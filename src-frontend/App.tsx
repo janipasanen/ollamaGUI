@@ -19,6 +19,44 @@ const CLOUD_MODELS = [
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 
+// Issue 22: standalone component so useState works per code block instance
+const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = ({ lang, code, dark, props }) => {
+  const [copied, setCopied] = React.useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="relative group my-2">
+      <div className={`flex items-center justify-between px-4 py-1.5 rounded-t-md text-xs ${
+        dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-300 text-zinc-600'
+      }`}>
+        <span className="font-mono">{lang}</span>
+        <button
+          onClick={handleCopy}
+          className={`transition-all px-2 py-0.5 rounded ${
+            copied
+              ? 'text-green-400'
+              : (dark ? 'text-zinc-400 hover:text-zinc-200 opacity-0 group-hover:opacity-100' : 'text-zinc-500 hover:text-zinc-800 opacity-0 group-hover:opacity-100')
+          }`}
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        style={dark ? vscDarkPlus : oneLight}
+        language={lang}
+        PreTag="div"
+        customStyle={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
+        {...props}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   // Core chat state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -268,6 +306,11 @@ const App: React.FC = () => {
     e.target.value = '';
   };
 
+  // Issue 24: helpers for MIME-safe image handling
+  // attachedImages / Message.images store full data URLs; API receives only the raw base64 part
+  const toApiBase64 = (img: string) => img.startsWith('data:') ? (img.split(',')[1] ?? '') : img;
+  const toDisplayUrl = (img: string) => img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`;
+
   // M5 Issue 20: Image attachments
   const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -275,8 +318,8 @@ const App: React.FC = () => {
     Array.from(files).forEach(file => {
       const reader = new FileReader();
       reader.onload = (ev) => {
-        const base64 = (ev.target?.result as string).split(',')[1];
-        setAttachedImages(prev => [...prev, base64]);
+        const dataUrl = ev.target?.result as string;
+        if (dataUrl) setAttachedImages(prev => [...prev, dataUrl]);
       };
       reader.readAsDataURL(file);
     });
@@ -293,10 +336,14 @@ const App: React.FC = () => {
       ...(attachedImages.length > 0 ? { images: [...attachedImages] } : {}),
     };
 
+    // Strip data-URL prefix before sending — API expects raw base64 only
+    const toApiMsg = (m: Message): Message =>
+      m.images ? { ...m, images: m.images.map(toApiBase64) } : m;
+
     const chatHistory: Message[] = [
       { role: 'system', content: systemPrompt },
-      ...messages,
-      userMessage,
+      ...messages.map(toApiMsg),
+      toApiMsg(userMessage),
     ];
 
     setMessages([...messages, userMessage]);
@@ -519,7 +566,7 @@ const App: React.FC = () => {
                     {msg.images.map((img, idx) => (
                       <img
                         key={idx}
-                        src={`data:image/jpeg;base64,${img}`}
+                        src={toDisplayUrl(img)}
                         alt="attachment"
                         className="max-h-48 rounded-lg object-contain border border-white/20"
                       />
@@ -533,16 +580,14 @@ const App: React.FC = () => {
                     components={{
                       code({ node, inline, className, children, ...props }: any) {
                         const lang = (className || '').replace('language-', '') || 'text';
-                        return !inline ? (
-                          <SyntaxHighlighter
-                            style={dark ? vscDarkPlus : oneLight}
-                            language={lang}
-                            PreTag="div"
-                            {...props}
-                          >
-                            {String(children).replace(/\n$/, '')}
-                          </SyntaxHighlighter>
-                        ) : (
+                        const code = String(children).replace(/\n$/, '');
+                        if (!inline) {
+                          // Issue 22: language label + copy button
+                          return (
+                            <CodeBlock lang={lang} code={code} dark={dark} props={props} />
+                          );
+                        }
+                        return (
                           <code className={`px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
                             {children}
                           </code>
@@ -553,16 +598,21 @@ const App: React.FC = () => {
                     {msg.content}
                   </ReactMarkdown>
                 </div>
+
+                {/* Issue 23: streaming cursor on last assistant message */}
+                {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content === '' && (
+                  <div className={`flex items-center gap-1 mt-1 text-sm ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:-0.3s]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:-0.15s]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce" />
+                  </div>
+                )}
+                {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content !== '' && (
+                  <span className="inline-block w-0.5 h-4 bg-current opacity-75 animate-pulse ml-0.5 align-middle" />
+                )}
               </div>
             </div>
           ))}
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className={`p-4 rounded-2xl rounded-tl-none animate-pulse ${dark ? 'bg-zinc-800' : 'bg-zinc-200'}`}>
-                Thinking...
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -576,7 +626,7 @@ const App: React.FC = () => {
               {attachedImages.map((img, idx) => (
                 <div key={idx} className="relative">
                   <img
-                    src={`data:image/jpeg;base64,${img}`}
+                    src={img}
                     alt="pending attachment"
                     className="h-16 w-16 object-cover rounded-lg border border-zinc-600"
                   />
