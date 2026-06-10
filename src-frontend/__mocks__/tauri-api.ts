@@ -1,9 +1,5 @@
-// Test setup file
-import { vi } from 'vitest';
-import { CliToolWrapper } from '../services/cli-tool';
-
-// Mock Tauri invoke for CLI tool
-const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {
+// Mock Tauri API for testing
+export const invoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {
   console.log(`[MOCK] Tauri invoke: ${cmd}`, args);
   
   if (cmd === 'run_cli_command') {
@@ -50,6 +46,3 @@ const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => 
   
   return { success: false, error: 'Unknown command' };
 });
-
-// Initialize CLI tool with mock
-CliToolWrapper.initializeWithTauri(mockInvoke);
