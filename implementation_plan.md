@@ -57,7 +57,7 @@ Turn the chat into an agent: Ollama tool-calling loop, CLI/shell tool with appro
 
 - [x] Issue 18: Agentic loop — Ollama tool-calling orchestration (agenticChatStream async generator).
 - [x] Issue 19: Tool registry + render tool calls/results in chat (ToolRegistry class, inline rendering).
-- [ ] Issue 20: CLI/shell tool with approval gate (Rust backend, depends on tool registry).
+- [x] Issue 20: CLI/shell tool with approval gate (Rust backend, depends on tool registry).
   - Rust `run_cli` command: spawn process, capture stdout/stderr/exit code, timeout, cwd.
   - Frontend approval modal (allow once / always / deny).
   - Configurable allowlist/denylist.
