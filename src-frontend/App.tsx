@@ -39,6 +39,7 @@ const App: React.FC = () => {
   const [showHelp, setShowHelp] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Model management state
   const [modelPullInput, setModelPullInput] = useState('');
@@ -96,6 +97,29 @@ const App: React.FC = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Responsive design - handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      const mobileBreakpoint = 768; // Typical tablet breakpoint
+      const isMobileDevice = window.innerWidth < mobileBreakpoint;
+      setIsMobile(isMobileDevice);
+      
+      // On mobile devices, automatically collapse sidebar for more screen space
+      if (isMobileDevice) {
+        setIsSidebarOpen(false);
+      }
+    };
+
+    // Initial check
+    handleResize();
+
+    // Add event listener
+    window.addEventListener('resize', handleResize);
+
+    // Cleanup
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const startNewChat = useCallback(() => {
     setMessages([]);
@@ -312,10 +336,12 @@ const App: React.FC = () => {
       dark ? 'bg-zinc-900 text-zinc-100' : 'bg-zinc-100 text-zinc-900'
     }`}>
 
-      {/* Sidebar */}
-      <div className={`transition-all duration-300 border-r flex flex-col ${
+      {/* Sidebar - Responsive: hidden on mobile by default, toggleable */}
+      <div className={`transition-all duration-300 border-r flex flex-col absolute md:relative z-40 ${
         isSidebarOpen ? 'w-64 p-4' : 'w-0 overflow-hidden p-0 border-none'
-      } ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+      } ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'} ${
+        isMobile && !isSidebarOpen ? 'hidden' : ''
+      }`}>
         <h1 className="text-xl font-bold mb-4">Ollama GUI</h1>
 
         <button
@@ -411,8 +437,10 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col relative overflow-hidden">
+      {/* Main Chat Area - Responsive: full width on mobile, adjusts for sidebar on desktop */}
+      <div className={`flex-1 flex flex-col relative overflow-hidden ${
+        isMobile && isSidebarOpen ? 'ml-64' : ''
+      }`}>
         {/* Header */}
         <header className={`h-14 border-b flex items-center justify-between px-6 transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
@@ -436,40 +464,53 @@ const App: React.FC = () => {
                 <option key={m.name} value={m.name}>{m.name}{m.cloud ? ' (Cloud)' : ''}</option>
               ))}
             </select>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className={`text-xs font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              title="Settings (Ctrl+,)"
-              className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-            >
-              ⚙️
-            </button>
-            <button
-              onClick={() => setShowHelp(prev => !prev)}
-              title="Keyboard shortcuts (?)"
-              className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-            >
-              ❓
-            </button>
-          </div>
+           </div>
+           <div className="flex items-center gap-3">
+             {/* On mobile, show only essential buttons; others go in mobile menu */}
+             {!isMobile ? (
+               <>
+                 <div className={`text-xs font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
+                 <button
+                   onClick={() => setIsSettingsOpen(true)}
+                   title="Settings (Ctrl+,)"
+                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+                 >
+                   ⚙️
+                 </button>
+                 <button
+                   onClick={() => setShowHelp(prev => !prev)}
+                   title="Keyboard shortcuts (?)"
+                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+                 >
+                   ❓
+                 </button>
+               </>
+             ) : (
+               <button
+                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                 className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+                 title="Menu"
+               >
+                 ⋯
+               </button>
+             )}
+           </div>
         </header>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Messages - Responsive: full width on mobile, padded on desktop */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
           {messages.length === 0 && (
             <div className={`h-full flex items-center justify-center italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
               Start a conversation with your local AI.
             </div>
           )}
-          {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-3xl p-4 rounded-2xl ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-tr-none'
-                  : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
-              }`}>
+           {messages.map((msg, i) => (
+             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+               <div className={`w-full md:max-w-3xl p-4 rounded-2xl ${
+                 msg.role === 'user'
+                   ? 'bg-blue-600 text-white rounded-tr-none'
+                   : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
+               }`}>
                 <div className="text-xs font-bold mb-2 opacity-50 uppercase">{msg.role}</div>
 
                 {/* M5 Issue 20: Show attached images */}
@@ -525,72 +566,10 @@ const App: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area */}
-        <div className={`px-6 pb-6 pt-2 shrink-0 ${dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'}`}>
-
-          {/* M5 Issue 20: Image thumbnails preview */}
-          {attachedImages.length > 0 && (
-            <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
-              {attachedImages.map((img, idx) => (
-                <div key={idx} className="relative">
-                  <img
-                    src={`data:image/jpeg;base64,${img}`}
-                    alt="pending attachment"
-                    className="h-16 w-16 object-cover rounded-lg border border-zinc-600"
-                  />
-                  <button
-                    onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
-                    className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs flex items-center justify-center leading-none"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="max-w-3xl mx-auto flex gap-2">
-            {/* M5 Issue 20: Attach image button */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              title="Attach image"
-              className={`px-3 py-3 rounded-xl transition-colors ${
-                dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
-              }`}
-            >
-              📎
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
-
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-              placeholder="Message Ollama..."
-              className={`flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
-              }`}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={isLoading}
-              className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
-            >
-              Send
-            </button>
-          </div>
-          <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-            Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
-          </div>
-        </div>
-
-        {/* Help Overlay (keyboard shortcuts) */}
-        {showHelp && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-md rounded-2xl p-6 shadow-2xl ${
-              dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
-            }`}>
+        {/* Input Area - Responsive: full width on mobile, constrained on desktop */}
+        <div className={`p-4 md:p-6 pb-6 pt-2 shrink-0 ${
+          dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'
+        }`}>
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-bold">Keyboard Shortcuts</h2>
                 <button onClick={() => setShowHelp(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
@@ -658,10 +637,10 @@ const App: React.FC = () => {
                     }`}
                   >
                     Test connection
-                  </button>
-                </div>
+                   </button>
+                 </div>
 
-                {/* System Prompt */}
+                 {/* System Prompt */}
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>System Prompt</label>
                   <textarea
@@ -723,9 +702,9 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
-          </div>
-        )}
-      </div>
+           </div>
+         )}
+       </div>
     </div>
   );
 };
