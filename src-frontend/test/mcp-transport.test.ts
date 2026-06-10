@@ -56,6 +56,14 @@ describe('MCP Transport Tests', () => {
         args: [],
       });
 
+      // Mock the sendRequest to avoid infinite waiting
+      const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
+      mockSend.mockResolvedValue(undefined);
+
+      // Mock the readResponse to return immediately
+      const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
+      mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
+
       const client = await mcpServerManager.connectToServer('test-stdio');
       expect(client).toBeInstanceOf(McpStdioClient);
       expect(mockSpawn).toHaveBeenCalled();
@@ -80,6 +88,26 @@ describe('MCP Transport Tests', () => {
         command: 'echo',
         args: [],
       });
+
+      const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
+      mockSend.mockResolvedValue(undefined);
+
+      const client = await mcpServerManager.connectToServer('test-stdio') as McpStdioClient;
+      
+      // Mock the initialize response
+      const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
+      mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
+
+      // Test initialization with timeout
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Test timeout')), 1000)
+      );
+      
+      await expect(Promise.race([
+        client.initialize(),
+        timeoutPromise
+      ])).resolves.toBeDefined();
+    });
 
       const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
       mockSend.mockResolvedValue(undefined);
@@ -185,9 +213,9 @@ describe('MCP Transport Tests', () => {
         body: '{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}',
       });
 
-      // Temporarily replace invoke
-      const originalInvoke = global.invoke;
-      global.invoke = mockInvoke;
+      // Temporarily replace the mock in McpHttpTransport
+      const originalInvoke = McpHttpTransport['invoke'];
+      McpHttpTransport['invoke'] = mockInvoke;
 
       try {
         await McpHttpTransport.initializeSession(config);
@@ -208,7 +236,7 @@ describe('MCP Transport Tests', () => {
         const callArgs = mockInvoke.mock.calls[0][1];
         expect(callArgs.request.headers.Authorization).toContain('Bearer test-token');
       } finally {
-        global.invoke = originalInvoke;
+        McpHttpTransport['invoke'] = originalInvoke;
       }
     });
 

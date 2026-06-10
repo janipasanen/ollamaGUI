@@ -5,6 +5,7 @@ import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, pers
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { performOAuthFlow } from './services/mcpAuth';
+import { mcpServerManager } from './services/mcp';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -987,40 +988,77 @@ const App: React.FC = () => {
                               {server.type}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1 shrink-0 ml-2">
-                            {server.type === 'http' && (
-                              <button
-                                onClick={async () => {
-                                  setMcpAuthError(null);
-                                  try {
-                                    await performOAuthFlow(server.id, server.url!);
-                                    setMcpServers(prev =>
-                                      prev.map(s => s.id === server.id ? { ...s, authenticated: true } : s)
-                                    );
-                                  } catch (e) {
-                                    setMcpAuthError(e instanceof Error ? e.message : 'Auth failed');
-                                  }
-                                }}
-                                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
-                                  server.authenticated
-                                    ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
-                                    : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')
-                                }`}
-                                title={server.authenticated ? 'Authenticated' : 'Authenticate with OAuth'}
-                              >
-                                {server.authenticated ? '🔑 auth' : 'Auth'}
-                              </button>
-                            )}
-                            <button
-                              onClick={() => {
-                                mcpConfigStore.delete(server.id);
-                                setMcpServers(mcpConfigStore.list());
-                              }}
-                              className="text-red-400 hover:text-red-300 text-xs px-1"
-                            >
-                              ✕
-                            </button>
-                          </div>
+                           <div className="flex items-center gap-1 shrink-0 ml-2">
+                             <button
+                               onClick={async () => {
+                                 try {
+                                   setMcpServers(prev =>
+                                     prev.map(s => s.id === server.id ? { ...s, status: 'connecting' } : s)
+                                   );
+                                   
+                                   const client = await mcpServerManager.connectToServer(server.id);
+                                   const tools = await client.listTools();
+                                   
+                                   setMcpServers(prev =>
+                                     prev.map(s => s.id === server.id ? {
+                                       ...s,
+                                       status: 'connected',
+                                       tools: tools.map(t => ({ ...t, enabled: true })),
+                                       errorMessage: null
+                                     } : s)
+                                   );
+                                 } catch (e) {
+                                   setMcpServers(prev =>
+                                     prev.map(s => s.id === server.id ? {
+                                       ...s,
+                                       status: 'error',
+                                       errorMessage: e instanceof Error ? e.message : 'Connection failed'
+                                     } : s)
+                                   );
+                                 }
+                               }}
+                               className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                                 server.status === 'connected'
+                                   ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
+                                   : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')
+                               }`}
+                               title={server.status === 'connected' ? 'Connected' : 'Connect to server'}
+                             >
+                               {server.status === 'connected' ? '🔗' : 'Connect'}
+                             </button>
+                             {server.type === 'http' && (
+                               <button
+                                 onClick={async () => {
+                                   setMcpAuthError(null);
+                                   try {
+                                     await performOAuthFlow(server.id, server.url!);
+                                     setMcpServers(prev =>
+                                       prev.map(s => s.id === server.id ? { ...s, authenticated: true } : s)
+                                     );
+                                   } catch (e) {
+                                     setMcpAuthError(e instanceof Error ? e.message : 'Auth failed');
+                                   }
+                                 }}
+                                 className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                                   server.authenticated
+                                     ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
+                                     : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')
+                                 }`}
+                                 title={server.authenticated ? 'Authenticated' : 'Authenticate with OAuth'}
+                               >
+                                 {server.authenticated ? '🔑 auth' : 'Auth'}
+                               </button>
+                             )}
+                             <button
+                               onClick={() => {
+                                 mcpConfigStore.delete(server.id);
+                                 setMcpServers(mcpConfigStore.list());
+                               }}
+                               className="text-red-400 hover:text-red-300 text-xs px-1"
+                             >
+                               ✕
+                             </button>
+                           </div>
                         </div>
                         {server.status === 'error' && server.errorMessage && (
                           <p className="text-[10px] text-red-400 mt-1 truncate">{server.errorMessage}</p>
@@ -1033,9 +1071,9 @@ const App: React.FC = () => {
                       </div>
                     ))}
                   </div>
-                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Connect/disconnect wired when MCP transport lands (#21/#22).
-                  </p>
+                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     Manage MCP servers for tool discovery and remote execution.
+                   </p>
                 </div>
 
                 {/* Model Management */}

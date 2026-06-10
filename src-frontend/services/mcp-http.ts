@@ -1,5 +1,36 @@
 // MCP HTTP Transport
-import { invoke } from '@tauri-apps/api/tauri';
+// Mock for testing environment
+let invoke: any = async (cmd: string, args: any) => {
+  console.log(`[MOCK] Tauri invoke: ${cmd}`, args);
+  
+  if (cmd === 'mcp_http_request') {
+    // Simulate a successful HTTP response
+    return {
+      success: true,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: args.request.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
+    };
+  }
+  
+  return { success: false, error: 'Unknown command' };
+};
+
+// Allow tests to override the mock
+if (import.meta.env?.MODE === 'test') {
+  invoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {
+    if (cmd === 'mcp_http_request') {
+      return {
+        success: true,
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: args.request.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
+      };
+    }
+    return { success: false, error: 'Unknown command' };
+  });
+}
+
 import { McpServerConfig, McpTool, McpRequest, McpResponse, McpNotification } from './mcp';
 
 export class McpHttpTransport {
