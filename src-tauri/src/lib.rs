@@ -608,6 +608,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             run_cli,
+            start_oauth_redirect_listener,
             mcp_stdio_spawn,
             mcp_stdio_send,
             mcp_stdio_read,
