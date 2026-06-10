@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { act } from '@testing-library/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
 
@@ -144,7 +145,7 @@ describe('App Component', () => {
       
       // Simulate mobile viewport
       global.innerWidth = 600;
-      global.dispatchEvent(new Event('resize'));
+      fireEvent.resize(window);
       
       // On mobile, sidebar should be collapsed by default
       const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div');

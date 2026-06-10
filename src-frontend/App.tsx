@@ -570,35 +570,61 @@ const App: React.FC = () => {
         <div className={`p-4 md:p-6 pb-6 pt-2 shrink-0 ${
           dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'
         }`}>
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Keyboard Shortcuts</h2>
-                <button onClick={() => setShowHelp(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
-              </div>
-              <div className="space-y-1">
-                {[
-                  ['New Chat', 'Ctrl+K'],
-                  ['Toggle Sidebar', 'Ctrl+\\'],
-                  ['Open Settings', 'Ctrl+,'],
-                  ['Close Modal', 'Escape'],
-                  ['Show Help', '?'],
-                ].map(([label, key]) => (
-                  <div key={key} className={`flex justify-between items-center py-3 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-                    <span className={dark ? 'text-zinc-300' : 'text-zinc-700'}>{label}</span>
-                    <kbd className={`px-2 py-1 rounded text-sm font-mono ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-200 text-zinc-800'}`}>{key}</kbd>
-                  </div>
-                ))}
-              </div>
-              <p className={`text-[10px] mt-4 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                Shortcuts work when not typing in an input field.
-              </p>
-              <div className="mt-4 flex justify-end">
-                <button onClick={() => setShowHelp(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
-                  Close
-                </button>
-              </div>
+          {/* M5 Issue 20: Image thumbnails preview */}
+          {attachedImages.length > 0 && (
+            <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
+              {attachedImages.map((img, idx) => (
+                <div key={idx} className="relative">
+                  <img
+                    src={`data:image/jpeg;base64,${img}`}
+                    alt="pending attachment"
+                    className="h-16 w-16 object-cover rounded-lg border border-zinc-600"
+                  />
+                  <button
+                    onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
+                    className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs flex items-center justify-center leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
+          )}
+
+          <div className="max-w-3xl mx-auto flex gap-2">
+            {/* M5 Issue 20: Attach image button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach image"
+              className={`px-3 py-3 rounded-xl transition-colors ${
+                dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
+              }`}
+            >
+              📎
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
+
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+              placeholder="Message Ollama..."
+              className={`flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
+              }`}
+            />
+            <button
+              onClick={sendMessage}
+              disabled={isLoading}
+              className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
+            >
+              Send
+            </button>
           </div>
-        )}
+          <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
+            Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
+          </div>
 
         {/* Settings Overlay */}
         {isSettingsOpen && (
@@ -700,10 +726,47 @@ const App: React.FC = () => {
                 <button onClick={() => setIsSettingsOpen(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
                   Close
                 </button>
-              </div>
-            </div>
+               </div>
+             </div>
            </div>
          )}
+       </div>
+
+        {/* Help Overlay (keyboard shortcuts) */}
+        {showHelp && (
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className={`border w-full max-w-md rounded-2xl p-6 shadow-2xl ${
+              dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
+            }`}>
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold">Keyboard Shortcuts</h2>
+                <button onClick={() => setShowHelp(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+              </div>
+              <div className="space-y-1">
+                {[
+                  ['New Chat', 'Ctrl+K'],
+                  ['Toggle Sidebar', 'Ctrl+\\'],
+                  ['Open Settings', 'Ctrl+,'],
+                  ['Close Modal', 'Escape'],
+                  ['Show Help', '?'],
+                ].map(([label, key]) => (
+                  <div key={key} className={`flex justify-between items-center py-3 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                    <span className={dark ? 'text-zinc-300' : 'text-zinc-700'}>{label}</span>
+                    <kbd className={`px-2 py-1 rounded text-sm font-mono ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-200 text-zinc-800'}`}>{key}</kbd>
+                  </div>
+                ))}
+              </div>
+              <p className={`text-[10px] mt-4 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                Shortcuts work when not typing in an input field.
+              </p>
+              <div className="mt-4 flex justify-end">
+                <button onClick={() => setShowHelp(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
        </div>
     </div>
   );
