@@ -160,6 +160,13 @@ const App: React.FC = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Focus input on initial load for better accessibility
+    if (messages.length === 0) {
+      const input = document.getElementById('chat-input');
+      if (input) {
+        setTimeout(() => input.focus(), 100);
+      }
+    }
   }, [messages]);
 
   // Responsive design - handle window resize
@@ -480,14 +487,15 @@ const App: React.FC = () => {
       }`}>
         <h1 className="text-xl font-bold mb-4">Ollama GUI</h1>
 
-        <button
-          onClick={startNewChat}
-          className={`w-full py-2 px-4 rounded-lg transition-colors mb-3 text-sm font-semibold ${
-            dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
-          }`}
-        >
-          + New Chat
-        </button>
+             <button
+               onClick={startNewChat}
+               aria-label="Start new chat"
+               className={`w-full py-2 px-4 rounded-lg transition-colors mb-3 text-sm font-semibold ${
+                 dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
+               }`}
+             >
+               + New Chat
+             </button>
 
         {/* M5 Issue 18: Search */}
         <input
@@ -511,15 +519,19 @@ const App: React.FC = () => {
             </div>
           )}
           {filteredSessions.map((s) => (
-            <div
-              key={s.id}
-              onClick={() => loadSession(s)}
-              className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${
-                currentSessionId === s.id
-                  ? (dark ? 'bg-zinc-700 text-white' : 'bg-zinc-300 text-zinc-900')
-                  : (dark ? 'hover:bg-zinc-700/50 text-zinc-300' : 'hover:bg-zinc-200 text-zinc-600')
-              }`}
-            >
+                   <div
+                     key={s.id}
+                     onClick={() => loadSession(s)}
+                     role="button"
+                     tabIndex={0}
+                     onKeyDown={(e) => e.key === 'Enter' && loadSession(s)}
+                     aria-label={`Load session: ${s.title}`}
+                     className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${
+                       currentSessionId === s.id
+                         ? (dark ? 'bg-zinc-700 text-white' : 'bg-zinc-300 text-zinc-900')
+                         : (dark ? 'hover:bg-zinc-700/50 text-zinc-300' : 'hover:bg-zinc-200 text-zinc-600')
+                     }`}
+                   >
               <span className="truncate text-sm flex-1">{s.title}</span>
               <button
                 onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
@@ -582,16 +594,18 @@ const App: React.FC = () => {
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
             <div className="flex items-center gap-4">
-              <button
-                onClick={() => setIsSidebarOpen(prev => !prev)}
-                title="Toggle sidebar (Ctrl+\)"
-                className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-              >
-                ☰
-              </button>
+             <button
+               onClick={() => setIsSidebarOpen(prev => !prev)}
+               title="Toggle sidebar (Ctrl+\)"
+               aria-label="Toggle sidebar"
+               className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+             >
+               ☰
+             </button>
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
+                aria-label="Select AI model"
                 className={`text-sm border rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
@@ -619,8 +633,9 @@ const App: React.FC = () => {
                <>
                  <div className={`text-xs font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
                  <button
-                   onClick={() => setIsSettingsOpen(true)}
+                   onClick={() => setIsSettingsOpen(prev => !prev)}
                    title="Settings (Ctrl+,)"
+                   aria-label="Open settings"
                    className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
                  >
                    ⚙️
@@ -628,6 +643,7 @@ const App: React.FC = () => {
                  <button
                    onClick={() => setShowHelp(prev => !prev)}
                    title="Keyboard shortcuts (?)"
+                   aria-label="Show keyboard shortcuts"
                    className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
                  >
                    ❓
@@ -768,34 +784,43 @@ const App: React.FC = () => {
 
           <div className="max-w-3xl mx-auto flex gap-2">
             {/* M5 Issue 20: Attach image button */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              title="Attach image"
-              className={`px-3 py-3 rounded-xl transition-colors ${
-                dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
-              }`}
-            >
-              📎
-            </button>
+             <button
+               onClick={() => fileInputRef.current?.click()}
+               title="Attach image"
+               aria-label="Attach image"
+               className={`px-3 py-3 rounded-xl transition-colors ${
+                 dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
+               }`}
+             >
+               📎
+             </button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
 
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-              placeholder="Message Ollama..."
-              className={`flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
-              }`}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={isLoading}
-              className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
-            >
-              Send
-            </button>
+             <input
+               id="chat-input"
+               type="text"
+               value={input}
+               onChange={(e) => setInput(e.target.value)}
+               onKeyDown={(e) => {
+                 if (e.key === 'Enter' && !e.shiftKey) {
+                   e.preventDefault();
+                   sendMessage();
+                 }
+               }}
+               placeholder="Message Ollama..."
+               aria-label="Type your message here"
+               className={`flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                 dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
+               }`}
+             />
+             <button
+               onClick={sendMessage}
+               disabled={isLoading}
+               aria-label="Send message"
+               className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
+             >
+               Send
+             </button>
           </div>
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
             Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
