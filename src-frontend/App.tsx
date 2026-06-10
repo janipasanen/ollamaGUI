@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
-import { toolRegistry, registerBuiltInTools } from './services/tools';
+import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -76,6 +76,11 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isAgenticMode, setIsAgenticMode] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<{
+    command: string;
+    cwd?: string;
+    resolve: (approved: boolean) => void;
+  } | null>(null);
 
   // Model management state
   const [modelPullInput, setModelPullInput] = useState('');
@@ -123,6 +128,11 @@ const App: React.FC = () => {
 
       // Initialize built-in tools
       registerBuiltInTools();
+      registerCliTool(async (command: string, cwd?: string) => {
+        return new Promise<boolean>((resolve) => {
+          setPendingApproval({ command, cwd, resolve });
+        });
+      });
 
       try {
         const combined = await refreshModels();
@@ -962,6 +972,71 @@ const App: React.FC = () => {
               <div className="mt-4 flex justify-end">
                 <button onClick={() => setShowHelp(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
                   Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* CLI Command Approval Modal */}
+        {pendingApproval && (
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
+              dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
+            }`}>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <span>🔧</span> Command Approval Required
+                </h2>
+              </div>
+              <p className={`text-sm mb-3 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                The AI wants to run a shell command on your machine:
+              </p>
+              <div className={`rounded-lg px-4 py-3 font-mono text-sm mb-2 border ${
+                dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-200 text-zinc-900'
+              }`}>
+                {pendingApproval.command}
+              </div>
+              {pendingApproval.cwd && (
+                <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                  Working directory: <span className="font-mono">{pendingApproval.cwd}</span>
+                </p>
+              )}
+              <p className={`text-xs mb-5 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                Review the command carefully before allowing. "Always Allow" remembers this exact command for the session.
+              </p>
+              <div className="flex gap-2 justify-end flex-wrap">
+                <button
+                  onClick={() => {
+                    pendingApproval.resolve(false);
+                    setPendingApproval(null);
+                  }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-700'
+                  }`}
+                >
+                  Deny
+                </button>
+                <button
+                  onClick={() => {
+                    cliAllowlist.add(pendingApproval.command);
+                    persistCliAllowlist();
+                    pendingApproval.resolve(true);
+                    setPendingApproval(null);
+                  }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                    dark ? 'border-blue-600 text-blue-400 hover:bg-blue-600/20' : 'border-blue-500 text-blue-600 hover:bg-blue-50'
+                  }`}
+                >
+                  Always Allow
+                </button>
+                <button
+                  onClick={() => {
+                    pendingApproval.resolve(true);
+                    setPendingApproval(null);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                >
+                  Allow Once
                 </button>
               </div>
             </div>

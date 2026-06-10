@@ -78,6 +78,80 @@ class ToolRegistry {
 
 export const toolRegistry = new ToolRegistry();
 
+// Allowlist of commands the user has approved to run without re-asking.
+// Persisted in localStorage under 'cli_allowlist'.
+export const cliAllowlist = new Set<string>(
+  JSON.parse(localStorage.getItem('cli_allowlist') ?? '[]') as string[]
+);
+
+export function persistCliAllowlist(): void {
+  localStorage.setItem('cli_allowlist', JSON.stringify([...cliAllowlist]));
+}
+
+interface CliResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out: boolean;
+}
+
+/**
+ * Register the `run_shell_command` tool backed by the Rust `run_cli` Tauri command.
+ * `onApprovalRequired` is called whenever a command is not in the allowlist;
+ * it should show the approval modal and return true (allow) or false (deny).
+ */
+export function registerCliTool(
+  onApprovalRequired: (command: string, cwd?: string) => Promise<boolean>
+): void {
+  toolRegistry.registerTool({
+    name: 'run_shell_command',
+    description:
+      'Run a shell command on the local machine and return stdout/stderr. Requires user approval.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'The shell command to execute (passed to sh -c on Unix, cmd /C on Windows).',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for the command (optional).',
+        },
+      },
+      required: ['command'],
+    },
+    execute: async (params: Record<string, any>) => {
+      const command = params.command as string;
+      const cwd = params.cwd as string | undefined;
+
+      if (!cliAllowlist.has(command)) {
+        const approved = await onApprovalRequired(command, cwd);
+        if (!approved) {
+          return { error: 'Command denied by user.', exit_code: -1 };
+        }
+      }
+
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<CliResult>('run_cli', {
+        command,
+        cwd,
+        timeoutMs: 30_000,
+      });
+
+      const output = result.timed_out
+        ? `[TIMED OUT]\n${result.stderr}`
+        : `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ''}`.trim();
+
+      return {
+        output: output || '(no output)',
+        exit_code: result.exit_code,
+        timed_out: result.timed_out,
+      };
+    },
+  });
+}
+
 // Built-in tools
 export function registerBuiltInTools() {
   // System information tool
