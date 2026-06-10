@@ -38,14 +38,14 @@ Based on OpenAI and Claude GUIs:
 - [x] Issue 15: Unit tests (vitest) for services and UI components.
 - [x] Issue 16: Final UI polish, duplicate-code cleanup, type fixes.
 
-### Milestone 5: Power User Features
-- [ ] Issue 17: Configurable Ollama endpoint (replace hardcoded localhost:11434).
-- [ ] Issue 18: Message search across conversation history.
-- [ ] Issue 19: Export/import conversations as JSON.
-- [ ] Issue 20: File/image attachment support (for vision models like llava).
+### Milestone 5: Power User Features ✅
+- [x] Issue 17: Configurable Ollama endpoint (replace hardcoded localhost:11434).
+- [x] Issue 18: Message search across conversation history.
+- [x] Issue 19: Export/import conversations as JSON.
+- [x] Issue 20: File/image attachment support (for vision models like llava).
 
-### Milestone 5: CLI and MCP Tools Integration
-- [ ] Issue 17: Add ability to use CLI and MCP tools.
+### Milestone 6: CLI and MCP Tools Integration
+- [ ] Issue 21: Add ability to use CLI and MCP tools.
 
 ## Testing Strategy
 - **Unit Tests**: Test API wrappers and state management.
