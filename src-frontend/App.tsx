@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
@@ -55,7 +55,6 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
       </SyntaxHighlighter>
     </div>
   );
-};
 
 const App: React.FC = () => {
   // Core chat state
@@ -1297,13 +1296,12 @@ const App: React.FC = () => {
                 >
                   Allow Once
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
-       </div>
+               </div>
+             </div>
+           </div>
+         )}
     </div>
   );
-};
+}
 
 export default App;
