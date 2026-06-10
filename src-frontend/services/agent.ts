@@ -151,9 +151,19 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       if (onError) {
         onError(error instanceof Error ? error : new Error('Unknown error'));
       }
-      yield { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` };
-      break;
+          yield { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` };
+        } catch (error) {
+          console.error(`[MCP HTTP] Request failed: ${error}`);
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          throw new Error(`MCP HTTP request failed: ${errorMsg}. Please check the server URL and connection.`);
+        }
+      }
+    } catch (error) {
+      console.error(`[MCP HTTP] Request failed: ${error}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      throw new Error(`MCP request failed: ${errorMsg}. Please verify the server configuration.`);
     }
+  }
   }
   
   if (onComplete) {

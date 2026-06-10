@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
@@ -20,7 +20,7 @@ const isCloudModel = (modelName: string): boolean => {
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 
 // Issue 22: standalone component so useState works per code block instance
-const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = ({ lang, code, dark, props }) => {
+const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
   const [copied, setCopied] = React.useState(false);
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
@@ -652,8 +652,8 @@ const App: React.FC = () => {
               Start a conversation with your local AI.
             </div>
           )}
-           {messages.map((msg, i) => (
-             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            {messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                <div className={`w-full md:max-w-3xl p-4 rounded-2xl ${
                  msg.role === 'user'
                    ? 'bg-blue-600 text-white rounded-tr-none'
@@ -831,7 +831,10 @@ const App: React.FC = () => {
                   <button
                     onClick={async () => {
                       try { await refreshModels(); alert('Connected successfully.'); }
-                      catch { alert('Could not connect to endpoint.'); }
+                       catch (e) {
+                         const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+                         alert(`Could not connect to endpoint: ${errorMessage}\n\nPlease check:\n- Ollama is running\n- Endpoint URL is correct\n- Network connection is active`);
+                       }
                     }}
                     className={`mt-2 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                       dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
@@ -941,17 +944,43 @@ const App: React.FC = () => {
                       <button
                         onClick={() => {
                           if (!newMcpServer.name.trim()) return;
-                          const server: McpServerConfig = {
-                            id: mcpConfigStore.generateId(),
-                            name: newMcpServer.name.trim(),
-                            type: newMcpServer.type,
-                            command: newMcpServer.type === 'stdio' ? newMcpServer.command : undefined,
-                            url: newMcpServer.type === 'http' ? newMcpServer.url : undefined,
-                            status: 'disconnected',
-                            tools: [],
-                            authRequired: newMcpServer.type === 'http',
-                            authenticated: false,
-                          };
+                              // Validate inputs
+                              if (!newMcpServer.name.trim()) {
+                                alert('Please enter a server name');
+                                return;
+                              }
+                              
+                              if (newMcpServer.type === 'stdio' && !newMcpServer.command?.trim()) {
+                                alert('Please enter a command for stdio server');
+                                return;
+                              }
+                              
+                              if (newMcpServer.type === 'http' && !newMcpServer.url?.trim()) {
+                                alert('Please enter a URL for HTTP server');
+                                return;
+                              }
+                              
+                              // Validate URL format for HTTP servers
+                              if (newMcpServer.type === 'http') {
+                                try {
+                                  new URL(newMcpServer.url.trim());
+                                } catch {
+                                  alert('Please enter a valid URL (e.g., https://example.com)');
+                                  return;
+                                }
+                              }
+                              
+                              const server: McpServerConfig = {
+                                id: mcpConfigStore.generateId(),
+                                name: newMcpServer.name.trim(),
+                                type: newMcpServer.type,
+                                command: newMcpServer.type === 'stdio' ? newMcpServer.command.trim() : undefined,
+                                url: newMcpServer.type === 'http' ? newMcpServer.url.trim() : undefined,
+                                status: 'disconnected',
+                                tools: [],
+                                authRequired: newMcpServer.type === 'http',
+                                authenticated: false,
+                              };
                           mcpConfigStore.save(server);
                           setMcpServers(mcpConfigStore.list());
                           setNewMcpServer({ name: '', type: 'stdio', command: '', url: '' });
@@ -1007,15 +1036,19 @@ const App: React.FC = () => {
                                        errorMessage: null
                                      } : s)
                                    );
-                                 } catch (e) {
-                                   setMcpServers(prev =>
-                                     prev.map(s => s.id === server.id ? {
-                                       ...s,
-                                       status: 'error',
-                                       errorMessage: e instanceof Error ? e.message : 'Connection failed'
-                                     } : s)
-                                   );
-                                 }
+                                  } catch (e) {
+                                    const errorMsg = e instanceof Error ? e.message : 'Connection failed';
+                                    const friendlyMessage = errorMsg.includes('failed') ? 
+                                      `Connection error: ${errorMsg}. Please check server URL and try again.` :
+                                      `Connection error: ${errorMsg}`;
+                                    setMcpServers(prev =>
+                                      prev.map(s => s.id === server.id ? {
+                                        ...s,
+                                        status: 'error',
+                                        errorMessage: friendlyMessage
+                                      } : s)
+                                    );
+                                  }
                                }}
                                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
                                  server.status === 'connected'

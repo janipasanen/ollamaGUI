@@ -64,6 +64,26 @@ describe('MCP Transport Tests', () => {
       const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
       mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
 
+      // Add timeout for safety
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Test timeout')), 2000)
+      );
+
+      const clientPromise = mcpServerManager.connectToServer('test-stdio');
+      const client = await Promise.race([clientPromise, timeoutPromise]);
+
+      expect(client).toBeInstanceOf(McpStdioClient);
+      expect(mockSpawn).toHaveBeenCalled();
+    });
+
+      // Mock the sendRequest to avoid infinite waiting
+      const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
+      mockSend.mockResolvedValue(undefined);
+
+      // Mock the readResponse to return immediately
+      const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
+      mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
+
       const client = await mcpServerManager.connectToServer('test-stdio');
       expect(client).toBeInstanceOf(McpStdioClient);
       expect(mockSpawn).toHaveBeenCalled();
@@ -118,6 +138,26 @@ describe('MCP Transport Tests', () => {
       const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
       mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
 
+      // Test initialization with timeout
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Test timeout')), 1000)
+      );
+      
+      await expect(Promise.race([
+        client.initialize(),
+        timeoutPromise
+      ])).resolves.toBeDefined();
+    });
+
+      const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
+      mockSend.mockResolvedValue(undefined);
+
+      const client = await mcpServerManager.connectToServer('test-stdio') as McpStdioClient;
+      
+      // Mock the initialize response
+      const mockRead = vi.spyOn(TauriMcpStdioTransport, 'readResponse');
+      mockRead.mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
+
       // Test initialization
       await expect(client.initialize()).resolves.toBeDefined();
     });
@@ -142,10 +182,20 @@ describe('MCP Transport Tests', () => {
         args: [],
       });
 
+      const mockSend = vi.spyOn(TauriMcpStdioTransport, 'sendRequest');
+      mockSend.mockResolvedValue(undefined);
+
       const mockClose = vi.spyOn(TauriMcpStdioTransport, 'closeProcess');
       mockClose.mockResolvedValue(undefined);
 
-      const client = await mcpServerManager.connectToServer('test-stdio');
+      // Add timeout for safety
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Test timeout')), 1000)
+      );
+
+      const clientPromise = mcpServerManager.connectToServer('test-stdio');
+      const client = await Promise.race([clientPromise, timeoutPromise]);
+
       await client.disconnect();
 
       expect(mockClose).toHaveBeenCalled();
