@@ -29,8 +29,11 @@ Based on OpenAI and Claude GUIs:
 ### Milestone 3: Advanced UI & UX ✅
 - [x] Issue 9: Markdown rendering and syntax highlighting for code blocks.
 - [x] Issue 10: Theme support (Light/Dark mode).
-- [x] Issue 11: Responsive design for different window sizes.
+- [x] Issue 11: Responsive design for different window sizes. 🔄 [IN PROGRESS — other computer]
 - [x] Issue 12: Keyboard shortcuts (e.g., Cmd/Ctrl+K for new chat).
+- [x] Issue 22: Copy-to-clipboard button on code blocks with language label.
+- [x] Issue 23: Streaming cursor while assistant response is generating.
+- [x] Issue 24: Fix image attachment MIME type (hardcoded as JPEG, breaks PNG/GIF/WebP).
 
 ### Milestone 4: System Integration & Polishing ✅
 - [x] Issue 13: Model management UI (Pull/Remove models) — wired into Settings overlay.
