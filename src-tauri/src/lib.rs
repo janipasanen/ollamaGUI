@@ -219,6 +219,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
 use tauri::Manager;
+use reqwest::Client;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct McpStdioCommand {
@@ -243,6 +245,33 @@ struct CliCommandResponse {
     stderr: String,
     error: Option<String>,
     timed_out: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct McpHttpRequest {
+    session_id: String,
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+    auth_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct McpHttpResponse {
+    success: bool,
+    status: u16,
+    headers: HashMap<String, String>,
+    body: String,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct McpHttpSession {
+    url: String,
+    auth_token: Option<String>,
+    client: Client,
+    sender: mpsc::Sender<McpHttpResponse>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -286,6 +315,12 @@ lazy_static::lazy_static! {
             "shutdown".to_string(),
             "reboot".to_string(),
         ]));
+    
+    static ref MCP_HTTP_CLIENT: Arc<Mutex<Option<Client>>> = 
+        Arc::new(Mutex::new(None));
+    
+    static ref MCP_SESSIONS: Arc<Mutex<HashMap<String, McpHttpSession>>> = 
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 #[tauri::command]
@@ -386,6 +421,67 @@ async fn mcp_stdio_close(
         success: true,
         message: "Process terminated".to_string(),
         session_id: Some(session_id),
+    })
+}
+
+#[tauri::command]
+async fn mcp_http_request(
+    request: McpHttpRequest,
+) -> Result<McpHttpResponse, String> {
+    // Initialize HTTP client if not already done
+    let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
+    if client_guard.is_none() {
+        *client_guard = Some(Client::new());
+    }
+    let client = client_guard.as_ref().unwrap().clone();
+    
+    drop(client_guard); // Release the lock early
+    
+    // Build the request
+    let mut req_builder = match request.method.as_str() {
+        "GET" => client.get(&request.url),
+        "POST" => client.post(&request.url),
+        "PUT" => client.put(&request.url),
+        "DELETE" => client.delete(&request.url),
+        "PATCH" => client.patch(&request.url),
+        _ => client.post(&request.url), // default to POST
+    };
+    
+    // Add headers
+    for (key, value) in &request.headers {
+        req_builder = req_builder.header(key, value);
+    }
+    
+    // Add authorization if token is provided
+    if let Some(token) = &request.auth_token {
+        req_builder = req_builder.bearer_auth(token);
+    }
+    
+    // Add body if provided
+    if let Some(body) = &request.body {
+        req_builder = req_builder.body(body.clone());
+    }
+    
+    // Execute the request
+    let response = req_builder.send().await.map_err(|e| e.to_string())?;
+    
+    // Read the response body
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    
+    // Collect response headers
+    let mut response_headers = HashMap::new();
+    for (key, value) in response.headers() {
+        if let Ok(value_str) = value.to_str() {
+            response_headers.insert(key.to_string(), value_str.to_string());
+        }
+    }
+    
+    Ok(McpHttpResponse {
+        success: response.status().is_success(),
+        status: response.status().as_u16(),
+        headers: response_headers,
+        body,
+        error: None,
     })
 }
 
@@ -512,12 +608,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             run_cli,
-            start_oauth_redirect_listener,
             mcp_stdio_spawn,
             mcp_stdio_send,
             mcp_stdio_read,
             mcp_stdio_close,
             mcp_stdio_check,
+            mcp_http_request,
             run_cli_command,
         ])
         .run(tauri::generate_context!())

@@ -2,6 +2,7 @@
 // https://github.com/ollama/mcp
 
 import { TauriMcpStdioTransport } from './mcp-tauri';
+import { McpHttpTransport } from './mcp-http';
 
 export interface McpServerConfig {
   id: string;
@@ -391,23 +392,11 @@ export class McpHttpClient {
     }
 
     try {
-      const response = await fetch(this.config.url, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-      });
+      // Initialize the HTTP transport session if not already done
+      await McpHttpTransport.initializeSession(this.config);
 
-      if (!response.ok) {
-        throw new Error(`MCP request failed: ${response.statusText}`);
-      }
-
-      const result: McpResponse = await response.json();
-
-      if (result.error) {
-        throw new Error(`MCP error: ${result.error.message}`);
-      }
-
-      return result.result;
+      // Send the request using the HTTP transport
+      return await McpHttpTransport.sendRequest(this.config.id, request);
     } catch (error) {
       console.error(`[MCP HTTP] Request failed: ${error}`);
       throw new Error(`MCP request failed: ${error}`);
