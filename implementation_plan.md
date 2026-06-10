@@ -38,6 +38,9 @@ Based on OpenAI and Claude GUIs:
 - [ ] Issue 15: Comprehensive end-to-end testing.
 - [ ] Issue 16: Final UI polish and bug fixes.
 
+### Milestone 5: CLI and MCP Tools Integration
+- [ ] Issue 17: Add ability to use CLI and MCP tools.
+
 ## Testing Strategy
 - **Unit Tests**: Test API wrappers and state management.
 - **Integration Tests**: Test the flow from user input to Ollama response.

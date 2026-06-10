@@ -16,9 +16,12 @@ export async function fetchOllamaChatStream(
   model: string,
   messages: Message[],
   onChunk: (chunk: Partial<OllamaResponse>) => void,
-  endpoint: string = 'http://localhost:11434/api/chat'
+  endpoint: string = 'http://localhost:11434/api/chat',
+  isCloudModel: boolean = false
 ): Promise<void> {
-  const response = await fetch(endpoint, {
+  // Use cloud API endpoint for cloud models
+  const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
+  const response = await fetch(apiEndpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -59,7 +62,8 @@ export async function fetchOllamaChatStream(
 }
 
 export async function fetchOllamaModels(
-  endpoint: string = 'http://localhost:11434/api/tags'
+  endpoint: string = 'http://localhost:11434/api/tags',
+  includeCloudModels: boolean = false
 ): Promise<any[]> {
   const response = await fetch(endpoint, {
     method: 'GET',
