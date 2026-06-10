@@ -137,5 +137,21 @@ describe('App Component', () => {
       expect(screen.getByText(/Ctrl\+\\/i)).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+,/i)).toBeInTheDocument();
     });
+
+    it('responsive design handles different screen sizes', () => {
+      render(<App />);
+      
+      // Initially should have desktop layout
+      expect(screen.getByText(/\+ New Chat/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /⚙️ Settings/i })).toBeInTheDocument();
+      
+      // Simulate mobile viewport
+      global.innerWidth = 600;
+      global.dispatchEvent(new Event('resize'));
+      
+      // On mobile, sidebar should be collapsed by default
+      const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div');
+      expect(sidebar).toHaveClass('w-0');
+    });
   });
 });
