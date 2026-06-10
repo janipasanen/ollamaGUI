@@ -5,7 +5,7 @@ describe('Ollama Service', () => {
   const mockFetch = vi.fn();
   global.fetch = mockFetch;
 
-  it('fetchOllamaModels should return a list of models', async () => {
+  it('fetchOllamaModels should return a list of models with cloud property', async () => {
     const mockModels = [{ name: 'llama3' }, { name: 'mistral' }];
     mockFetch.mockResolvedValue({
       ok: true,
@@ -13,7 +13,10 @@ describe('Ollama Service', () => {
     });
 
     const models = await fetchOllamaModels();
-    expect(models).toEqual(mockModels);
+    expect(models).toEqual([
+      { name: 'llama3', cloud: false },
+      { name: 'mistral', cloud: false },
+    ]);
     expect(mockFetch).toHaveBeenCalledWith('http://localhost:11434/api/tags', expect.any(Object));
   });
 

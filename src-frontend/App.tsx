@@ -1,21 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
+import { toolRegistry, registerBuiltInTools } from './services/tools';
+import { agenticChatStream } from './services/agent';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-const CLOUD_MODELS = [
-  'gemma4:31b-cloud',
-  'nemotron-3-ultra:cloud',
-  'gpt-oss:20b-cloud',
-  'gpt-oss:120b-cloud',
-  'ministral-3:14b-cloud',
-  'devstral-small-2:24b-cloud',
-  'devstral-2:123b-cloud',
-  'deepseek-v4-pro:cloud',
-];
+// Cloud model detection
+const isCloudModel = (modelName: string): boolean => {
+  const CLOUD_SUFFIXES = ['-cloud', ':cloud'];
+  return CLOUD_SUFFIXES.some(suffix => modelName.includes(suffix));
+};
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 
@@ -78,6 +75,7 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
+  const [isAgenticMode, setIsAgenticMode] = useState(false);
 
   // Model management state
   const [modelPullInput, setModelPullInput] = useState('');
@@ -101,9 +99,10 @@ const App: React.FC = () => {
 
   const refreshModels = useCallback(async () => {
     const availableModels = await fetchOllamaModels(url('/api/tags'));
+    const cloudModels = await fetchCloudModels();
     const combined = [
-      ...availableModels.map(m => ({ name: m.name, cloud: false })),
-      ...CLOUD_MODELS.map(m => ({ name: m, cloud: true })),
+      ...availableModels.map(m => ({ name: m.name, cloud: isCloudModel(m.name) })),
+      ...cloudModels,
     ];
     setModels(combined);
     return combined;
@@ -121,6 +120,9 @@ const App: React.FC = () => {
       if (savedTheme !== null) setIsDarkMode(savedTheme === 'dark');
 
       setSessions(storage.getSessions());
+
+      // Initialize built-in tools
+      registerBuiltInTools();
 
       try {
         const combined = await refreshModels();
@@ -230,7 +232,8 @@ const App: React.FC = () => {
   };
 
   const handleDeleteModel = async (modelName: string) => {
-    if (CLOUD_MODELS.includes(modelName)) { alert('Cloud models cannot be deleted.'); return; }
+    const selectedModel = models.find(m => m.name === modelName);
+    if (selectedModel?.cloud) { alert('Cloud models cannot be deleted.'); return; }
     if (!confirm(`Delete ${modelName}?`)) return;
     try {
       await deleteOllamaModel(modelName, url('/api/delete'));
@@ -352,26 +355,88 @@ const App: React.FC = () => {
     setIsLoading(true);
 
     try {
-      let assistantContent = '';
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-      const isCloudModel = CLOUD_MODELS.includes(model);
+      const isCloudModel = models.some(m => m.name === model && m.cloud);
+      const endpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
 
-      await fetchOllamaChatStream(model, chatHistory, (chunk) => {
-        if (chunk.message?.content) {
-          assistantContent += chunk.message.content;
-          setMessages(prev => {
-            const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
-            saveCurrentSession(updated);
-            return updated;
-          });
+      if (isAgenticMode) {
+        // Use agentic loop with tool calling
+        const agentStream = agenticChatStream({
+          model,
+          messages: chatHistory,
+          endpoint,
+          maxIterations: 5,
+          onAssistantMessage: (message) => {
+            setMessages(prev => {
+              const lastMessage = prev[prev.length - 1];
+              if (lastMessage.role === 'assistant') {
+                const updated = [...prev.slice(0, -1), { role: 'assistant', content: message }] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              } else {
+                const updated = [...prev, { role: 'assistant', content: message }] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              }
+            });
+          },
+          onToolCall: (toolCall) => {
+            setMessages(prev => [
+              ...prev,
+              {
+                role: 'assistant',
+                content: `Calling tool: ${toolCall.function.name}`,
+                tool_calls: [toolCall],
+              },
+            ]);
+          },
+          onToolResult: (toolResult) => {
+            setMessages(prev => [
+              ...prev,
+              {
+                role: 'tool',
+                content: toolResult.content,
+                name: toolResult.name,
+              },
+            ]);
+          },
+          onComplete: () => {
+            setIsLoading(false);
+          },
+          onError: (error) => {
+            setMessages(prev => [
+              ...prev,
+              { role: 'assistant', content: `Error: ${error.message}` },
+            ]);
+            setIsLoading(false);
+          },
+        });
+
+        for await (const message of agentStream) {
+          // Messages are already handled by the callbacks
         }
-      }, url('/api/chat'), isCloudModel);
-    } catch {
+      } else {
+        // Use regular chat stream
+        let assistantContent = '';
+        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+        await fetchOllamaChatStream(model, chatHistory, (chunk) => {
+          if (chunk.message?.content) {
+            assistantContent += chunk.message.content;
+            setMessages(prev => {
+              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+              saveCurrentSession(updated);
+              return updated;
+            });
+          }
+        }, endpoint);
+        
+        setIsLoading(false);
+      }
+    } catch (error) {
       setMessages(prev => [
-        ...prev.slice(0, -1),
-        { role: 'assistant', content: 'Error: Could not connect to Ollama. Check your endpoint in Settings.' },
+        ...prev,
+        { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` },
       ]);
-    } finally {
       setIsLoading(false);
     }
   };
@@ -492,26 +557,38 @@ const App: React.FC = () => {
         <header className={`h-14 border-b flex items-center justify-between px-6 transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIsSidebarOpen(prev => !prev)}
-              title="Toggle sidebar (Ctrl+\)"
-              className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-            >
-              ☰
-            </button>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className={`text-sm border rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
-              }`}
-            >
-              {models.map((m) => (
-                <option key={m.name} value={m.name}>{m.name}{m.cloud ? ' (Cloud)' : ''}</option>
-              ))}
-            </select>
-           </div>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setIsSidebarOpen(prev => !prev)}
+                title="Toggle sidebar (Ctrl+\)"
+                className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+              >
+                ☰
+              </button>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className={`text-sm border rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
+                }`}
+              >
+                {models.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name}{m.cloud ? ' ⛅' : ''}
+                  </option>
+                ))}
+              </select>
+              {models.find(m => m.name === model)?.cloud && (
+                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
+                  ⛅ Cloud
+                </span>
+              )}
+              {isAgenticMode && (
+                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
+                  🤖 Agent
+                </span>
+              )}
+             </div>
            <div className="flex items-center gap-3">
              {/* On mobile, show only essential buttons; others go in mobile menu */}
              {!isMobile ? (
@@ -556,10 +633,15 @@ const App: React.FC = () => {
                <div className={`w-full md:max-w-3xl p-4 rounded-2xl ${
                  msg.role === 'user'
                    ? 'bg-blue-600 text-white rounded-tr-none'
-                   : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
+                   : msg.role === 'tool'
+                     ? (dark ? 'bg-zinc-700 text-zinc-100 rounded-tl-none border-l-2 border-blue-500' : 'bg-zinc-100 text-zinc-900 rounded-tl-none border-l-2 border-blue-500')
+                     : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
                }`}>
-                <div className="text-xs font-bold mb-2 opacity-50 uppercase">{msg.role}</div>
-
+                <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
+                  {msg.role}
+                  {msg.role === 'tool' && <span className="text-blue-400">🔧</span>}
+                </div>
+ 
                 {/* M5 Issue 20: Show attached images */}
                 {msg.images && msg.images.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-2">
@@ -573,7 +655,21 @@ const App: React.FC = () => {
                     ))}
                   </div>
                 )}
-
+ 
+                {/* Tool call rendering */}
+                {msg.tool_calls && msg.tool_calls.length > 0 && (
+                  <div className="mb-2 p-2 rounded bg-blue-900/20 border border-blue-500/30">
+                    <div className="text-xs font-mono text-blue-300 mb-1">Tool Call</div>
+                    {msg.tool_calls.map((toolCall: any, idx: number) => (
+                      <div key={idx} className="text-xs font-mono">
+                        <span className="text-yellow-300">{toolCall.function.name}</span>(
+                        <span className="text-green-300">{toolCall.function.arguments}</span>
+                        )
+                      </div>
+                    ))}
+                  </div>
+                )}
+ 
                 <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
@@ -598,7 +694,7 @@ const App: React.FC = () => {
                     {msg.content}
                   </ReactMarkdown>
                 </div>
-
+ 
                 {/* Issue 23: streaming cursor on last assistant message */}
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content === '' && (
                   <div className={`flex items-center gap-1 mt-1 text-sm ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
@@ -610,9 +706,14 @@ const App: React.FC = () => {
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content !== '' && (
                   <span className="inline-block w-0.5 h-4 bg-current opacity-75 animate-pulse ml-0.5 align-middle" />
                 )}
-              </div>
-            </div>
-          ))}
+                {msg.role === 'tool' && (
+                  <div className={`text-xs text-blue-400 mt-1 italic`}>
+                    Tool execution result
+                  </div>
+                )}
+               </div>
+             </div>
+           ))}
           <div ref={messagesEndRef} />
         </div>
 
@@ -717,17 +818,52 @@ const App: React.FC = () => {
                  </div>
 
                  {/* System Prompt */}
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>System Prompt</label>
-                  <textarea
-                    value={systemPrompt}
-                    onChange={(e) => updateSystemPrompt(e.target.value)}
-                    className={`w-full h-28 border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none transition-colors ${
-                      dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
-                    }`}
-                    placeholder="Enter the AI's persona..."
-                  />
-                </div>
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>System Prompt</label>
+                   <textarea
+                     value={systemPrompt}
+                     onChange={(e) => updateSystemPrompt(e.target.value)}
+                     className={`w-full h-28 border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none transition-colors ${
+                       dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
+                     }`}
+                     placeholder="Enter the AI's persona..."
+                   />
+                 </div>
+                 
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agentic Mode</label>
+                   <div className="flex items-center gap-3">
+                     <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Enable tool calling</span>
+                     <button
+                       onClick={() => setIsAgenticMode(!isAgenticMode)}
+                       className={`relative w-12 h-6 rounded-full transition-colors flex items-center ${dark ? 'bg-zinc-700' : 'bg-zinc-300'}`}
+                     >
+                       <span className={`absolute w-5 h-5 rounded-full transition-transform ${isAgenticMode ? 'translate-x-6 bg-blue-500' : 'translate-x-1 bg-white'}`} />
+                     </button>
+                     <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{isAgenticMode ? 'Enabled' : 'Disabled'}</span>
+                   </div>
+                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     When enabled, the AI can use tools for advanced functionality
+                   </p>
+                 </div>
+                 
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Available Tools ({toolRegistry.getAllTools().length})</label>
+                   <div className={`rounded-lg border divide-y overflow-hidden max-h-48 overflow-y-auto ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                     {toolRegistry.getAllTools().length === 0 && (
+                       <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No tools available.</p>
+                     )}
+                     {toolRegistry.getAllTools().map((tool) => (
+                       <div key={tool.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
+                         <div>
+                           <div className="font-mono text-xs truncate">{tool.name}</div>
+                           <div className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'} truncate`}>{tool.description}</div>
+                         </div>
+                         <span className={`ml-3 text-green-400 text-xs shrink-0`}>✓</span>
+                       </div>
+                     ))}
+                   </div>
+                 </div>
 
                 {/* Model Management */}
                 <div>
@@ -756,19 +892,33 @@ const App: React.FC = () => {
                       {pullProgress}
                     </p>
                   )}
-                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                    {models.filter(m => !m.cloud).length === 0 && (
-                      <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No local models installed.</p>
-                    )}
-                    {models.filter(m => !m.cloud).map((m) => (
-                      <div key={m.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
-                        <span className="font-mono text-xs truncate">{m.name}</span>
-                        <button onClick={() => handleDeleteModel(m.name)} className="ml-3 text-red-400 hover:text-red-300 text-xs shrink-0">
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                   <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                     <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Local Models</div>
+                     {models.filter(m => !m.cloud).length === 0 && (
+                       <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No local models installed.</p>
+                     )}
+                     {models.filter(m => !m.cloud).map((m) => (
+                       <div key={m.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
+                         <span className="font-mono text-xs truncate">{m.name}</span>
+                         <button onClick={() => handleDeleteModel(m.name)} className="ml-3 text-red-400 hover:text-red-300 text-xs shrink-0">
+                           Remove
+                         </button>
+                       </div>
+                     ))}
+                   </div>
+                   
+                   <div className={`rounded-lg border divide-y overflow-hidden mt-3 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                     <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Cloud Models ⛅</div>
+                     {models.filter(m => m.cloud).length === 0 && (
+                       <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No cloud models available.</p>
+                     )}
+                     {models.filter(m => m.cloud).map((m) => (
+                       <div key={m.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
+                         <span className="font-mono text-xs truncate">{m.name}</span>
+                         <span className="ml-3 text-blue-400 text-xs shrink-0">Cloud</span>
+                       </div>
+                     ))}
+                   </div>
                 </div>
               </div>
 

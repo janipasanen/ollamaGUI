@@ -1,7 +1,9 @@
 export interface Message {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   images?: string[];
+  name?: string;
+  tool_calls?: any[];
 }
 
 export interface OllamaResponse {
@@ -48,12 +50,40 @@ export async function fetchOllamaChatStream(
 
 export async function fetchOllamaModels(
   endpoint: string = 'http://localhost:11434/api/tags',
-  _includeCloudModels: boolean = false
-): Promise<{ name: string }[]> {
+  includeCloudModels: boolean = false
+): Promise<{ name: string; cloud: boolean }[]> {
   const response = await fetch(endpoint, { method: 'GET' });
   if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
   const data = await response.json();
-  return data.models ?? [];
+  
+  const localModels = data.models?.map((m: any) => ({ 
+    name: m.name, 
+    cloud: false 
+  })) || [];
+  
+  if (includeCloudModels) {
+    return localModels;
+  }
+  
+  return localModels;
+}
+
+export function isCloudModel(modelName: string): boolean {
+  const CLOUD_SUFFIXES = ['-cloud', ':cloud'];
+  return CLOUD_SUFFIXES.some(suffix => modelName.includes(suffix));
+}
+
+export async function fetchCloudModels(): Promise<{ name: string; cloud: boolean }[]> {
+  return [
+    { name: 'gemma4:31b-cloud', cloud: true },
+    { name: 'nemotron-3-ultra:cloud', cloud: true },
+    { name: 'gpt-oss:20b-cloud', cloud: true },
+    { name: 'gpt-oss:120b-cloud', cloud: true },
+    { name: 'ministral-3:14b-cloud', cloud: true },
+    { name: 'devstral-small-2:24b-cloud', cloud: true },
+    { name: 'devstral-2:123b-cloud', cloud: true },
+    { name: 'deepseek-v4-pro:cloud', cloud: true },
+  ];
 }
 
 export async function pullOllamaModel(
