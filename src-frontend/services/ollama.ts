@@ -1,13 +1,13 @@
-import { useState } from 'react';
-
 export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  images?: string[];
 }
 
 export interface OllamaResponse {
   model: string;
   created_at: string;
+  message?: { role: string; content: string };
   response: string;
   done: boolean;
 }
@@ -19,41 +19,26 @@ export async function fetchOllamaChatStream(
   endpoint: string = 'http://localhost:11434/api/chat',
   isCloudModel: boolean = false
 ): Promise<void> {
-  // Use cloud API endpoint for cloud models
   const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
   const response = await fetch(apiEndpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: model,
-      messages: messages,
-      stream: true,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages, stream: true }),
   });
 
-  if (!response.ok) {
-    throw new Error(`Ollama API error: ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
-
   if (!reader) throw new Error('Response body is null');
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
-    const chunk = decoder.decode(value, { stream: true });
-    const lines = chunk.split('\\n');
-
-    for (const line of lines) {
+    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
-        onChunk(parsed);
+        onChunk(JSON.parse(line));
       } catch (e) {
         console.error('Error parsing stream chunk', e);
       }
@@ -63,54 +48,38 @@ export async function fetchOllamaChatStream(
 
 export async function fetchOllamaModels(
   endpoint: string = 'http://localhost:11434/api/tags',
-  includeCloudModels: boolean = false
-): Promise<any[]> {
-  const response = await fetch(endpoint, {
-    method: 'GET',
-  });
-
-  if (!response.ok) {
-    throw new Error(`Ollama API error: ${response.statusText}`);
-  }
-
+  _includeCloudModels: boolean = false
+): Promise<{ name: string }[]> {
+  const response = await fetch(endpoint, { method: 'GET' });
+  if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
   const data = await response.json();
-  return data.models;
+  return data.models ?? [];
 }
 
 export async function pullOllamaModel(
   modelName: string,
-  onProgress: (progress: any) => void,
+  onProgress: (progress: { status?: string; completed?: number; total?: number }) => void,
   endpoint: string = 'http://localhost:11434/api/pull'
 ): Promise<void> {
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: modelName }),
   });
 
-  if (!response.ok) {
-    throw new Error(`Ollama pull error: ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(`Ollama pull error: ${response.statusText}`);
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
-
   if (!reader) throw new Error('Response body is null');
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
-    const chunk = decoder.decode(value, { stream: true });
-    const lines = chunk.split('\\n');
-
-    for (const line of lines) {
+    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
-        onProgress(parsed);
+        onProgress(JSON.parse(line));
       } catch (e) {
         console.error('Error parsing pull chunk', e);
       }
@@ -124,13 +93,8 @@ export async function deleteOllamaModel(
 ): Promise<void> {
   const response = await fetch(endpoint, {
     method: 'DELETE',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: modelName }),
   });
-
-  if (!response.ok) {
-    throw new Error(`Ollama delete error: ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(`Ollama delete error: ${response.statusText}`);
 }

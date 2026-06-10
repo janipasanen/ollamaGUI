@@ -13,12 +13,13 @@ describe('App Component', () => {
     render(<App />);
     const menuButton = screen.getByRole('button', { name: /☰/i });
 
-    // Initially open (based on App.tsx default state)
-    expect(screen.getByText(/History/i)).toBeInTheDocument();
+    // Sidebar heading is visible initially
+    expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
 
     fireEvent.click(menuButton);
-    // Sidebar should be hidden (width 0, overflow hidden)
-    const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div');
+
+    // After collapse the sidebar container has w-0
+    const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div.transition-all');
     expect(sidebar).toHaveClass('w-0');
   });
 
@@ -27,7 +28,7 @@ describe('App Component', () => {
     const settingsButton = screen.getByRole('button', { name: /⚙️ Settings/i });
 
     fireEvent.click(settingsButton);
-    expect(screen.getByRole('heading', { name: /Settings/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Settings$/i })).toBeInTheDocument();
     expect(screen.getByText(/System Prompt/i)).toBeInTheDocument();
   });
 
@@ -39,99 +40,95 @@ describe('App Component', () => {
     expect(input).toHaveValue('Hello AI');
   });
 
+  // M5 feature tests
+  it('shows search input in sidebar', () => {
+    render(<App />);
+    expect(screen.getByPlaceholderText(/Search conversations/i)).toBeInTheDocument();
+  });
+
+  it('shows export and import buttons in sidebar', () => {
+    render(<App />);
+    expect(screen.getByRole('button', { name: /Export/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Import/i })).toBeInTheDocument();
+  });
+
+  it('shows attach button in input area', () => {
+    render(<App />);
+    expect(screen.getByTitle(/Attach image/i)).toBeInTheDocument();
+  });
+
+  it('shows endpoint config in settings overlay', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+    expect(screen.getByText(/Ollama Endpoint/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/http:\/\/localhost:11434/i)).toBeInTheDocument();
+  });
+
   describe('Keyboard Shortcuts', () => {
     it('Cmd/Ctrl+K should start new chat', () => {
       render(<App />);
       const initialMessages = screen.queryAllByRole('listitem');
-      
-      // Trigger keyboard shortcut
+
       fireEvent.keyDown(window, { key: 'k', metaKey: true });
-      
-      // Should start new chat (messages cleared)
+
       const updatedMessages = screen.queryAllByRole('listitem');
       expect(updatedMessages.length).toBeLessThanOrEqual(initialMessages.length);
     });
 
     it('Cmd/Ctrl+, should toggle settings', () => {
       render(<App />);
-      
-      // Settings should be closed initially
-      expect(screen.queryByRole('heading', { name: /Settings/i })).not.toBeInTheDocument();
-      
-      // Trigger keyboard shortcut
+
+      expect(screen.queryByRole('heading', { name: /^Settings$/i })).not.toBeInTheDocument();
+
       fireEvent.keyDown(window, { key: ',', metaKey: true });
-      
-      // Settings should be open
-      expect(screen.getByRole('heading', { name: /Settings/i })).toBeInTheDocument();
-      
-      // Close settings with same shortcut
+      expect(screen.getByRole('heading', { name: /^Settings$/i })).toBeInTheDocument();
+
       fireEvent.keyDown(window, { key: ',', metaKey: true });
-      
-      // Settings should be closed again
-      expect(screen.queryByRole('heading', { name: /Settings/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /^Settings$/i })).not.toBeInTheDocument();
     });
 
     it('Cmd/Ctrl+\\ should toggle sidebar', () => {
       render(<App />);
-      
-      // Sidebar should be open initially
+
       expect(screen.getByText(/History/i)).toBeInTheDocument();
-      
-      // Trigger keyboard shortcut
+
       fireEvent.keyDown(window, { key: '\\', metaKey: true });
-      
-      // Sidebar should be closed
-      const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div');
+      const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div.transition-all');
       expect(sidebar).toHaveClass('w-0');
-      
-      // Open sidebar with same shortcut
+
       fireEvent.keyDown(window, { key: '\\', metaKey: true });
-      
-      // Sidebar should be open again
       expect(screen.getByText(/History/i)).toBeInTheDocument();
     });
 
     it('Escape should close settings when open', () => {
       render(<App />);
-      
-      // Open settings first
-      const settingsButton = screen.getByRole('button', { name: /⚙️ Settings/i });
-      fireEvent.click(settingsButton);
-      expect(screen.getByRole('heading', { name: /Settings/i })).toBeInTheDocument();
-      
-      // Close with Escape
+
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByRole('heading', { name: /^Settings$/i })).toBeInTheDocument();
+
       fireEvent.keyDown(window, { key: 'Escape' });
-      
-      // Settings should be closed
-      expect(screen.queryByRole('heading', { name: /Settings/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /^Settings$/i })).not.toBeInTheDocument();
     });
 
     it('shortcuts should not trigger when typing in input', () => {
       render(<App />);
       const input = screen.getByPlaceholderText(/Message Ollama\.\.\./i);
-      
-      // Focus on input
+
       input.focus();
-      
-      // Type in input (should not trigger shortcuts)
       fireEvent.keyDown(input, { key: 'k', metaKey: true });
       fireEvent.keyDown(input, { key: ',', metaKey: true });
-      
-      // No errors should occur and input should maintain focus
+
       expect(document.activeElement).toBe(input);
     });
 
     it('help button shows keyboard shortcuts', () => {
       render(<App />);
-      
-      // Help should be closed initially
+
       expect(screen.queryByRole('heading', { name: /Keyboard Shortcuts/i })).not.toBeInTheDocument();
-      
-      // Click help button
+
       const helpButton = screen.getByRole('button', { name: /❓/ });
       fireEvent.click(helpButton);
-      
-      // Help modal should be open with shortcuts
+
       expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+K/i)).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+\\/i)).toBeInTheDocument();

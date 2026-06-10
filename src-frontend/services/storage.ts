@@ -1,3 +1,5 @@
+import { Message } from './ollama';
+
 export interface ChatSession {
   id: string;
   title: string;

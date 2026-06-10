@@ -14,29 +14,35 @@ Based on OpenAI and Claude GUIs:
 
 ## Milestones & Issues
 
-### Milestone 1: Core Infrastructure & Basic Chat
-- [ ] Issue 1: Setup project structure (Tauri + React + Tailwind).
-- [ ] Issue 2: Implement basic Ollama API integration (Chat completion).
-- [ ] Issue 3: Build basic chat UI (Input field, message bubbles).
-- [ ] Issue 4: Implement streaming responses.
+### Milestone 1: Core Infrastructure & Basic Chat ✅
+- [x] Issue 1: Setup project structure (Tauri + React + Tailwind).
+- [x] Issue 2: Implement basic Ollama API integration (Chat completion).
+- [x] Issue 3: Build basic chat UI (Input field, message bubbles).
+- [x] Issue 4: Implement streaming responses.
 
-### Milestone 2: Model & Session Management
-- [ ] Issue 5: Sidebar for conversation history (Local storage).
-- [ ] Issue 6: Model selection dropdown (Fetch models from Ollama).
-- [ ] Issue 7: System prompt configuration panel.
-- [ ] Issue 8: Implementation of "New Chat" and "Delete Chat".
+### Milestone 2: Model & Session Management ✅
+- [x] Issue 5: Sidebar for conversation history (Local storage).
+- [x] Issue 6: Model selection dropdown (Fetch models from Ollama).
+- [x] Issue 7: System prompt configuration panel.
+- [x] Issue 8: Implementation of "New Chat" and "Delete Chat".
 
-### Milestone 3: Advanced UI & UX
-- [ ] Issue 9: Markdown rendering and syntax highlighting for code blocks.
-- [ ] Issue 10: Theme support (Light/Dark mode).
-- [ ] Issue 11: Responsive design for different window sizes.
-- [ ] Issue 12: Keyboard shortcuts (e.g., Cmd/Ctrl+K for new chat).
+### Milestone 3: Advanced UI & UX ✅
+- [x] Issue 9: Markdown rendering and syntax highlighting for code blocks.
+- [x] Issue 10: Theme support (Light/Dark mode).
+- [x] Issue 11: Responsive design for different window sizes.
+- [x] Issue 12: Keyboard shortcuts (e.g., Cmd/Ctrl+K for new chat).
 
-### Milestone 4: System Integration & Polishing
-- [ ] Issue 13: Model management UI (Pull/Remove models).
-- [ ] Issue 14: Cross-platform build pipeline (CI/CD for Linux, Windows, macOS 10.15+).
-- [ ] Issue 15: Comprehensive end-to-end testing.
-- [ ] Issue 16: Final UI polish and bug fixes.
+### Milestone 4: System Integration & Polishing ✅
+- [x] Issue 13: Model management UI (Pull/Remove models) — wired into Settings overlay.
+- [x] Issue 14: Cross-platform build pipeline (CI/CD for Linux, Windows, macOS).
+- [x] Issue 15: Unit tests (vitest) for services and UI components.
+- [x] Issue 16: Final UI polish, duplicate-code cleanup, type fixes.
+
+### Milestone 5: Power User Features
+- [ ] Issue 17: Configurable Ollama endpoint (replace hardcoded localhost:11434).
+- [ ] Issue 18: Message search across conversation history.
+- [ ] Issue 19: Export/import conversations as JSON.
+- [ ] Issue 20: File/image attachment support (for vision models like llava).
 
 ### Milestone 5: CLI and MCP Tools Integration
 - [ ] Issue 17: Add ability to use CLI and MCP tools.
