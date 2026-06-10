@@ -70,17 +70,20 @@ Turn the chat into an agent: Ollama tool-calling loop, CLI/shell tool with appro
   - Rust `mcp_http_request` proxy (avoids CORS, attaches auth headers).
   - TS transport implementing the same interface as stdio client.
   - Parses JSON and SSE-framed responses; handles `Mcp-Session-Id`.
-- [ ] Issue 23: MCP OAuth 2.0 authentication — PKCE + metadata discovery (depends on HTTP transport).
+- [x] Issue 23: MCP OAuth 2.0 authentication — PKCE + metadata discovery.
   - Protected-resource / authorization-server metadata discovery.
   - PKCE (S256) code generation/verification.
-  - Open system browser + loopback redirect capture (Rust).
-  - Token exchange + refresh; tokens persisted securely.
-- [ ] Issue 24: MCP server management UI (depends on Issues 21 + 22).
-  - Add/edit/remove servers (stdio command or HTTP URL).
-  - Connect/disconnect + live status.
-  - Browse discovered tools; enable/disable individually.
-  - Config persisted to localStorage/storage.
-- [ ] Issue 25: Agentic feature test suite (covers all above).
+  - Open system browser + loopback redirect capture (Rust `start_oauth_redirect_listener`).
+  - Token exchange + refresh; tokens persisted to localStorage.
+- [x] Issue 24: MCP server management UI.
+  - Add/remove servers (stdio command or HTTP URL) in Settings overlay.
+  - Status indicator (connecting/connected/error/disconnected).
+  - OAuth Authenticate button for HTTP servers.
+  - Config persisted to localStorage (`mcp_servers`).
+  - Connect/disconnect stubs ready to wire when MCP transports (#21/#22) land.
+- [x] Issue 25: Agentic feature test suite (covers all above).
+  - `agent.test.ts`: 5 tests — no tools, tool call + loop, maxIterations guard, error callback, onComplete.
+  - `mcpAuth.test.ts`: 10 tests — PKCE verifier/challenge, SHA-256 correctness, metadata discovery, token store lifecycle.
 
 ## Testing Strategy
 - **Unit Tests**: Test API wrappers and state management.

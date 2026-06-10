@@ -3,6 +3,8 @@ import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, del
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
+import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
+import { performOAuthFlow } from './services/mcpAuth';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -82,6 +84,14 @@ const App: React.FC = () => {
     resolve: (approved: boolean) => void;
   } | null>(null);
 
+  // MCP server management state
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+  const [showAddMcpServer, setShowAddMcpServer] = useState(false);
+  const [newMcpServer, setNewMcpServer] = useState<{ name: string; type: 'stdio' | 'http'; command: string; url: string }>({
+    name: '', type: 'stdio', command: '', url: '',
+  });
+  const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
+
   // Model management state
   const [modelPullInput, setModelPullInput] = useState('');
   const [isPulling, setIsPulling] = useState(false);
@@ -125,6 +135,9 @@ const App: React.FC = () => {
       if (savedTheme !== null) setIsDarkMode(savedTheme === 'dark');
 
       setSessions(storage.getSessions());
+
+      // Load persisted MCP servers
+      setMcpServers(mcpConfigStore.list());
 
       // Initialize built-in tools
       registerBuiltInTools();
@@ -874,6 +887,156 @@ const App: React.FC = () => {
                      ))}
                    </div>
                  </div>
+
+                {/* MCP Servers */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                      MCP Servers ({mcpServers.length})
+                    </label>
+                    <button
+                      onClick={() => setShowAddMcpServer(v => !v)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${
+                        dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
+                      }`}
+                    >
+                      {showAddMcpServer ? 'Cancel' : '+ Add'}
+                    </button>
+                  </div>
+
+                  {showAddMcpServer && (
+                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <input
+                        placeholder="Server name"
+                        value={newMcpServer.name}
+                        onChange={e => setNewMcpServer(s => ({ ...s, name: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <div className="flex gap-2">
+                        <select
+                          value={newMcpServer.type}
+                          onChange={e => setNewMcpServer(s => ({ ...s, type: e.target.value as 'stdio' | 'http' }))}
+                          className={`border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        >
+                          <option value="stdio">stdio</option>
+                          <option value="http">HTTP</option>
+                        </select>
+                        {newMcpServer.type === 'stdio' ? (
+                          <input
+                            placeholder="Command (e.g. npx my-mcp-server)"
+                            value={newMcpServer.command}
+                            onChange={e => setNewMcpServer(s => ({ ...s, command: e.target.value }))}
+                            className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                          />
+                        ) : (
+                          <input
+                            placeholder="URL (e.g. https://mcp.example.com)"
+                            value={newMcpServer.url}
+                            onChange={e => setNewMcpServer(s => ({ ...s, url: e.target.value }))}
+                            className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                          />
+                        )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!newMcpServer.name.trim()) return;
+                          const server: McpServerConfig = {
+                            id: mcpConfigStore.generateId(),
+                            name: newMcpServer.name.trim(),
+                            type: newMcpServer.type,
+                            command: newMcpServer.type === 'stdio' ? newMcpServer.command : undefined,
+                            url: newMcpServer.type === 'http' ? newMcpServer.url : undefined,
+                            status: 'disconnected',
+                            tools: [],
+                            authRequired: newMcpServer.type === 'http',
+                            authenticated: false,
+                          };
+                          mcpConfigStore.save(server);
+                          setMcpServers(mcpConfigStore.list());
+                          setNewMcpServer({ name: '', type: 'stdio', command: '', url: '' });
+                          setShowAddMcpServer(false);
+                        }}
+                        className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-1.5 rounded font-semibold transition-colors"
+                      >
+                        Add Server
+                      </button>
+                    </div>
+                  )}
+
+                  {mcpAuthError && (
+                    <p className="text-xs text-red-400 mb-2">{mcpAuthError}</p>
+                  )}
+
+                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {mcpServers.length === 0 && (
+                      <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        No MCP servers configured.
+                      </p>
+                    )}
+                    {mcpServers.map(server => (
+                      <div key={server.id} className={`px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${
+                              server.status === 'connected' ? 'bg-green-400' :
+                              server.status === 'connecting' ? 'bg-yellow-400 animate-pulse' :
+                              server.status === 'error' ? 'bg-red-400' : 'bg-zinc-500'
+                            }`} />
+                            <span className="font-mono text-xs truncate">{server.name}</span>
+                            <span className={`text-[10px] px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>
+                              {server.type}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0 ml-2">
+                            {server.type === 'http' && (
+                              <button
+                                onClick={async () => {
+                                  setMcpAuthError(null);
+                                  try {
+                                    await performOAuthFlow(server.id, server.url!);
+                                    setMcpServers(prev =>
+                                      prev.map(s => s.id === server.id ? { ...s, authenticated: true } : s)
+                                    );
+                                  } catch (e) {
+                                    setMcpAuthError(e instanceof Error ? e.message : 'Auth failed');
+                                  }
+                                }}
+                                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                                  server.authenticated
+                                    ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
+                                    : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')
+                                }`}
+                                title={server.authenticated ? 'Authenticated' : 'Authenticate with OAuth'}
+                              >
+                                {server.authenticated ? '🔑 auth' : 'Auth'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                mcpConfigStore.delete(server.id);
+                                setMcpServers(mcpConfigStore.list());
+                              }}
+                              className="text-red-400 hover:text-red-300 text-xs px-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                        {server.status === 'error' && server.errorMessage && (
+                          <p className="text-[10px] text-red-400 mt-1 truncate">{server.errorMessage}</p>
+                        )}
+                        {server.tools.length > 0 && (
+                          <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                            {server.tools.filter(t => t.enabled).length}/{server.tools.length} tools enabled
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Connect/disconnect wired when MCP transport lands (#21/#22).
+                  </p>
+                </div>
 
                 {/* Model Management */}
                 <div>

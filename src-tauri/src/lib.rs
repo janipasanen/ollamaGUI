@@ -94,6 +94,119 @@ async fn run_cli(
     .map_err(|e| e.to_string())?
 }
 
+// ─── MCP OAuth loopback redirect listener ────────────────────────────────────
+
+#[derive(Serialize)]
+struct OAuthRedirect {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn start_oauth_redirect_listener(port: u16) -> Result<OAuthRedirect, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<OAuthRedirect, String>>();
+
+        std::thread::spawn(move || {
+            let _ = tx.send(handle_oauth_redirect(port));
+        });
+
+        // 5-minute window for the user to complete the OAuth flow in their browser
+        match rx.recv_timeout(std::time::Duration::from_secs(300)) {
+            Ok(result) => result,
+            Err(_) => Err("OAuth redirect listener timed out after 5 minutes".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn handle_oauth_redirect(port: u16) -> Result<OAuthRedirect, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
+
+    let (mut stream, _) = listener
+        .accept()
+        .map_err(|e| format!("Failed to accept connection: {}", e))?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .ok();
+
+    let mut buf = [0u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .map_err(|e| format!("Failed to read request: {}", e))?;
+
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    // Parse "GET /callback?key=val&... HTTP/1.1"
+    let query = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_once('?'))
+        .and_then(|(_, rest)| rest.split_once(' '))
+        .map(|(qs, _)| qs)
+        .unwrap_or("");
+
+    let params = parse_query(query);
+
+    let html = "<html><body><h2>Authorization complete!</h2>\
+                <p>You can close this tab and return to the app.</p></body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html.len(),
+        html
+    );
+    let _ = stream.write_all(response.as_bytes());
+
+    Ok(OAuthRedirect {
+        code: params.get("code").cloned(),
+        state: params.get("state").cloned(),
+        error: params.get("error").cloned(),
+    })
+}
+
+fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
+    query
+        .split('&')
+        .filter(|s| !s.is_empty())
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            Some((k.to_string(), url_decode(v)))
+        })
+        .collect()
+}
+
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut result = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    result.push(byte as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        } else if bytes[i] == b'+' {
+            result.push(' ');
+        } else {
+            result.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+    result
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -396,10 +509,10 @@ async fn mcp_stdio_check(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-<<<<<<< HEAD
         .invoke_handler(tauri::generate_handler![
             greet,
             run_cli,
+            start_oauth_redirect_listener,
             mcp_stdio_spawn,
             mcp_stdio_send,
             mcp_stdio_read,
@@ -407,7 +520,6 @@ pub fn run() {
             mcp_stdio_check,
             run_cli_command,
         ])
->>>>>>> 7afc979c2b7ef5ec2344d26a0e1c0fcdef6210bd
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
