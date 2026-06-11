@@ -173,6 +173,33 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     ],
   },
   {
+    key: 'supabase',
+    name: 'Supabase',
+    icon: '🟢',
+    description: 'Manage a Supabase project — DB, edge functions, storage, logs — over OAuth.',
+    // Default: project-scoped + read-only (safest). Edit <PROJECT_REF> to your project ref.
+    type: 'http',
+    url: 'https://mcp.supabase.com/mcp?project_ref=<PROJECT_REF>&read_only=true',
+    authRequired: true,
+    docsUrl: 'https://supabase.com/docs/guides/getting-started/mcp',
+    variants: [
+      {
+        label: 'Read-write (project-scoped)',
+        type: 'http',
+        url: 'https://mcp.supabase.com/mcp?project_ref=<PROJECT_REF>',
+        authRequired: true,
+        securityNote: 'Read-write grants full project access including destructive SQL. Prefer read_only unless you need writes.',
+      },
+      {
+        label: 'All projects (no scope)',
+        type: 'http',
+        url: 'https://mcp.supabase.com/mcp',
+        authRequired: true,
+        securityNote: 'No project_ref — the agent can access ALL your Supabase projects. Scope to one project when possible.',
+      },
+    ],
+  },
+  {
     key: 'faq',
     name: 'Custom / FAQ knowledge base',
     icon: '❓',

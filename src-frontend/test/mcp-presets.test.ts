@@ -6,8 +6,20 @@ describe('MCP server presets', () => {
   it('includes all required connectors', () => {
     const keys = MCP_SERVER_PRESETS.map(p => p.key).sort();
     expect(keys).toEqual(
-      ['atlassian-rovo', 'database', 'faq', 'filesystem', 'github', 'gitlab', 'jira'].sort(),
+      ['atlassian-rovo', 'database', 'faq', 'filesystem', 'github', 'gitlab', 'jira', 'supabase'].sort(),
     );
+  });
+
+  it('Supabase is an OAuth remote server, project-scoped + read-only by default', () => {
+    const sb = getMcpPreset('supabase')!;
+    expect(sb.type).toBe('http');
+    expect(sb.authRequired).toBe(true);
+    expect(sb.url).toContain('mcp.supabase.com/mcp');
+    expect(sb.url).toContain('project_ref=');
+    expect(sb.url).toContain('read_only=true');
+    // read-write + all-projects variants exist and carry security notes
+    expect(sb.variants!.length).toBeGreaterThanOrEqual(2);
+    expect(sb.variants!.every(v => v.securityNote)).toBe(true);
   });
 
   it('every preset has name, icon, description and docs link', () => {
