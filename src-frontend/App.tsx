@@ -71,6 +71,11 @@ import {
   SavedPrompt,
   loadPrompts, addPrompt, updatePrompt, removePrompt,
 } from './services/promptLibrary';
+import {
+  BranchState,
+  createBranch, navigateBranch, getForkInfo, getForkPoints,
+  emptyBranchState, migrateToBranchState,
+} from './services/branching';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -343,6 +348,13 @@ const App: React.FC = () => {
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
 
+  // Conversation branching (#98)
+  const [branchState, setBranchState] = useState<BranchState>(emptyBranchState());
+  // Trunk messages always hold the full canonical history; branchState tracks alternatives
+  const trunkMessagesRef = useRef<Message[]>([]);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editContent, setEditContent] = useState('');
+
   // Slash commands (#96)
   const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
@@ -478,6 +490,12 @@ const App: React.FC = () => {
     loadInitialData();
   }, []);
 
+  // Keep trunk in sync with messages during normal (non-branch-navigating) operation.
+  useEffect(() => {
+    const onBranch = branchState.forkNav.some(n => n.activeIndex !== -1);
+    if (!onBranch) trunkMessagesRef.current = messages;
+  }, [messages, branchState]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     // Focus input on initial load for better accessibility
@@ -514,6 +532,8 @@ const App: React.FC = () => {
 
   const startNewChat = useCallback(() => {
     setMessages([]);
+    trunkMessagesRef.current = [];
+    setBranchState(emptyBranchState());
     setCurrentSessionId(null);
     setAttachedImages([]);
     setInput('');
@@ -524,6 +544,8 @@ const App: React.FC = () => {
   // Start a temporary chat — messages live only in state, never persisted.
   const startTemporaryChat = useCallback(() => {
     setMessages([]);
+    trunkMessagesRef.current = [];
+    setBranchState(emptyBranchState());
     setCurrentSessionId(null);
     setAttachedImages([]);
     setInput('');
@@ -705,7 +727,10 @@ const App: React.FC = () => {
 
   // Session management
   const loadSession = (session: ChatSession) => {
+    const bs = session.branchState ?? migrateToBranchState(session.messages);
     setMessages(session.messages);
+    trunkMessagesRef.current = session.messages;
+    setBranchState(bs);
     setCurrentSessionId(session.id);
     setModel(session.model);
     setAttachedImages([]);
@@ -774,8 +799,9 @@ const App: React.FC = () => {
     return title || first.slice(0, 55);
   };
 
-  const saveCurrentSession = (currentMessages: Message[]) => {
+  const saveCurrentSession = (currentMessages: Message[], bs?: BranchState) => {
     if (isTemporary) return; // temporary chats are never written to storage
+    const activeBranchState = bs ?? branchState;
     if (currentSessionId === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
@@ -783,6 +809,7 @@ const App: React.FC = () => {
         messages: currentMessages,
         createdAt: Date.now(),
         model,
+        branchState: activeBranchState,
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
@@ -791,7 +818,7 @@ const App: React.FC = () => {
     } else {
       const session = storage.getSessions().find(s => s.id === currentSessionId);
       if (session) {
-        const result = storage.saveSession({ ...session, messages: currentMessages });
+        const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState });
         if (result.ok === false && result.error === 'quota') setStorageWarning(true);
         setSessions(storage.getSessions());
       }
@@ -1246,6 +1273,51 @@ const App: React.FC = () => {
     setMessageQueue(q => q.filter((_, i) => i !== index));
   };
 
+  // ─── Conversation branching (#98) ─────────────────────────────────────────
+  // Edit a user message at index: save the current tail as a branch, truncate,
+  // and re-send the edited content.
+  const editMessage = (index: number, newContent: string) => {
+    if (isLoading) return;
+    const { branch, updated } = createBranch(messages, index, branchState);
+    void branch; // stored inside updated
+    const newTrunk = messages.slice(0, index);
+    trunkMessagesRef.current = newTrunk;
+    setBranchState(updated);
+    setMessages(newTrunk);
+    void sendMessage(newContent);
+    saveCurrentSession(newTrunk, updated);
+  };
+
+  // Regenerate the last assistant reply: save the current tail starting at the
+  // last user message index as a branch, truncate, and re-stream.
+  const regenerateMessage = (assistantIndex: number) => {
+    if (isLoading) return;
+    // Walk back to find the user message that preceded this assistant turn.
+    let userIndex = assistantIndex - 1;
+    while (userIndex >= 0 && messages[userIndex].role !== 'user') userIndex--;
+    if (userIndex < 0) return;
+    const { updated } = createBranch(messages, userIndex, branchState);
+    const newTrunk = messages.slice(0, userIndex);
+    trunkMessagesRef.current = newTrunk;
+    setBranchState(updated);
+    setMessages(newTrunk);
+    void sendMessage(messages[userIndex].content);
+    saveCurrentSession(newTrunk, updated);
+  };
+
+  // Navigate to the previous or next sibling branch at a fork point.
+  const navigateFork = (forkAt: number, direction: 1 | -1) => {
+    const { messages: newMsgs, updated } = navigateBranch(
+      trunkMessagesRef.current,
+      branchState,
+      forkAt,
+      direction
+    );
+    setBranchState(updated);
+    setMessages(newMsgs);
+    saveCurrentSession(newMsgs, updated);
+  };
+
   const dark = isDarkMode;
 
   return (
@@ -1598,8 +1670,8 @@ const App: React.FC = () => {
             </div>
           )}
             {messages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-               <div className={`w-full md:max-w-3xl p-4 rounded-2xl ${
+              <div key={i} className={`flex flex-col gap-0.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+               <div className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
                  msg.role === 'user'
                    ? 'bg-blue-600 text-white rounded-tr-none'
                    : msg.role === 'tool'
@@ -1614,7 +1686,7 @@ const App: React.FC = () => {
                     <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
                   )}
                 </div>
- 
+
                 {/* M5 Issue 20: Show attached images */}
                 {msg.images && msg.images.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-2">
@@ -1628,7 +1700,7 @@ const App: React.FC = () => {
                     ))}
                   </div>
                 )}
- 
+
                 {/* Tool call rendering */}
                 {msg.tool_calls && msg.tool_calls.length > 0 && (
                   <div className="mb-2 p-2 rounded bg-blue-900/20 border border-blue-500/30">
@@ -1642,8 +1714,39 @@ const App: React.FC = () => {
                     ))}
                   </div>
                 )}
- 
-                <MarkdownMessage content={msg.content} dark={dark} />
+
+                {/* Inline edit (#98): show textarea when editing this user message */}
+                {editingIndex === i ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={editContent}
+                      onChange={e => setEditContent(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          setEditingIndex(null);
+                          editMessage(i, editContent);
+                        } else if (e.key === 'Escape') {
+                          setEditingIndex(null);
+                        }
+                      }}
+                      autoFocus
+                      rows={3}
+                      className="w-full rounded-lg p-2 text-sm bg-white/20 text-white placeholder-white/50 resize-none focus:outline-none focus:ring-2 focus:ring-white/40"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { setEditingIndex(null); editMessage(i, editContent); }}
+                        className="text-xs px-3 py-1 rounded-lg bg-white/20 hover:bg-white/30 font-semibold"
+                      >Send edit</button>
+                      <button
+                        onClick={() => setEditingIndex(null)}
+                        className="text-xs px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20"
+                      >Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <MarkdownMessage content={msg.content} dark={dark} />
+                )}
  
                 {/* Issue 23: streaming cursor on last assistant message */}
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content === '' && (
@@ -1699,6 +1802,15 @@ const App: React.FC = () => {
                         className={`text-xs px-1 rounded transition-colors ${speakingMsgId === `msg-${i}` ? 'text-blue-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
                       >{speakingMsgId === `msg-${i}` ? '⏹' : '🔊'}</button>
                     )}
+                    {/* Regenerate button (#98) */}
+                    {!isLoading && (
+                      <button
+                        onClick={() => regenerateMessage(i)}
+                        aria-label="Regenerate response"
+                        title="Regenerate (creates a branch)"
+                        className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                      >↺</button>
+                    )}
                     {/* Action function buttons (#127) */}
                     {getEnabledActions().map(action => (
                       <button
@@ -1713,7 +1825,40 @@ const App: React.FC = () => {
                     ))}
                   </div>
                 )}
+                {/* Edit button on user messages (#98) */}
+                {msg.role === 'user' && !isLoading && editingIndex !== i && (
+                  <div className="flex justify-end mt-1">
+                    <button
+                      onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
+                      aria-label="Edit message"
+                      title="Edit (creates a branch)"
+                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
+                    >✏ Edit</button>
+                  </div>
+                )}
                </div>
+               {/* Branch navigation row (#98) — shown below the message at fork points */}
+               {(() => {
+                 const forkPoints = getForkPoints(branchState);
+                 if (!forkPoints.includes(i)) return null;
+                 const { current, total } = getForkInfo(i, branchState);
+                 const label = current === -1 ? `original` : `edit ${current + 1}`;
+                 return (
+                   <div className={`flex items-center gap-1.5 text-[10px] self-${msg.role === 'user' ? 'end' : 'start'} ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     <button
+                       onClick={() => navigateFork(i, -1)}
+                       aria-label="Previous branch"
+                       className={`px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-700 hover:bg-zinc-700' : 'border-zinc-300 hover:bg-zinc-200'}`}
+                     >‹</button>
+                     <span>{label} ({current === -1 ? 1 : current + 2}/{total})</span>
+                     <button
+                       onClick={() => navigateFork(i, 1)}
+                       aria-label="Next branch"
+                       className={`px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-700 hover:bg-zinc-700' : 'border-zinc-300 hover:bg-zinc-200'}`}
+                     >›</button>
+                   </div>
+                 );
+               })()}
              </div>
            ))}
 

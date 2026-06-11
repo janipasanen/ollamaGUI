@@ -1,4 +1,5 @@
 import { Message } from './ollama';
+import type { BranchState } from './branching';
 
 export interface ChatSession {
   id: string;
@@ -11,6 +12,8 @@ export interface ChatSession {
   tags?: string[];
   pinned?: boolean;
   archived?: boolean;
+  // Conversation branching (#98)
+  branchState?: BranchState;
 }
 
 export interface Folder {
