@@ -68,6 +68,7 @@ export class McpHttpTransport {
   private static sessions: Map<string, {
     url: string;
     authToken?: string;
+    extraHeaders?: Record<string, string>;
     eventListeners: Map<string, ((data: any) => void)[]>;
   }> = new Map();
 
@@ -88,6 +89,7 @@ export class McpHttpTransport {
     this.sessions.set(config.id, {
       url: config.url,
       authToken: config.auth?.token,
+      extraHeaders: config.headers,
       eventListeners: new Map(),
     });
   }
@@ -115,6 +117,7 @@ export class McpHttpTransport {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
+            ...(session.extraHeaders ?? {}),
           },
           body: JSON.stringify(request),
           authToken,
@@ -220,6 +223,7 @@ export class McpHttpTransport {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
+            ...(session.extraHeaders ?? {}),
           },
           body,
           authToken,

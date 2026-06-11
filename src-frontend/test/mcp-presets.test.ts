@@ -6,7 +6,7 @@ describe('MCP server presets', () => {
   it('includes all required connectors', () => {
     const keys = MCP_SERVER_PRESETS.map(p => p.key).sort();
     expect(keys).toEqual(
-      ['atlassian-rovo', 'database', 'faq', 'filesystem', 'github', 'gitlab', 'jira', 'kiion', 'kiion-crm', 'supabase'].sort(),
+      ['atlassian-rovo', 'custom-http', 'custom-stdio', 'database', 'filesystem', 'github', 'gitlab', 'jira', 'kiion', 'kiion-crm', 'supabase'].sort(),
     );
   });
 
@@ -93,6 +93,79 @@ describe('MCP server presets', () => {
 
   it('getMcpPreset returns undefined for an unknown key', () => {
     expect(getMcpPreset('nope')).toBeUndefined();
+  });
+
+  // ── M13: GitHub / GitLab (#112) ───────────────────────────────────────────
+
+  it('GitHub Docker variant has PAT env and requiresDocker hint', () => {
+    const gh = getMcpPreset('github')!;
+    const docker = gh.variants!.find(v => /docker/i.test(v.label))!;
+    expect(docker.command).toContain('docker');
+    expect(docker.env?.some(f => f.key === 'GITHUB_PERSONAL_ACCESS_TOKEN' && f.secret)).toBe(true);
+  });
+
+  it('GitLab default url is editable (SaaS) and has authRequired=true', () => {
+    const gl = getMcpPreset('gitlab')!;
+    expect(gl.url).toContain('gitlab.com/api/v4/mcp');
+    expect(gl.authRequired).toBe(true);
+  });
+
+  // ── M13: Atlassian (#113) ─────────────────────────────────────────────────
+
+  it('Jira preset includes optional Confluence env fields', () => {
+    const jira = getMcpPreset('jira')!;
+    const keys = jira.env!.map(f => f.key);
+    expect(keys).toContain('CONFLUENCE_URL');
+    expect(keys).toContain('CONFLUENCE_USERNAME');
+    expect(keys).toContain('CONFLUENCE_API_TOKEN');
+    const confluenceToken = jira.env!.find(f => f.key === 'CONFLUENCE_API_TOKEN');
+    expect(confluenceToken?.secret).toBe(true);
+  });
+
+  it('Jira has a Server/DC variant using JIRA_PERSONAL_TOKEN', () => {
+    const jira = getMcpPreset('jira')!;
+    const dc = jira.variants!.find(v => /server|data.?center|pat/i.test(v.label))!;
+    expect(dc).toBeDefined();
+    expect(dc.env!.some(f => f.key === 'JIRA_PERSONAL_TOKEN' && f.secret)).toBe(true);
+    expect(dc.env!.some(f => f.key === 'JIRA_API_TOKEN')).toBe(false);
+  });
+
+  it('Jira and Database presets carry requiresUvx=true', () => {
+    expect(getMcpPreset('jira')!.requiresUvx).toBe(true);
+    expect(getMcpPreset('database')!.requiresUvx).toBe(true);
+  });
+
+  // ── M13: Database (#114) ──────────────────────────────────────────────────
+
+  it('Database connection string env field is secret', () => {
+    const db = getMcpPreset('database')!;
+    const uri = db.env!.find(f => f.key === 'DATABASE_URI');
+    expect(uri).toBeDefined();
+    expect(uri?.secret).toBe(true);
+  });
+
+  // ── M13: Custom / FAQ / KB (#115) ────────────────────────────────────────
+
+  it('custom-http preset is an HTTP server with editable url', () => {
+    const ch = getMcpPreset('custom-http')!;
+    expect(ch.type).toBe('http');
+    expect(ch.url).toMatch(/^https?:\/\//);
+    expect(ch.authRequired).toBe(false);
+  });
+
+  it('custom-stdio preset is a stdio server with MCP_API_KEY secret field', () => {
+    const cs = getMcpPreset('custom-stdio')!;
+    expect(cs.type).toBe('stdio');
+    expect(cs.env!.some(f => f.key === 'MCP_API_KEY' && f.secret)).toBe(true);
+    expect(cs.requiresUvx).toBe(true);
+  });
+
+  it('custom-stdio has an Inkeep variant with INKEEP_API_KEY secret', () => {
+    const cs = getMcpPreset('custom-stdio')!;
+    const inkeep = cs.variants!.find(v => /inkeep/i.test(v.label))!;
+    expect(inkeep).toBeDefined();
+    expect(inkeep.type).toBe('stdio');
+    expect(inkeep.env!.some(f => f.key === 'INKEEP_API_KEY' && f.secret)).toBe(true);
   });
 });
 

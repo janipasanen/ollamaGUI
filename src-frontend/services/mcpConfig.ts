@@ -20,6 +20,8 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   // http servers
   url?: string;
+  /** Extra HTTP headers forwarded on every request (e.g. X-Gitlab-Mcp-Server-Tool-Name-Prefix). */
+  headers?: Record<string, string>;
   // runtime state (not persisted)
   status: McpServerStatus;
   errorMessage?: string;

@@ -60,6 +60,10 @@ export interface McpServerPreset {
   variants?: McpPresetVariant[];
   /** Link to the server's documentation. */
   docsUrl: string;
+  /** Show a uvx (uv) availability hint when this preset is selected. */
+  requiresUvx?: boolean;
+  /** Show a Docker availability hint when this preset is selected. */
+  requiresDocker?: boolean;
 }
 
 const GITHUB_PAT: McpEnvField = { key: 'GITHUB_PERSONAL_ACCESS_TOKEN', label: 'GitHub personal access token', placeholder: 'ghp_…', secret: true };
@@ -130,15 +134,31 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     key: 'jira',
     name: 'Jira (self-hosted token)',
     icon: '📋',
-    description: 'Jira issues & projects via the mcp-atlassian server (API token).',
+    description: 'Jira issues & projects via the mcp-atlassian server (API token). Set Confluence env vars to also expose Confluence tools.',
     type: 'stdio',
     command: 'uvx mcp-atlassian',
     env: [
       { key: 'JIRA_URL', label: 'Jira URL', placeholder: 'https://your-org.atlassian.net' },
       { key: 'JIRA_USERNAME', label: 'Jira username/email', placeholder: 'you@example.com' },
       { key: 'JIRA_API_TOKEN', label: 'Jira API token', placeholder: 'ATATT…', secret: true },
+      // Optional Confluence fields — leave blank to skip Confluence tools.
+      { key: 'CONFLUENCE_URL', label: 'Confluence URL (optional)', placeholder: 'https://your-org.atlassian.net/wiki' },
+      { key: 'CONFLUENCE_USERNAME', label: 'Confluence username (optional)', placeholder: 'you@example.com' },
+      { key: 'CONFLUENCE_API_TOKEN', label: 'Confluence API token (optional)', placeholder: 'ATATT…', secret: true },
     ],
+    requiresUvx: true,
     docsUrl: 'https://github.com/sooperset/mcp-atlassian',
+    variants: [
+      {
+        label: 'Jira Server / Data Center (PAT)',
+        type: 'stdio',
+        command: 'uvx mcp-atlassian',
+        env: [
+          { key: 'JIRA_URL', label: 'Jira Server URL', placeholder: 'https://jira.your-company.com' },
+          { key: 'JIRA_PERSONAL_TOKEN', label: 'Jira personal access token', placeholder: 'your-pat', secret: true },
+        ],
+      },
+    ],
   },
   {
     key: 'atlassian-rovo',
@@ -161,6 +181,7 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     env: [
       { key: 'DATABASE_URI', label: 'PostgreSQL connection URI', placeholder: 'postgresql://user:pass@localhost/db', secret: true },
     ],
+    requiresUvx: true,
     docsUrl: 'https://github.com/crystaldba/postgres-mcp',
     variants: [
       {
@@ -220,14 +241,38 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     docsUrl: 'https://supabase.com/docs/guides/functions',
   },
   {
-    key: 'faq',
-    name: 'Custom / FAQ knowledge base',
-    icon: '❓',
-    description: 'Connect any custom MCP server — a FAQ/KB or your own (set URL or command).',
+    key: 'custom-http',
+    name: 'Custom HTTP MCP',
+    icon: '🌐',
+    description: 'Connect any remote MCP server over HTTP (bearer API key or unauthenticated).',
     type: 'http',
-    url: 'https://your-faq-server.example.com/mcp',
+    url: 'https://your-mcp-server.example.com/mcp',
     authRequired: false,
-    docsUrl: 'https://modelcontextprotocol.io/examples',
+    docsUrl: 'https://modelcontextprotocol.io/docs/concepts/transports',
+  },
+  {
+    key: 'custom-stdio',
+    name: 'Custom stdio MCP',
+    icon: '⌨️',
+    description: 'Run any local MCP server as a subprocess (uvx, npx, or a direct binary).',
+    type: 'stdio',
+    command: 'uvx <your-mcp-server>',
+    env: [
+      { key: 'MCP_API_URL', label: 'API URL (optional)', placeholder: 'https://api.example.com' },
+      { key: 'MCP_API_KEY', label: 'API key (optional)', placeholder: 'sk-…', secret: true },
+    ],
+    docsUrl: 'https://modelcontextprotocol.io/docs/concepts/transports',
+    variants: [
+      {
+        label: 'Inkeep (AI knowledge base)',
+        type: 'stdio',
+        command: 'uvx mcp-server-inkeep',
+        env: [
+          { key: 'INKEEP_API_KEY', label: 'Inkeep API key', placeholder: 'inkeep-…', secret: true },
+        ],
+      },
+    ],
+    requiresUvx: true,
   },
 ];
 

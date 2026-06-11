@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mcpServerManager, McpStdioClient, McpHttpClient } from '../services/mcp';
+import type { McpServerConfig } from '../services/mcp';
 import { McpHttpTransport } from '../services/mcp-http';
 import { TauriMcpStdioTransport } from '../services/mcp-tauri';
 
@@ -540,6 +541,197 @@ describe('MCP Transport Tests', () => {
       const tools = await mcpServerManager.discoverTools('disc');
       expect(Array.isArray(tools)).toBe(true);
       expect(tools[0]).toMatchObject({ name: 't' });
+    });
+  });
+
+  // ── M13: GitHub / GitLab transport tests (#112) ───────────────────────────
+
+  describe('M13: GitHub + GitLab (#112)', () => {
+    it('http: PAT bearer token from config.auth.token sent in Authorization header', async () => {
+      const headers: Record<string, string>[] = [];
+      McpHttpTransport._mockInvoke = async (_cmd, args) => {
+        headers.push(args.request.headers);
+        const req = JSON.parse(args.request.body);
+        return {
+          success: true, status: 200, headers: {},
+          body: JSON.stringify({ jsonrpc: '2.0', id: req.id ?? 1, result: { protocolVersion: '2025-06-18', capabilities: {} } }),
+        };
+      };
+      const cfg = {
+        id: 'gh-http', name: 'GitHub', type: 'http', url: 'https://api.githubcopilot.com/mcp/',
+        auth: { token: 'ghp_test123', type: 'bearer' as const },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig;
+      await McpHttpTransport.initializeSession(cfg);
+      await McpHttpTransport.initialize('gh-http');
+      expect(headers.some(h => h.Authorization === 'Bearer ghp_test123')).toBe(true);
+    });
+
+    it('stdio: Docker variant env vars reach spawnProcess (#112)', async () => {
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'gh-docker', command: 'docker', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}');
+
+      mcpServerManager.addServer({
+        id: 'gh-docker', name: 'GitHub Docker', type: 'stdio',
+        command: 'docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server',
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_dockertest' },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('gh-docker');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'docker',
+        ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server'],
+        { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_dockertest' },
+      );
+    });
+
+    it('http: GitLab tool-name-prefix header forwarded on every request (#112)', async () => {
+      const capturedHeaders: Record<string, string>[] = [];
+      McpHttpTransport._mockInvoke = async (_cmd, args) => {
+        capturedHeaders.push({ ...args.request.headers });
+        const req = JSON.parse(args.request.body);
+        return {
+          success: true, status: 200, headers: {},
+          body: JSON.stringify({ jsonrpc: '2.0', id: req.id ?? 1, result: { protocolVersion: '2025-06-18', capabilities: {} } }),
+        };
+      };
+      const cfg = {
+        id: 'gl-http', name: 'GitLab', type: 'http', url: 'https://gitlab.com/api/v4/mcp',
+        headers: { 'X-Gitlab-Mcp-Server-Tool-Name-Prefix': 'gl_' },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig;
+      await McpHttpTransport.initializeSession(cfg);
+      await McpHttpTransport.initialize('gl-http');
+      expect(capturedHeaders.some(h => h['X-Gitlab-Mcp-Server-Tool-Name-Prefix'] === 'gl_')).toBe(true);
+    });
+  });
+
+  // ── M13: Atlassian (#113) ─────────────────────────────────────────────────
+
+  describe('M13: Atlassian (#113)', () => {
+    it('stdio: Jira env vars (incl. Confluence optional) reach spawnProcess', async () => {
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'jira-test', command: 'uvx', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}');
+
+      mcpServerManager.addServer({
+        id: 'jira-test', name: 'Jira', type: 'stdio', command: 'uvx mcp-atlassian',
+        env: {
+          JIRA_URL: 'https://org.atlassian.net',
+          JIRA_USERNAME: 'user@org.com',
+          JIRA_API_TOKEN: 'jira-tok',
+          CONFLUENCE_URL: 'https://org.atlassian.net/wiki',
+          CONFLUENCE_USERNAME: 'user@org.com',
+          CONFLUENCE_API_TOKEN: 'conf-tok',
+        },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('jira-test');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'uvx',
+        ['mcp-atlassian'],
+        expect.objectContaining({
+          JIRA_URL: 'https://org.atlassian.net',
+          JIRA_API_TOKEN: 'jira-tok',
+          CONFLUENCE_API_TOKEN: 'conf-tok',
+        }),
+      );
+    });
+
+    it('http: Rovo 401 throws McpReauthRequiredError (#113)', async () => {
+      McpHttpTransport._mockInvoke = async () => ({
+        success: false, status: 401, headers: {}, body: 'Unauthorized',
+      });
+      const { McpReauthRequiredError } = await import('../services/mcp-http');
+      const cfg = {
+        id: 'rovo', name: 'Rovo', type: 'http', url: 'https://mcp.atlassian.com/v1/mcp/authv2',
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig;
+      await McpHttpTransport.initializeSession(cfg);
+      await expect(McpHttpTransport.sendRequest('rovo', { jsonrpc: '2.0', id: 1, method: 'initialize' }))
+        .rejects.toBeInstanceOf(McpReauthRequiredError);
+    });
+  });
+
+  // ── M13: Postgres connection-string secret (#114) ─────────────────────────
+
+  describe('M13: Postgres secret URI (#114)', () => {
+    it('stdio: Postgres DATABASE_URI env var reaches spawnProcess', async () => {
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'pg', command: 'uvx', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}');
+
+      mcpServerManager.addServer({
+        id: 'pg', name: 'Postgres', type: 'stdio',
+        command: 'uvx postgres-mcp --access-mode=restricted',
+        env: { DATABASE_URI: 'postgresql://user:s3cr3t@localhost/mydb' },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('pg');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'uvx',
+        ['postgres-mcp', '--access-mode=restricted'],
+        expect.objectContaining({ DATABASE_URI: 'postgresql://user:s3cr3t@localhost/mydb' }),
+      );
+      // Connection string must NOT appear in the command args directly
+      const [, args] = mockSpawn.mock.calls[0];
+      expect(args.some((a: string) => a.includes('@localhost'))).toBe(false);
+    });
+  });
+
+  // ── M13: Custom HTTP / stdio KB (#115) ────────────────────────────────────
+
+  describe('M13: Custom HTTP KB (#115)', () => {
+    it('http: bearer API key sent in Authorization header', async () => {
+      const capturedHeaders: Record<string, string>[] = [];
+      McpHttpTransport._mockInvoke = async (_cmd, args) => {
+        capturedHeaders.push({ ...args.request.headers });
+        const req = JSON.parse(args.request.body);
+        return {
+          success: true, status: 200, headers: {},
+          body: JSON.stringify({ jsonrpc: '2.0', id: req.id ?? 1, result: { protocolVersion: '2025-06-18', capabilities: {} } }),
+        };
+      };
+      const cfg = {
+        id: 'kb-http', name: 'Custom KB', type: 'http', url: 'https://kb.example.com/mcp',
+        auth: { token: 'kb-bearer-key', type: 'bearer' as const },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig;
+      await McpHttpTransport.initializeSession(cfg);
+      await McpHttpTransport.initialize('kb-http');
+      expect(capturedHeaders.some(h => h.Authorization === 'Bearer kb-bearer-key')).toBe(true);
+    });
+
+    it('stdio: Custom stdio KB forwards MCP_API_URL and MCP_API_KEY env vars', async () => {
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'kb-stdio', command: 'uvx', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}');
+
+      mcpServerManager.addServer({
+        id: 'kb-stdio', name: 'Custom KB Stdio', type: 'stdio',
+        command: 'uvx my-kb-server',
+        env: { MCP_API_URL: 'https://api.kb.example.com', MCP_API_KEY: 'sk-kb-test' },
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('kb-stdio');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'uvx',
+        ['my-kb-server'],
+        expect.objectContaining({ MCP_API_URL: 'https://api.kb.example.com', MCP_API_KEY: 'sk-kb-test' }),
+      );
     });
   });
 });
