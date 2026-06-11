@@ -148,7 +148,7 @@ describe('End-to-End Tests', () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
-      fireEvent.click(screen.getByText('+ Add'));
+      fireEvent.click(screen.getByRole('button', { name: 'Add MCP server' }));
 
       const nameInput = screen.getByPlaceholderText('Server name');
       fireEvent.change(nameInput, { target: { value: 'Test Server' } });
@@ -196,7 +196,7 @@ describe('End-to-End Tests', () => {
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
       // Add a server
-      fireEvent.click(screen.getByText('+ Add'));
+      fireEvent.click(screen.getByRole('button', { name: 'Add MCP server' }));
       const nameInput = screen.getByPlaceholderText('Server name');
       fireEvent.change(nameInput, { target: { value: 'Test Server' } });
       const typeSelect = screen.getByDisplayValue('stdio');
@@ -307,7 +307,7 @@ describe('End-to-End Tests', () => {
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
       // Add HTTP server
-      fireEvent.click(screen.getByText('+ Add'));
+      fireEvent.click(screen.getByRole('button', { name: 'Add MCP server' }));
       const nameInput = screen.getByPlaceholderText('Server name');
       fireEvent.change(nameInput, { target: { value: 'Fail Server' } });
       const typeSelect = screen.getByDisplayValue('stdio');

@@ -6,6 +6,11 @@ import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, pers
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
+import {
+  OpenApiServerConfig,
+  loadOpenApiServers, saveOpenApiServers,
+  registerOpenApiServer, unregisterOpenApiServer,
+} from './services/openapiTools';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -237,6 +242,13 @@ const App: React.FC = () => {
     name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [], note: '',
   });
   const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
+
+  // OpenAPI tool servers (#129)
+  const [openApiServers, setOpenApiServers] = useState<OpenApiServerConfig[]>(() => loadOpenApiServers());
+  const [showAddOpenApi, setShowAddOpenApi] = useState(false);
+  const [newOpenApi, setNewOpenApi] = useState({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
+  const [openApiTestStatus, setOpenApiTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
+
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -1791,6 +1803,7 @@ const App: React.FC = () => {
                         {showMcpCatalog ? 'Close' : '📚 Catalog'}
                       </button>
                       <button
+                        aria-label="Add MCP server"
                         onClick={() => { setShowAddMcpServer(v => !v); setShowMcpCatalog(false); }}
                         className={`text-xs px-2 py-1 rounded border transition-colors ${
                           dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
@@ -2147,6 +2160,144 @@ const App: React.FC = () => {
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                      Manage MCP servers for tool discovery and remote execution.
                    </p>
+                </div>
+
+                {/* OpenAPI Tool Servers (#129) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                      OpenAPI Servers ({openApiServers.length})
+                    </label>
+                    <button
+                      onClick={() => setShowAddOpenApi(v => !v)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                    >
+                      {showAddOpenApi ? 'Cancel' : '+ Add'}
+                    </button>
+                  </div>
+
+                  {showAddOpenApi && (
+                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <input
+                        type="text"
+                        placeholder="Name (e.g. My REST API)"
+                        value={newOpenApi.name}
+                        onChange={e => setNewOpenApi(v => ({ ...v, name: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="url"
+                        placeholder="Spec URL (https://…/openapi.json)"
+                        value={newOpenApi.specUrl}
+                        onChange={e => setNewOpenApi(v => ({ ...v, specUrl: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="text"
+                        placeholder="API key (optional)"
+                        value={newOpenApi.apiKey}
+                        onChange={e => setNewOpenApi(v => ({ ...v, apiKey: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="text"
+                        placeholder="API key header (default: Authorization)"
+                        value={newOpenApi.apiKeyHeader}
+                        onChange={e => setNewOpenApi(v => ({ ...v, apiKeyHeader: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <button
+                        onClick={async () => {
+                          if (!newOpenApi.name.trim() || !newOpenApi.specUrl.trim()) return;
+                          const cfg: OpenApiServerConfig = {
+                            id: crypto.randomUUID(),
+                            name: newOpenApi.name.trim(),
+                            specUrl: newOpenApi.specUrl.trim(),
+                            apiKey: newOpenApi.apiKey.trim() || undefined,
+                            apiKeyHeader: newOpenApi.apiKeyHeader.trim() || undefined,
+                            enabled: true,
+                          };
+                          const updated = [...openApiServers, cfg];
+                          setOpenApiServers(updated);
+                          saveOpenApiServers(updated);
+                          registerOpenApiServer(cfg).catch(() => {});
+                          setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
+                          setShowAddOpenApi(false);
+                        }}
+                        className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
+                      >
+                        Add Server
+                      </button>
+                    </div>
+                  )}
+
+                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {openApiServers.length === 0 ? (
+                      <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No OpenAPI servers added.</p>
+                    ) : openApiServers.map(srv => (
+                      <div key={srv.id} className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${srv.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className="text-xs font-medium truncate">{srv.name}</span>
+                          </div>
+                          <div className={`text-[10px] truncate mt-0.5 font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{srv.specUrl}</div>
+                          {openApiTestStatus[srv.id] && (
+                            <div className={`text-[10px] mt-0.5 ${openApiTestStatus[srv.id] === 'ok' ? 'text-green-400' : openApiTestStatus[srv.id] === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>
+                              {openApiTestStatus[srv.id] === 'testing' ? 'Testing…' : openApiTestStatus[srv.id] === 'ok' ? '✓ Spec loaded' : '✗ Failed to fetch spec'}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={async () => {
+                              setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'testing' }));
+                              try {
+                                await registerOpenApiServer(srv);
+                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'ok' }));
+                              } catch {
+                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'error' }));
+                              }
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                          >
+                            {openApiTestStatus[srv.id] === 'testing' ? '…' : 'Test'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = openApiServers.map(s => s.id === srv.id ? { ...s, enabled: !s.enabled } : s);
+                              setOpenApiServers(updated);
+                              saveOpenApiServers(updated);
+                              const toggled = updated.find(s => s.id === srv.id)!;
+                              if (toggled.enabled) registerOpenApiServer(toggled).catch(() => {});
+                              else unregisterOpenApiServer(srv.id);
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                              srv.enabled
+                                ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
+                                : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')
+                            }`}
+                          >
+                            {srv.enabled ? 'On' : 'Off'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = openApiServers.filter(s => s.id !== srv.id);
+                              setOpenApiServers(updated);
+                              saveOpenApiServers(updated);
+                              unregisterOpenApiServer(srv.id);
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-red-400 hover:bg-zinc-700' : 'border-zinc-300 text-red-500 hover:bg-zinc-50'}`}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Point at any OpenAPI 3.x spec URL — operations become callable tools for the agent.
+                  </p>
                 </div>
 
                 {/* Model Management */}
