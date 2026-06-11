@@ -474,10 +474,10 @@ export class McpServerManager {
     this.servers.set(config.id, config);
   }
 
-  removeServer(id: string): void {
-    // Disconnect if connected
+  async removeServer(id: string): Promise<void> {
+    // Disconnect (awaited) so the stdio child process is reaped before we forget it (#54).
     if (this.activeConnections.has(id)) {
-      this.activeConnections.get(id)?.disconnect();
+      try { await this.activeConnections.get(id)?.disconnect(); } catch { /* ignore */ }
       this.activeConnections.delete(id);
     }
     this.servers.delete(id);
@@ -517,12 +517,30 @@ export class McpServerManager {
     return client;
   }
 
-  disconnectFromServer(id: string): void {
+  async disconnectFromServer(id: string): Promise<void> {
     const connection = this.activeConnections.get(id);
     if (connection) {
-      connection.disconnect();
+      try { await connection.disconnect(); } catch { /* ignore */ }
       this.activeConnections.delete(id);
     }
+  }
+
+  /** Active connection ids (used by the shutdown handler and UI). */
+  getActiveConnectionIds(): string[] {
+    return Array.from(this.activeConnections.keys());
+  }
+
+  /**
+   * Gracefully disconnect every active connection (#54). Called on app close so
+   * spawned stdio child processes are terminated instead of leaking.
+   */
+  async disconnectAll(): Promise<void> {
+    const ids = this.getActiveConnectionIds();
+    await Promise.allSettled(ids.map(async (id) => {
+      const c = this.activeConnections.get(id);
+      this.activeConnections.delete(id);
+      if (c) { try { await c.disconnect(); } catch { /* ignore */ } }
+    }));
   }
 
   async discoverTools(serverId: string): Promise<McpTool[]> {
@@ -536,3 +554,28 @@ export class McpServerManager {
 }
 
 export const mcpServerManager = new McpServerManager();
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown (#54)
+// ---------------------------------------------------------------------------
+
+let _shutdownRegistered = false;
+
+/**
+ * Register a window 'beforeunload' handler that disconnects all active MCP
+ * connections when the app closes, terminating spawned stdio child processes.
+ * Idempotent and a no-op outside a browser/Tauri window (e.g. tests).
+ */
+export function registerMcpShutdownHandler(manager: McpServerManager = mcpServerManager): void {
+  if (_shutdownRegistered) return;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  _shutdownRegistered = true;
+  window.addEventListener('beforeunload', () => {
+    void manager.disconnectAll();
+  });
+}
+
+/** Test helper: allow re-registration. */
+export function _resetShutdownHandler(): void {
+  _shutdownRegistered = false;
+}

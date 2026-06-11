@@ -22,6 +22,8 @@ export interface McpServerConfig {
   url?: string;
   /** Extra HTTP headers forwarded on every request (e.g. X-Gitlab-Mcp-Server-Tool-Name-Prefix). */
   headers?: Record<string, string>;
+  /** Epoch ms of the last successful connection (persisted; powers auto-reconnect #55). */
+  lastConnected?: number;
   // runtime state (not persisted)
   status: McpServerStatus;
   errorMessage?: string;
@@ -102,6 +104,26 @@ export const mcpConfigStore = {
     }
     await secretStore.delete(`tokens:${id}`);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(readPersisted().filter(s => s.id !== id)));
+  },
+
+  /** Record a successful connection time (#55) so it can be auto-reconnected next launch. */
+  markConnected(id: string, when: number = Date.now()): void {
+    const existing = readPersisted();
+    const idx = existing.findIndex(s => s.id === id);
+    if (idx < 0) return;
+    existing[idx] = { ...existing[idx], lastConnected: when };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+  },
+
+  /**
+   * Servers eligible for auto-reconnect on app launch (#55): HTTP servers that
+   * were connected before (have a lastConnected timestamp). Stdio servers are
+   * excluded — they spawn processes and should be reconnected explicitly.
+   */
+  reconnectCandidates(): McpServerConfig[] {
+    return readPersisted()
+      .filter(s => s.type === 'http' && typeof s.lastConnected === 'number')
+      .map(fromPersistedServer);
   },
 
   generateId(): string {

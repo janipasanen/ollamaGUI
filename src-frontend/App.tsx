@@ -41,7 +41,7 @@ import {
 } from './services/connections';
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow } from './services/mcpAuth';
-import { mcpServerManager } from './services/mcp';
+import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -495,6 +495,36 @@ const App: React.FC = () => {
 
       // Load persisted MCP servers
       setMcpServers(mcpConfigStore.list());
+
+      // Reap spawned stdio MCP processes when the app window closes (#54)
+      registerMcpShutdownHandler();
+
+      // Auto-reconnect HTTP MCP servers that were connected before (#55). Runs in
+      // the background so a slow/unreachable server never blocks startup.
+      void (async () => {
+        for (const cfg of mcpConfigStore.reconnectCandidates()) {
+          try {
+            const env = await mcpConfigStore.loadSecrets(cfg.id);
+            mcpServerManager.addServer({
+              id: cfg.id, name: cfg.name, type: cfg.type,
+              command: cfg.command, url: cfg.url, env,
+              enabled: true, toolsEnabled: true,
+            });
+            await mcpServerManager.connectToServer(cfg.id);
+            mcpConfigStore.markConnected(cfg.id);
+            const registeredNames = await registerMcpTools(cfg, true);
+            const client = mcpServerManager.getActiveConnection(cfg.id)!;
+            const tools = await client.listTools();
+            setMcpServers(prev => prev.map(s => s.id === cfg.id ? {
+              ...s, status: 'connected',
+              tools: tools.map(t => ({ ...t, enabled: registeredNames.includes(`mcp_${cfg.id}_${t.name}`) })),
+              errorMessage: undefined,
+            } : s));
+          } catch {
+            // Leave disconnected; the user can reconnect manually.
+          }
+        }
+      })();
 
       // Load MLX settings + detect availability (graceful no-op if unavailable)
       const loadedMlx = loadMlxSettings();
@@ -2688,15 +2718,50 @@ const App: React.FC = () => {
                      {toolRegistry.getAllTools().length === 0 && (
                        <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No tools available.</p>
                      )}
-                     {toolRegistry.getAllTools().map((tool) => (
-                       <div key={tool.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
-                         <div>
-                           <div className="font-mono text-xs truncate">{tool.name}</div>
-                           <div className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'} truncate`}>{tool.description}</div>
-                         </div>
-                         <span className={`ml-3 text-green-400 text-xs shrink-0`}>✓</span>
-                       </div>
-                     ))}
+                     {toolRegistry.getAllTools().map((tool) => {
+                       const props = (tool.parameters?.properties ?? {}) as Record<string, { type?: string; description?: string; enum?: string[] }>;
+                       const required = (tool.parameters?.required ?? []) as string[];
+                       const paramNames = Object.keys(props);
+                       return (
+                         <details key={tool.name} className={`${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
+                           <summary className="flex items-center justify-between px-3 py-2 cursor-pointer list-none">
+                             <div className="min-w-0">
+                               <div className="font-mono text-xs truncate">{tool.name}</div>
+                               <div className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'} truncate`}>{tool.description}</div>
+                             </div>
+                             <span className="ml-3 text-xs shrink-0 flex items-center gap-1.5">
+                               {paramNames.length > 0 && (
+                                 <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{paramNames.length} param{paramNames.length === 1 ? '' : 's'}</span>
+                               )}
+                               <span className="text-green-400">✓</span>
+                             </span>
+                           </summary>
+                           {paramNames.length > 0 ? (
+                             <div className={`px-3 pb-2 space-y-1 ${dark ? 'bg-zinc-800/40' : 'bg-zinc-100/60'}`}>
+                               {paramNames.map((name) => {
+                                 const p = props[name] || {};
+                                 return (
+                                   <div key={name} className="text-[11px]">
+                                     <span className="font-mono">{name}</span>
+                                     <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>
+                                       : {p.type || 'any'}{p.enum ? ` (${p.enum.join(' | ')})` : ''}
+                                     </span>
+                                     {required.includes(name)
+                                       ? <span className="text-amber-500 ml-1">required</span>
+                                       : <span className={`ml-1 ${dark ? 'text-zinc-600' : 'text-zinc-500'}`}>optional</span>}
+                                     {p.description && (
+                                       <div className={`ml-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.description}</div>
+                                     )}
+                                   </div>
+                                 );
+                               })}
+                             </div>
+                           ) : (
+                             <div className={`px-3 pb-2 text-[11px] italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No parameters.</div>
+                           )}
+                         </details>
+                       );
+                     })}
                    </div>
                  </div>
 
@@ -3061,6 +3126,8 @@ const App: React.FC = () => {
                                    });
 
                                    await mcpServerManager.connectToServer(server.id);
+                                   // Record connection time so this server auto-reconnects next launch (#55)
+                                   mcpConfigStore.markConnected(server.id);
                                    // Register MCP tools via service bridge (#102)
                                    const registeredNames = await registerMcpTools(server, server.toolsEnabled !== false);
                                    const client = mcpServerManager.getActiveConnection(server.id)!;
@@ -3127,7 +3194,7 @@ const App: React.FC = () => {
                                  if (existing) {
                                    unregisterMcpTools(server.id, getRegisteredToolNames(existing));
                                  }
-                                 mcpServerManager.disconnectFromServer(server.id);
+                                 await mcpServerManager.disconnectFromServer(server.id);
                                  await mcpConfigStore.delete(server.id);
                                  setMcpServers(mcpConfigStore.list());
                                }}
@@ -3143,6 +3210,11 @@ const App: React.FC = () => {
                         {server.tools.length > 0 && (
                           <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                             {server.tools.filter(t => t.enabled).length}/{server.tools.length} tools enabled
+                          </p>
+                        )}
+                        {server.status !== 'connected' && server.lastConnected && (
+                          <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
+                            Last connected {new Date(server.lastConnected).toLocaleString()} — use Connect to reconnect.
                           </p>
                         )}
                       </div>
