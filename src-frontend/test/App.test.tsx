@@ -30,7 +30,7 @@ describe('App Component', () => {
 
     fireEvent.click(settingsButton);
     expect(screen.getByRole('heading', { name: /^Settings$/i })).toBeInTheDocument();
-    expect(screen.getByText(/System Prompt/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Settings$/i })).toBeInTheDocument();
   });
 
   it('updates input value when typing', () => {

@@ -21,6 +21,11 @@ import {
   getEnabledActions, runAction,
   STARTER_EXAMPLES,
 } from './services/customTools';
+import {
+  ModelPreset,
+  loadPresets, savePresets, addPreset, updatePreset, removePreset,
+  loadActivePresetId, setActivePreset, clearActivePreset, getActivePreset, applyPreset,
+} from './services/presets';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -266,6 +271,12 @@ const App: React.FC = () => {
   const [showAddFunction, setShowAddFunction] = useState(false);
   const [newCustomTool, setNewCustomTool] = useState({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
   const [newFunction, setNewFunction] = useState<{ kind: 'filter' | 'action'; name: string; code: string; priority: string }>({ kind: 'filter', name: '', code: '', priority: '100' });
+
+  // Model presets (#124)
+  const [presets, setPresets] = useState<ModelPreset[]>(() => loadPresets());
+  const [activePresetId, setActivePresetId] = useState<string | null>(() => loadActivePresetId());
+  const [showAddPreset, setShowAddPreset] = useState(false);
+  const [newPreset, setNewPreset] = useState({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' });
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -1208,18 +1219,44 @@ const App: React.FC = () => {
                ☰
              </button>
               <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+                value={activePresetId ? `preset:${activePresetId}` : model}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val.startsWith('preset:')) {
+                    const id = val.slice(7);
+                    const preset = presets.find(p => p.id === id);
+                    if (preset) {
+                      applyPreset(preset, { setModel, setSystemPrompt, setGenOptions });
+                      setActivePresetId(id);
+                      setActivePreset(id);
+                    }
+                  } else {
+                    setModel(val);
+                    setActivePresetId(null);
+                    clearActivePreset();
+                  }
+                }}
                 aria-label="Select AI model"
                 className={`text-sm border rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
-                {models.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {m.name}{m.cloud ? ' ⛅' : ''}
-                  </option>
-                ))}
+                {presets.length > 0 && (
+                  <optgroup label="— Presets —">
+                    {presets.map(p => (
+                      <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
+                        {p.icon ? `${p.icon} ` : ''}{p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="— Models —">
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}{m.cloud ? ' ⛅' : ''}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
               {models.find(m => m.name === model)?.cloud && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
@@ -2473,6 +2510,74 @@ const App: React.FC = () => {
                   </div>
                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                     Tools run in a sandboxed Web Worker. Filters mutate messages; Actions add buttons to replies.
+                  </p>
+                </div>
+
+                {/* Model Presets (#124) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Model Presets ({presets.length})</label>
+                    <button onClick={() => setShowAddPreset(v => !v)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}>
+                      {showAddPreset ? 'Cancel' : '+ Add'}
+                    </button>
+                  </div>
+                  {showAddPreset && (
+                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5">
+                        <input placeholder="Icon (emoji)" value={newPreset.icon} onChange={e => setNewPreset(v => ({ ...v, icon: e.target.value }))}
+                          className={`w-14 border rounded px-2 py-1 text-xs text-center focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <input placeholder="Preset name" value={newPreset.name} onChange={e => setNewPreset(v => ({ ...v, name: e.target.value }))}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      </div>
+                      <textarea placeholder="System prompt" rows={2} value={newPreset.systemPrompt} onChange={e => setNewPreset(v => ({ ...v, systemPrompt: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <div className="flex gap-1.5">
+                        <input placeholder="Temp (0-1)" value={newPreset.temperature} onChange={e => setNewPreset(v => ({ ...v, temperature: e.target.value }))}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <input placeholder="Context window" value={newPreset.numCtx} onChange={e => setNewPreset(v => ({ ...v, numCtx: e.target.value }))}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      </div>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base model: currently selected model ({model})</p>
+                      <button onClick={() => {
+                        if (!newPreset.name.trim()) return;
+                        const params: Record<string, number> = {};
+                        const t = parseFloat(newPreset.temperature);
+                        if (!isNaN(t)) params.temperature = t;
+                        const nc = parseInt(newPreset.numCtx);
+                        if (!isNaN(nc)) params.num_ctx = nc;
+                        addPreset({ name: newPreset.name.trim(), icon: newPreset.icon.trim() || undefined, baseModel: model, systemPrompt: newPreset.systemPrompt, params, toolNames: [], mcpServerIds: [], knowledgeCollectionIds: [] });
+                        setPresets(loadPresets());
+                        setNewPreset({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' });
+                        setShowAddPreset(false);
+                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Save Preset</button>
+                    </div>
+                  )}
+                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {presets.length === 0
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No presets. Add one to bundle a model + system prompt + params.</p>
+                      : presets.map(p => (
+                        <div key={p.id} className={`flex items-center gap-2 px-3 py-2 ${activePresetId === p.id ? (dark ? 'bg-blue-900/20' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50')}`}>
+                          <span className="text-base shrink-0">{p.icon ?? '🤖'}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-medium truncate">{p.name}</span>
+                              {activePresetId === p.id && <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-600'}`}>active</span>}
+                            </div>
+                            <div className={`text-[10px] truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.baseModel}{p.systemPrompt ? ` · ${p.systemPrompt.slice(0, 40)}…` : ''}</div>
+                          </div>
+                          <button onClick={() => {
+                            applyPreset(p, { setModel, setSystemPrompt, setGenOptions });
+                            setActivePresetId(p.id); setActivePreset(p.id);
+                          }} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Apply</button>
+                          <button onClick={() => { removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                        </div>
+                      ))
+                    }
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Select a preset from the model dropdown to apply it to the current chat.
                   </p>
                 </div>
 
