@@ -228,6 +228,28 @@ export const tokenStore = {
     if (!tokens.expires_at) return false;
     return Date.now() >= tokens.expires_at - 60_000; // refresh 1 min early
   },
+  /**
+   * Purge a stored token that is expired and cannot be refreshed (no refresh
+   * token). Token hygiene so dead credentials don't linger (#34). Returns true
+   * if a token was cleared.
+   */
+  async cleanupExpired(serverId: string): Promise<boolean> {
+    const tokens = await this.load(serverId);
+    if (!tokens) return false;
+    if (this.isExpired(tokens) && !tokens.refresh_token) {
+      await this.clear(serverId);
+      return true;
+    }
+    return false;
+  },
+  /** Run cleanupExpired across several servers; returns the ids that were cleared. */
+  async cleanupAllExpired(serverIds: string[]): Promise<string[]> {
+    const cleared: string[] = [];
+    for (const id of serverIds) {
+      if (await this.cleanupExpired(id)) cleared.push(id);
+    }
+    return cleared;
+  },
 };
 
 // ─── Auth metadata store (token endpoint per server, for refresh) ──────────────

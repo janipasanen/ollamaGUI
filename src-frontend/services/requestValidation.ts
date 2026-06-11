@@ -113,3 +113,52 @@ export function sanitizeText(input: string): string {
 export function isNonEmptySubmission(text: string, attachmentCount = 0): boolean {
   return (text ?? '').trim().length > 0 || attachmentCount > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Image attachment validation (#31, #59)
+// ---------------------------------------------------------------------------
+
+export interface ImageFileLike {
+  name: string;
+  type: string;
+  size: number;
+}
+
+export interface ImageValidationResult<T extends ImageFileLike> {
+  valid: T[];
+  errors: string[];
+}
+
+export interface ImageValidationOptions {
+  maxImages?: number;
+  maxBytes?: number;
+  allowed?: string[];
+}
+
+/**
+ * Validate image attachments: enforce a per-message count cap, an allowlist of
+ * MIME types, and a size limit. Returns the accepted files and human-readable
+ * errors for the rejected ones.
+ */
+export function validateImageAttachments<T extends ImageFileLike>(
+  files: T[],
+  existingCount = 0,
+  opts: ImageValidationOptions = {},
+): ImageValidationResult<T> {
+  const maxImages = opts.maxImages ?? 5;
+  const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
+  const allowed = opts.allowed ?? ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+  const valid: T[] = [];
+  const errors: string[] = [];
+  let count = existingCount;
+
+  for (const file of files) {
+    if (count >= maxImages) { errors.push(`Max ${maxImages} images per message.`); continue; }
+    if (!allowed.includes(file.type)) { errors.push(`${file.name}: unsupported format (use JPEG, PNG, WebP, or GIF).`); continue; }
+    if (file.size > maxBytes) { errors.push(`${file.name}: exceeds ${Math.round(maxBytes / (1024 * 1024))} MB limit.`); continue; }
+    valid.push(file);
+    count++;
+  }
+  return { valid, errors };
+}

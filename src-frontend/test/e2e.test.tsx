@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import App from '../App';
 import { toolRegistry } from '../services/tools';
 import { CliToolWrapper } from '../services/cli-tool';
+import { storage, type ChatSession } from '../services/storage';
 
 describe('End-to-End Tests', () => {
   beforeAll(() => {
@@ -281,6 +282,51 @@ describe('End-to-End Tests', () => {
     });
   });
 
+  describe('Session lifecycle (#16)', () => {
+    function seedSession(id: string, title: string): ChatSession {
+      const s: ChatSession = {
+        id, title, messages: [{ role: 'user', content: 'hi' }], createdAt: Date.now(), model: 'llama3',
+      };
+      storage.saveSession(s);
+      return s;
+    }
+
+    it('renders persisted sessions in the sidebar', () => {
+      seedSession('s-alpha', 'Alpha conversation');
+      seedSession('s-beta', 'Beta conversation');
+      render(<App />);
+      expect(screen.getByText('Alpha conversation')).toBeInTheDocument();
+      expect(screen.getByText('Beta conversation')).toBeInTheDocument();
+    });
+
+    it('deletes a session from the sidebar', async () => {
+      seedSession('s-del', 'Deletable conversation');
+      render(<App />);
+      const title = screen.getByText('Deletable conversation');
+      // The row container holds the hover action buttons (Rename/Pin/Delete).
+      const row = title.closest('div')!.parentElement!;
+      const deleteBtn = within(row).getByTitle('Delete');
+      fireEvent.click(deleteBtn);
+      await waitFor(() => {
+        expect(screen.queryByText('Deletable conversation')).not.toBeInTheDocument();
+      });
+    });
+
+    it('renames a session inline (#52)', async () => {
+      seedSession('s-ren', 'Old name');
+      render(<App />);
+      const title = screen.getByText('Old name');
+      const row = title.closest('div')!.parentElement!;
+      fireEvent.click(within(row).getByTitle('Rename'));
+      const input = within(row).getByLabelText('Rename conversation') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'New name' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(screen.getByText('New name')).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('Error Handling', () => {
     it('should handle Ollama API errors gracefully', async () => {
       let callCount = 0;
@@ -299,8 +345,9 @@ describe('End-to-End Tests', () => {
       fireEvent.click(screen.getByText('Send'));
 
       await waitFor(() => {
-        // Error is rendered as assistant message div containing "Error:"
-        expect(screen.getByText(/Error:/i)).toBeInTheDocument();
+        // A friendly, actionable error message is rendered (#30): the 5xx
+        // "Service Unavailable" maps to a "Service unavailable" assistant bubble.
+        expect(screen.getByText(/unavailable|went wrong|cannot reach/i)).toBeInTheDocument();
       }, { timeout: 3000 });
     });
 
@@ -352,6 +399,22 @@ describe('End-to-End Tests', () => {
       // The header settings button (gear icon, no text) has a title attribute
       const headerSettingsBtn = screen.getByTitle('Settings (Ctrl+,)');
       expect(headerSettingsBtn).toBeInTheDocument();
+    });
+
+    it('composer input and Send button expose aria-labels (#33)', () => {
+      render(<App />);
+      // Input is reachable by its accessible name.
+      expect(screen.getByLabelText('Type your message here')).toBeInTheDocument();
+      // Send button is reachable by role + accessible name.
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
+    });
+
+    it('sidebar session actions have descriptive aria-labels (#33)', () => {
+      storage.saveSession({ id: 'a11y', title: 'Accessible chat', messages: [], createdAt: Date.now(), model: 'llama3' });
+      render(<App />);
+      // Icon-only buttons are labelled with the action + session title.
+      expect(screen.getByRole('button', { name: /Delete session: Accessible chat/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Rename session: Accessible chat/i })).toBeInTheDocument();
     });
   });
 });

@@ -40,10 +40,12 @@ import {
   fetchAllConnectionModels, streamOpenAiChat,
 } from './services/connections';
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
-import { performOAuthFlow } from './services/mcpAuth';
+import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
 import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCost } from './services/tokenEstimate';
-import { validateMcpServer, isNonEmptySubmission } from './services/requestValidation';
+import { validateMcpServer, isNonEmptySubmission, validateImageAttachments } from './services/requestValidation';
+import { formatErrorLine } from './services/errorMessages';
+import { secureWipeAll } from './services/secureStorage';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -449,13 +451,21 @@ const App: React.FC = () => {
 
   // Derived: filtered sessions for search (Issue 18)
   // Search across title/tags/folder/content, then apply archive + folder filters,
-  // ordered pinned-first (#133).
-  const filteredSessions = orderSessions(
+  // ordered pinned-first (#133). Memoized so sidebar filtering doesn't re-run on
+  // every unrelated render (#32).
+  const filteredSessions = React.useMemo(() => orderSessions(
     searchSessions(sessions, searchQuery, folders)
       .filter(s => (showArchived ? !!s.archived : !s.archived))
       .filter(s => folderFilter === null || s.folderId === folderFilter)
       // Filter by active project (#92): null = no project = show unscoped sessions
       .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId)
+  ), [sessions, searchQuery, folders, showArchived, folderFilter, activeProjectId]);
+
+  // Conversation token estimate, memoized so it only recomputes when the
+  // messages or current draft change (#32, #62).
+  const conversationTokens = React.useMemo(
+    () => estimateConversationTokens(messages) + (input ? estimateTokens(input) : 0),
+    [messages, input],
   );
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
@@ -505,6 +515,9 @@ const App: React.FC = () => {
 
       // Reap spawned stdio MCP processes when the app window closes (#54)
       registerMcpShutdownHandler();
+
+      // Token hygiene: purge expired, non-refreshable OAuth tokens (#34)
+      void tokenStore.cleanupAllExpired(mcpConfigStore.list().map(s => s.id)).catch(() => {});
 
       // Auto-reconnect HTTP MCP servers that were connected before (#55). Runs in
       // the background so a slow/unreachable server never blocks startup.
@@ -1014,15 +1027,8 @@ const App: React.FC = () => {
   const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    const maxSize = 5 * 1024 * 1024; // 5 MB
-    const errors: string[] = [];
-    const valid = Array.from(files).filter(file => {
-      if (attachedImages.length >= 5) { errors.push('Max 5 images per message.'); return false; }
-      if (!allowed.includes(file.type)) { errors.push(`${file.name}: unsupported format (use JPEG, PNG, WebP, or GIF).`); return false; }
-      if (file.size > maxSize) { errors.push(`${file.name}: exceeds 5 MB limit.`); return false; }
-      return true;
-    });
+    // Shared validation: count cap, MIME allowlist, size limit (#31/#59).
+    const { valid, errors } = validateImageAttachments(Array.from(files), attachedImages.length);
     if (errors.length > 0) alert(errors.join('\n'));
     valid.forEach(file => {
       const reader = new FileReader();
@@ -1266,7 +1272,7 @@ const App: React.FC = () => {
           onError: (error) => {
             setMessages(prev => [
               ...prev,
-              { role: 'assistant', content: `Error: ${error.message}` },
+              { role: 'assistant', content: formatErrorLine(error, 'ollama') },
             ]);
             setIsLoading(false);
           },
@@ -1402,7 +1408,7 @@ const App: React.FC = () => {
             // Network/server failure — roll back partial message
             setMessages(prev => {
               const withoutPartial = prev.slice(0, -1);
-              return [...withoutPartial, { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : 'Stream failed'}` }] as Message[];
+              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, 'ollama') }] as Message[];
             });
           }
         }
@@ -1412,7 +1418,7 @@ const App: React.FC = () => {
     } catch (error) {
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+        { role: 'assistant', content: formatErrorLine(error, 'ollama') },
       ]);
       setIsLoading(false);
     } finally {
@@ -1665,10 +1671,10 @@ const App: React.FC = () => {
                 )}
                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                   <button onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }} title="Rename" aria-label={`Rename session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">✏️</button>
-                  <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} className="p-1 text-xs hover:text-blue-400">📌</button>
-                  <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" className="p-1 text-xs hover:text-blue-400">🏷</button>
-                  <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} className="p-1 text-xs hover:text-amber-400">🗄</button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }} title="Delete" className="p-1 text-xs hover:text-red-400">✕</button>
+                  <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} aria-label={`${s.pinned ? 'Unpin' : 'Pin'} session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📌</button>
+                  <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" aria-label={`Add tag to session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">🏷</button>
+                  <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} aria-label={`${s.archived ? 'Unarchive' : 'Archive'} session: ${s.title}`} className="p-1 text-xs hover:text-amber-400">🗄</button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
                 </div>
               </div>
               {/* tags + folder controls */}
@@ -2418,11 +2424,10 @@ const App: React.FC = () => {
           </div>
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
             {(() => {
-              const convoTokens = estimateConversationTokens(messages) + (input ? estimateTokens(input) : 0);
-              const cost = formatCost(convoTokens);
+              const cost = formatCost(conversationTokens);
               return (
                 <span title="Approximate token usage for this conversation (and current draft)">
-                  ≈ {formatTokenCount(convoTokens)} tokens{cost ? ` · ${cost}` : ''}
+                  ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
                 </span>
               );
             })()}
@@ -2653,6 +2658,26 @@ const App: React.FC = () => {
                    </details>
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                      A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave a field blank to use the model default.
+                   </p>
+                 </div>
+
+                 {/* Privacy & data — secure cleanup (#38) */}
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Privacy &amp; data</label>
+                   <button
+                     onClick={() => {
+                       if (!confirm('Securely erase ALL local data (chats, settings, MCP servers)? This cannot be undone.')) return;
+                       const wiped = secureWipeAll();
+                       notify(`Securely erased ${wiped.length} stored item${wiped.length === 1 ? '' : 's'}.`);
+                       setSessions([]); setFolders([]); setMessages([]); setCurrentSessionId(null);
+                       setMcpServers([]);
+                     }}
+                     className={`text-xs px-3 py-1.5 rounded border transition-colors ${dark ? 'border-red-800 text-red-400 hover:bg-red-950/40' : 'border-red-300 text-red-600 hover:bg-red-50'}`}
+                   >
+                     Securely erase all local data
+                   </button>
+                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     Overwrites then removes every stored item. Secrets (tokens) already live in the OS keychain; chat history can be encrypted at rest with AES-GCM via secureStorage.
                    </p>
                  </div>
 
