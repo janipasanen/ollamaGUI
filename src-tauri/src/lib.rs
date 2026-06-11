@@ -1,8 +1,10 @@
 use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+use tauri::Emitter;
 
 #[derive(Serialize)]
 struct CliOutput {
@@ -983,6 +985,107 @@ async fn get_system_memory() -> Result<SystemMemory, String> {
     .map_err(|e| e.to_string())
 }
 
+// ─── Terminal streaming commands (#87) ───────────────────────────────────────
+//
+// Spawns a shell command and streams stdout/stderr lines back to the frontend
+// via Tauri events.  Each session gets a unique u64 id.  The frontend
+// subscribes to `terminal_output_<id>` events; a final `{ done: true }` event
+// signals completion.
+
+static TERMINAL_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Maps session_id → OS PID for kill support.
+lazy_static::lazy_static! {
+    static ref TERMINAL_PIDS: Arc<Mutex<HashMap<u64, u32>>>
+        = Arc::new(Mutex::new(HashMap::new()));
+}
+
+#[derive(Serialize, Clone)]
+struct TerminalLine {
+    line: String,
+    stream: String, // "stdout" | "stderr"
+    done: bool,
+}
+
+#[tauri::command]
+async fn terminal_run(
+    command: String,
+    cwd: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<u64, String> {
+    let id = TERMINAL_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let event_name = format!("terminal_output_{}", id);
+
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(&command);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+
+    // Store the OS PID so terminal_kill can signal the process.
+    let pid = child.id();
+    TERMINAL_PIDS.lock().map_err(|e| e.to_string())?.insert(id, pid);
+
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    let app1 = app_handle.clone();
+    let event1 = event_name.clone();
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = app1.emit(&event1, TerminalLine { line, stream: "stdout".into(), done: false });
+        }
+    });
+
+    let app2 = app_handle.clone();
+    let event2 = event_name.clone();
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = app2.emit(&event2, TerminalLine { line, stream: "stderr".into(), done: false });
+        }
+    });
+
+    let pids_ref = Arc::clone(&TERMINAL_PIDS);
+    let app3 = app_handle.clone();
+    let event3 = event_name.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        pids_ref.lock().ok().map(|mut m| m.remove(&id));
+        let _ = app3.emit(&event3, TerminalLine { line: String::new(), stream: "stdout".into(), done: true });
+    });
+
+    Ok(id)
+}
+
+/// Kill a terminal session by sending SIGKILL to the shell process.
+#[tauri::command]
+fn terminal_kill(session_id: u64) -> Result<(), String> {
+    let pid = {
+        let mut pids = TERMINAL_PIDS.lock().map_err(|e| e.to_string())?;
+        pids.remove(&session_id)
+    };
+    if let Some(pid) = pid {
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .output();
+        }
+    }
+    Ok(())
+}
+
 /// Check whether an executable is available on PATH (e.g. docker, uvx, npx).
 /// Used by connector UX to detect prerequisites without a shell plugin.
 // ─── Filesystem commands (#82) ───────────────────────────────────────────────
@@ -1163,6 +1266,8 @@ pub fn run() {
             write_file,
             list_dir,
             apply_edit,
+            terminal_run,
+            terminal_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
