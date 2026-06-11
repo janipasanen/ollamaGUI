@@ -2,3 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 */
+
+/* Appearance: accent color drives primary controls via --accent (#136). */
+:root { --accent: #2563eb; }
+
+.bg-blue-600 { background-color: var(--accent) !important; }
+.hover\:bg-blue-500:hover { background-color: var(--accent) !important; filter: brightness(1.12); }
+.text-blue-600,
+.text-blue-400 { color: var(--accent) !important; }
+.focus\:ring-blue-500:focus { --tw-ring-color: var(--accent) !important; }
+
+/* Compact density tightens chat spacing. */
+[data-density="compact"] .prose { font-size: 0.9rem; }
+[data-density="compact"] .max-w-3xl > * + * { margin-top: 0.5rem; }

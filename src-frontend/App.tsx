@@ -14,6 +14,7 @@ import {
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
 import { pickDirectory, appendPathArg } from './services/platform';
+import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme } from './services/theme';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -206,6 +207,7 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isAgenticMode, setIsAgenticMode] = useState(false);
@@ -281,8 +283,10 @@ const App: React.FC = () => {
         try { setGenOptions(JSON.parse(savedGenOptions)); } catch { /* keep defaults */ }
       }
 
-      const savedTheme = localStorage.getItem('ollama_gui_theme');
-      if (savedTheme !== null) setIsDarkMode(savedTheme === 'dark');
+      const ts = loadThemeSettings();
+      setThemeSettings(ts);
+      setIsDarkMode(resolveDark(ts.mode));
+      applyTheme(ts);
 
       setSessions(storage.getSessions());
 
@@ -389,11 +393,27 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [startNewChat, isSettingsOpen, showHelp]);
 
-  const toggleTheme = () => {
-    const next = !isDarkMode;
-    setIsDarkMode(next);
-    localStorage.setItem('ollama_gui_theme', next ? 'dark' : 'light');
+  // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
+  const updateTheme = (patch: Partial<ThemeSettings>) => {
+    setThemeSettings(prev => {
+      const next = saveThemeSettings({ ...prev, ...patch });
+      setIsDarkMode(resolveDark(next.mode));
+      applyTheme(next);
+      return next;
+    });
   };
+
+  const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+
+  // When mode is 'system', track OS light/dark changes live.
+  useEffect(() => {
+    if (themeSettings.mode !== 'system') return;
+    let mq: MediaQueryList;
+    try { mq = window.matchMedia('(prefers-color-scheme: dark)'); } catch { return; }
+    const onChange = () => setIsDarkMode(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [themeSettings.mode]);
 
   // Pre-fill the Add-server form from a catalog preset (or one of its variants),
   // then open it for editing.
@@ -1177,6 +1197,55 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-6">
+                {/* Appearance (#136) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Appearance</label>
+                  <div className="flex items-center gap-2 mb-3">
+                    {(['light', 'dark', 'system'] as const).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => updateTheme({ mode: m })}
+                        className={`text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize ${
+                          themeSettings.mode === m
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : (dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')
+                        }`}
+                      >
+                        {m === 'light' ? '☀️ Light' : m === 'dark' ? '🌙 Dark' : '🖥 System'}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Accent</span>
+                    {Object.entries(ACCENTS).map(([name, hex]) => (
+                      <button
+                        key={name}
+                        onClick={() => updateTheme({ accent: hex })}
+                        aria-label={`Accent ${name}`}
+                        title={name}
+                        className={`w-5 h-5 rounded-full border-2 transition-transform ${themeSettings.accent === hex ? 'scale-110 border-white' : 'border-transparent'}`}
+                        style={{ backgroundColor: hex }}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Density</span>
+                    {(['cozy', 'compact'] as const).map(d => (
+                      <button
+                        key={d}
+                        onClick={() => updateTheme({ density: d })}
+                        className={`text-xs px-3 py-1 rounded-lg border transition-colors capitalize ${
+                          themeSettings.density === d
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : (dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* M5 Issue 17: Configurable endpoint */}
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Ollama Endpoint</label>
