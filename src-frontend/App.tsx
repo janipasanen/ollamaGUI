@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo } from './services/ollama';
+import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, storage, searchSessions, orderSessions } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
@@ -13,7 +14,7 @@ import {
   isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
-import { pickDirectory, appendPathArg } from './services/platform';
+import { pickDirectory, appendPathArg, getSystemMemory } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 
@@ -192,7 +193,8 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [model, setModel] = useState('llama3');
-  const [models, setModels] = useState<{ name: string; cloud: boolean }[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [systemMemory, setSystemMemory] = useState<SystemMemory | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Session state
@@ -279,8 +281,8 @@ const App: React.FC = () => {
   const refreshModels = useCallback(async () => {
     const availableModels = await fetchOllamaModels(url('/api/tags'));
     const cloudModels = await fetchCloudModels();
-    const combined = [
-      ...availableModels.map(m => ({ name: m.name, cloud: isCloudModel(m.name) })),
+    const combined: ModelInfo[] = [
+      ...availableModels.map(m => ({ ...m, cloud: isCloudModel(m.name) })), // preserve size/quant
       ...cloudModels,
     ];
     setModels(combined);
@@ -312,6 +314,7 @@ const App: React.FC = () => {
 
       setSessions(storage.getSessions());
       setFolders(storage.getFolders());
+      getSystemMemory().then(setSystemMemory).catch(() => setSystemMemory(null));
 
       // Load persisted MCP servers
       setMcpServers(mcpConfigStore.list());
@@ -2222,18 +2225,32 @@ const App: React.FC = () => {
                     })}
                   </div>
                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                     <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Local Models</div>
+                     <div className={`flex items-center justify-between px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                       <span>Local Models</span>
+                       {systemMemory && (
+                         <span className={`font-normal ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{formatBytes(systemMemory.available_bytes)} free / {formatBytes(systemMemory.total_bytes)} RAM</span>
+                       )}
+                     </div>
                      {models.filter(m => !m.cloud).length === 0 && (
                        <p className={`text-xs p-3 italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No local models installed.</p>
                      )}
-                     {models.filter(m => !m.cloud).map((m) => (
+                     {models.filter(m => !m.cloud).map((m) => {
+                       const fit = classifyFit(m.size, systemMemory?.available_bytes);
+                       return (
                        <div key={m.name} className={`flex items-center justify-between px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'}`}>
-                         <span className="font-mono text-xs truncate">{m.name}</span>
+                         <div className="flex items-center gap-2 min-w-0">
+                           {systemMemory && fit !== 'unknown' && (
+                             <span className={fitColor(fit)} title={`${fitLabel(fit)} · ${formatBytes(m.size)}${m.quantization ? ` · ${m.quantization}` : ''} · ${formatBytes(systemMemory.available_bytes)} free`}>●</span>
+                           )}
+                           <span className="font-mono text-xs truncate">{m.name}</span>
+                           {m.size != null && <span className={`text-[10px] shrink-0 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{formatBytes(m.size)}</span>}
+                         </div>
                          <button onClick={() => handleDeleteModel(m.name)} className="ml-3 text-red-400 hover:text-red-300 text-xs shrink-0">
                            Remove
                          </button>
                        </div>
-                     ))}
+                       );
+                     })}
                    </div>
                    
                    <div className={`rounded-lg border divide-y overflow-hidden mt-3 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>

@@ -917,6 +917,29 @@ async fn secret_delete(app: tauri::AppHandle, service: String, key: String) -> R
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct SystemMemory {
+    total_bytes: u64,
+    available_bytes: u64,
+    apple_silicon: bool,
+}
+
+/// Total + available system RAM, for the model-fit indicator (cross-platform via sysinfo).
+#[tauri::command]
+async fn get_system_memory() -> Result<SystemMemory, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        SystemMemory {
+            total_bytes: sys.total_memory(),
+            available_bytes: sys.available_memory(),
+            apple_silicon: std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64",
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Check whether an executable is available on PATH (e.g. docker, uvx, npx).
 /// Used by connector UX to detect prerequisites without a shell plugin.
 #[tauri::command]
@@ -941,6 +964,7 @@ pub fn run() {
             greet,
             run_cli,
             probe_binary,
+            get_system_memory,
             secret_set,
             secret_get,
             secret_delete,
@@ -959,4 +983,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn system_memory_is_plausible() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        // Any real machine has a non-zero total, and available <= total.
+        assert!(sys.total_memory() > 0, "total memory should be non-zero");
+        assert!(sys.available_memory() <= sys.total_memory());
+    }
 }

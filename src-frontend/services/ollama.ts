@@ -79,23 +79,31 @@ export async function fetchOllamaChatStream(
   }
 }
 
+/** A model entry from /api/tags, with size metadata used for the fit indicator. */
+export interface ModelInfo {
+  name: string;
+  cloud: boolean;
+  size?: number;           // bytes on disk
+  quantization?: string;   // e.g. Q4_K_M
+  parameterSize?: string;  // e.g. 7B
+}
+
 export async function fetchOllamaModels(
   endpoint: string = 'http://localhost:11434/api/tags',
   includeCloudModels: boolean = false
-): Promise<{ name: string; cloud: boolean }[]> {
+): Promise<ModelInfo[]> {
   const response = await fetch(endpoint, { method: 'GET' });
   if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
   const data = await response.json();
-  
-  const localModels = data.models?.map((m: any) => ({ 
-    name: m.name, 
-    cloud: false 
+
+  const localModels: ModelInfo[] = data.models?.map((m: any) => ({
+    name: m.name,
+    cloud: false,
+    size: typeof m.size === 'number' ? m.size : undefined,
+    quantization: m.details?.quantization_level,
+    parameterSize: m.details?.parameter_size,
   })) || [];
-  
-  if (includeCloudModels) {
-    return localModels;
-  }
-  
+
   return localModels;
 }
 
@@ -104,7 +112,7 @@ export function isCloudModel(modelName: string): boolean {
   return CLOUD_SUFFIXES.some(suffix => modelName.includes(suffix));
 }
 
-export async function fetchCloudModels(): Promise<{ name: string; cloud: boolean }[]> {
+export async function fetchCloudModels(): Promise<ModelInfo[]> {
   return [
     { name: 'gemma4:31b-cloud', cloud: true },
     { name: 'nemotron-3-ultra:cloud', cloud: true },

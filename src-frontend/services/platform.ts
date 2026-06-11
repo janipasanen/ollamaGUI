@@ -22,6 +22,16 @@ export async function pickDirectory(): Promise<string | null> {
   }
 }
 
+/** Detect total/available system memory. Returns null outside Tauri (hides the fit indicator). */
+export async function getSystemMemory(): Promise<{ total_bytes: number; available_bytes: number; apple_silicon: boolean } | null> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return (await invoke('get_system_memory')) as any;
+  } catch {
+    return null;
+  }
+}
+
 /** Append a path as a CLI arg to a command, quoting it if it contains spaces. */
 export function appendPathArg(command: string, path: string): string {
   const arg = /\s/.test(path) ? `"${path}"` : path;
