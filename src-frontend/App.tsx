@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, storage, searchSessions, orderSessions } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
@@ -277,6 +277,13 @@ const App: React.FC = () => {
   const [activePresetId, setActivePresetId] = useState<string | null>(() => loadActivePresetId());
   const [showAddPreset, setShowAddPreset] = useState(false);
   const [newPreset, setNewPreset] = useState({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' });
+
+  // Modelfile builder (#125)
+  const [modelfileFields, setModelfileFields] = useState({ name: '', system: '', temperature: '', numCtx: '', stop: '', template: '' });
+  const [modelfilePreview, setModelfilePreview] = useState('');
+  const [modelfileProgress, setModelfileProgress] = useState('');
+  const [modelfileError, setModelfileError] = useState('');
+  const [isCreatingModel, setIsCreatingModel] = useState(false);
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -2698,6 +2705,76 @@ const App: React.FC = () => {
                      ))}
                    </div>
                 </div>
+
+                {/* Modelfile Builder (#125) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Create Model (Modelfile)</label>
+                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    <div className="flex gap-1.5">
+                      <input placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
+                        const f = { ...modelfileFields, name: e.target.value };
+                        setModelfileFields(f);
+                        setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
+                      }}
+                        className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    </div>
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base: <span className="font-mono">{model}</span> (currently selected)</p>
+                    <textarea placeholder="SYSTEM prompt (optional)" rows={2} value={modelfileFields.system} onChange={e => {
+                      const f = { ...modelfileFields, system: e.target.value };
+                      setModelfileFields(f);
+                      setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined }));
+                    }}
+                      className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    <div className="flex gap-1.5">
+                      <input placeholder="Temperature" value={modelfileFields.temperature} onChange={e => setModelfileFields(v => ({ ...v, temperature: e.target.value }))}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <input placeholder="num_ctx" value={modelfileFields.numCtx} onChange={e => setModelfileFields(v => ({ ...v, numCtx: e.target.value }))}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    </div>
+                    {modelfilePreview && (
+                      <div className={`rounded border p-2 text-[10px] font-mono whitespace-pre-wrap max-h-24 overflow-auto ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-200 text-zinc-600'}`}>
+                        {modelfilePreview}
+                      </div>
+                    )}
+                    {modelfileProgress && (
+                      <p className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>{modelfileProgress}</p>
+                    )}
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => {
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          setModelfilePreview(mf);
+                        }}
+                        className={`flex-1 text-xs py-1.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                      >Preview</button>
+                      <button
+                        onClick={async () => {
+                          if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          setIsCreatingModel(true);
+                          setModelfileError('');
+                          setModelfileProgress('Starting…');
+                          try {
+                            await createOllamaModel(modelfileFields.name.trim(), mf, (p) => {
+                              setModelfileProgress(p.status ?? 'Working…');
+                              if (p.error) setModelfileError(p.error);
+                            }, url('/api/create'));
+                            setModelfileProgress('✓ Model created');
+                            refreshModels().catch(() => {});
+                          } catch (e) {
+                            setModelfileError(e instanceof Error ? e.message : 'Create failed');
+                            setModelfileProgress('');
+                          } finally {
+                            setIsCreatingModel(false);
+                          }
+                        }}
+                        disabled={isCreatingModel}
+                        className="flex-1 text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white font-semibold transition-colors"
+                      >{isCreatingModel ? 'Creating…' : 'Create Model'}</button>
+                    </div>
+                  </div>
+                </div>
+
               </div>
 
               <div className="mt-6 flex justify-end">

@@ -156,6 +156,66 @@ export const SUGGESTED_MODELS: SuggestedModel[] = [
   { name: 'llama3.1:8b', label: 'Llama 3.1 8B', description: 'Higher-quality general model; 16 GB+ RAM.', sizeGB: 4.7, minRamGB: 16 },
 ];
 
+/**
+ * Assemble a Modelfile string from discrete fields (#125).
+ * Returns the Modelfile text ready to POST to Ollama /api/create.
+ */
+export function assembleModelfile(fields: {
+  from: string;
+  system?: string;
+  temperature?: number;
+  numCtx?: number;
+  stop?: string;
+  template?: string;
+}): string {
+  const lines: string[] = [];
+  lines.push(`FROM ${fields.from}`);
+  if (fields.system) lines.push(`\nSYSTEM """${fields.system}"""`);
+  if (fields.temperature !== undefined) lines.push(`\nPARAMETER temperature ${fields.temperature}`);
+  if (fields.numCtx !== undefined) lines.push(`\nPARAMETER num_ctx ${fields.numCtx}`);
+  if (fields.stop) lines.push(`\nPARAMETER stop "${fields.stop}"`);
+  if (fields.template) lines.push(`\nTEMPLATE """${fields.template}"""`);
+  return lines.join('\n');
+}
+
+/**
+ * Create a new Ollama model via POST /api/create (#125).
+ * Streams NDJSON progress identical to pullOllamaModel.
+ */
+export async function createOllamaModel(
+  name: string,
+  modelfile: string,
+  onProgress: (progress: { status?: string; error?: string }) => void,
+  endpoint: string = 'http://localhost:11434/api/create'
+): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, modelfile }),
+  });
+
+  if (!response.ok) throw new Error(`Ollama create error: ${response.statusText}`);
+
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  if (!reader) throw new Error('Response body is null');
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const chunk = JSON.parse(line);
+        onProgress(chunk);
+        if (chunk.error) throw new Error(chunk.error);
+      } catch (e) {
+        if (e instanceof Error && e.message !== line) throw e;
+      }
+    }
+  }
+}
+
 export async function pullOllamaModel(
   modelName: string,
   onProgress: (progress: { status?: string; completed?: number; total?: number }) => void,
