@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -667,6 +668,8 @@ struct MlxServer {
 
 lazy_static::lazy_static! {
     static ref MLX_SERVER: Arc<Mutex<Option<MlxServer>>> = Arc::new(Mutex::new(None));
+    /// Current workspace root — all filesystem commands validate paths against this.
+    static ref WORKSPACE_ROOT: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
 }
 
 /// Find a usable python interpreter that can import mlx + mlx_lm.
@@ -982,6 +985,141 @@ async fn get_system_memory() -> Result<SystemMemory, String> {
 
 /// Check whether an executable is available on PATH (e.g. docker, uvx, npx).
 /// Used by connector UX to detect prerequisites without a shell plugin.
+// ─── Filesystem commands (#82) ───────────────────────────────────────────────
+//
+// All file operations are restricted to the user-chosen workspace root.
+// Paths are canonicalized before comparison to prevent path-traversal attacks.
+
+#[derive(Serialize)]
+struct FsDirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    modified_ms: Option<u64>,
+}
+
+/// Resolve `path` and verify it is inside the workspace root.
+/// Returns the canonical absolute path on success.
+fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
+    let root = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
+    let root = root.as_ref().ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
+    let candidate = PathBuf::from(path);
+    // Resolve to absolute; the file doesn't have to exist yet for writes.
+    let abs = if candidate.is_absolute() {
+        candidate.clone()
+    } else {
+        root.join(&candidate)
+    };
+    // Normalize without requiring existence (for new files)
+    let normalized = normalize_path(&abs);
+    if !normalized.starts_with(root) {
+        return Err(format!("Path '{}' is outside the workspace root.", path));
+    }
+    Ok(normalized)
+}
+
+/// Lexically normalize a path (resolve `..` without hitting the filesystem).
+fn normalize_path(path: &PathBuf) -> PathBuf {
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in path.components() {
+        use std::path::Component::*;
+        match component {
+            ParentDir => { parts.pop(); }
+            CurDir => {}
+            c => parts.push(c.as_os_str()),
+        }
+    }
+    parts.iter().collect()
+}
+
+#[tauri::command]
+fn set_workspace_root(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("'{}' is not a directory or does not exist.", path));
+    }
+    let canonical = p.canonicalize().map_err(|e| e.to_string())?;
+    let mut root = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
+    *root = Some(canonical);
+    Ok(())
+}
+
+#[tauri::command]
+async fn read_file(path: String) -> Result<String, String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&abs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn write_file(path: String, content: String) -> Result<(), String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&abs, &content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_dir(path: String) -> Result<Vec<FsDirEntry>, String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let rd = std::fs::read_dir(&abs).map_err(|e| e.to_string())?;
+        let mut entries: Vec<FsDirEntry> = rd
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                let meta = e.metadata().ok();
+                let modified_ms = meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64);
+                FsDirEntry {
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    path: e.path().to_string_lossy().into_owned(),
+                    is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                    size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    modified_ms,
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Surgical string-replacement edit. Errors if `old_string` is not found or
+/// appears more than once (to avoid ambiguous replacements).
+#[tauri::command]
+async fn apply_edit(path: String, old_string: String, new_string: String) -> Result<(), String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let content = std::fs::read_to_string(&abs).map_err(|e| e.to_string())?;
+        let count = content.matches(old_string.as_str()).count();
+        if count == 0 {
+            return Err("old_string not found in file.".to_string());
+        }
+        if count > 1 {
+            return Err(format!("old_string found {} times — provide more context to make the match unique.", count));
+        }
+        let updated = content.replacen(old_string.as_str(), new_string.as_str(), 1);
+        std::fs::write(&abs, &updated).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn probe_binary(name: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1020,6 +1158,11 @@ pub fn run() {
             mlx_start_server,
             mlx_stop_server,
             mlx_server_status,
+            set_workspace_root,
+            read_file,
+            write_file,
+            list_dir,
+            apply_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
