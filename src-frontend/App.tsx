@@ -67,6 +67,10 @@ import {
   filterCommands, findCommand, runCommand,
   loadUserCommands, addUserCommand, updateUserCommand, removeUserCommand,
 } from './services/commands';
+import {
+  SavedPrompt,
+  loadPrompts, addPrompt, updatePrompt, removePrompt,
+} from './services/promptLibrary';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -333,6 +337,11 @@ const App: React.FC = () => {
   const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
+
+  // Prompt library (#97)
+  const [prompts, setPrompts] = useState<SavedPrompt[]>(() => loadPrompts());
+  const [showPromptPicker, setShowPromptPicker] = useState(false);
+  const [newPromptName, setNewPromptName] = useState('');
 
   // Slash commands (#96)
   const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
@@ -1164,13 +1173,14 @@ const App: React.FC = () => {
           streamOk = true;
           // Apply filter outlets after stream completes (#127)
           const filtered = await applyFilterOutlet(assistantContent);
-          if (filtered !== assistantContent) {
-            setMessages(prev => {
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: filtered }] as Message[];
-              saveCurrentSession(updated);
-              return updated;
-            });
-          }
+          // Stamp producedByModel (#97) and apply filtered content in one update
+          setMessages(prev => {
+            const last = prev[prev.length - 1];
+            const updatedMsg: Message = { ...last, content: filtered, producedByModel: model };
+            const updated = [...prev.slice(0, -1), updatedMsg] as Message[];
+            saveCurrentSession(updated);
+            return updated;
+          });
           // Auto-speak after response if enabled (#101)
           if (voiceSettings.autoSpeak && isTtsAvailable() && filtered) {
             speak(filtered, voiceSettings).catch(() => {});
@@ -1599,6 +1609,10 @@ const App: React.FC = () => {
                 <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
                   {msg.role}
                   {msg.role === 'tool' && <span className="text-blue-400">🔧</span>}
+                  {/* Per-message model label (#97) */}
+                  {msg.role === 'assistant' && msg.producedByModel && (
+                    <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
+                  )}
                 </div>
  
                 {/* M5 Issue 20: Show attached images */}
@@ -1805,6 +1819,31 @@ const App: React.FC = () => {
                📎
              </button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
+
+             {/* Prompt library button (#97) */}
+             {prompts.length > 0 && (
+               <div className="relative">
+                 <button
+                   type="button"
+                   title="Prompt library"
+                   aria-label="Open prompt library"
+                   onClick={() => setShowPromptPicker(p => !p)}
+                   className={`px-3 py-3 rounded-xl transition-colors ${dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'}`}
+                 >📋</button>
+                 {showPromptPicker && (
+                   <div className={`absolute bottom-full mb-1 left-0 w-56 rounded-xl border shadow-lg overflow-hidden z-20 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                     {prompts.map(p => (
+                       <button
+                         key={p.id}
+                         type="button"
+                         onMouseDown={(e) => { e.preventDefault(); setInput(p.body); setShowPromptPicker(false); }}
+                         className={`w-full text-left px-3 py-2 text-xs truncate ${dark ? 'hover:bg-zinc-700 text-zinc-200' : 'hover:bg-zinc-50 text-zinc-800'}`}
+                       >{p.name}</button>
+                     ))}
+                   </div>
+                 )}
+               </div>
+             )}
 
              {/* Slash command autocomplete dropdown (#96) */}
              {commandSuggestions.length > 0 && (
@@ -3427,6 +3466,35 @@ const App: React.FC = () => {
                     <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                       {isTtsAvailable() ? '✓ TTS available.' : '✗ TTS not available.'} {isSpeechRecognitionAvailable() ? '✓ Dictation available (🎤 in composer).' : '✗ SpeechRecognition not available.'}
                     </p>
+                  </div>
+                </div>
+
+                {/* Prompt library (#97) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Prompt Library ({prompts.length})</label>
+                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    {prompts.map(p => (
+                      <div key={p.id} className="flex items-center gap-1.5">
+                        <span className={`flex-1 text-xs font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>{p.name}</span>
+                        <span className={`text-[10px] truncate max-w-[120px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.body.slice(0, 40)}</span>
+                        <button onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                      </div>
+                    ))}
+                    <div className="flex gap-1.5">
+                      <input placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <button
+                        onClick={() => {
+                          if (!newPromptName.trim() || !input.trim()) return;
+                          addPrompt({ name: newPromptName.trim(), body: input.trim() });
+                          setPrompts(loadPrompts());
+                          setNewPromptName('');
+                        }}
+                        title="Save current input as a prompt"
+                        className="text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white whitespace-nowrap"
+                      >Save input</button>
+                    </div>
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Prompts appear in the 📋 picker next to the composer when saved.</p>
                   </div>
                 </div>
 

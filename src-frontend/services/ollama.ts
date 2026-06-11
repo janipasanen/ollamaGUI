@@ -13,6 +13,8 @@ export interface Message {
   tool_calls?: any[];
   /** Local-only thumbs rating on assistant messages (#137). */
   feedback?: MessageFeedback;
+  /** Which model produced this assistant message (#97). */
+  producedByModel?: string;
 }
 
 export interface OllamaResponse {
