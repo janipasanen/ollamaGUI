@@ -325,9 +325,10 @@ async fn mcp_stdio_spawn(
     session_id: String,
     command: String,
     args: Vec<String>,
+    env: Option<HashMap<String, String>>,
 ) -> Result<McpStdioResponse, String> {
     let mut processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
-    
+
     if processes.contains_key(&session_id) {
         return Ok(McpStdioResponse {
             success: false,
@@ -335,9 +336,16 @@ async fn mcp_stdio_spawn(
             session_id: Some(session_id),
         });
     }
-    
+
     let mut cmd = Command::new(command);
     cmd.args(args);
+    // Inject per-server environment variables (e.g. credential tokens) on top of
+    // the inherited environment, so MCP servers like GitHub/GitLab/Jira authenticate.
+    if let Some(env_vars) = env {
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
+    }
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

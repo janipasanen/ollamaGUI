@@ -24,16 +24,17 @@ export interface McpTauriStdioClient {
 export class TauriMcpStdioTransport {
   private static clients: Map<string, McpTauriStdioClient> = new Map();
 
-  static async spawnProcess(command: string, args: string[] = []): Promise<McpTauriStdioClient> {
+  static async spawnProcess(command: string, args: string[] = [], env?: Record<string, string>): Promise<McpTauriStdioClient> {
     const sessionId = `mcp_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    
+
     try {
       const result = await invoke('mcp_stdio_spawn', {
         sessionId,
         command,
         args,
+        env,
       });
-      
+
       const client: McpTauriStdioClient = {
         sessionId,
         command,

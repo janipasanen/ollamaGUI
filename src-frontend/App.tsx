@@ -4,6 +4,7 @@ import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
+import { MCP_SERVER_PRESETS, McpServerPreset } from './services/mcpPresets';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -139,8 +140,9 @@ const App: React.FC = () => {
   // MCP server management state
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [showAddMcpServer, setShowAddMcpServer] = useState(false);
-  const [newMcpServer, setNewMcpServer] = useState<{ name: string; type: 'stdio' | 'http'; command: string; url: string }>({
-    name: '', type: 'stdio', command: '', url: '',
+  const [showMcpCatalog, setShowMcpCatalog] = useState(false);
+  const [newMcpServer, setNewMcpServer] = useState<{ name: string; type: 'stdio' | 'http'; command: string; url: string; authRequired: boolean; env: { key: string; value: string }[] }>({
+    name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [],
   });
   const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
 
@@ -308,6 +310,20 @@ const App: React.FC = () => {
     const next = !isDarkMode;
     setIsDarkMode(next);
     localStorage.setItem('ollama_gui_theme', next ? 'dark' : 'light');
+  };
+
+  // Pre-fill the Add-server form from a catalog preset, then open it for editing.
+  const useMcpPreset = (preset: McpServerPreset) => {
+    setNewMcpServer({
+      name: preset.name,
+      type: preset.type,
+      command: preset.command ?? '',
+      url: preset.url ?? '',
+      authRequired: preset.authRequired ?? false,
+      env: (preset.env ?? []).map(f => ({ key: f.key, value: '' })),
+    });
+    setShowMcpCatalog(false);
+    setShowAddMcpServer(true);
   };
 
   const updateSystemPrompt = (val: string) => {
@@ -1305,15 +1321,58 @@ const App: React.FC = () => {
                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
                       MCP Servers ({mcpServers.length})
                     </label>
-                    <button
-                      onClick={() => setShowAddMcpServer(v => !v)}
-                      className={`text-xs px-2 py-1 rounded border transition-colors ${
-                        dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
-                      }`}
-                    >
-                      {showAddMcpServer ? 'Cancel' : '+ Add'}
-                    </button>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => { setShowMcpCatalog(v => !v); setShowAddMcpServer(false); }}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          showMcpCatalog
+                            ? (dark ? 'border-blue-600 text-blue-400' : 'border-blue-500 text-blue-600')
+                            : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')
+                        }`}
+                      >
+                        {showMcpCatalog ? 'Close' : '📚 Catalog'}
+                      </button>
+                      <button
+                        onClick={() => { setShowAddMcpServer(v => !v); setShowMcpCatalog(false); }}
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${
+                          dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {showAddMcpServer ? 'Cancel' : '+ Add'}
+                      </button>
+                    </div>
                   </div>
+
+                  {/* MCP server catalog — one-click presets */}
+                  {showMcpCatalog && (
+                    <div className={`rounded-lg border divide-y mb-2 overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700 bg-zinc-900/50' : 'border-zinc-200 divide-zinc-200 bg-zinc-50'}`}>
+                      {MCP_SERVER_PRESETS.map(preset => (
+                        <div key={preset.key} className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-100'}`}>
+                          <div className="min-w-0 pr-1">
+                            <div className="flex items-center gap-1.5">
+                              <span>{preset.icon}</span>
+                              <span className="text-xs font-medium truncate">{preset.name}</span>
+                              <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>{preset.type}</span>
+                              {preset.authRequired && (
+                                <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>OAuth</span>
+                              )}
+                            </div>
+                            <div className={`text-[10px] mt-0.5 truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{preset.description}</div>
+                          </div>
+                          <button
+                            onClick={() => useMcpPreset(preset)}
+                            aria-label={`Use ${preset.name} preset`}
+                            className="shrink-0 text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
+                          >
+                            Use
+                          </button>
+                        </div>
+                      ))}
+                      <p className={`text-[10px] px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        Presets pre-fill the form — edit paths/tokens, then Add Server.
+                      </p>
+                    </div>
+                  )}
 
                   {showAddMcpServer && (
                     <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
@@ -1348,6 +1407,41 @@ const App: React.FC = () => {
                           />
                         )}
                       </div>
+
+                      {/* Environment variables (credentials) for stdio servers */}
+                      {newMcpServer.type === 'stdio' && (
+                        <div className="space-y-1.5">
+                          {newMcpServer.env.map((pair, idx) => (
+                            <div key={idx} className="flex gap-1.5">
+                              <input
+                                placeholder="ENV_KEY"
+                                value={pair.key}
+                                onChange={e => setNewMcpServer(s => ({ ...s, env: s.env.map((p, i) => i === idx ? { ...p, key: e.target.value } : p) }))}
+                                className={`w-2/5 border rounded px-2 py-1 text-[11px] font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                              />
+                              <input
+                                placeholder="value"
+                                type="password"
+                                value={pair.value}
+                                onChange={e => setNewMcpServer(s => ({ ...s, env: s.env.map((p, i) => i === idx ? { ...p, value: e.target.value } : p) }))}
+                                className={`flex-1 border rounded px-2 py-1 text-[11px] font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                              />
+                              <button
+                                onClick={() => setNewMcpServer(s => ({ ...s, env: s.env.filter((_, i) => i !== idx) }))}
+                                className="text-red-400 hover:text-red-300 text-xs px-1"
+                                aria-label="Remove env var"
+                              >✕</button>
+                            </div>
+                          ))}
+                          <button
+                            onClick={() => setNewMcpServer(s => ({ ...s, env: [...s.env, { key: '', value: '' }] }))}
+                            className={`text-[10px] px-2 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                          >
+                            + Env var
+                          </button>
+                        </div>
+                      )}
+
                       <button
                         onClick={() => {
                           if (!newMcpServer.name.trim()) return;
@@ -1377,20 +1471,29 @@ const App: React.FC = () => {
                                 }
                               }
                               
+                              // Collect non-empty env pairs into a record (stdio only).
+                              const envEntries = newMcpServer.env
+                                .filter(p => p.key.trim() && p.value.trim())
+                                .map(p => [p.key.trim(), p.value] as [string, string]);
+                              const env = newMcpServer.type === 'stdio' && envEntries.length
+                                ? Object.fromEntries(envEntries)
+                                : undefined;
+
                               const server: McpServerConfig = {
                                 id: mcpConfigStore.generateId(),
                                 name: newMcpServer.name.trim(),
                                 type: newMcpServer.type,
                                 command: newMcpServer.type === 'stdio' ? newMcpServer.command.trim() : undefined,
                                 url: newMcpServer.type === 'http' ? newMcpServer.url.trim() : undefined,
+                                env,
                                 status: 'disconnected',
                                 tools: [],
-                                authRequired: newMcpServer.type === 'http',
+                                authRequired: newMcpServer.type === 'http' ? newMcpServer.authRequired : false,
                                 authenticated: false,
                               };
                           mcpConfigStore.save(server);
                           setMcpServers(mcpConfigStore.list());
-                          setNewMcpServer({ name: '', type: 'stdio', command: '', url: '' });
+                          setNewMcpServer({ name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [] });
                           setShowAddMcpServer(false);
                         }}
                         className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-1.5 rounded font-semibold transition-colors"
@@ -1435,7 +1538,7 @@ const App: React.FC = () => {
                                    // Ensure server is registered in the manager before connecting
                                    mcpServerManager.addServer({
                                      id: server.id, name: server.name, type: server.type,
-                                     command: server.command, url: server.url,
+                                     command: server.command, url: server.url, env: server.env,
                                      enabled: true, toolsEnabled: true,
                                    });
 

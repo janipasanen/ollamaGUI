@@ -69,6 +69,35 @@ describe('MCP Transport Tests', () => {
       expect(mockSpawn).toHaveBeenCalled();
     });
 
+    it('should split the command line and pass env to the spawn', async () => {
+      const config: McpServerConfig = {
+        id: 'env-stdio',
+        name: 'Env Stdio Server',
+        type: 'stdio',
+        command: 'npx -y @modelcontextprotocol/server-github',
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_test' },
+        enabled: true,
+        toolsEnabled: true,
+      } as McpServerConfig;
+
+      mcpServerManager.addServer(config);
+
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'env-session', command: 'npx', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"version":"1.0"}}');
+
+      await mcpServerManager.connectToServer('env-stdio');
+
+      // bin/args split out of the command line; env forwarded verbatim
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'npx',
+        ['-y', '@modelcontextprotocol/server-github'],
+        { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_test' },
+      );
+    });
+
     it('should handle stdio request sending', async () => {
       const config: McpServerConfig = {
         id: 'test-stdio',

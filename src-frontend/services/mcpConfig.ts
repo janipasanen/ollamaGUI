@@ -14,6 +14,8 @@ export interface McpServerConfig {
   // stdio servers
   command?: string;
   args?: string[];
+  /** Per-server environment variables (e.g. credential tokens) for stdio servers. */
+  env?: Record<string, string>;
   // http servers
   url?: string;
   // runtime state (not persisted)

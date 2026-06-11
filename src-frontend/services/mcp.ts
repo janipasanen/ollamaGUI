@@ -9,6 +9,8 @@ export interface McpServerConfig {
   name: string;
   type: 'stdio' | 'http';
   command?: string; // For stdio servers
+  args?: string[]; // Extra args appended to a stdio command
+  env?: Record<string, string>; // Per-server env vars (credential tokens) for stdio servers
   url?: string; // For HTTP servers
   auth?: {
     token?: string;
@@ -48,6 +50,21 @@ export interface McpNotification {
   params?: any;
 }
 
+/**
+ * Split a command line into the executable and its arguments, honoring single
+ * and double quotes (so paths/values with spaces survive). Returns the first
+ * token as `bin` and the rest as `args`.
+ */
+export function splitCommandLine(commandLine: string): { bin: string; args: string[] } {
+  const tokens: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(commandLine)) !== null) {
+    tokens.push(m[1] ?? m[2] ?? m[3]);
+  }
+  return { bin: tokens[0] ?? '', args: tokens.slice(1) };
+}
+
 export class McpStdioClient {
   private process: any = null;
   private stdin: any = null;
@@ -68,10 +85,16 @@ export class McpStdioClient {
     }
 
     try {
+      // The config stores a full command line (e.g. "npx -y @mcp/server-fs /path").
+      // Split it into executable + args; the OS spawn needs them separated.
+      const { bin, args: parsedArgs } = splitCommandLine(this.config.command);
+      const allArgs = [...parsedArgs, ...(this.config.args ?? [])];
+
       // Use Tauri transport for real process management
       this.tauriClient = await TauriMcpStdioTransport.spawnProcess(
-        this.config.command,
-        [] // args would go here if needed
+        bin,
+        allArgs,
+        this.config.env,
       );
 
       console.log(`[MCP] Connected via Tauri: ${this.config.command}`);
