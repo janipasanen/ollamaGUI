@@ -26,6 +26,11 @@ import {
   loadPresets, savePresets, addPreset, updatePreset, removePreset,
   loadActivePresetId, setActivePreset, clearActivePreset, getActivePreset, applyPreset,
 } from './services/presets';
+import {
+  ModelConnection, ConnectedModel,
+  loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
+  fetchAllConnectionModels, streamOpenAiChat,
+} from './services/connections';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -285,6 +290,13 @@ const App: React.FC = () => {
   const [modelfileError, setModelfileError] = useState('');
   const [isCreatingModel, setIsCreatingModel] = useState(false);
 
+  // Model connections (#123): extra OpenAI-compatible / Ollama endpoints
+  const [connections, setConnections] = useState<ModelConnection[]>(() => loadConnections());
+  const [connectedModels, setConnectedModels] = useState<ConnectedModel[]>([]);
+  const [showAddConnection, setShowAddConnection] = useState(false);
+  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
+
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
   const [mlxSettings, setMlxSettings] = useState<MlxSettings>(DEFAULT_MLX_SETTINGS);
@@ -333,6 +345,8 @@ const App: React.FC = () => {
       ...cloudModels,
     ];
     setModels(combined);
+    // Fetch extra connection models in parallel (#123)
+    fetchAllConnectionModels(loadConnections()).then(setConnectedModels).catch(() => {});
     return combined;
   }, [ollamaBaseUrl]);
 
@@ -952,12 +966,34 @@ const App: React.FC = () => {
           // Messages are already handled by the callbacks
         }
       } else {
+        // Route through OpenAI-compatible connection when model belongs to one (#123)
+        const connectedModel = connectedModels.find(m => m.id === model);
+        const connForModel = connectedModel ? connections.find(c => c.id === connectedModel.connectionId && c.kind === 'openai') : undefined;
+
         // Use regular chat stream
         let assistantContent = '';
         let streamOk = false;
         setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
         try {
+          if (connForModel && connectedModel) {
+            // OpenAI-compatible SSE stream (#123)
+            await streamOpenAiChat(
+              connForModel,
+              connectedModel.name,
+              chatHistory,
+              (delta) => {
+                assistantContent += delta;
+                setMessages(prev => {
+                  const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+                  saveCurrentSession(updated);
+                  return updated;
+                });
+              },
+              { temperature: genOptions?.temperature },
+              abortControllerRef.current?.signal
+            );
+          } else {
           await fetchOllamaChatStream(model, chatHistory, (chunk) => {
             if (chunk.message?.content) {
               assistantContent += chunk.message.content;
@@ -968,6 +1004,7 @@ const App: React.FC = () => {
               });
             }
           }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
+          }
           streamOk = true;
           // Apply filter outlets after stream completes (#127)
           const filtered = await applyFilterOutlet(assistantContent);
@@ -1257,13 +1294,25 @@ const App: React.FC = () => {
                     ))}
                   </optgroup>
                 )}
-                <optgroup label="— Models —">
+                <optgroup label="— Local / Cloud —">
                   {models.map((m) => (
                     <option key={m.name} value={m.name}>
                       {m.name}{m.cloud ? ' ⛅' : ''}
                     </option>
                   ))}
                 </optgroup>
+                {/* Extra connection models grouped by connection (#123) */}
+                {connections.filter(c => c.enabled).map(conn => {
+                  const connModels = connectedModels.filter(m => m.connectionId === conn.id);
+                  if (!connModels.length) return null;
+                  return (
+                    <optgroup key={conn.id} label={`— ${conn.name} —`}>
+                      {connModels.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </select>
               {models.find(m => m.name === model)?.cloud && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
@@ -1869,6 +1918,95 @@ const App: React.FC = () => {
                      ))}
                    </div>
                  </div>
+
+                {/* Model Connections — OpenAI-compatible endpoints (#123) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Connections ({connections.length})</label>
+                    <button onClick={() => setShowAddConnection(v => !v)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}>
+                      {showAddConnection ? 'Cancel' : '+ Add'}
+                    </button>
+                  </div>
+                  {showAddConnection && (
+                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5">
+                        <select value={newConn.kind} onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as 'openai' | 'ollama' }))}
+                          className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
+                          <option value="openai">OpenAI-compat</option>
+                          <option value="ollama">Ollama</option>
+                        </select>
+                        <input placeholder="Name (e.g. LM Studio)" value={newConn.name} onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      </div>
+                      <input placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      {newConn.kind === 'openai' && (
+                        <input placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      )}
+                      <button onClick={() => {
+                        if (!newConn.name.trim() || !newConn.baseUrl.trim()) return;
+                        const conn = addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
+                        const updated = loadConnections();
+                        setConnections(updated);
+                        fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {});
+                        setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' });
+                        setShowAddConnection(false);
+                        void conn;
+                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add Connection</button>
+                    </div>
+                  )}
+                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {connections.length === 0
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No extra connections. Add an OpenAI-compatible (LM Studio, llama.cpp) or a second Ollama host.</p>
+                      : connections.map(conn => {
+                        const modelCount = connectedModels.filter(m => m.connectionId === conn.id).length;
+                        return (
+                          <div key={conn.id} className={`flex items-center gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${conn.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-medium truncate">{conn.name}</span>
+                                <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>{conn.kind}</span>
+                              </div>
+                              <div className={`text-[10px] truncate font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} {modelCount > 0 ? `· ${modelCount} model${modelCount !== 1 ? 's' : ''}` : ''}</div>
+                              {connTestStatus[conn.id] && (
+                                <div className={`text-[10px] ${connTestStatus[conn.id] === 'ok' ? 'text-green-400' : connTestStatus[conn.id] === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>
+                                  {connTestStatus[conn.id] === 'testing' ? 'Fetching models…' : connTestStatus[conn.id] === 'ok' ? `✓ ${modelCount} model${modelCount !== 1 ? 's' : ''} found` : '✗ Could not fetch models'}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button onClick={async () => {
+                                setConnTestStatus(s => ({ ...s, [conn.id]: 'testing' }));
+                                const all = loadConnections();
+                                const fresh = await fetchAllConnectionModels(all);
+                                setConnectedModels(fresh);
+                                const count = fresh.filter(m => m.connectionId === conn.id).length;
+                                setConnTestStatus(s => ({ ...s, [conn.id]: count > 0 ? 'ok' : 'error' }));
+                              }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>
+                                {connTestStatus[conn.id] === 'testing' ? '…' : 'Test'}
+                              </button>
+                              <button onClick={() => {
+                                const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
+                                saveConnections(updated); setConnections(updated);
+                                fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {});
+                              }} className={`text-[10px] px-1.5 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
+                                {conn.enabled ? 'On' : 'Off'}
+                              </button>
+                              <button onClick={() => { removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
+                                className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    }
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Models from extra connections appear in the model selector grouped by connection.
+                  </p>
+                </div>
 
                 {/* MCP Servers */}
                 <div>
