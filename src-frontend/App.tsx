@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
@@ -159,6 +159,8 @@ const App: React.FC = () => {
   const [isPulling, setIsPulling] = useState(false);
   const [pullProgress, setPullProgress] = useState('');
   const [pullError, setPullError] = useState(false);
+  const [pullingModel, setPullingModel] = useState<string | null>(null);
+  const [lastPullTarget, setLastPullTarget] = useState('');
 
   // M5: Image attachments (Issue 20)
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
@@ -338,25 +340,32 @@ const App: React.FC = () => {
   };
 
   // Model management
-  const handlePullModel = async () => {
-    if (!modelPullInput.trim()) return;
+  // Pull a model. Pass an explicit name (e.g. from a suggested-model button),
+  // otherwise pulls whatever is typed in the input box.
+  const handlePullModel = async (explicitModel?: string) => {
+    const target = (explicitModel ?? modelPullInput).trim();
+    if (!target || isPulling) return;
+    setLastPullTarget(target);
     setIsPulling(true);
+    setPullingModel(target);
     setPullError(false);
-    setPullProgress('Starting pull...');
+    setPullProgress(`Starting pull: ${target}…`);
     try {
-      await pullOllamaModel(modelPullInput, (p) => {
+      await pullOllamaModel(target, (p) => {
         const pct = p.total ? ` (${Math.round(((p.completed ?? 0) / p.total) * 100)}%)` : '';
-        setPullProgress((p.status || 'Pulling...') + pct);
+        setPullProgress(`${target}: ${p.status || 'Pulling…'}${pct}`);
       }, url('/api/pull'));
-      setPullProgress('Pull complete!');
-      setModelPullInput('');
+      setPullProgress(`Pull complete: ${target}`);
+      if (!explicitModel) setModelPullInput('');
       const updated = await refreshModels();
-      if (!updated.find(m => m.name === model)) setModel(updated[0]?.name || 'llama3');
+      // Auto-select the freshly pulled model if nothing valid is selected.
+      if (!updated.find(m => m.name === model)) setModel(target);
     } catch (e) {
-      setPullProgress(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      setPullProgress(`Error pulling ${target}: ${e instanceof Error ? e.message : 'Unknown error'}`);
       setPullError(true);
     } finally {
       setIsPulling(false);
+      setPullingModel(null);
     }
   };
 
@@ -1545,13 +1554,13 @@ const App: React.FC = () => {
                       value={modelPullInput}
                       onChange={(e) => setModelPullInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handlePullModel()}
-                      placeholder="e.g. llama3:latest"
+                      placeholder="e.g. ministral-3:3b"
                       className={`flex-1 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${
                         dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                       }`}
                     />
                     <button
-                      onClick={handlePullModel}
+                      onClick={() => handlePullModel()}
                       disabled={isPulling}
                       className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                     >
@@ -1565,7 +1574,7 @@ const App: React.FC = () => {
                       </p>
                       {pullError && (
                         <button
-                          onClick={() => { setPullProgress(''); setPullError(false); handlePullModel(); }}
+                          onClick={() => { setPullProgress(''); setPullError(false); handlePullModel(lastPullTarget); }}
                           className="text-xs px-2 py-0.5 rounded border border-zinc-600 text-zinc-400 hover:bg-zinc-700 shrink-0"
                         >
                           Retry
@@ -1573,6 +1582,44 @@ const App: React.FC = () => {
                       )}
                     </div>
                   )}
+
+                  {/* Suggested models — one-click download */}
+                  <div className={`rounded-lg border divide-y overflow-hidden mb-2 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Suggested models</div>
+                    {SUGGESTED_MODELS.map((s) => {
+                      const installed = models.some(m => m.name === s.name);
+                      const pulling = pullingModel === s.name;
+                      return (
+                        <div
+                          key={s.name}
+                          className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-50'} ${s.recommended ? (dark ? 'bg-amber-900/10' : 'bg-amber-50') : ''}`}
+                        >
+                          <div className="min-w-0 pr-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono text-xs truncate">{s.name}</span>
+                              {s.recommended && (
+                                <span className={`text-[9px] px-1 py-0.5 rounded font-semibold ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>⭐ 8GB RAM</span>
+                              )}
+                              <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>~{s.sizeGB} GB · {s.minRamGB} GB RAM</span>
+                            </div>
+                            <div className={`text-[10px] mt-0.5 truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{s.description}</div>
+                          </div>
+                          {installed ? (
+                            <span className="text-green-400 text-xs shrink-0">Installed ✓</span>
+                          ) : (
+                            <button
+                              onClick={() => handlePullModel(s.name)}
+                              disabled={isPulling}
+                              aria-label={`Download ${s.name}`}
+                              className="shrink-0 text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white font-semibold transition-colors"
+                            >
+                              {pulling ? 'Pulling…' : 'Download'}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
                      <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Local Models</div>
                      {models.filter(m => !m.cloud).length === 0 && (

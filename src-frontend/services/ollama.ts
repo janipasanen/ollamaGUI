@@ -86,6 +86,37 @@ export async function fetchCloudModels(): Promise<{ name: string; cloud: boolean
   ];
 }
 
+/** A curated local model the user can download with one click. */
+export interface SuggestedModel {
+  /** Exact `ollama pull` tag. */
+  name: string;
+  /** Human-friendly display name. */
+  label: string;
+  /** One-line description. */
+  description: string;
+  /** Approximate download size in GB. */
+  sizeGB: number;
+  /** Recommended minimum system RAM in GB to run comfortably. */
+  minRamGB: number;
+  /** Highlighted as the recommended default for modest hardware. */
+  recommended?: boolean;
+}
+
+/**
+ * Curated models to suggest for one-click download, ordered lightest-first.
+ * `ministral-3:3b` is recommended as a strong default that runs on 8 GB RAM.
+ */
+export const SUGGESTED_MODELS: SuggestedModel[] = [
+  { name: 'ministral-3:3b', label: 'Ministral 3B', description: 'Compact Mistral model — great quality-to-size balance, runs on 8 GB RAM.', sizeGB: 2.0, minRamGB: 8, recommended: true },
+  { name: 'llama3.2:1b', label: 'Llama 3.2 1B', description: "Meta's tiniest model — fastest, runs almost anywhere.", sizeGB: 1.3, minRamGB: 4 },
+  { name: 'gemma2:2b', label: 'Gemma 2 2B', description: "Google's efficient small model.", sizeGB: 1.6, minRamGB: 8 },
+  { name: 'llama3.2:3b', label: 'Llama 3.2 3B', description: "Meta's small general-purpose model.", sizeGB: 2.0, minRamGB: 8 },
+  { name: 'qwen2.5:3b', label: 'Qwen 2.5 3B', description: 'Strong multilingual + reasoning for its size.', sizeGB: 1.9, minRamGB: 8 },
+  { name: 'phi3:mini', label: 'Phi-3 Mini', description: "Microsoft's 3.8B model, strong at reasoning.", sizeGB: 2.2, minRamGB: 8 },
+  { name: 'qwen2.5-coder:7b', label: 'Qwen 2.5 Coder 7B', description: 'Coding-focused model; needs more memory.', sizeGB: 4.7, minRamGB: 16 },
+  { name: 'llama3.1:8b', label: 'Llama 3.1 8B', description: 'Higher-quality general model; 16 GB+ RAM.', sizeGB: 4.7, minRamGB: 16 },
+];
+
 export async function pullOllamaModel(
   modelName: string,
   onProgress: (progress: { status?: string; completed?: number; total?: number }) => void,
