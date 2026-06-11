@@ -31,6 +31,7 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchAllConnectionModels, streamOpenAiChat,
 } from './services/connections';
+import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -296,6 +297,10 @@ const App: React.FC = () => {
   const [showAddConnection, setShowAddConnection] = useState(false);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
+
+  // Many-models conversation (#126)
+  const [extraModels, setExtraModels] = useState<string[]>([]);
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -965,6 +970,56 @@ const App: React.FC = () => {
         for await (const message of agentStream) {
           // Messages are already handled by the callbacks
         }
+      } else if (extraModels.length > 0) {
+        // Many-models fan-out (#126)
+        const allModelIds = [model, ...extraModels];
+        const sameHost = hasSameHostConflict(allModelIds, ollamaBaseUrl, connectedModels, connections);
+        const groupIndex = messages.length; // user turn index after userMessage is added
+
+        // Initialize group with all pending replies
+        const initGroup: ModelGroup = {
+          userTurnIndex: groupIndex,
+          replies: allModelIds.map(mid => ({
+            modelId: mid,
+            label: connectedModels.find(m => m.id === mid)?.name ?? mid,
+            content: '',
+            state: 'pending' as const,
+          })),
+        };
+        setModelGroups(prev => [...prev, initGroup]);
+
+        if (sameHost) {
+          setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ Memory warning: multiple models share the same Ollama host — running sequentially to avoid OOM.` } as Message]);
+        }
+
+        await runManyModels(
+          allModelIds,
+          chatHistory,
+          (modelId, delta, state, error) => {
+            setModelGroups(prev => prev.map((g, i) => {
+              if (i !== prev.length - 1) return g;
+              return {
+                ...g,
+                replies: g.replies.map(r => r.modelId !== modelId ? r : {
+                  ...r,
+                  content: state === 'streaming' ? r.content + delta : r.content,
+                  state,
+                  error,
+                }),
+              };
+            }));
+          },
+          {
+            defaultBaseUrl: ollamaBaseUrl,
+            connectedModels,
+            connections,
+            genOptions,
+            signal: abortControllerRef.current?.signal,
+            streamOllama: fetchOllamaChatStream as any,
+            streamOpenAi: streamOpenAiChat as any,
+          }
+        );
+        setExtraModels([]);
       } else {
         // Route through OpenAI-compatible connection when model belongs to one (#123)
         const connectedModel = connectedModels.find(m => m.id === model);
@@ -1476,6 +1531,36 @@ const App: React.FC = () => {
              </div>
            ))}
 
+          {/* Many-models reply groups (#126) */}
+          {modelGroups.map((group, gi) => (
+            <div key={`group-${gi}`} className="mb-4">
+              <div className="flex flex-wrap gap-2">
+                {group.replies.map((reply, ri) => (
+                  <div key={reply.modelId} className={`flex-1 min-w-[220px] rounded-xl border p-3 ${dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-white'}`}>
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-100 text-zinc-600'}`}>{reply.label}</span>
+                      {reply.state === 'streaming' && <span className="text-[9px] text-blue-400 animate-pulse">●</span>}
+                      {reply.state === 'error' && <span className="text-[9px] text-red-400">✗</span>}
+                      {reply.state === 'done' && group.chosenIndex === ri && <span className="text-[9px] text-green-400">✓ chosen</span>}
+                    </div>
+                    <div className={`text-sm whitespace-pre-wrap ${reply.state === 'error' ? 'text-red-400' : ''}`}>
+                      {reply.state === 'error' ? reply.error : reply.content || <span className="opacity-30">Waiting…</span>}
+                    </div>
+                    {reply.state === 'done' && group.chosenIndex === undefined && (
+                      <button
+                        onClick={() => {
+                          setModelGroups(prev => prev.map((g, i) => i === gi ? { ...g, chosenIndex: ri } : g));
+                          setMessages(prev => [...prev, { role: 'assistant', content: reply.content } as Message]);
+                        }}
+                        className={`mt-2 text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                      >Continue with this</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
           {/* Queued messages waiting for the current reply to finish (#137) */}
           {messageQueue.map((q, qi) => (
             <div key={`queued-${qi}`} className="flex justify-end mb-2">
@@ -1566,6 +1651,28 @@ const App: React.FC = () => {
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
              />
+             {/* Many-models extra-model picker (#126) */}
+             {[...models, ...connectedModels].length > 1 && (
+               <select
+                 multiple
+                 aria-label="Compare with additional models"
+                 value={extraModels}
+                 onChange={e => setExtraModels(Array.from(e.target.selectedOptions, o => o.value))}
+                 title="Ctrl/Cmd+click to select 1-2 additional models for comparison"
+                 className={`hidden sm:block w-28 text-xs border rounded-xl px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-300 text-zinc-600'}`}
+                 style={{ height: '3rem' }}
+               >
+                 {models.filter(m => m.name !== model).map(m => (
+                   <option key={m.name} value={m.name}>{m.name}</option>
+                 ))}
+                 {connectedModels.filter(m => m.id !== model).map(m => (
+                   <option key={m.id} value={m.id}>{m.name}</option>
+                 ))}
+               </select>
+             )}
+             {extraModels.length > 0 && hasSameHostConflict([model, ...extraModels], ollamaBaseUrl, connectedModels, connections) && (
+               <span className={`text-[9px] shrink-0 ${dark ? 'text-amber-400' : 'text-amber-600'}`} title="These models share a local host and will run sequentially">⚠️ seq</span>
+             )}
              {isLoading ? (
                <button
                  onClick={cancelStream}
