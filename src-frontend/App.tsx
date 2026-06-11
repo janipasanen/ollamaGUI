@@ -76,6 +76,10 @@ import {
   createBranch, navigateBranch, getForkInfo, getForkPoints,
   emptyBranchState, migrateToBranchState,
 } from './services/branching';
+import {
+  Artifact,
+  detectArtifacts, pickPrimaryArtifact, exportArtifact,
+} from './services/artifacts';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -354,6 +358,12 @@ const App: React.FC = () => {
   const trunkMessagesRef = useRef<Message[]>([]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
+
+  // Artifact canvas (#99)
+  const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
+  const [showArtifacts, setShowArtifacts] = useState(false);
+  const [artifactTab, setArtifactTab] = useState<'preview' | 'code'>('preview');
+  const [artifactCopied, setArtifactCopied] = useState(false);
 
   // Slash commands (#96)
   const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
@@ -1208,6 +1218,14 @@ const App: React.FC = () => {
             saveCurrentSession(updated);
             return updated;
           });
+          // Detect artifacts (#99) and surface in the canvas panel
+          const arts = detectArtifacts(filtered);
+          const primary = pickPrimaryArtifact(arts);
+          if (primary) {
+            setCurrentArtifact(primary);
+            setShowArtifacts(true);
+            setArtifactTab(primary.kind === 'html' || primary.kind === 'svg' ? 'preview' : 'code');
+          }
           // Auto-speak after response if enabled (#101)
           if (voiceSettings.autoSpeak && isTtsAvailable() && filtered) {
             speak(filtered, voiceSettings).catch(() => {});
@@ -1639,6 +1657,17 @@ const App: React.FC = () => {
                      className={`p-2 rounded-md transition-colors ${voiceCallActive ? 'text-red-500 animate-pulse' : dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
                    >
                      📞
+                   </button>
+                 )}
+                 {/* Artifact canvas toggle (#99) */}
+                 {currentArtifact && (
+                   <button
+                     onClick={() => setShowArtifacts(v => !v)}
+                     title={showArtifacts ? 'Close artifacts panel' : 'Open artifacts panel'}
+                     aria-label={showArtifacts ? 'Close artifacts panel' : 'Open artifacts panel'}
+                     className={`p-2 rounded-md transition-colors ${showArtifacts ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                   >
+                     🖼
                    </button>
                  )}
                  <button
@@ -3847,6 +3876,89 @@ const App: React.FC = () => {
            </div>
          )}
     </div>
+
+      {/* Artifact canvas panel (#99) — docks to the right of the chat area */}
+      {showArtifacts && currentArtifact && (
+        <div className={`w-96 shrink-0 border-l flex flex-col overflow-hidden transition-all ${
+          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
+        }`}>
+          {/* Panel header */}
+          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
+            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`text-xs font-mono px-2 py-0.5 rounded shrink-0 ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}>
+                {currentArtifact.language}
+              </span>
+              <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>
+                Artifact
+              </span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Tab toggle for html/svg */}
+              {(currentArtifact.kind === 'html' || currentArtifact.kind === 'svg') && (
+                <div className={`flex rounded-lg overflow-hidden border text-xs mr-1 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                  <button
+                    onClick={() => setArtifactTab('preview')}
+                    className={`px-2 py-1 transition-colors ${artifactTab === 'preview' ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-zinc-200 text-zinc-800') : (dark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-zinc-500 hover:bg-zinc-100')}`}
+                  >Preview</button>
+                  <button
+                    onClick={() => setArtifactTab('code')}
+                    className={`px-2 py-1 transition-colors ${artifactTab === 'code' ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-zinc-200 text-zinc-800') : (dark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-zinc-500 hover:bg-zinc-100')}`}
+                  >Code</button>
+                </div>
+              )}
+              {/* Copy button */}
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(currentArtifact.code);
+                  setArtifactCopied(true);
+                  setTimeout(() => setArtifactCopied(false), 2000);
+                }}
+                aria-label="Copy artifact code"
+                title="Copy"
+                className={`text-xs px-2 py-1 rounded transition-colors ${artifactCopied ? 'text-green-400' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100')}`}
+              >{artifactCopied ? '✓' : '⎘'}</button>
+              {/* Export button */}
+              <button
+                onClick={() => exportArtifact(currentArtifact)}
+                aria-label="Export artifact to file"
+                title="Export to file"
+                className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100'}`}
+              >↓</button>
+              {/* Close */}
+              <button
+                onClick={() => setShowArtifacts(false)}
+                aria-label="Close artifacts panel"
+                className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100'}`}
+              >✕</button>
+            </div>
+          </div>
+
+          {/* Panel body */}
+          <div className="flex-1 overflow-auto">
+            {(currentArtifact.kind === 'html' || currentArtifact.kind === 'svg') && artifactTab === 'preview' ? (
+              <iframe
+                srcDoc={currentArtifact.code}
+                title="Artifact preview"
+                sandbox="allow-scripts"
+                className="w-full h-full border-0 bg-white"
+              />
+            ) : (
+              <div className="p-2">
+                <SyntaxHighlighter
+                  style={dark ? vscDarkPlus : oneLight}
+                  language={currentArtifact.language}
+                  PreTag="div"
+                  customStyle={{ margin: 0, borderRadius: '0.5rem', fontSize: '0.75rem' }}
+                >
+                  {currentArtifact.code}
+                </SyntaxHighlighter>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
