@@ -235,6 +235,11 @@ const App: React.FC = () => {
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Message queue: enqueue prompts while a reply streams; auto-send FIFO (#137).
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const messageQueueRef = useRef<string[]>([]);
+  useEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
+
   // Storage quota warning
   const [storageWarning, setStorageWarning] = useState(false);
 
@@ -367,6 +372,7 @@ const App: React.FC = () => {
     setAttachedImages([]);
     setInput('');
     setIsTemporary(false);
+    setMessageQueue([]);
   }, []);
 
   // Start a temporary chat — messages live only in state, never persisted.
@@ -376,6 +382,7 @@ const App: React.FC = () => {
     setAttachedImages([]);
     setInput('');
     setIsTemporary(true);
+    setMessageQueue([]);
   }, []);
 
   // Promote the current temporary chat into a persisted session.
@@ -547,6 +554,8 @@ const App: React.FC = () => {
     setCurrentSessionId(session.id);
     setModel(session.model);
     setAttachedImages([]);
+    setMessageQueue([]);
+    setIsTemporary(false);
   };
 
   const deleteSession = (id: string) => {
@@ -659,12 +668,20 @@ const App: React.FC = () => {
   };
 
   // Send message
-  const sendMessage = async () => {
-    if (!input.trim() && attachedImages.length === 0) return;
+  const sendMessage = async (textOverride?: string) => {
+    const text = textOverride ?? input;
+    if (!text.trim() && attachedImages.length === 0) return;
+
+    // While a reply streams, enqueue user submissions instead of dropping them.
+    if (isLoading && textOverride === undefined) {
+      setMessageQueue(q => [...q, text]);
+      setInput('');
+      return;
+    }
 
     const userMessage: Message = {
       role: 'user',
-      content: input,
+      content: text,
       ...(attachedImages.length > 0 ? { images: [...attachedImages] } : {}),
     };
 
@@ -679,7 +696,7 @@ const App: React.FC = () => {
     ];
 
     setMessages([...messages, userMessage]);
-    setInput('');
+    if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
     setAttachedImages([]);
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
@@ -822,7 +839,7 @@ const App: React.FC = () => {
                 return updated;
               });
             }
-          }, endpoint, false, genOptions);
+          }, endpoint, false, genOptions, abortControllerRef.current?.signal);
           streamOk = true;
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
@@ -852,8 +869,37 @@ const App: React.FC = () => {
       ]);
       setIsLoading(false);
     } finally {
+      // Cancelling the active turn halts the queue (the user resumes/clears it).
+      const wasAborted = abortControllerRef.current?.signal.aborted ?? false;
       abortControllerRef.current = null;
+      if (!wasAborted && messageQueueRef.current.length > 0) {
+        const [next, ...rest] = messageQueueRef.current;
+        messageQueueRef.current = rest;
+        setMessageQueue(rest);
+        setTimeout(() => { void sendMessage(next); }, 0);
+      }
     }
+  };
+
+  // Local thumbs feedback on an assistant message (#137).
+  const setMessageFeedback = (index: number, thumbs: 'up' | 'down') => {
+    setMessages(prev => {
+      const updated = prev.map((m, i) => {
+        if (i !== index || m.role !== 'assistant') return m;
+        const existing = m.feedback;
+        // Toggle off if the same thumb is clicked again.
+        const feedback = existing && existing.thumbs === thumbs
+          ? undefined
+          : { thumbs, comment: existing?.comment, model, ts: Date.now() };
+        return { ...m, feedback };
+      });
+      saveCurrentSession(updated);
+      return updated;
+    });
+  };
+
+  const removeQueuedMessage = (index: number) => {
+    setMessageQueue(q => q.filter((_, i) => i !== index));
   };
 
   const dark = isDarkMode;
@@ -1132,9 +1178,35 @@ const App: React.FC = () => {
                     Tool execution result
                   </div>
                 )}
+                {/* Thumbs feedback on completed assistant replies (#137) */}
+                {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
+                  <div className="flex items-center gap-1 mt-1">
+                    <button
+                      onClick={() => setMessageFeedback(i, 'up')}
+                      aria-label="Thumbs up"
+                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'up' ? 'text-green-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
+                    >👍</button>
+                    <button
+                      onClick={() => setMessageFeedback(i, 'down')}
+                      aria-label="Thumbs down"
+                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
+                    >👎</button>
+                  </div>
+                )}
                </div>
              </div>
            ))}
+
+          {/* Queued messages waiting for the current reply to finish (#137) */}
+          {messageQueue.map((q, qi) => (
+            <div key={`queued-${qi}`} className="flex justify-end mb-2">
+              <div className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm flex items-center gap-2 border border-dashed ${dark ? 'border-zinc-600 text-zinc-400 bg-zinc-800/40' : 'border-zinc-300 text-zinc-500 bg-zinc-100'}`}>
+                <span className="text-[10px] uppercase tracking-wide opacity-70">queued</span>
+                <span className="truncate">{q}</span>
+                <button onClick={() => removeQueuedMessage(qi)} aria-label="Remove queued message" className="ml-1 hover:text-red-400">✕</button>
+              </div>
+            </div>
+          ))}
           <div ref={messagesEndRef} />
         </div>
 
@@ -1225,7 +1297,7 @@ const App: React.FC = () => {
                </button>
              ) : (
                <button
-                 onClick={sendMessage}
+                 onClick={() => sendMessage()}
                  disabled={isLoading}
                  aria-label="Send message"
                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"

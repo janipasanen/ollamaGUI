@@ -1,9 +1,18 @@
+export interface MessageFeedback {
+  thumbs: 'up' | 'down';
+  comment?: string;
+  model: string;
+  ts: number;
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   images?: string[];
   name?: string;
   tool_calls?: any[];
+  /** Local-only thumbs rating on assistant messages (#137). */
+  feedback?: MessageFeedback;
 }
 
 export interface OllamaResponse {
@@ -37,7 +46,8 @@ export async function fetchOllamaChatStream(
   onChunk: (chunk: Partial<OllamaResponse>) => void,
   endpoint: string = 'http://localhost:11434/api/chat',
   isCloudModel: boolean = false,
-  options?: GenerationOptions
+  options?: GenerationOptions,
+  signal?: AbortSignal
 ): Promise<void> {
   const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
   const cleaned = cleanGenerationOptions(options);
@@ -45,6 +55,7 @@ export async function fetchOllamaChatStream(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}) }),
+    signal,
   });
 
   if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
