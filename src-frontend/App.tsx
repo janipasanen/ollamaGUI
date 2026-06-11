@@ -51,8 +51,12 @@ import {
 import {
   SttConfig,
   loadSttConfig, saveSttConfig,
-  startDictation, stopDictation, isRecording, transcribeBlob, checkWhisperAvailable,
+  startDictation, stopDictation, transcribeBlob, checkWhisperAvailable,
 } from './services/stt';
+import {
+  startVoiceCall, defaultSpeak, defaultRecordUtterance,
+  type CallState, type VoiceCallHandle,
+} from './services/voiceCall';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -319,6 +323,13 @@ const App: React.FC = () => {
   const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
+
+  // Voice call mode (#132)
+  const [voiceCallActive, setVoiceCallActive] = useState(false);
+  const [voiceCallState, setVoiceCallState] = useState<CallState>('idle');
+  const [voiceCallTranscript, setVoiceCallTranscript] = useState('');
+  const [voiceCallResponse, setVoiceCallResponse] = useState('');
+  const voiceCallHandleRef = useRef<VoiceCallHandle | null>(null);
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -1449,6 +1460,57 @@ const App: React.FC = () => {
                  >
                    ⚙️
                  </button>
+                 {sttConfig.enabled && (
+                   <button
+                     onClick={() => {
+                       if (voiceCallActive) {
+                         voiceCallHandleRef.current?.stop();
+                         setVoiceCallActive(false);
+                       } else {
+                         setVoiceCallActive(true);
+                         setVoiceCallTranscript('');
+                         setVoiceCallResponse('');
+                         const handle = startVoiceCall(
+                           {
+                             transcribeFn: (blob) => transcribeBlob(blob, sttConfig),
+                             speakFn: defaultSpeak,
+                             recordUtteranceFn: defaultRecordUtterance,
+                             chatFn: async (text, onChunk, signal) => {
+                               const history: import('./services/ollama').Message[] = [
+                                 { role: 'system', content: systemPrompt },
+                                 ...messages,
+                                 { role: 'user', content: text },
+                               ];
+                               let full = '';
+                               await import('./services/ollama').then(({ fetchOllamaChatStream }) =>
+                                 fetchOllamaChatStream(model, history, (chunk) => {
+                                   const delta = chunk.message?.content ?? '';
+                                   full += delta;
+                                   onChunk(delta);
+                                 }, url('/api/chat'), false, {}, signal)
+                               );
+                               setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: full }]);
+                               return full;
+                             },
+                           },
+                           {
+                             onStateChange: setVoiceCallState,
+                             onTranscript: setVoiceCallTranscript,
+                             onResponseChunk: (delta) => setVoiceCallResponse(prev => prev + delta),
+                             onResponseComplete: () => setVoiceCallResponse(''),
+                             onError: (e) => console.error('Voice call error', e),
+                           }
+                         );
+                         voiceCallHandleRef.current = handle;
+                       }
+                     }}
+                     title={voiceCallActive ? 'End voice call' : 'Start voice call'}
+                     aria-label={voiceCallActive ? 'End voice call' : 'Start voice call'}
+                     className={`p-2 rounded-md transition-colors ${voiceCallActive ? 'text-red-500 animate-pulse' : dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+                   >
+                     📞
+                   </button>
+                 )}
                  <button
                    onClick={() => setShowHelp(prev => !prev)}
                    title="Keyboard shortcuts (?)"
@@ -1771,6 +1833,42 @@ const App: React.FC = () => {
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
             Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
           </div>
+
+        {/* Voice Call Overlay (#132) */}
+        {voiceCallActive && (
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center gap-6 p-8 text-white">
+            <div className="text-6xl">{voiceCallState === 'listening' ? '🎙' : voiceCallState === 'transcribing' ? '✍️' : voiceCallState === 'responding' ? '🤔' : voiceCallState === 'speaking' ? '🔊' : '📞'}</div>
+            <div className={`text-lg font-semibold capitalize ${voiceCallState === 'listening' ? 'text-green-400 animate-pulse' : 'text-zinc-200'}`}>
+              {voiceCallState === 'listening' ? 'Listening…' : voiceCallState === 'transcribing' ? 'Transcribing…' : voiceCallState === 'responding' ? 'Thinking…' : voiceCallState === 'speaking' ? 'Speaking…' : voiceCallState}
+            </div>
+            {voiceCallTranscript && (
+              <div className={`max-w-md text-center text-sm rounded-xl px-4 py-2 ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-100 text-zinc-800'}`}>
+                <span className="text-zinc-400 text-xs block mb-1">You said</span>
+                {voiceCallTranscript}
+              </div>
+            )}
+            {voiceCallResponse && (
+              <div className={`max-w-md text-center text-sm rounded-xl px-4 py-2 ${dark ? 'bg-blue-900/50 text-blue-100' : 'bg-blue-50 text-blue-900'}`}>
+                <span className="text-blue-400 text-xs block mb-1">Assistant</span>
+                {voiceCallResponse}
+              </div>
+            )}
+            <div className="flex gap-4">
+              <button
+                onClick={() => { voiceCallHandleRef.current?.mute ? (voiceCallHandleRef.current.muted ? voiceCallHandleRef.current.unmute() : voiceCallHandleRef.current.mute()) : null; }}
+                className="px-5 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-semibold"
+              >
+                {voiceCallHandleRef.current?.muted ? 'Unmute' : 'Mute'}
+              </button>
+              <button
+                onClick={() => { voiceCallHandleRef.current?.stop(); setVoiceCallActive(false); setVoiceCallState('idle'); }}
+                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-sm font-semibold"
+              >
+                End Call
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Settings Overlay */}
         {isSettingsOpen && (
