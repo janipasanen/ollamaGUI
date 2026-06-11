@@ -11,6 +11,8 @@ export interface Message {
   images?: string[];
   name?: string;
   tool_calls?: any[];
+  /** Grounding sources for inline citations (#120); round-trips via storage.saveSession. */
+  sources?: import('./citations').Source[];
   /** Local-only thumbs rating on assistant messages (#137). */
   feedback?: MessageFeedback;
   /** Which model produced this assistant message (#97). */

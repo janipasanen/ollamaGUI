@@ -46,6 +46,7 @@ import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCos
 import { validateMcpServer, isNonEmptySubmission, validateImageAttachments } from './services/requestValidation';
 import { formatErrorLine } from './services/errorMessages';
 import { secureWipeAll } from './services/secureStorage';
+import Sources, { renderWithCitations } from './components/Sources';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -2012,9 +2013,21 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  <MarkdownMessage content={msg.content} dark={dark} />
+                  // Grounded assistant replies render [n] as clickable citations (#120);
+                  // ungrounded replies keep full markdown rendering.
+                  msg.role === 'assistant' && msg.sources && msg.sources.length > 0
+                    ? (
+                      <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
+                        <p className="whitespace-pre-wrap">{renderWithCitations(msg.content, msg.sources, dark)}</p>
+                      </div>
+                    )
+                    : <MarkdownMessage content={msg.content} dark={dark} />
                 )}
- 
+                {/* Inline citation Sources list (#120) */}
+                {msg.role === 'assistant' && msg.sources && (
+                  <Sources sources={msg.sources} dark={dark} />
+                )}
+
                 {/* Issue 23: streaming cursor on last assistant message */}
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content === '' && (
                   <div className={`flex items-center gap-1 mt-1 text-sm ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
