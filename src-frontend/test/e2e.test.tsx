@@ -21,10 +21,12 @@ describe('End-to-End Tests', () => {
 
     // Initialize CLI tool with mock that returns snake_case (matching Tauri response format)
     CliToolWrapper.initializeWithTauri(vi.fn().mockResolvedValue({
+      success: true,
       exit_code: 0,
       timed_out: false,
       stdout: "CLI output",
       stderr: "",
+      error: null,
     }));
   });
 

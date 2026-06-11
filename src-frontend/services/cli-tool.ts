@@ -1,6 +1,7 @@
 import { toolRegistry } from './tools';
 
 export interface CliCommandRequest {
+  /** Full shell command string; split into binary + args before invoking Rust. */
   command: string;
   cwd?: string;
   timeoutMs?: number;
@@ -40,13 +41,28 @@ export class CliToolWrapper {
       const invoke = CliToolWrapper._mockInvoke
         ?? (await import('@tauri-apps/api/core').then(m => m.invoke).catch(() => null));
       if (!invoke) return { success: false, stdout: '', stderr: '', timedOut: false, error: 'Tauri not available' };
-      const result = await invoke('run_cli', { command: req.command, cwd: req.cwd, timeoutMs: req.timeoutMs ?? 30_000 });
+
+      // Route through run_cli_command (allowlist/denylist enforced in Rust).
+      // Split "command args..." into [command, ...args] for CliCommandRequest.
+      const parts = req.command.match(/"([^"]*)"|'([^']*)'|(\S+)/g)
+        ?.map(t => t.replace(/^["']|["']$/g, '')) ?? [req.command];
+      const [bin, ...args] = parts;
+      const result = await invoke('run_cli_command', {
+        request: {
+          command: bin,
+          args,
+          cwd: req.cwd ?? null,
+          timeout_ms: req.timeoutMs ?? 30_000,
+          env: null,
+        },
+      });
       return {
-        success: result.exit_code === 0 && !result.timed_out,
+        success: result.success,
         exitCode: result.exit_code,
         stdout: result.stdout,
         stderr: result.stderr,
         timedOut: result.timed_out,
+        error: result.error,
       };
     } catch {
       return { success: false, stdout: '', stderr: '', timedOut: false, error: 'Tauri not available' };

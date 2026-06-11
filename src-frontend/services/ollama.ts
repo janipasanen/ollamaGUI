@@ -114,6 +114,63 @@ export function isCloudModel(modelName: string): boolean {
   return CLOUD_SUFFIXES.some(suffix => modelName.includes(suffix));
 }
 
+// ── Vision capability detection (#76) ────────────────────────────────────────
+
+/** Known vision-capable model name prefixes/substrings (Ollama families). */
+const VISION_FAMILIES = [
+  'llava', 'llava-phi', 'bakllava', 'moondream', 'minicpm-v',
+  'qwen2-vl', 'qwen2.5-vl', 'mistral-vision', 'gemma3',
+  'llama3.2-vision', 'phi3-vision', 'pixtral', 'internvl',
+];
+
+/** Cache the result of /api/show to avoid repeated network calls. */
+const _visionCache = new Map<string, boolean>();
+
+/**
+ * Returns true if the named model supports image inputs.
+ *
+ * First checks a curated allowlist of known vision families; if the model name
+ * doesn't match, queries Ollama /api/show for the `projector_info` field which
+ * is present on multimodal models.
+ *
+ * Results are cached per model per session.
+ */
+export async function modelSupportsVision(
+  modelName: string,
+  endpoint = 'http://localhost:11434',
+): Promise<boolean> {
+  if (_visionCache.has(modelName)) return _visionCache.get(modelName)!;
+
+  const lower = modelName.toLowerCase();
+  if (VISION_FAMILIES.some(f => lower.includes(f))) {
+    _visionCache.set(modelName, true);
+    return true;
+  }
+
+  try {
+    const res = await fetch(`${endpoint}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelName }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      // projector_info is present on multimodal (vision) models.
+      const hasVision = !!(data.projector_info || data.capabilities?.includes?.('vision'));
+      _visionCache.set(modelName, hasVision);
+      return hasVision;
+    }
+  } catch { /* network error — fall back to false */ }
+
+  _visionCache.set(modelName, false);
+  return false;
+}
+
+/** Clear the vision capability cache (useful in tests). */
+export function clearVisionCache(): void {
+  _visionCache.clear();
+}
+
 export async function fetchCloudModels(): Promise<ModelInfo[]> {
   return [
     { name: 'gemma4:31b-cloud', cloud: true },

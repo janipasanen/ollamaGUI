@@ -21,10 +21,11 @@ const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => 
   if (cmd === 'run_cli_command') {
     return {
       success: true,
-      exitCode: 0,
+      exit_code: 0,
       stdout: "Mock command output",
       stderr: "",
-      timedOut: false,
+      timed_out: false,
+      error: null,
     };
   }
   

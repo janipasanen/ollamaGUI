@@ -546,30 +546,64 @@ async fn run_cli_command(
 
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(30_000));
 
-    // Run on a blocking thread with a timeout (mirrors run_cli). wait_with_output
-    // collects stdout/stderr; recv_timeout enforces the deadline and kills on expiry.
+    // Spawn separate reader threads for stdout/stderr so we can return partial
+    // output captured before a timeout (Bug 2 fix: return actual text, not a
+    // byte-count). A mpsc channel signals when the process exits.
     tauri::async_runtime::spawn_blocking(move || {
-        let child = match cmd.spawn() {
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return Err(e.to_string()),
         };
         let pid = child.id();
-        let (tx, rx) = mpsc::channel::<Result<std::process::Output, std::io::Error>>();
+
+        // Move piped stdio handles into reader threads that accumulate output.
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+
+        let out_buf = Arc::clone(&stdout_buf);
+        let err_buf = Arc::clone(&stderr_buf);
+
+        let child_stdout = child.stdout.take().expect("stdout piped");
+        let child_stderr = child.stderr.take().expect("stderr piped");
+
         std::thread::spawn(move || {
-            let _ = tx.send(child.wait_with_output());
+            use std::io::Read;
+            let mut s = String::new();
+            let mut r = BufReader::new(child_stdout);
+            let _ = r.read_to_string(&mut s);
+            if let Ok(mut g) = out_buf.lock() { *g = s; }
+        });
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = String::new();
+            let mut r = BufReader::new(child_stderr);
+            let _ = r.read_to_string(&mut s);
+            if let Ok(mut g) = err_buf.lock() { *g = s; }
+        });
+
+        let (tx, rx) = mpsc::channel::<Result<std::process::ExitStatus, std::io::Error>>();
+        std::thread::spawn(move || {
+            let _ = tx.send(child.wait());
         });
 
         match rx.recv_timeout(timeout) {
-            Ok(Ok(output)) => Ok(CliCommandResponse {
-                success: output.status.success(),
-                exit_code: output.status.code(),
-                stdout: String::from_utf8_lossy(&output.stdout).chars().take(10_000).collect(),
-                stderr: String::from_utf8_lossy(&output.stderr).chars().take(2_000).collect(),
-                error: None,
-                timed_out: false,
-            }),
+            Ok(Ok(status)) => {
+                // Reader threads may still be draining; give them a brief moment.
+                std::thread::sleep(Duration::from_millis(50));
+                let stdout = stdout_buf.lock().map(|g| g.chars().take(10_000).collect::<String>()).unwrap_or_default();
+                let stderr = stderr_buf.lock().map(|g| g.chars().take(2_000).collect::<String>()).unwrap_or_default();
+                Ok(CliCommandResponse {
+                    success: status.success(),
+                    exit_code: status.code(),
+                    stdout,
+                    stderr,
+                    error: None,
+                    timed_out: false,
+                })
+            },
             Ok(Err(e)) => Err(e.to_string()),
             Err(_) => {
+                // Kill the process; reader threads will exit as pipes close.
                 #[cfg(unix)]
                 let _ = std::process::Command::new("kill")
                     .args(["-9", &pid.to_string()])
@@ -579,12 +613,18 @@ async fn run_cli_command(
                     .args(["/F", "/PID", &pid.to_string()])
                     .status();
 
+                // Drain whatever partial output was captured before the kill.
+                std::thread::sleep(Duration::from_millis(100));
+                let stdout = stdout_buf.lock().map(|g| g.chars().take(10_000).collect::<String>()).unwrap_or_default();
+                let stderr = stderr_buf.lock().map(|g| g.chars().take(2_000).collect::<String>()).unwrap_or_default();
+                let timeout_note = format!("(timed out after {}ms)", timeout.as_millis());
+
                 Ok(CliCommandResponse {
                     success: false,
                     exit_code: None,
-                    stdout: String::new(),
-                    stderr: format!("Command timed out after {}ms", timeout.as_millis()),
-                    error: Some("Command timed out".to_string()),
+                    stdout,
+                    stderr: if stderr.is_empty() { timeout_note.clone() } else { format!("{}\n{}", timeout_note, stderr) },
+                    error: Some(format!("Command timed out after {}ms", timeout.as_millis())),
                     timed_out: true,
                 })
             }
