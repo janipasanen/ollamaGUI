@@ -4,6 +4,8 @@
  * dynamic client registration, PKCE (S256), loopback redirect, token lifecycle.
  */
 
+import { secretStore } from './secretStore';
+
 export interface AuthServerMetadata {
   issuer: string;
   authorization_endpoint: string;
@@ -87,16 +89,16 @@ export interface ClientCredentials {
   client_secret?: string;
 }
 
-const CLIENT_STORAGE_KEY = 'mcp_clients';
-
-function loadClients(): Record<string, ClientCredentials> {
-  return JSON.parse(localStorage.getItem(CLIENT_STORAGE_KEY) ?? '{}');
+// Client credentials may include a client_secret, so they live in the secret store.
+async function loadClients(): Promise<Record<string, ClientCredentials>> {
+  const raw = await secretStore.get('clients');
+  return raw ? JSON.parse(raw) : {};
 }
 
-function saveClient(serverId: string, creds: ClientCredentials): void {
-  const all = loadClients();
+async function saveClient(serverId: string, creds: ClientCredentials): Promise<void> {
+  const all = await loadClients();
   all[serverId] = creds;
-  localStorage.setItem(CLIENT_STORAGE_KEY, JSON.stringify(all));
+  await secretStore.set('clients', JSON.stringify(all));
 }
 
 /** Register a dynamic client or return the cached credentials. */
@@ -105,7 +107,7 @@ export async function getOrRegisterClient(
   metadata: AuthServerMetadata,
   appName = 'Ollama GUI'
 ): Promise<ClientCredentials> {
-  const cached = loadClients()[serverId];
+  const cached = (await loadClients())[serverId];
   if (cached) return cached;
 
   if (!metadata.registration_endpoint) {
@@ -190,22 +192,18 @@ async function refreshAccessToken(
 
 // ─── Token store ─────────────────────────────────────────────────────────────
 
-const TOKEN_STORAGE_KEY = 'mcp_tokens';
-
+// OAuth tokens (incl. refresh tokens) are secrets — stored via the OS keychain /
+// encrypted fallback, never localStorage. One secret entry per server.
 export const tokenStore = {
-  save(serverId: string, tokens: OAuthTokens): void {
-    const all = JSON.parse(localStorage.getItem(TOKEN_STORAGE_KEY) ?? '{}');
-    all[serverId] = tokens;
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(all));
+  async save(serverId: string, tokens: OAuthTokens): Promise<void> {
+    await secretStore.set(`tokens:${serverId}`, JSON.stringify(tokens));
   },
-  load(serverId: string): OAuthTokens | null {
-    const all = JSON.parse(localStorage.getItem(TOKEN_STORAGE_KEY) ?? '{}');
-    return (all[serverId] as OAuthTokens) ?? null;
+  async load(serverId: string): Promise<OAuthTokens | null> {
+    const raw = await secretStore.get(`tokens:${serverId}`);
+    return raw ? (JSON.parse(raw) as OAuthTokens) : null;
   },
-  clear(serverId: string): void {
-    const all = JSON.parse(localStorage.getItem(TOKEN_STORAGE_KEY) ?? '{}');
-    delete all[serverId];
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(all));
+  async clear(serverId: string): Promise<void> {
+    await secretStore.delete(`tokens:${serverId}`);
   },
   isExpired(tokens: OAuthTokens): boolean {
     if (!tokens.expires_at) return false;
@@ -235,13 +233,13 @@ export const authMetaStore = {
  */
 export async function getValidAccessToken(serverId: string): Promise<string | null> {
   const meta = authMetaStore.load(serverId);
-  const client = loadClients()[serverId];
+  const client = (await loadClients())[serverId];
   if (meta?.tokenEndpoint && client?.client_id) {
     const fresh = await getValidTokens(serverId, meta.tokenEndpoint, client.client_id);
     return fresh?.access_token ?? null;
   }
   // No refresh metadata — return the stored token as-is if present.
-  return tokenStore.load(serverId)?.access_token ?? null;
+  return (await tokenStore.load(serverId))?.access_token ?? null;
 }
 
 // ─── Full OAuth flow ──────────────────────────────────────────────────────────
@@ -295,7 +293,7 @@ export async function performOAuthFlow(serverId: string, serverUrl: string): Pro
     verifier,
   });
 
-  tokenStore.save(serverId, tokens);
+  await tokenStore.save(serverId, tokens);
   return tokens;
 }
 
@@ -308,22 +306,22 @@ export async function getValidTokens(
   tokenEndpoint: string,
   clientId: string
 ): Promise<OAuthTokens | null> {
-  const tokens = tokenStore.load(serverId);
+  const tokens = await tokenStore.load(serverId);
   if (!tokens) return null;
 
   if (!tokenStore.isExpired(tokens)) return tokens;
 
   if (!tokens.refresh_token) {
-    tokenStore.clear(serverId);
+    await tokenStore.clear(serverId);
     return null;
   }
 
   try {
     const fresh = await refreshAccessToken(tokenEndpoint, tokens.refresh_token, clientId);
-    tokenStore.save(serverId, fresh);
+    await tokenStore.save(serverId, fresh);
     return fresh;
   } catch {
-    tokenStore.clear(serverId);
+    await tokenStore.clear(serverId);
     return null;
   }
 }

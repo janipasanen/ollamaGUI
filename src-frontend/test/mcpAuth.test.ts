@@ -109,24 +109,30 @@ describe('discoverAuthServer', () => {
 describe('tokenStore', () => {
   const TEST_ID = 'test_server_1';
 
-  beforeEach(() => {
-    tokenStore.clear(TEST_ID);
+  beforeEach(async () => {
+    await tokenStore.clear(TEST_ID);
   });
 
-  it('saves and loads tokens', () => {
+  it('saves and loads tokens', async () => {
     const tokens = { access_token: 'abc', token_type: 'Bearer' };
-    tokenStore.save(TEST_ID, tokens);
-    expect(tokenStore.load(TEST_ID)).toMatchObject(tokens);
+    await tokenStore.save(TEST_ID, tokens);
+    expect(await tokenStore.load(TEST_ID)).toMatchObject(tokens);
   });
 
-  it('returns null for unknown server', () => {
-    expect(tokenStore.load('nonexistent_server')).toBeNull();
+  it('returns null for unknown server', async () => {
+    expect(await tokenStore.load('nonexistent_server')).toBeNull();
   });
 
-  it('clears tokens', () => {
-    tokenStore.save(TEST_ID, { access_token: 'xyz', token_type: 'Bearer' });
-    tokenStore.clear(TEST_ID);
-    expect(tokenStore.load(TEST_ID)).toBeNull();
+  it('does not store tokens in localStorage (secret store only)', async () => {
+    await tokenStore.save(TEST_ID, { access_token: 'supersecret', token_type: 'Bearer' });
+    const dump = JSON.stringify(localStorage);
+    expect(dump).not.toContain('supersecret');
+  });
+
+  it('clears tokens', async () => {
+    await tokenStore.save(TEST_ID, { access_token: 'xyz', token_type: 'Bearer' });
+    await tokenStore.clear(TEST_ID);
+    expect(await tokenStore.load(TEST_ID)).toBeNull();
   });
 
   it('isExpired returns false for tokens without expires_at', () => {

@@ -218,6 +218,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use serde::Deserialize;
 use reqwest::Client;
+use tauri::Manager;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct McpStdioCommand {
@@ -798,6 +799,124 @@ async fn mlx_server_status() -> Result<MlxServerStatus, String> {
     }
 }
 
+// ─── Secret storage: OS keychain with an encrypted-file fallback ─────────────
+//
+// Primary: the cross-platform `keyring` crate — macOS Keychain, Windows
+// Credential Manager, Linux Secret Service. Fallback (no OS secret store, e.g.
+// headless Linux): an AES-256-GCM encrypted file in the app data dir, with the
+// 32-byte key in a sibling 0600 file. Plaintext secrets never touch disk.
+
+use aes_gcm::{Aes256Gcm, Nonce, Key};
+use aes_gcm::aead::{Aead, KeyInit, OsRng, AeadCore};
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 { return None; }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+}
+
+fn secret_fallback_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn restrict_perms(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+fn secret_fallback_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
+    let path = secret_fallback_dir(app)?.join("secrets.key");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        if let Some(k) = hex_decode(s.trim()) {
+            if k.len() == 32 { return Ok(k); }
+        }
+    }
+    let key = Aes256Gcm::generate_key(&mut OsRng);
+    std::fs::write(&path, hex_encode(key.as_slice())).map_err(|e| e.to_string())?;
+    restrict_perms(&path);
+    Ok(key.to_vec())
+}
+
+fn secret_fallback_load(app: &tauri::AppHandle) -> HashMap<String, String> {
+    match secret_fallback_dir(app) {
+        Ok(dir) => std::fs::read_to_string(dir.join("secrets.enc"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn secret_fallback_save(app: &tauri::AppHandle, map: &HashMap<String, String>) -> Result<(), String> {
+    let path = secret_fallback_dir(app)?.join("secrets.enc");
+    std::fs::write(&path, serde_json::to_string(map).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    restrict_perms(&path);
+    Ok(())
+}
+
+fn secret_entry_key(service: &str, key: &str) -> String {
+    format!("{service}\u{0}{key}")
+}
+
+fn secret_fallback_set(app: &tauri::AppHandle, service: &str, key: &str, value: &str) -> Result<(), String> {
+    let kbytes = secret_fallback_key(app)?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ct = cipher.encrypt(&nonce, value.as_bytes()).map_err(|e| e.to_string())?;
+    let mut map = secret_fallback_load(app);
+    map.insert(secret_entry_key(service, key), format!("{}:{}", hex_encode(&nonce), hex_encode(&ct)));
+    secret_fallback_save(app, &map)
+}
+
+fn secret_fallback_get(app: &tauri::AppHandle, service: &str, key: &str) -> Option<String> {
+    let entry = secret_fallback_load(app).get(&secret_entry_key(service, key))?.clone();
+    let (n, c) = entry.split_once(':')?;
+    let kbytes = secret_fallback_key(app).ok()?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
+    let pt = cipher.decrypt(Nonce::from_slice(&hex_decode(n)?), hex_decode(c)?.as_ref()).ok()?;
+    String::from_utf8(pt).ok()
+}
+
+fn secret_fallback_delete(app: &tauri::AppHandle, service: &str, key: &str) -> Result<(), String> {
+    let mut map = secret_fallback_load(app);
+    map.remove(&secret_entry_key(service, key));
+    secret_fallback_save(app, &map)
+}
+
+#[tauri::command]
+async fn secret_set(app: tauri::AppHandle, service: String, key: String, value: String) -> Result<(), String> {
+    match keyring::Entry::new(&service, &key).and_then(|e| e.set_password(&value)) {
+        Ok(_) => Ok(()),
+        Err(_) => secret_fallback_set(&app, &service, &key, &value), // no OS keychain → encrypted file
+    }
+}
+
+#[tauri::command]
+async fn secret_get(app: tauri::AppHandle, service: String, key: String) -> Result<Option<String>, String> {
+    match keyring::Entry::new(&service, &key).and_then(|e| e.get_password()) {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(secret_fallback_get(&app, &service, &key)),
+        Err(_) => Ok(secret_fallback_get(&app, &service, &key)),
+    }
+}
+
+#[tauri::command]
+async fn secret_delete(app: tauri::AppHandle, service: String, key: String) -> Result<(), String> {
+    let _ = keyring::Entry::new(&service, &key).and_then(|e| e.delete_credential());
+    let _ = secret_fallback_delete(&app, &service, &key);
+    Ok(())
+}
+
 /// Check whether an executable is available on PATH (e.g. docker, uvx, npx).
 /// Used by connector UX to detect prerequisites without a shell plugin.
 #[tauri::command]
@@ -822,6 +941,9 @@ pub fn run() {
             greet,
             run_cli,
             probe_binary,
+            secret_set,
+            secret_get,
+            secret_delete,
             start_oauth_redirect_listener,
             mcp_stdio_spawn,
             mcp_stdio_send,

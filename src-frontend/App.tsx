@@ -1539,7 +1539,7 @@ const App: React.FC = () => {
                       )}
 
                       <button
-                        onClick={() => {
+                        onClick={async () => {
                           if (!newMcpServer.name.trim()) return;
                               // Validate inputs
                               if (!newMcpServer.name.trim()) {
@@ -1587,7 +1587,7 @@ const App: React.FC = () => {
                                 authRequired: newMcpServer.type === 'http' ? newMcpServer.authRequired : false,
                                 authenticated: false,
                               };
-                          mcpConfigStore.save(server);
+                          await mcpConfigStore.save(server);
                           setMcpServers(mcpConfigStore.list());
                           setNewMcpServer({ name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [], note: '' });
                           setShowAddMcpServer(false);
@@ -1631,10 +1631,12 @@ const App: React.FC = () => {
                                      prev.map(s => s.id === server.id ? { ...s, status: 'connecting' } : s)
                                    );
 
+                                   // Rehydrate secret env values from the keychain just-in-time.
+                                   const env = await mcpConfigStore.loadSecrets(server.id);
                                    // Ensure server is registered in the manager before connecting
                                    mcpServerManager.addServer({
                                      id: server.id, name: server.name, type: server.type,
-                                     command: server.command, url: server.url, env: server.env,
+                                     command: server.command, url: server.url, env,
                                      enabled: true, toolsEnabled: true,
                                    });
 
@@ -1710,7 +1712,7 @@ const App: React.FC = () => {
                                </button>
                              )}
                              <button
-                               onClick={() => {
+                               onClick={async () => {
                                  // Unregister tools and disconnect
                                  const existing = mcpServers.find(s => s.id === server.id);
                                  if (existing) {
@@ -1719,7 +1721,7 @@ const App: React.FC = () => {
                                    }
                                  }
                                  mcpServerManager.disconnectFromServer(server.id);
-                                 mcpConfigStore.delete(server.id);
+                                 await mcpConfigStore.delete(server.id);
                                  setMcpServers(mcpConfigStore.list());
                                }}
                                className="text-red-400 hover:text-red-300 text-xs px-1"
