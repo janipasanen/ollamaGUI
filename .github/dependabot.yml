@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # JavaScript / frontend dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    groups:
+      # Batch low-risk minor/patch bumps into a single PR to reduce noise.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Rust / Tauri backend dependencies
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+
+  # GitHub Actions workflow dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"

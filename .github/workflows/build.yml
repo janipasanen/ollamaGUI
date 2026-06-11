@@ -40,3 +40,30 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Dependency vulnerability scanning (#37). Runs independently of the build so a
+  # newly-disclosed advisory surfaces even when the build matrix is green.
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: npm dependency audit
+        # Fail only on high/critical advisories; moderate findings are reported but non-blocking.
+        run: npm audit --audit-level=high
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo dependency audit
+        working-directory: src-tauri
+        run: cargo audit
