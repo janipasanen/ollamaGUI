@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions } from './services/ollama';
-import { ChatSession, storage } from './services/storage';
+import { ChatSession, Folder, storage, searchSessions, orderSessions } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
@@ -198,6 +198,10 @@ const App: React.FC = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  // Organization (#133)
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [folderFilter, setFolderFilter] = useState<string | null>(null);
 
   // Settings / UI state
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
@@ -258,10 +262,12 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Derived: filtered sessions for search (Issue 18)
-  const filteredSessions = sessions.filter(s =>
-    searchQuery.trim() === '' ||
-    s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.messages.some(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()))
+  // Search across title/tags/folder/content, then apply archive + folder filters,
+  // ordered pinned-first (#133).
+  const filteredSessions = orderSessions(
+    searchSessions(sessions, searchQuery, folders)
+      .filter(s => (showArchived ? !!s.archived : !s.archived))
+      .filter(s => folderFilter === null || s.folderId === folderFilter)
   );
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
@@ -296,6 +302,7 @@ const App: React.FC = () => {
       applyTheme(ts);
 
       setSessions(storage.getSessions());
+      setFolders(storage.getFolders());
 
       // Load persisted MCP servers
       setMcpServers(mcpConfigStore.list());
@@ -556,6 +563,46 @@ const App: React.FC = () => {
     setAttachedImages([]);
     setMessageQueue([]);
     setIsTemporary(false);
+  };
+
+  // ─── Organization actions (#133) ─────────────────────────────────────────
+  const togglePin = (id: string) => {
+    const s = sessions.find(x => x.id === id);
+    storage.updateSession(id, { pinned: !s?.pinned });
+    setSessions(storage.getSessions());
+  };
+  const toggleArchive = (id: string) => {
+    const s = sessions.find(x => x.id === id);
+    storage.updateSession(id, { archived: !s?.archived });
+    setSessions(storage.getSessions());
+  };
+  const addTagToSession = (id: string) => {
+    const tag = window.prompt('Add a tag')?.trim();
+    if (!tag) return;
+    const s = sessions.find(x => x.id === id);
+    storage.updateSession(id, { tags: Array.from(new Set([...(s?.tags ?? []), tag])) });
+    setSessions(storage.getSessions());
+  };
+  const removeTagFromSession = (id: string, tag: string) => {
+    const s = sessions.find(x => x.id === id);
+    storage.updateSession(id, { tags: (s?.tags ?? []).filter(t => t !== tag) });
+    setSessions(storage.getSessions());
+  };
+  const moveToFolder = (id: string, folderId: string) => {
+    storage.updateSession(id, { folderId: folderId || undefined });
+    setSessions(storage.getSessions());
+  };
+  const createFolder = () => {
+    const name = window.prompt('Folder name')?.trim();
+    if (!name) return;
+    storage.saveFolder({ id: `f_${Date.now()}`, name, order: folders.length });
+    setFolders(storage.getFolders());
+  };
+  const removeFolder = (id: string) => {
+    storage.deleteFolder(id);
+    setFolders(storage.getFolders());
+    setSessions(storage.getSessions());
+    if (folderFilter === id) setFolderFilter(null);
   };
 
   const deleteSession = (id: string) => {
@@ -948,14 +995,38 @@ const App: React.FC = () => {
           }`}
         />
 
+        {/* Folder chips + archived toggle (#133) */}
+        <div className="flex items-center flex-wrap gap-1 mb-2">
+          <button
+            onClick={() => { setFolderFilter(null); setShowArchived(false); }}
+            className={`text-[10px] px-2 py-0.5 rounded-full border ${folderFilter === null && !showArchived ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
+          >All</button>
+          {folders.map(f => (
+            <button
+              key={f.id}
+              onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
+              title={`Folder: ${f.name} (long-press the ✕ to delete)`}
+              className={`group/folder text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${folderFilter === f.id ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
+            >
+              🗂 {f.name}
+              <span onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }} className="opacity-0 group-hover/folder:opacity-100 hover:text-red-300">✕</span>
+            </button>
+          ))}
+          <button onClick={createFolder} className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'}`}>+ folder</button>
+          <button
+            onClick={() => { setShowArchived(v => !v); setFolderFilter(null); }}
+            className={`text-[10px] px-2 py-0.5 rounded-full border ${showArchived ? 'bg-amber-600 text-white border-amber-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
+          >🗄 Archived</button>
+        </div>
+
         {/* Session list */}
         <div className="flex-1 overflow-y-auto space-y-1">
           <p className={`text-xs uppercase font-semibold mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-            {searchQuery ? `Results (${filteredSessions.length})` : 'History'}
+            {searchQuery ? `Results (${filteredSessions.length})` : showArchived ? 'Archived' : folderFilter ? folders.find(f => f.id === folderFilter)?.name : 'History'}
           </p>
           {filteredSessions.length === 0 && (
             <div className={`text-sm italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-              {searchQuery ? 'No matches.' : 'No past conversations.'}
+              {searchQuery ? 'No matches.' : showArchived ? 'No archived chats.' : 'No past conversations.'}
             </div>
           )}
           {filteredSessions.map((s) => (
@@ -966,19 +1037,41 @@ const App: React.FC = () => {
                      tabIndex={0}
                      onKeyDown={(e) => e.key === 'Enter' && loadSession(s)}
                      aria-label={`Load session: ${s.title}`}
-                     className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${
+                     className={`group p-2 rounded-md cursor-pointer transition-colors ${
                        currentSessionId === s.id
                          ? (dark ? 'bg-zinc-700 text-white' : 'bg-zinc-300 text-zinc-900')
                          : (dark ? 'hover:bg-zinc-700/50 text-zinc-300' : 'hover:bg-zinc-200 text-zinc-600')
                      }`}
                    >
-              <span className="truncate text-sm flex-1">{s.title}</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition-opacity text-xs"
-              >
-                ✕
-              </button>
+              <div className="flex items-center justify-between">
+                <span className="truncate text-sm flex-1">{s.pinned ? '📌 ' : ''}{s.title}</span>
+                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} className="p-1 text-xs hover:text-blue-400">📌</button>
+                  <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" className="p-1 text-xs hover:text-blue-400">🏷</button>
+                  <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} className="p-1 text-xs hover:text-amber-400">🗄</button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }} title="Delete" className="p-1 text-xs hover:text-red-400">✕</button>
+                </div>
+              </div>
+              {/* tags + folder controls */}
+              {((s.tags && s.tags.length > 0) || folders.length > 0) && (
+                <div className="flex items-center flex-wrap gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
+                  {(s.tags ?? []).map(tag => (
+                    <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}>
+                      {tag}<button onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
+                    </span>
+                  ))}
+                  {folders.length > 0 && (
+                    <select
+                      value={s.folderId ?? ''}
+                      onChange={(e) => moveToFolder(s.id, e.target.value)}
+                      className={`text-[9px] rounded border bg-transparent ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'} opacity-0 group-hover:opacity-100`}
+                    >
+                      <option value="">No folder</option>
+                      {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>

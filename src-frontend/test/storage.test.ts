@@ -17,7 +17,9 @@ describe('Storage Service', () => {
     
     storage.saveSession(session);
     const sessions = storage.getSessions();
-    expect(sessions).toContainEqual(session);
+    // getSessions migrates in default org fields (#133), so match the core shape.
+    expect(sessions[0]).toMatchObject(session);
+    expect(sessions[0]).toMatchObject({ tags: [], pinned: false, archived: false });
   });
 
   it('should delete a session', () => {
