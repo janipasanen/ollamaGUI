@@ -46,6 +46,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -71,6 +74,50 @@ const Toggle: React.FC<{ checked: boolean; onChange: () => void; disabled?: bool
     <span className={`absolute w-5 h-5 rounded-full transition-transform ${checked ? 'translate-x-6 bg-blue-500' : 'translate-x-1 bg-white'}`} />
   </button>
 );
+
+// Renders a ```mermaid block as an SVG diagram (lazy-loads mermaid), with a
+// source toggle and a graceful fallback to the raw code on parse errors.
+let _mermaidId = 0;
+const Mermaid: React.FC<{ code: string; dark: boolean }> = ({ code, dark }) => {
+  const [svg, setSvg] = React.useState<string>('');
+  const [error, setError] = React.useState(false);
+  const [showSource, setShowSource] = React.useState(false);
+  const idRef = React.useRef(`mmd-${_mermaidId++}`);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = (await import('mermaid')).default;
+        mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', securityLevel: 'strict' });
+        const { svg } = await mermaid.render(idRef.current, code);
+        if (!cancelled) { setSvg(svg); setError(false); }
+      } catch {
+        if (!cancelled) setError(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code, dark]);
+
+  if (error) {
+    // Invalid diagram → show the raw code rather than crashing.
+    return <pre className={`my-2 p-3 rounded-md text-xs overflow-x-auto ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-100 text-zinc-700'}`}>{code}</pre>;
+  }
+
+  return (
+    <div className="relative group my-2">
+      <button
+        onClick={() => setShowSource(s => !s)}
+        className={`absolute top-1 right-1 z-10 text-[10px] px-2 py-0.5 rounded transition-opacity opacity-0 group-hover:opacity-100 ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
+      >
+        {showSource ? 'Diagram' : 'Source'}
+      </button>
+      {showSource
+        ? <pre className={`p-3 rounded-md text-xs overflow-x-auto ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-100 text-zinc-700'}`}>{code}</pre>
+        : <div className="mermaid-diagram overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} />}
+    </div>
+  );
+};
 
 // Issue 22: standalone component so useState works per code block instance
 const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
@@ -109,6 +156,34 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
     </div>
   );
 });
+
+// Renders an assistant/user message as markdown with GFM, LaTeX math (KaTeX),
+// syntax-highlighted code, and Mermaid diagrams. Exported for isolated testing.
+export const MarkdownMessage: React.FC<{ content: string; dark: boolean }> = ({ content, dark }) => (
+  <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{
+        code({ node, inline, className, children, ...props }: any) {
+          const lang = (className || '').replace('language-', '') || 'text';
+          const code = String(children).replace(/\n$/, '');
+          if (!inline) {
+            if (lang === 'mermaid') return <Mermaid code={code} dark={dark} />;
+            return <CodeBlock lang={lang} code={code} dark={dark} props={props} />;
+          }
+          return (
+            <code className={`px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
+              {children}
+            </code>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  </div>
+);
 
 const App: React.FC = () => {
   // Core chat state
@@ -979,30 +1054,7 @@ const App: React.FC = () => {
                   </div>
                 )}
  
-                <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code({ node, inline, className, children, ...props }: any) {
-                        const lang = (className || '').replace('language-', '') || 'text';
-                        const code = String(children).replace(/\n$/, '');
-                        if (!inline) {
-                          // Issue 22: language label + copy button
-                          return (
-                            <CodeBlock lang={lang} code={code} dark={dark} props={props} />
-                          );
-                        }
-                        return (
-                          <code className={`px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
-                            {children}
-                          </code>
-                        );
-                      },
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownMessage content={msg.content} dark={dark} />
  
                 {/* Issue 23: streaming cursor on last assistant message */}
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content === '' && (
