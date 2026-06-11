@@ -78,14 +78,13 @@ class ToolRegistry {
 
 export const toolRegistry = new ToolRegistry();
 
-// Allowlist of commands the user has approved to run without re-asking.
-// Persisted in localStorage under 'cli_allowlist'.
-export const cliAllowlist = new Set<string>(
-  JSON.parse(localStorage.getItem('cli_allowlist') ?? '[]') as string[]
-);
+// Allowlist of commands approved for the current session only.
+// Intentionally NOT persisted to localStorage — auto-approvals reset on restart
+// to prevent a compromised renderer from exploiting stale approvals.
+export const cliAllowlist = new Set<string>();
 
 export function persistCliAllowlist(): void {
-  localStorage.setItem('cli_allowlist', JSON.stringify([...cliAllowlist]));
+  // no-op: session-only by design
 }
 
 interface CliResult {

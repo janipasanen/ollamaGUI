@@ -1,53 +1,19 @@
 // Tauri bindings for MCP stdio transport
-// Mock for testing environment
-const invoke = async (cmd: string, args: any) => {
-  console.log(`[MOCK] Tauri invoke: ${cmd}`, args);
-  
-  if (cmd === 'mcp_stdio_spawn') {
-    return {
-      success: true,
-      message: `Process spawned with session ID: ${args.sessionId}`,
-      session_id: args.sessionId,
-    };
+async function invoke(cmd: string, args: any): Promise<any> {
+  try {
+    const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+    return await tauriInvoke(cmd, args);
+  } catch {
+    // Outside Tauri (tests / browser dev) — return stubs
+    console.warn(`[MCP stdio] Tauri not available, stubbing ${cmd}`);
+    if (cmd === 'mcp_stdio_spawn') return { success: true, session_id: args?.sessionId };
+    if (cmd === 'mcp_stdio_send') return { success: true };
+    if (cmd === 'mcp_stdio_read') return `{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`;
+    if (cmd === 'mcp_stdio_close') return { success: true };
+    if (cmd === 'mcp_stdio_check') return true;
+    return { success: false, error: 'Tauri not available' };
   }
-  
-  if (cmd === 'mcp_stdio_send') {
-    return {
-      success: true,
-      message: "Request sent",
-      session_id: args.sessionId,
-    };
-  }
-  
-  if (cmd === 'mcp_stdio_read') {
-    // Simulate reading a response
-    return `{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`;
-  }
-  
-  if (cmd === 'mcp_stdio_close') {
-    return {
-      success: true,
-      message: "Process terminated",
-      session_id: args.sessionId,
-    };
-  }
-  
-  if (cmd === 'mcp_stdio_check') {
-    return true;
-  }
-  
-  if (cmd === 'run_cli_command') {
-    return {
-      success: true,
-      exitCode: 0,
-      stdout: "Mock command output",
-      stderr: "",
-      timedOut: false,
-    };
-  }
-  
-  return { success: false, error: 'Unknown command' };
-};
+}
 
 export interface McpTauriStdioClient {
   sessionId: string;

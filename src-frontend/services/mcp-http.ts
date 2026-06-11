@@ -1,44 +1,39 @@
 // MCP HTTP Transport
-// Mock for testing environment
-let invoke: any = async (cmd: string, args: any) => {
-  console.log(`[MOCK] Tauri invoke: ${cmd}`, args);
-  
-  if (cmd === 'mcp_http_request') {
-    // Simulate a successful HTTP response
-    return {
-      success: true,
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: args.request.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
-    };
-  }
-  
-  return { success: false, error: 'Unknown command' };
-};
-
-// Allow tests to override the mock
-if (import.meta.env?.MODE === 'test') {
-  invoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {
+async function invoke(cmd: string, args: any): Promise<any> {
+  try {
+    const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+    return await tauriInvoke(cmd, args);
+  } catch {
+    // Outside Tauri (tests / browser dev) — return a no-op stub
+    console.warn(`[MCP HTTP] Tauri not available, stubbing ${cmd}`);
     if (cmd === 'mcp_http_request') {
       return {
         success: true,
         status: 200,
         headers: { 'content-type': 'application/json' },
-        body: args.request.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
+        body: args?.request?.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
       };
     }
-    return { success: false, error: 'Unknown command' };
-  });
+    return { success: false, error: 'Tauri not available' };
+  }
 }
 
 import { McpServerConfig, McpTool, McpRequest, McpResponse, McpNotification } from './mcp';
 
 export class McpHttpTransport {
+  /** Test seam: set to override the real Tauri invoke. */
+  static _mockInvoke: ((cmd: string, args: any) => Promise<any>) | null = null;
+
   private static sessions: Map<string, {
     url: string;
     authToken?: string;
     eventListeners: Map<string, ((data: any) => void)[]>;
   }> = new Map();
+
+  /** Test helper: clears all sessions. */
+  static clearSessions(): void {
+    this.sessions.clear();
+  }
 
   static async initializeSession(config: McpServerConfig): Promise<void> {
     if (config.type !== 'http' || !config.url) {
@@ -66,7 +61,8 @@ export class McpHttpTransport {
     }
 
     try {
-      const response = await invoke('mcp_http_request', {
+      const callInvoke = McpHttpTransport._mockInvoke ?? invoke;
+      const response = await callInvoke('mcp_http_request', {
         request: {
           sessionId,
           url: session.url,

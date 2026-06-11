@@ -1,6 +1,18 @@
 // Test setup file
+import '@testing-library/jest-dom';
 import { vi } from 'vitest';
 import { CliToolWrapper } from '../services/cli-tool';
+
+// jsdom doesn't implement scrollIntoView
+window.HTMLElement.prototype.scrollIntoView = vi.fn();
+
+// Mock fetch for all tests — individual tests can override via vi.spyOn / mockResolvedValue
+global.fetch = vi.fn().mockResolvedValue({
+  ok: true,
+  json: async () => ({ models: [] }),
+  body: null,
+  text: async () => '',
+});
 
 // Mock Tauri invoke for CLI tool
 const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {

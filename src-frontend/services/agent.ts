@@ -27,8 +27,9 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
   } = options;
   
   let iteration = 0;
+  let hitMaxIterations = false;
   let currentMessages = [...messages];
-  
+
   while (iteration < maxIterations) {
     iteration++;
     
@@ -142,29 +143,30 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
         }
         
         // Continue to next iteration to let the model respond to tool results
+        if (iteration >= maxIterations) {
+          hitMaxIterations = true;
+        }
         continue;
       }
-      
+
       // No more tool calls, we're done
       break;
-        } catch (error) {
-          console.error(`[MCP HTTP] Request failed: ${error}`);
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          if (onError) {
-            onError(error instanceof Error ? error : new Error('Unknown error'));
-          }
-          yield { role: 'assistant', content: `Error: ${errorMsg}. Please check the server URL and connection.` };
-          throw new Error(`MCP HTTP request failed: ${errorMsg}`);
-        }
-      }
     } catch (error) {
-      console.error(`[MCP HTTP] Request failed: ${error}`);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`MCP request failed: ${errorMsg}. Please verify the server configuration.`);
+      if (onError) {
+        onError(error instanceof Error ? error : new Error('Unknown error'));
+      }
+      yield { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` };
+      break;
     }
   }
+
+  if (hitMaxIterations) {
+    yield {
+      role: 'assistant',
+      content: `⚠️ Agent stopped: maximum tool iterations (${maxIterations}) reached without a final answer.`,
+    } as Message;
   }
-  
+
   if (onComplete) {
     onComplete();
   }

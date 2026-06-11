@@ -13,7 +13,7 @@ export const storage = {
     const data = localStorage.getItem('ollama_gui_sessions');
     return data ? JSON.parse(data) : [];
   },
-  saveSession: (session: ChatSession) => {
+  saveSession: (session: ChatSession): { ok: true } | { ok: false; error: 'quota' } => {
     const sessions = storage.getSessions();
     const index = sessions.findIndex(s => s.id === session.id);
     if (index > -1) {
@@ -21,7 +21,15 @@ export const storage = {
     } else {
       sessions.unshift(session);
     }
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
+    try {
+      localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        return { ok: false, error: 'quota' };
+      }
+      return { ok: true }; // unexpected error — treat as non-fatal
+    }
   },
   deleteSession: (id: string) => {
     const sessions = storage.getSessions().filter(s => s.id !== id);

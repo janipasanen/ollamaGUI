@@ -12,7 +12,7 @@ describe('App Component', () => {
 
   it('toggles sidebar when menu button is clicked', () => {
     render(<App />);
-    const menuButton = screen.getByRole('button', { name: /☰/i });
+    const menuButton = screen.getByRole('button', { name: /Toggle sidebar/i });
 
     // Sidebar heading is visible initially
     expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
@@ -127,7 +127,7 @@ describe('App Component', () => {
 
       expect(screen.queryByRole('heading', { name: /Keyboard Shortcuts/i })).not.toBeInTheDocument();
 
-      const helpButton = screen.getByRole('button', { name: /❓/ });
+      const helpButton = screen.getByRole('button', { name: /Show keyboard shortcuts/i });
       fireEvent.click(helpButton);
 
       expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();

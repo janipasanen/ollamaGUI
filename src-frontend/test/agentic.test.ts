@@ -338,13 +338,22 @@ describe('Agentic Features', () => {
       const mockFetch = vi.fn();
       global.fetch = mockFetch;
 
+      let readCount = 0;
       const mockResponse = {
         ok: true,
         body: {
           getReader: () => ({
-            read: vi.fn().mockResolvedValue({
-              done: false,
-              value: Buffer.from('{"message":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]}}\n'),
+            read: vi.fn().mockImplementation(() => {
+              readCount++;
+              if (readCount % 2 === 1) {
+                // odd calls: return a tool call chunk
+                return Promise.resolve({
+                  done: false,
+                  value: Buffer.from('{"message":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]}}\n'),
+                });
+              }
+              // even calls: end the stream so the loop can process and iterate
+              return Promise.resolve({ done: true, value: undefined });
             }),
           }),
         },

@@ -75,12 +75,12 @@ export class McpStdioClient {
       );
 
       console.log(`[MCP] Connected via Tauri: ${this.config.command}`);
-      
-      // Send initialization request
-      await this.initialize();
-      
-      // Start polling for responses
+
+      // Start polling for responses BEFORE initialize so the response can arrive
       this.startResponsePolling();
+
+      // Send initialization request (polling loop will deliver the response)
+      await this.initialize();
     } catch (error) {
       console.error(`[MCP] Failed to connect via Tauri: ${error}`);
       throw new Error(`Failed to connect to MCP server: ${error}`);
@@ -228,7 +228,7 @@ export class McpStdioClient {
     }
     
     return new Promise((resolve, reject) => {
-      const requestId = request.id || this.getNextRequestId();
+      const requestId = request.id != null ? request.id : this.getNextRequestId();
       this.pendingRequests.set(requestId, { resolve, reject });
       
       // Set the ID on the request

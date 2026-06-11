@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
@@ -6,6 +6,36 @@ import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('UI Error:', error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-zinc-900 text-zinc-100 p-8">
+          <div className="max-w-md text-center space-y-4">
+            <div className="text-4xl">⚠️</div>
+            <h1 className="text-xl font-bold">Something went wrong</h1>
+            <p className="text-zinc-400 text-sm font-mono">{(this.state.error as Error).message}</p>
+            <div className="flex gap-3 justify-center">
+              <button onClick={() => window.location.reload()} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold">
+                Reload
+              </button>
+              <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="bg-zinc-700 hover:bg-zinc-600 text-white px-4 py-2 rounded-lg text-sm">
+                Clear cache &amp; reload
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -55,6 +85,7 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
       </SyntaxHighlighter>
     </div>
   );
+});
 
 const App: React.FC = () => {
   // Core chat state
@@ -92,10 +123,17 @@ const App: React.FC = () => {
   });
   const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
 
+  // Streaming cancel support
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Storage quota warning
+  const [storageWarning, setStorageWarning] = useState(false);
+
   // Model management state
   const [modelPullInput, setModelPullInput] = useState('');
   const [isPulling, setIsPulling] = useState(false);
   const [pullProgress, setPullProgress] = useState('');
+  const [pullError, setPullError] = useState(false);
 
   // M5: Image attachments (Issue 20)
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
@@ -195,6 +233,7 @@ const App: React.FC = () => {
     setMessages([]);
     setCurrentSessionId(null);
     setAttachedImages([]);
+    setInput('');
   }, []);
 
   useEffect(() => {
@@ -244,6 +283,7 @@ const App: React.FC = () => {
   const handlePullModel = async () => {
     if (!modelPullInput.trim()) return;
     setIsPulling(true);
+    setPullError(false);
     setPullProgress('Starting pull...');
     try {
       await pullOllamaModel(modelPullInput, (p) => {
@@ -256,6 +296,7 @@ const App: React.FC = () => {
       if (!updated.find(m => m.name === model)) setModel(updated[0]?.name || 'llama3');
     } catch (e) {
       setPullProgress(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      setPullError(true);
     } finally {
       setIsPulling(false);
     }
@@ -288,22 +329,39 @@ const App: React.FC = () => {
     if (currentSessionId === id) startNewChat();
   };
 
+  const generateTitle = (msgs: Message[]): string => {
+    const first = msgs.find(m => m.role === 'user')?.content ?? '';
+    if (!first.trim()) return 'New Chat';
+    // Use first sentence up to 60 chars, fall back to word boundary truncation
+    const sentence = first.split(/[.!?\n]/)[0].trim();
+    if (sentence.length > 0 && sentence.length <= 60) return sentence;
+    const words = first.split(' ');
+    let title = '';
+    for (const w of words) {
+      if ((title + ' ' + w).trim().length > 55) break;
+      title = (title + ' ' + w).trim();
+    }
+    return title || first.slice(0, 55);
+  };
+
   const saveCurrentSession = (currentMessages: Message[]) => {
     if (currentSessionId === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
-        title: currentMessages[0]?.content.slice(0, 40) || 'New Chat',
+        title: generateTitle(currentMessages),
         messages: currentMessages,
         createdAt: Date.now(),
         model,
       };
-      storage.saveSession(newSession);
+      const result = storage.saveSession(newSession);
+      if (result.ok === false && result.error === 'quota') setStorageWarning(true);
       setCurrentSessionId(newSession.id);
       setSessions(storage.getSessions());
     } else {
       const session = storage.getSessions().find(s => s.id === currentSessionId);
       if (session) {
-        storage.saveSession({ ...session, messages: currentMessages });
+        const result = storage.saveSession({ ...session, messages: currentMessages });
+        if (result.ok === false && result.error === 'quota') setStorageWarning(true);
         setSessions(storage.getSessions());
       }
     }
@@ -348,7 +406,17 @@ const App: React.FC = () => {
   const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-    Array.from(files).forEach(file => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    const maxSize = 5 * 1024 * 1024; // 5 MB
+    const errors: string[] = [];
+    const valid = Array.from(files).filter(file => {
+      if (attachedImages.length >= 5) { errors.push('Max 5 images per message.'); return false; }
+      if (!allowed.includes(file.type)) { errors.push(`${file.name}: unsupported format (use JPEG, PNG, WebP, or GIF).`); return false; }
+      if (file.size > maxSize) { errors.push(`${file.name}: exceeds 5 MB limit.`); return false; }
+      return true;
+    });
+    if (errors.length > 0) alert(errors.join('\n'));
+    valid.forEach(file => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const dataUrl = ev.target?.result as string;
@@ -357,6 +425,10 @@ const App: React.FC = () => {
       reader.readAsDataURL(file);
     });
     e.target.value = '';
+  };
+
+  const cancelStream = () => {
+    abortControllerRef.current?.abort();
   };
 
   // Send message
@@ -383,6 +455,7 @@ const App: React.FC = () => {
     setInput('');
     setAttachedImages([]);
     setIsLoading(true);
+    abortControllerRef.current = new AbortController();
 
     try {
       const isCloudModel = models.some(m => m.name === model && m.cloud);
@@ -447,20 +520,41 @@ const App: React.FC = () => {
       } else {
         // Use regular chat stream
         let assistantContent = '';
+        let streamOk = false;
         setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
-        await fetchOllamaChatStream(model, chatHistory, (chunk) => {
-          if (chunk.message?.content) {
-            assistantContent += chunk.message.content;
+        try {
+          await fetchOllamaChatStream(model, chatHistory, (chunk) => {
+            if (chunk.message?.content) {
+              assistantContent += chunk.message.content;
+              setMessages(prev => {
+                const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              });
+            }
+          }, endpoint);
+          streamOk = true;
+        } catch (streamError) {
+          if (abortControllerRef.current?.signal.aborted) {
+            // User cancelled — keep partial content, append note
             setMessages(prev => {
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
-              saveCurrentSession(updated);
-              return updated;
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant') {
+                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*' }] as Message[];
+              }
+              return prev;
+            });
+          } else {
+            // Network/server failure — roll back partial message
+            setMessages(prev => {
+              const withoutPartial = prev.slice(0, -1);
+              return [...withoutPartial, { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : 'Stream failed'}` }] as Message[];
             });
           }
-        }, endpoint);
-        
+        }
         setIsLoading(false);
+        if (streamOk) void streamOk; // used for future tracking
       }
     } catch (error) {
       setMessages(prev => [
@@ -468,6 +562,8 @@ const App: React.FC = () => {
         { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` },
       ]);
       setIsLoading(false);
+    } finally {
+      abortControllerRef.current = null;
     }
   };
 
@@ -756,6 +852,14 @@ const App: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Storage quota warning */}
+        {storageWarning && (
+          <div className="mx-4 mb-2 flex items-center justify-between rounded-lg bg-amber-900/60 border border-amber-700 px-3 py-2 text-xs text-amber-200">
+            <span>⚠️ Chat history is nearly full. Export and delete old conversations to free space.</span>
+            <button onClick={() => setStorageWarning(false)} className="ml-3 text-amber-400 hover:text-amber-200">✕</button>
+          </div>
+        )}
+
         {/* Input Area - Responsive: full width on mobile, constrained on desktop */}
         <div className={`p-4 md:p-6 pb-6 pt-2 shrink-0 ${
           dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'
@@ -812,14 +916,24 @@ const App: React.FC = () => {
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
              />
-             <button
-               onClick={sendMessage}
-               disabled={isLoading}
-               aria-label="Send message"
-               className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
-             >
-               Send
-             </button>
+             {isLoading ? (
+               <button
+                 onClick={cancelStream}
+                 aria-label="Cancel generation"
+                 className="bg-red-600 hover:bg-red-500 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
+               >
+                 Cancel
+               </button>
+             ) : (
+               <button
+                 onClick={sendMessage}
+                 disabled={isLoading}
+                 aria-label="Send message"
+                 className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
+               >
+                 Send
+               </button>
+             )}
           </div>
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
             Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
@@ -853,12 +967,23 @@ const App: React.FC = () => {
                     Change this to connect to a remote Ollama instance.
                   </p>
                   <button
-                    onClick={async () => {
-                      try { await refreshModels(); alert('Connected successfully.'); }
-                       catch (e) {
-                         const errorMessage = e instanceof Error ? e.message : 'Unknown error';
-                         alert(`Could not connect to endpoint: ${errorMessage}\n\nPlease check:\n- Ollama is running\n- Endpoint URL is correct\n- Network connection is active`);
-                       }
+                    onClick={async (e) => {
+                      const btn = e.currentTarget;
+                      btn.textContent = 'Testing...';
+                      btn.disabled = true;
+                      const timeout = new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error('Connection timed out after 5 s — is Ollama running?')), 5000)
+                      );
+                      try {
+                        const models = await Promise.race([refreshModels(), timeout]);
+                        btn.textContent = `✓ Connected (${models.length} model${models.length !== 1 ? 's' : ''})`;
+                        setTimeout(() => { btn.textContent = 'Test connection'; btn.disabled = false; }, 3000);
+                      } catch (e) {
+                        const msg = e instanceof Error ? e.message : 'Unknown error';
+                        btn.textContent = `✕ ${msg}`;
+                        btn.classList.add('text-red-400');
+                        setTimeout(() => { btn.textContent = 'Test connection'; btn.classList.remove('text-red-400'); btn.disabled = false; }, 5000);
+                      }
                     }}
                     className={`mt-2 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                       dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'
@@ -1048,16 +1173,37 @@ const App: React.FC = () => {
                                    setMcpServers(prev =>
                                      prev.map(s => s.id === server.id ? { ...s, status: 'connecting' } : s)
                                    );
-                                   
+
+                                   // Ensure server is registered in the manager before connecting
+                                   mcpServerManager.addServer({
+                                     id: server.id, name: server.name, type: server.type,
+                                     command: server.command, url: server.url,
+                                     enabled: true, toolsEnabled: true,
+                                   });
+
                                    const client = await mcpServerManager.connectToServer(server.id);
                                    const tools = await client.listTools();
-                                   
+
+                                   // Register MCP tools into toolRegistry so agentic mode can call them
+                                   for (const tool of tools) {
+                                     toolRegistry.registerTool({
+                                       name: `mcp_${server.id}_${tool.name}`,
+                                       description: `[MCP:${server.name}] ${tool.description}`,
+                                       parameters: tool.parameters ?? { type: 'object', properties: {} },
+                                       execute: async (params) => {
+                                         const c = mcpServerManager.getActiveConnection(server.id);
+                                         if (!c) throw new Error(`MCP server ${server.name} not connected`);
+                                         return c.callTool(tool.name, params);
+                                       },
+                                     });
+                                   }
+
                                    setMcpServers(prev =>
                                      prev.map(s => s.id === server.id ? {
                                        ...s,
                                        status: 'connected',
                                        tools: tools.map(t => ({ ...t, enabled: true })),
-                                       errorMessage: null
+                                       errorMessage: undefined,
                                      } : s)
                                    );
                                   } catch (e) {
@@ -1108,6 +1254,14 @@ const App: React.FC = () => {
                              )}
                              <button
                                onClick={() => {
+                                 // Unregister tools and disconnect
+                                 const existing = mcpServers.find(s => s.id === server.id);
+                                 if (existing) {
+                                   for (const t of existing.tools) {
+                                     toolRegistry.unregisterTool(`mcp_${server.id}_${t.name}`);
+                                   }
+                                 }
+                                 mcpServerManager.disconnectFromServer(server.id);
                                  mcpConfigStore.delete(server.id);
                                  setMcpServers(mcpConfigStore.list());
                                }}
@@ -1156,9 +1310,19 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   {pullProgress && (
-                    <p className={`text-xs mb-2 ${pullProgress.startsWith('Error') ? 'text-red-400' : (dark ? 'text-zinc-400' : 'text-zinc-500')}`}>
-                      {pullProgress}
-                    </p>
+                    <div className="flex items-center gap-2 mb-2">
+                      <p className={`text-xs flex-1 ${pullError ? 'text-red-400' : (dark ? 'text-zinc-400' : 'text-zinc-500')}`}>
+                        {pullProgress}
+                      </p>
+                      {pullError && (
+                        <button
+                          onClick={() => { setPullProgress(''); setPullError(false); handlePullModel(); }}
+                          className="text-xs px-2 py-0.5 rounded border border-zinc-600 text-zinc-400 hover:bg-zinc-700 shrink-0"
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </div>
                   )}
                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
                      <div className={`px-3 py-2 font-semibold text-xs ${dark ? 'text-zinc-300' : 'text-zinc-600'}`}>Local Models</div>
@@ -1301,7 +1465,14 @@ const App: React.FC = () => {
            </div>
          )}
     </div>
+    </div>
   );
 }
 
-export default App;
+const AppWithErrorBoundary: React.FC = () => (
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+export default AppWithErrorBoundary;
