@@ -31,6 +31,8 @@ export interface GenerationOptions {
   temperature?: number;
   top_p?: number;
   top_k?: number;
+  /** Max tokens to generate (Ollama's num_predict; -1 = unlimited). */
+  num_predict?: number;
   stop?: string[];
 }
 

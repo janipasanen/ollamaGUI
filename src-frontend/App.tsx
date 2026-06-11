@@ -42,6 +42,8 @@ import {
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
+import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCost } from './services/tokenEstimate';
+import { validateMcpServer, isNonEmptySubmission } from './services/requestValidation';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -272,6 +274,11 @@ const App: React.FC = () => {
   // Session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  // Inline session rename (#52)
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  // Transient toast notification (#58 and general feedback)
+  const [notification, setNotification] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   // Organization (#133)
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -824,6 +831,12 @@ const App: React.FC = () => {
     }
   };
 
+  // Show a transient toast that auto-dismisses (#58 and general feedback).
+  const notify = (msg: string) => {
+    setNotification(msg);
+    setTimeout(() => setNotification(prev => (prev === msg ? null : prev)), 4000);
+  };
+
   const handleDeleteModel = async (modelName: string) => {
     const selectedModel = models.find(m => m.name === modelName);
     if (selectedModel?.cloud) { alert('Cloud models cannot be deleted.'); return; }
@@ -831,7 +844,12 @@ const App: React.FC = () => {
     try {
       await deleteOllamaModel(modelName, url('/api/delete'));
       const updated = await refreshModels();
-      if (model === modelName) setModel(updated[0]?.name || 'llama3');
+      // If the deleted model was the active one, auto-switch and tell the user (#58).
+      if (model === modelName) {
+        const next = updated[0]?.name || 'llama3';
+        setModel(next);
+        notify(`Model removed — switched to ${next}.`);
+      }
     } catch (e) {
       alert(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
@@ -855,6 +873,25 @@ const App: React.FC = () => {
     const s = sessions.find(x => x.id === id);
     storage.updateSession(id, { pinned: !s?.pinned });
     setSessions(storage.getSessions());
+  };
+  // Inline rename (#52)
+  const startRename = (id: string, currentTitle: string) => {
+    setRenamingSessionId(id);
+    setRenameDraft(currentTitle);
+  };
+  const commitRename = () => {
+    if (!renamingSessionId) return;
+    const title = renameDraft.trim();
+    if (title) {
+      storage.updateSession(renamingSessionId, { title });
+      setSessions(storage.getSessions());
+    }
+    setRenamingSessionId(null);
+    setRenameDraft('');
+  };
+  const cancelRename = () => {
+    setRenamingSessionId(null);
+    setRenameDraft('');
   };
   const toggleArchive = (id: string) => {
     const s = sessions.find(x => x.id === id);
@@ -1608,8 +1645,26 @@ const App: React.FC = () => {
                      }`}
                    >
               <div className="flex items-center justify-between">
-                <span className="truncate text-sm flex-1">{s.pinned ? '📌 ' : ''}{s.title}</span>
+                {renamingSessionId === s.id ? (
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') commitRename();
+                      else if (e.key === 'Escape') cancelRename();
+                    }}
+                    onBlur={commitRename}
+                    aria-label="Rename conversation"
+                    className={`flex-1 text-sm px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                  />
+                ) : (
+                  <span className="truncate text-sm flex-1">{s.pinned ? '📌 ' : ''}{s.title}</span>
+                )}
                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <button onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }} title="Rename" aria-label={`Rename session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">✏️</button>
                   <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} className="p-1 text-xs hover:text-blue-400">📌</button>
                   <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" className="p-1 text-xs hover:text-blue-400">🏷</button>
                   <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} className="p-1 text-xs hover:text-amber-400">🗄</button>
@@ -2352,16 +2407,26 @@ const App: React.FC = () => {
              ) : (
                <button
                  onClick={() => sendMessage()}
-                 disabled={isLoading}
+                 disabled={isLoading || !isNonEmptySubmission(input, attachedImages.length)}
                  aria-label="Send message"
-                 className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
+                 title={!isNonEmptySubmission(input, attachedImages.length) ? 'Type a message or attach an image first' : 'Send message'}
+                 className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:opacity-60 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl transition-colors font-semibold"
                >
                  Send
                </button>
              )}
           </div>
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-            Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
+            {(() => {
+              const convoTokens = estimateConversationTokens(messages) + (input ? estimateTokens(input) : 0);
+              const cost = formatCost(convoTokens);
+              return (
+                <span title="Approximate token usage for this conversation (and current draft)">
+                  ≈ {formatTokenCount(convoTokens)} tokens{cost ? ` · ${cost}` : ''}
+                </span>
+              );
+            })()}
+            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
           </div>
 
         {/* Voice Call Overlay (#132) */}
@@ -2546,8 +2611,48 @@ const App: React.FC = () => {
                        />
                      </div>
                    </div>
+                   <details className="mt-2">
+                     <summary className={`text-[11px] cursor-pointer ${dark ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 hover:text-zinc-700'}`}>
+                       Advanced sampling (top_p, top_k, max tokens)
+                     </summary>
+                     <div className="grid grid-cols-3 gap-2 mt-2">
+                       <div>
+                         <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>top_p</div>
+                         <input
+                           type="number" min={0} max={1} step={0.05}
+                           value={genOptions.top_p ?? ''}
+                           onChange={(e) => updateGenOptions({ top_p: e.target.value === '' ? undefined : Number(e.target.value) })}
+                           placeholder="default"
+                           aria-label="top_p nucleus sampling"
+                           className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
+                         />
+                       </div>
+                       <div>
+                         <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>top_k</div>
+                         <input
+                           type="number" min={0} step={1}
+                           value={genOptions.top_k ?? ''}
+                           onChange={(e) => updateGenOptions({ top_k: e.target.value === '' ? undefined : Number(e.target.value) })}
+                           placeholder="default"
+                           aria-label="top_k sampling"
+                           className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
+                         />
+                       </div>
+                       <div>
+                         <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>max tokens</div>
+                         <input
+                           type="number" min={-1} step={64}
+                           value={genOptions.num_predict ?? ''}
+                           onChange={(e) => updateGenOptions({ num_predict: e.target.value === '' ? undefined : Number(e.target.value) })}
+                           placeholder="default"
+                           aria-label="max tokens to generate (num_predict)"
+                           className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
+                         />
+                       </div>
+                     </div>
+                   </details>
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave temperature blank to use the model default.
+                     A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave a field blank to use the model default.
                    </p>
                  </div>
 
@@ -3025,33 +3130,19 @@ const App: React.FC = () => {
 
                       <button
                         onClick={async () => {
-                          if (!newMcpServer.name.trim()) return;
-                              // Validate inputs
-                              if (!newMcpServer.name.trim()) {
-                                alert('Please enter a server name');
+                              // Centralized validation: name, http(s)-scheme URLs, and
+                              // injection-free stdio commands (#36/#31).
+                              const check = validateMcpServer({
+                                name: newMcpServer.name,
+                                type: newMcpServer.type,
+                                command: newMcpServer.command,
+                                url: newMcpServer.url,
+                              });
+                              if (!check.valid) {
+                                alert(check.error);
                                 return;
                               }
-                              
-                              if (newMcpServer.type === 'stdio' && !newMcpServer.command?.trim()) {
-                                alert('Please enter a command for stdio server');
-                                return;
-                              }
-                              
-                              if (newMcpServer.type === 'http' && !newMcpServer.url?.trim()) {
-                                alert('Please enter a URL for HTTP server');
-                                return;
-                              }
-                              
-                              // Validate URL format for HTTP servers
-                              if (newMcpServer.type === 'http') {
-                                try {
-                                  new URL(newMcpServer.url.trim());
-                                } catch {
-                                  alert('Please enter a valid URL (e.g., https://example.com)');
-                                  return;
-                                }
-                              }
-                              
+
                               // Collect non-empty env pairs into a record (stdio only).
                               const envEntries = newMcpServer.env
                                 .filter(p => p.key.trim() && p.value.trim())
@@ -4096,6 +4187,18 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+        {/* Transient toast notification (#58) */}
+        {notification && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm border ${
+              dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
+            }`}
+          >
+            {notification}
           </div>
         )}
         {/* CLI Command Approval Modal */}

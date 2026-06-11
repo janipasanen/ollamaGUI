@@ -3,6 +3,7 @@
 
 import { TauriMcpStdioTransport } from './mcp-tauri';
 import { McpHttpTransport } from './mcp-http';
+import { checkRateLimit } from './rateLimiter';
 
 // MCP protocol handshake constants (spec 2025-06-18).
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -442,6 +443,12 @@ export class McpHttpClient {
   private async sendRequest(request: McpRequest): Promise<any> {
     if (!this.config.url) {
       throw new Error('MCP HTTP URL not configured');
+    }
+
+    // Guard against runaway request storms to a single MCP endpoint (#35).
+    const limit = checkRateLimit(`mcp-http:${this.config.id}`, 'mcp-http');
+    if (!limit.allowed) {
+      throw new Error(`MCP request rate limit reached — retry in ${Math.ceil(limit.retryAfterMs / 1000)}s.`);
     }
 
     try {

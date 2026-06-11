@@ -5,6 +5,7 @@
  */
 
 import { secretStore } from './secretStore';
+import { checkRateLimit, recordFailure, recordSuccess } from './rateLimiter';
 
 export interface AuthServerMetadata {
   issuer: string;
@@ -151,13 +152,22 @@ async function exchangeCode(opts: {
     code_verifier: opts.verifier,
   });
 
+  const limit = checkRateLimit(`oauth:${opts.tokenEndpoint}`, 'oauth');
+  if (!limit.allowed) {
+    throw new Error(`Too many token requests — retry in ${Math.ceil(limit.retryAfterMs / 1000)}s.`);
+  }
+
   const res = await fetch(opts.tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
 
-  if (!res.ok) throw new Error(`Token exchange failed: ${res.statusText}`);
+  if (!res.ok) {
+    recordFailure(`oauth:${opts.tokenEndpoint}`);
+    throw new Error(`Token exchange failed: ${res.statusText}`);
+  }
+  recordSuccess(`oauth:${opts.tokenEndpoint}`);
   const tokens = (await res.json()) as OAuthTokens;
   if (tokens.expires_in) {
     tokens.expires_at = Date.now() + tokens.expires_in * 1000;
@@ -176,13 +186,22 @@ async function refreshAccessToken(
     client_id: clientId,
   });
 
+  const limit = checkRateLimit(`oauth:${tokenEndpoint}`, 'oauth');
+  if (!limit.allowed) {
+    throw new Error(`Too many token requests — retry in ${Math.ceil(limit.retryAfterMs / 1000)}s.`);
+  }
+
   const res = await fetch(tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
 
-  if (!res.ok) throw new Error(`Token refresh failed: ${res.statusText}`);
+  if (!res.ok) {
+    recordFailure(`oauth:${tokenEndpoint}`);
+    throw new Error(`Token refresh failed: ${res.statusText}`);
+  }
+  recordSuccess(`oauth:${tokenEndpoint}`);
   const tokens = (await res.json()) as OAuthTokens;
   if (tokens.expires_in) {
     tokens.expires_at = Date.now() + tokens.expires_in * 1000;
