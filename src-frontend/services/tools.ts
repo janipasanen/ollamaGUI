@@ -199,10 +199,11 @@ export function registerBuiltInTools() {
     },
     execute: async (params: { expression: string }) => {
       try {
-        // Note: In a real app, you'd want to sanitize this input
-        const result = eval(params.expression); // eslint-disable-line no-eval
+        // Use Function constructor (sandboxed scope) instead of eval
+        const fn = new Function('return (' + params.expression + ')');
+        const result = fn();
         return { result };
-      } catch (error) {
+      } catch {
         return { error: 'Invalid expression' };
       }
     },

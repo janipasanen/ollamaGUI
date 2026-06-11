@@ -11,6 +11,16 @@ import {
   loadOpenApiServers, saveOpenApiServers,
   registerOpenApiServer, unregisterOpenApiServer,
 } from './services/openapiTools';
+import {
+  CustomTool, FunctionDef,
+  loadCustomTools, saveCustomTools, initCustomTools,
+  addCustomTool, updateCustomTool, removeCustomTool,
+  loadFunctionDefs, saveFunctionDefs,
+  addFunctionDef, updateFunctionDef, removeFunctionDef,
+  applyFilterInlet, applyFilterOutlet,
+  getEnabledActions, runAction,
+  STARTER_EXAMPLES,
+} from './services/customTools';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -249,6 +259,13 @@ const App: React.FC = () => {
   const [newOpenApi, setNewOpenApi] = useState({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
   const [openApiTestStatus, setOpenApiTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
 
+  // Custom Tools & Functions (#127)
+  const [customTools, setCustomTools] = useState<CustomTool[]>(() => loadCustomTools());
+  const [functionDefs, setFunctionDefs] = useState<FunctionDef[]>(() => loadFunctionDefs());
+  const [showAddCustomTool, setShowAddCustomTool] = useState(false);
+  const [showAddFunction, setShowAddFunction] = useState(false);
+  const [newCustomTool, setNewCustomTool] = useState({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
+  const [newFunction, setNewFunction] = useState<{ kind: 'filter' | 'action'; name: string; code: string; priority: string }>({ kind: 'filter', name: '', code: '', priority: '100' });
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -345,8 +362,9 @@ const App: React.FC = () => {
         setMlxAvailability(null);
       }
 
-      // Initialize built-in tools
+      // Initialize built-in tools and user-defined tools/functions (#127)
       registerBuiltInTools();
+      initCustomTools();
       registerCliTool(async (command: string, cwd?: string) => {
         return new Promise<boolean>((resolve) => {
           setPendingApproval({ command, cwd, resolve });
@@ -778,11 +796,13 @@ const App: React.FC = () => {
     const toApiMsg = (m: Message): Message =>
       m.images ? { ...m, images: m.images.map(toApiBase64) } : m;
 
-    const chatHistory: Message[] = [
+    // Apply filter inlets before dispatch (#127)
+    const rawHistory: Message[] = [
       { role: 'system', content: systemPrompt },
       ...messages.map(toApiMsg),
       toApiMsg(userMessage),
     ];
+    const chatHistory = await applyFilterInlet(rawHistory);
 
     setMessages([...messages, userMessage]);
     if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
@@ -931,6 +951,15 @@ const App: React.FC = () => {
             }
           }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
           streamOk = true;
+          // Apply filter outlets after stream completes (#127)
+          const filtered = await applyFilterOutlet(assistantContent);
+          if (filtered !== assistantContent) {
+            setMessages(prev => {
+              const updated = [...prev.slice(0, -1), { role: 'assistant', content: filtered }] as Message[];
+              saveCurrentSession(updated);
+              return updated;
+            });
+          }
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
             // User cancelled — keep partial content, append note
@@ -1325,7 +1354,7 @@ const App: React.FC = () => {
                 })()}
                 {/* Thumbs feedback on completed assistant replies (#137) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
-                  <div className="flex items-center gap-1 mt-1">
+                  <div className="flex items-center gap-1 mt-1 flex-wrap">
                     <button
                       onClick={() => setMessageFeedback(i, 'up')}
                       aria-label="Thumbs up"
@@ -1336,6 +1365,18 @@ const App: React.FC = () => {
                       aria-label="Thumbs down"
                       className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
                     >👎</button>
+                    {/* Action function buttons (#127) */}
+                    {getEnabledActions().map(action => (
+                      <button
+                        key={action.id}
+                        aria-label={`Action: ${action.name}`}
+                        onClick={async () => {
+                          const result = await runAction(action.id, msg);
+                          if (result) sendMessage(result);
+                        }}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                      >{action.name}</button>
+                    ))}
                   </div>
                 )}
                </div>
@@ -2297,6 +2338,141 @@ const App: React.FC = () => {
                   </div>
                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                     Point at any OpenAPI 3.x spec URL — operations become callable tools for the agent.
+                  </p>
+                </div>
+
+                {/* Custom Tools & Functions (#127) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Tools & Functions</label>
+
+                  {/* Custom Tools */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Custom Tools ({customTools.length})</span>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            const ex = STARTER_EXAMPLES.find(e => e.tool);
+                            if (ex?.tool) {
+                              const t = addCustomTool(ex.tool);
+                              setCustomTools(loadCustomTools());
+                              void t;
+                            }
+                          }}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >Example</button>
+                        <button
+                          onClick={() => setShowAddCustomTool(v => !v)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >{showAddCustomTool ? 'Cancel' : '+ Add'}</button>
+                      </div>
+                    </div>
+                    {showAddCustomTool && (
+                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                        <input placeholder="Tool name (alphanumeric, _)" value={newCustomTool.name} onChange={e => setNewCustomTool(v => ({ ...v, name: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <input placeholder="Description" value={newCustomTool.description} onChange={e => setNewCustomTool(v => ({ ...v, description: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <textarea placeholder='Parameters JSON: {"key":{"type":"string","description":"desc"}}' rows={2} value={newCustomTool.paramsJson} onChange={e => setNewCustomTool(v => ({ ...v, paramsJson: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <textarea placeholder="JS body — use params.x to access parameters. Must return/resolve a value." rows={3} value={newCustomTool.code} onChange={e => setNewCustomTool(v => ({ ...v, code: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <button onClick={() => {
+                          if (!newCustomTool.name.trim()) return;
+                          let props: Record<string, { type: string; description: string }> = {};
+                          try { props = JSON.parse(newCustomTool.paramsJson); } catch {}
+                          addCustomTool({ name: newCustomTool.name.trim(), description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
+                          setCustomTools(loadCustomTools());
+                          setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
+                          setShowAddCustomTool(false);
+                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add Tool</button>
+                      </div>
+                    )}
+                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                      {customTools.length === 0
+                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No custom tools.</p>
+                        : customTools.map(t => (
+                          <div key={t.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className="text-xs font-medium flex-1 truncate font-mono">{t.name}</span>
+                            <span className={`text-[10px] truncate flex-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t.description}</span>
+                            <button onClick={() => { updateCustomTool(t.id, { enabled: !t.enabled }); setCustomTools(loadCustomTools()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${t.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
+                              {t.enabled ? 'On' : 'Off'}
+                            </button>
+                            <button onClick={() => { removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+
+                  {/* Filters + Actions */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Filters & Actions ({functionDefs.length})</span>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            const ex = STARTER_EXAMPLES.find(e => e.fn);
+                            if (ex?.fn) { addFunctionDef(ex.fn); setFunctionDefs(loadFunctionDefs()); }
+                          }}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >Example</button>
+                        <button onClick={() => setShowAddFunction(v => !v)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >{showAddFunction ? 'Cancel' : '+ Add'}</button>
+                      </div>
+                    </div>
+                    {showAddFunction && (
+                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                        <div className="flex gap-1.5">
+                          <select value={newFunction.kind} onChange={e => setNewFunction(v => ({ ...v, kind: e.target.value as 'filter' | 'action' }))}
+                            className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
+                            <option value="filter">Filter</option>
+                            <option value="action">Action</option>
+                          </select>
+                          <input placeholder="Name" value={newFunction.name} onChange={e => setNewFunction(v => ({ ...v, name: e.target.value }))}
+                            className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                          {newFunction.kind === 'filter' && (
+                            <input placeholder="Priority" value={newFunction.priority} onChange={e => setNewFunction(v => ({ ...v, priority: e.target.value }))}
+                              className={`w-16 border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                          )}
+                        </div>
+                        <textarea placeholder={newFunction.kind === 'filter' ? 'function inlet(messages){return messages;} // and/or function outlet(text){return text;}' : 'function action(message){return "Prompt: "+message.content;}'}
+                          rows={4} value={newFunction.code} onChange={e => setNewFunction(v => ({ ...v, code: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <button onClick={() => {
+                          if (!newFunction.name.trim()) return;
+                          addFunctionDef({ kind: newFunction.kind, name: newFunction.name.trim(), code: newFunction.code, priority: parseInt(newFunction.priority) || 100, enabled: true });
+                          setFunctionDefs(loadFunctionDefs());
+                          setNewFunction({ kind: 'filter', name: '', code: '', priority: '100' });
+                          setShowAddFunction(false);
+                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add</button>
+                      </div>
+                    )}
+                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                      {functionDefs.length === 0
+                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No filters or actions.</p>
+                        : functionDefs.map(f => (
+                          <div key={f.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${f.kind === 'filter' ? (dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700')}`}>{f.kind}</span>
+                            <span className="text-xs font-medium flex-1 truncate">{f.name}</span>
+                            <button onClick={() => { updateFunctionDef(f.id, { enabled: !f.enabled }); setFunctionDefs(loadFunctionDefs()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${f.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
+                              {f.enabled ? 'On' : 'Off'}
+                            </button>
+                            <button onClick={() => { removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Tools run in a sandboxed Web Worker. Filters mutate messages; Actions add buttons to replies.
                   </p>
                 </div>
 
