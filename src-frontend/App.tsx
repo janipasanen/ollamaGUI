@@ -48,6 +48,11 @@ import {
   loadImageGenConfig, saveImageGenConfig,
   generateImage, registerImageGenTool,
 } from './services/imagegen';
+import {
+  SttConfig,
+  loadSttConfig, saveSttConfig,
+  startDictation, stopDictation, isRecording, transcribeBlob, checkWhisperAvailable,
+} from './services/stt';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -309,6 +314,11 @@ const App: React.FC = () => {
 
   // Image generation (#130)
   const [imageGenConfig, setImageGenConfig] = useState<ImageGenConfig>(() => loadImageGenConfig());
+
+  // Speech-to-text (#131)
+  const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
 
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
@@ -1708,6 +1718,36 @@ const App: React.FC = () => {
              )}
              {extraModels.length > 0 && hasSameHostConflict([model, ...extraModels], ollamaBaseUrl, connectedModels, connections) && (
                <span className={`text-[9px] shrink-0 ${dark ? 'text-amber-400' : 'text-amber-600'}`} title="These models share a local host and will run sequentially">⚠️ seq</span>
+             )}
+             {sttConfig.enabled && (
+               <button
+                 type="button"
+                 aria-label={isRecordingAudio ? 'Stop recording' : 'Start dictation'}
+                 onClick={async () => {
+                   if (isRecordingAudio) {
+                     stopDictation();
+                     setIsRecordingAudio(false);
+                   } else {
+                     setIsRecordingAudio(true);
+                     try {
+                       const blob = await startDictation(sttConfig);
+                       const text = await transcribeBlob(blob, sttConfig);
+                       if (text) setInput(prev => prev ? `${prev} ${text}` : text);
+                     } catch (e) {
+                       console.error('STT error', e);
+                     } finally {
+                       setIsRecordingAudio(false);
+                     }
+                   }
+                 }}
+                 className={`px-3 py-3 rounded-xl transition-colors text-sm font-semibold ${
+                   isRecordingAudio
+                     ? 'bg-red-600 hover:bg-red-500 text-white animate-pulse'
+                     : dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-700'
+                 }`}
+               >
+                 {isRecordingAudio ? '⏹' : '🎙'}
+               </button>
              )}
              {isLoading ? (
                <button
@@ -3114,6 +3154,66 @@ const App: React.FC = () => {
                       </div>
                       <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                         Use <span className="font-mono">/image &lt;prompt&gt;</span> in the chat to generate an image. The <span className="font-mono">generate_image</span> tool is also available to models.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Speech-to-Text / Dictation (#131) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Speech-to-Text (Whisper)</label>
+                    <Toggle
+                      checked={sttConfig.enabled}
+                      onChange={() => { const cfg = { ...sttConfig, enabled: !sttConfig.enabled }; setSttConfig(cfg); saveSttConfig(cfg); setIsRecordingAudio(false); }}
+                      dark={dark}
+                      label="Enable speech-to-text"
+                    />
+                  </div>
+                  {sttConfig.enabled && (
+                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5 items-center">
+                        <input
+                          placeholder="Whisper server URL (e.g. http://127.0.0.1:8080)"
+                          value={sttConfig.whisperUrl}
+                          onChange={e => { const cfg = { ...sttConfig, whisperUrl: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); setWhisperAvailable(null); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                        <button
+                          onClick={async () => { const ok = await checkWhisperAvailable(sttConfig); setWhisperAvailable(ok); }}
+                          className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                        >Test</button>
+                        {whisperAvailable === true && <span className="text-green-400 text-xs">✓</span>}
+                        {whisperAvailable === false && <span className="text-red-400 text-xs">✗</span>}
+                      </div>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={sttConfig.language}
+                          onChange={e => { const cfg = { ...sttConfig, language: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        >
+                          <option value="auto">Auto-detect language</option>
+                          <option value="en">English</option>
+                          <option value="fi">Finnish</option>
+                          <option value="sv">Swedish</option>
+                          <option value="de">German</option>
+                          <option value="fr">French</option>
+                          <option value="es">Spanish</option>
+                          <option value="zh">Chinese</option>
+                          <option value="ja">Japanese</option>
+                        </select>
+                        <input
+                          placeholder="Max sec"
+                          type="number"
+                          min="5"
+                          max="300"
+                          value={Math.round(sttConfig.maxDurationMs / 1000)}
+                          onChange={e => { const cfg = { ...sttConfig, maxDurationMs: parseInt(e.target.value) * 1000 }; setSttConfig(cfg); saveSttConfig(cfg); }}
+                          className={`w-24 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      </div>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        Run <span className="font-mono">./server --port 8080</span> from whisper.cpp. A 🎙 button appears in the chat composer to record and transcribe.
                       </p>
                     </div>
                   )}
