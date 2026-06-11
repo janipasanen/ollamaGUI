@@ -50,6 +50,12 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools } from './services/browser-tools';
 import BrowserPane from './components/BrowserPane';
+import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
+import DocumentArtifact, { type DocumentArtifactData } from './components/DocumentArtifact';
+import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
+import { checkLibreOffice, convertDocument } from './services/documents';
+import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
+import { openSource } from './services/citations';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -404,6 +410,8 @@ const App: React.FC = () => {
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false); // browser preview pane (#71)
+  const [documentArtifact, setDocumentArtifact] = useState<DocumentArtifactData | null>(null); // #145
+  const [showLoOnboarding, setShowLoOnboarding] = useState(false); // LibreOffice onboarding (#145)
   const [artifactTab, setArtifactTab] = useState<'preview' | 'code'>('preview');
   const [artifactCopied, setArtifactCopied] = useState(false);
 
@@ -567,6 +575,8 @@ const App: React.FC = () => {
 
       // Initialize built-in tools and user-defined tools/functions (#127)
       registerBuiltInTools();
+      // Multi-format document tools (read/create/convert/formats) — #144
+      registerDocumentTools();
       initCustomTools();
       registerImageGenTool(() => loadImageGenConfig());
       // Register spawn_subagent tool (#104) — isolated sub-agent with scoped context
@@ -1404,6 +1414,25 @@ const App: React.FC = () => {
             setCurrentArtifact(primary);
             setShowArtifacts(true);
             setArtifactTab(primary.kind === 'html' || primary.kind === 'svg' ? 'preview' : 'code');
+          }
+          // Surface agent-created/converted documents in the Artifacts panel (#145).
+          // Scan the just-finalized message list (via the messages ref, kept current
+          // by the message-tracking effect) for a document tool result.
+          const recent = trunkMessagesRef.current ?? [];
+          const docMsg = [...recent].reverse().find(
+            m => m.role === 'tool' && !!m.name && ['document_create', 'document_convert'].includes(m.name),
+          );
+          if (docMsg) {
+            try {
+              const res = JSON.parse(docMsg.content || '{}');
+              const path: string | undefined = res.path || res.dest;
+              if (path) {
+                void readDocument(path)
+                  .then(doc => setDocumentArtifact({ kind: 'document', path, format: doc.format, previewText: doc.text }))
+                  .catch(() => setDocumentArtifact({ kind: 'document', path, format: detectDocumentFormat(path), previewText: '' }))
+                  .finally(() => setShowArtifacts(true));
+              }
+            } catch { /* non-document or unparseable result — ignore */ }
           }
           // Auto-speak after response if enabled (#101)
           if (voiceSettings.autoSpeak && isTtsAvailable() && filtered) {
@@ -4269,6 +4298,18 @@ const App: React.FC = () => {
             {notification}
           </div>
         )}
+        {/* LibreOffice optional-engine onboarding (#145) */}
+        <LibreOfficeOnboarding
+          open={showLoOnboarding}
+          dark={dark}
+          onDetect={async () => {
+            const lo = await checkLibreOffice().catch(() => ({ available: false }));
+            if (lo.available) { setShowLoOnboarding(false); notify('LibreOffice detected.'); }
+            else notify('LibreOffice not found. Install it, then retry.');
+          }}
+          onOpenDownload={() => { void openSource({ id: 'lo', label: 'LibreOffice', kind: 'url', url: 'https://www.libreoffice.org/download/download/' }); }}
+          onDismiss={() => { markDismissed(); setShowLoOnboarding(false); }}
+        />
         {/* CLI Command Approval Modal */}
         {pendingApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -4353,6 +4394,42 @@ const App: React.FC = () => {
           </div>
           <div className="flex-1 min-h-0 overflow-hidden">
             <BrowserPane dark={dark} />
+          </div>
+        </div>
+      )}
+
+      {/* Document artifact panel (#145) — preview/open/export agent documents */}
+      {showArtifacts && documentArtifact && (
+        <div className={`w-96 shrink-0 border-l flex flex-col overflow-hidden ${
+          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
+        }`}>
+          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
+            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
+          }`}>
+            <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>Document</span>
+            <button
+              onClick={() => setDocumentArtifact(null)}
+              aria-label="Close document panel"
+              className={`p-1 rounded text-xs ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}
+            >✕</button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto">
+            <DocumentArtifact
+              data={documentArtifact}
+              dark={dark}
+              onOpen={(p) => { void openSource({ id: p, label: p, kind: 'file', fileId: p, url: p }); }}
+              onExport={async (p) => {
+                const lo = await checkLibreOffice().catch(() => ({ available: false }));
+                if (needsOnboarding(!!lo.available)) { setShowLoOnboarding(true); return; }
+                const dest = p.replace(/\.[^.]+$/, '') + '.pdf';
+                try {
+                  await convertDocument(p, dest, 'pdf');
+                  notify(`Exported to ${dest}`);
+                } catch (e) {
+                  notify(formatErrorLine(e, 'generic'));
+                }
+              }}
+            />
           </div>
         </div>
       )}
