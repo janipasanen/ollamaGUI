@@ -45,6 +45,9 @@ use serde::{Deserialize, Serialize};
 /// or tear down the child webview.
 pub static PREVIEW_OPEN: AtomicBool = AtomicBool::new(false);
 
+/// Label of the native preview child webview created via `window.add_child`.
+const PREVIEW_LABEL: &str = "browser-preview";
+
 /// Read the current mounted-state of the native preview. Thin wrapper kept so
 /// callers (and tests) don't reach for `Ordering` directly.
 pub fn is_preview_open() -> bool {
@@ -206,9 +209,40 @@ fn extract_host(raw: &str) -> Option<String> {
 /// Until the `unstable` feature is enabled this returns a clear deferred error so
 /// the frontend surfaces "native preview unavailable" rather than silently no-op.
 #[tauri::command]
-pub async fn preview_webview_open(url: String, rect: PreviewRect, allow: Option<Vec<String>>) -> Result<(), String> {
-    let _ = (url, rect, allow);
-    Err("native preview deferred — needs Tauri unstable add_child".to_string())
+pub async fn preview_webview_open(
+    app: tauri::AppHandle,
+    url: String,
+    rect: PreviewRect,
+    allow: Option<Vec<String>>,
+) -> Result<(), String> {
+    use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl};
+    use tauri::webview::WebviewBuilder;
+
+    let window = app
+        .get_window("main")
+        .ok_or("main window not found")?;
+
+    // Re-opening replaces any existing preview webview (idempotent).
+    if let Some(existing) = app.get_webview(PREVIEW_LABEL) {
+        let _ = existing.close();
+    }
+
+    let allow_list = allow.unwrap_or_default();
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let guard = allow_list.clone();
+    let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed))
+        .on_navigation(move |u| is_navigation_allowed(u.as_str(), &guard));
+
+    window
+        .add_child(
+            builder,
+            LogicalPosition::new(rect.x, rect.y),
+            LogicalSize::new(rect.width, rect.height),
+        )
+        .map_err(|e| format!("Failed to create preview webview: {e}"))?;
+
+    PREVIEW_OPEN.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// Navigate the already-mounted native preview to a new `url`, subject to the
@@ -216,14 +250,23 @@ pub async fn preview_webview_open(url: String, rect: PreviewRect, allow: Option<
 ///
 /// DEFERRED (needs Tauri `unstable` add_child child handle to call `.navigate()`).
 #[tauri::command]
-pub async fn preview_webview_navigate(url: String, allow: Option<Vec<String>>) -> Result<(), String> {
-    let _ = (url, allow);
-    if !is_preview_open() {
-        // Nothing mounted yet — treat as a benign no-op so the UI's optimistic
-        // navigate doesn't error before the (deferred) open lands.
+pub async fn preview_webview_navigate(
+    app: tauri::AppHandle,
+    url: String,
+    allow: Option<Vec<String>>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let Some(wv) = app.get_webview(PREVIEW_LABEL) else {
+        // Nothing mounted yet — benign no-op so an optimistic navigate before
+        // open() lands does not surface an error.
         return Ok(());
+    };
+    let allow_list = allow.unwrap_or_default();
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    if !is_navigation_allowed(parsed.as_str(), &allow_list) {
+        return Err(format!("Navigation to '{url}' blocked by allow-list."));
     }
-    Err("native preview deferred — needs Tauri unstable add_child".to_string())
+    wv.navigate(parsed).map_err(|e| e.to_string())
 }
 
 /// Reposition / resize the mounted native preview to track the host `<div>`.
@@ -235,23 +278,27 @@ pub async fn preview_webview_navigate(url: String, allow: Option<Vec<String>>) -
 /// DEFERRED (needs the `unstable` child handle to call `.set_position()` /
 /// `.set_size()`).
 #[tauri::command]
-pub async fn preview_webview_set_bounds(rect: PreviewRect) -> Result<(), String> {
-    let _ = rect;
-    if !is_preview_open() {
+pub async fn preview_webview_set_bounds(app: tauri::AppHandle, rect: PreviewRect) -> Result<(), String> {
+    use tauri::{LogicalPosition, LogicalSize, Manager};
+    let Some(wv) = app.get_webview(PREVIEW_LABEL) else {
         return Ok(());
-    }
-    Err("native preview deferred — needs Tauri unstable add_child".to_string())
+    };
+    wv.set_position(LogicalPosition::new(rect.x, rect.y)).map_err(|e| e.to_string())?;
+    wv.set_size(LogicalSize::new(rect.width, rect.height)).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Reload the currently mounted native preview. No-ops when nothing is open.
 ///
 /// DEFERRED (needs the `unstable` child handle to call `.reload()`).
 #[tauri::command]
-pub async fn preview_webview_reload() -> Result<(), String> {
-    if !is_preview_open() {
+pub async fn preview_webview_reload(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let Some(wv) = app.get_webview(PREVIEW_LABEL) else {
         return Ok(());
-    }
-    Err("native preview deferred — needs Tauri unstable add_child".to_string())
+    };
+    // Webview has no direct reload(); re-run the document's own reload.
+    wv.eval("window.location.reload()").map_err(|e| e.to_string())
 }
 
 /// Close (unmount) the native preview child webview if one is open.
@@ -261,14 +308,13 @@ pub async fn preview_webview_reload() -> Result<(), String> {
 ///
 /// DEFERRED (needs the `unstable` child handle to call `.close()`).
 #[tauri::command]
-pub async fn preview_webview_close() -> Result<(), String> {
-    if !is_preview_open() {
-        // Already closed — idempotent success.
-        return Ok(());
+pub async fn preview_webview_close(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(PREVIEW_LABEL) {
+        wv.close().map_err(|e| e.to_string())?;
     }
-    // Once the deferred body actually tears the child down it will also
-    // `PREVIEW_OPEN.store(false, Ordering::SeqCst)`. For now we report deferral.
-    Err("native preview deferred — needs Tauri unstable add_child".to_string())
+    PREVIEW_OPEN.store(false, Ordering::SeqCst);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
