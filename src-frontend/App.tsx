@@ -208,6 +208,8 @@ const App: React.FC = () => {
   const [showHelp, setShowHelp] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
+  // Temporary/incognito chat: held in memory only, never persisted (#134).
+  const [isTemporary, setIsTemporary] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isAgenticMode, setIsAgenticMode] = useState(false);
@@ -364,7 +366,34 @@ const App: React.FC = () => {
     setCurrentSessionId(null);
     setAttachedImages([]);
     setInput('');
+    setIsTemporary(false);
   }, []);
+
+  // Start a temporary chat — messages live only in state, never persisted.
+  const startTemporaryChat = useCallback(() => {
+    setMessages([]);
+    setCurrentSessionId(null);
+    setAttachedImages([]);
+    setInput('');
+    setIsTemporary(true);
+  }, []);
+
+  // Promote the current temporary chat into a persisted session.
+  const saveTemporaryChat = () => {
+    if (!isTemporary || messages.length === 0) return;
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: generateTitle(messages),
+      messages,
+      createdAt: Date.now(),
+      model,
+    };
+    const result = storage.saveSession(newSession);
+    if (result.ok === false && result.error === 'quota') setStorageWarning(true);
+    setIsTemporary(false);
+    setCurrentSessionId(newSession.id);
+    setSessions(storage.getSessions());
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -542,6 +571,7 @@ const App: React.FC = () => {
   };
 
   const saveCurrentSession = (currentMessages: Message[]) => {
+    if (isTemporary) return; // temporary chats are never written to storage
     if (currentSessionId === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
@@ -844,11 +874,21 @@ const App: React.FC = () => {
              <button
                onClick={startNewChat}
                aria-label="Start new chat"
-               className={`w-full py-2 px-4 rounded-lg transition-colors mb-3 text-sm font-semibold ${
+               className={`w-full py-2 px-4 rounded-lg transition-colors mb-2 text-sm font-semibold ${
                  dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
                }`}
              >
                + New Chat
+             </button>
+             <button
+               onClick={startTemporaryChat}
+               aria-label="Start temporary chat"
+               title="A scratch chat that is never saved to history"
+               className={`w-full py-1.5 px-4 rounded-lg transition-colors mb-3 text-xs border ${
+                 dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'
+               }`}
+             >
+               🕶 Temporary chat
              </button>
 
         {/* M5 Issue 18: Search */}
@@ -1103,6 +1143,19 @@ const App: React.FC = () => {
           <div className="mx-4 mb-2 flex items-center justify-between rounded-lg bg-amber-900/60 border border-amber-700 px-3 py-2 text-xs text-amber-200">
             <span>⚠️ Chat history is nearly full. Export and delete old conversations to free space.</span>
             <button onClick={() => setStorageWarning(false)} className="ml-3 text-amber-400 hover:text-amber-200">✕</button>
+          </div>
+        )}
+
+        {/* Temporary chat banner (#134) */}
+        {isTemporary && (
+          <div className={`mx-4 mb-2 flex items-center justify-between rounded-lg px-3 py-2 text-xs ${dark ? 'bg-purple-900/40 border border-purple-700 text-purple-200' : 'bg-purple-100 border border-purple-300 text-purple-700'}`}>
+            <span>🕶 Temporary chat — won't be saved to history.</span>
+            <div className="flex items-center gap-2 shrink-0 ml-3">
+              {messages.length > 0 && (
+                <button onClick={saveTemporaryChat} className="px-2 py-0.5 rounded border border-current hover:opacity-80">Save this chat</button>
+              )}
+              <button onClick={startNewChat} className="px-2 py-0.5 rounded border border-current hover:opacity-80">Discard</button>
+            </div>
           </div>
         )}
 
