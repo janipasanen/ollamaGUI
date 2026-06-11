@@ -14,6 +14,19 @@ export interface ChatSession {
   archived?: boolean;
   // Conversation branching (#98)
   branchState?: BranchState;
+  // Projects (#92)
+  projectId?: string;
+}
+
+// ─── Projects (#92) ───────────────────────────────────────────────────────────
+export interface Project {
+  id: string;
+  name: string;
+  /** Absolute path to the workspace root (may be empty string when not yet set). */
+  workspaceRoot: string;
+  /** Project-scoped instructions prepended to the system prompt. */
+  instructions: string;
+  createdAt: number;
 }
 
 export interface Folder {
@@ -24,6 +37,7 @@ export interface Folder {
 
 const SESSIONS_KEY = 'ollama_gui_sessions';
 const FOLDERS_KEY = 'ollama_gui_folders';
+const PROJECTS_KEY = 'ollama_gui_projects';
 
 /** Ensure organization fields exist on legacy sessions. */
 function migrate(s: any): ChatSession {
@@ -90,6 +104,24 @@ export const storage = {
     localStorage.setItem(FOLDERS_KEY, JSON.stringify(storage.getFolders().filter(f => f.id !== id)));
     // Detach sessions from the removed folder.
     const sessions = storage.getSessions().map(s => s.folderId === id ? { ...s, folderId: undefined } : s);
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  },
+
+  // ─── Projects (#92) ────────────────────────────────────────────────────────
+  getProjects: (): Project[] => {
+    const data = localStorage.getItem(PROJECTS_KEY);
+    return data ? JSON.parse(data) : [];
+  },
+  saveProject: (project: Project): void => {
+    const projects = storage.getProjects();
+    const index = projects.findIndex(p => p.id === project.id);
+    if (index > -1) projects[index] = project; else projects.unshift(project);
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+  },
+  deleteProject: (id: string): void => {
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(storage.getProjects().filter(p => p.id !== id)));
+    // Detach sessions from the deleted project.
+    const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
   },
 };

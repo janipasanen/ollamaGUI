@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, storage, searchSessions, orderSessions } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, orderSessions } from './services/storage';
+import { composeSystemPrompt } from './services/systemPrompt';
+import {
+  MemoryEntry,
+  loadMemory, addMemoryEntry, removeMemoryEntry, composeMemoryBlock,
+} from './services/memory';
+import {
+  shouldCompact, compactConversation, makeSummarizeFn,
+} from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
@@ -269,6 +277,25 @@ const App: React.FC = () => {
   const [showArchived, setShowArchived] = useState(false);
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
 
+  // Projects (#92)
+  const [projects, setProjects] = useState<Project[]>(() => storage.getProjects());
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+
+  // Memory (#95)
+  const [memoryEntries, setMemoryEntries] = useState<MemoryEntry[]>(() => loadMemory());
+  const [newMemoryText, setNewMemoryText] = useState('');
+
+  // Compaction (#95)
+  const [autoCompact, setAutoCompact] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_auto_compact') ?? 'false'); } catch { return false; }
+  });
+  const [compactionThreshold, setCompactionThreshold] = useState(() => {
+    const v = parseInt(localStorage.getItem('ollama_gui_compact_threshold') ?? '3000', 10);
+    return isNaN(v) ? 3000 : v;
+  });
+
   // Settings / UI state
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
   // Generation options — num_ctx defaults modest for 8 GB machines.
@@ -419,6 +446,8 @@ const App: React.FC = () => {
     searchSessions(sessions, searchQuery, folders)
       .filter(s => (showArchived ? !!s.archived : !s.archived))
       .filter(s => folderFilter === null || s.folderId === folderFilter)
+      // Filter by active project (#92): null = no project = show unscoped sessions
+      .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId)
   );
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
@@ -484,6 +513,17 @@ const App: React.FC = () => {
       registerBuiltInTools();
       initCustomTools();
       registerImageGenTool(() => loadImageGenConfig());
+      // Register remember tool (#95) — agent can persist facts across sessions
+      toolRegistry.registerTool({
+        name: 'remember',
+        description: 'Store a fact or preference in persistent memory for future sessions.',
+        parameters: { type: 'object', properties: { fact: { type: 'string', description: 'The fact or preference to remember.' } }, required: ['fact'] },
+        execute: async (params: { fact: string }) => {
+          addMemoryEntry(params.fact);
+          setMemoryEntries(loadMemory());
+          return { stored: params.fact };
+        },
+      });
       registerCliTool(async (command: string, cwd?: string) => {
         return new Promise<boolean>((resolve) => {
           setPendingApproval({ command, cwd, resolve });
@@ -540,7 +580,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const startNewChat = useCallback(() => {
+  const startNewChat = useCallback((projectId?: string | null) => {
     setMessages([]);
     trunkMessagesRef.current = [];
     setBranchState(emptyBranchState());
@@ -549,6 +589,7 @@ const App: React.FC = () => {
     setInput('');
     setIsTemporary(false);
     setMessageQueue([]);
+    if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
   // Start a temporary chat — messages live only in state, never persisted.
@@ -820,6 +861,7 @@ const App: React.FC = () => {
         createdAt: Date.now(),
         model,
         branchState: activeBranchState,
+        ...(activeProjectId ? { projectId: activeProjectId } : {}),
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
@@ -980,12 +1022,30 @@ const App: React.FC = () => {
     const toApiMsg = (m: Message): Message =>
       m.images ? { ...m, images: m.images.map(toApiBase64) } : m;
 
+    // Compose system prompt from all context sources (#92/#93/#95)
+    const activeProject = projects.find(p => p.id === activeProjectId);
+    const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
+    const composedSystem = composeSystemPrompt({
+      systemPrompt,
+      projectInstructions: activeProject?.instructions,
+      memoryBlock: memBlock || undefined,
+    });
+
     // Apply filter inlets before dispatch (#127)
-    const rawHistory: Message[] = [
-      { role: 'system', content: systemPrompt },
+    let rawHistory: Message[] = [
+      { role: 'system', content: composedSystem },
       ...messages.map(toApiMsg),
       toApiMsg(userMessage),
     ];
+
+    // Auto-compact when history approaches context limit (#95)
+    if (autoCompact && shouldCompact(rawHistory, compactionThreshold)) {
+      rawHistory = await compactConversation(rawHistory, {
+        thresholdTokens: compactionThreshold,
+        summarizeFn: makeSummarizeFn(model, url('/api/chat')),
+      });
+    }
+
     const chatHistory = await applyFilterInlet(rawHistory);
 
     setMessages([...messages, userMessage]);
@@ -1370,6 +1430,62 @@ const App: React.FC = () => {
              >
                🕶 Temporary chat
              </button>
+
+        {/* Project switcher (#92) */}
+        <div className={`mb-2 rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-300'}`}>
+          <div className={`flex items-center justify-between px-3 py-1.5 text-xs font-semibold ${dark ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500'}`}>
+            <span>📁 Project</span>
+            <button onClick={() => setShowAddProject(v => !v)} className="hover:opacity-70">+</button>
+          </div>
+          <button
+            onClick={() => { setActiveProjectId(null); startNewChat(null); }}
+            className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${activeProjectId === null ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
+          >🌐 No project</button>
+          {projects.map(p => (
+            <div key={p.id} className="group/proj flex items-center">
+              <button
+                onClick={() => { setActiveProjectId(p.id); startNewChat(p.id); }}
+                className={`flex-1 text-left px-3 py-1.5 text-xs transition-colors truncate ${activeProjectId === p.id ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100')}`}
+              >📂 {p.name}</button>
+              <button
+                onClick={() => {
+                  if (confirm(`Delete project "${p.name}"?`)) {
+                    storage.deleteProject(p.id);
+                    setProjects(storage.getProjects());
+                    setSessions(storage.getSessions());
+                    if (activeProjectId === p.id) setActiveProjectId(null);
+                  }
+                }}
+                className="opacity-0 group-hover/proj:opacity-100 px-2 text-[10px] text-red-400 hover:text-red-300"
+                aria-label={`Delete project ${p.name}`}
+              >✕</button>
+            </div>
+          ))}
+          {showAddProject && (
+            <div className={`p-2 border-t ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
+              <input
+                value={newProjectName}
+                onChange={e => setNewProjectName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newProjectName.trim()) {
+                    const proj: Project = { id: `proj_${Date.now()}`, name: newProjectName.trim(), workspaceRoot: '', instructions: '', createdAt: Date.now() };
+                    storage.saveProject(proj);
+                    setProjects(storage.getProjects());
+                    setNewProjectName('');
+                    setShowAddProject(false);
+                    setActiveProjectId(proj.id);
+                  } else if (e.key === 'Escape') {
+                    setShowAddProject(false);
+                  }
+                }}
+                placeholder="Project name…"
+                autoFocus
+                className={`w-full text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400'}`}
+              />
+              <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Press Enter to create</p>
+            </div>
+          )}
+        </div>
 
         {/* M5 Issue 18: Search */}
         <input
@@ -3764,6 +3880,88 @@ const App: React.FC = () => {
                 </div>
 
               </div>
+
+                {/* Projects (#92) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Projects ({projects.length})</label>
+                  {projects.length === 0 && <p className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No projects. Create one from the sidebar.</p>}
+                  {projects.map(p => (
+                    <div key={p.id} className={`mb-3 rounded-lg p-3 border ${dark ? 'border-zinc-700 bg-zinc-800' : 'border-zinc-200 bg-white'}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{p.name}</span>
+                        {activeProjectId === p.id && <span className="text-[10px] text-blue-400">active</span>}
+                      </div>
+                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Instructions (prepended to system prompt)</label>
+                      <textarea
+                        value={p.instructions}
+                        onChange={e => {
+                          const updated = { ...p, instructions: e.target.value };
+                          storage.saveProject(updated);
+                          setProjects(storage.getProjects());
+                        }}
+                        rows={3}
+                        placeholder="e.g. Always respond in TypeScript. Prefer functional patterns."
+                        className={`w-full text-xs px-2 py-1.5 rounded border resize-none focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Memory (#95) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Persistent Memory ({memoryEntries.length})</label>
+                  <p className={`text-xs mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Facts and preferences injected into every conversation. The model can also call <span className="font-mono">remember</span> to store facts automatically.</p>
+                  <div className="space-y-1 mb-2 max-h-32 overflow-y-auto">
+                    {memoryEntries.map(e => (
+                      <div key={e.id} className={`flex items-start gap-2 text-xs rounded px-2 py-1 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-zinc-700'}`}>
+                        <span className="flex-1 break-words">{e.text}</span>
+                        {e.scope !== 'global' && <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{e.scope}</span>}
+                        <button onClick={() => { removeMemoryEntry(e.id); setMemoryEntries(loadMemory()); }} className="shrink-0 text-red-400 hover:text-red-300">✕</button>
+                      </div>
+                    ))}
+                    {memoryEntries.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No memory entries.</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      value={newMemoryText}
+                      onChange={e => setNewMemoryText(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newMemoryText.trim()) {
+                          addMemoryEntry(newMemoryText.trim(), activeProjectId ?? 'global');
+                          setMemoryEntries(loadMemory());
+                          setNewMemoryText('');
+                        }
+                      }}
+                      placeholder="New fact or preference…"
+                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <button
+                      onClick={() => { if (newMemoryText.trim()) { addMemoryEntry(newMemoryText.trim(), activeProjectId ?? 'global'); setMemoryEntries(loadMemory()); setNewMemoryText(''); } }}
+                      className="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >Add</button>
+                  </div>
+                </div>
+
+                {/* Compaction (#95) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Context Compaction</label>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Automatically summarise old messages when the conversation approaches the context limit. Keeps recent turns intact.</p>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-compact</span>
+                    <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); localStorage.setItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Threshold (tokens)</label>
+                    <input
+                      type="number"
+                      min={500}
+                      max={32000}
+                      value={compactionThreshold}
+                      onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) { setCompactionThreshold(v); localStorage.setItem('ollama_gui_compact_threshold', String(v)); } }}
+                      className={`w-24 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                    />
+                  </div>
+                </div>
 
               <div className="mt-6 flex justify-end">
                 <button onClick={() => setIsSettingsOpen(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
