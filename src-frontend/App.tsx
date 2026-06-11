@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions } from './services/ollama';
 import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
@@ -124,6 +124,8 @@ const App: React.FC = () => {
 
   // Settings / UI state
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+  // Generation options — num_ctx defaults modest for 8 GB machines.
+  const [genOptions, setGenOptions] = useState<GenerationOptions>({ num_ctx: 4096 });
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -197,6 +199,11 @@ const App: React.FC = () => {
 
       const savedPrompt = localStorage.getItem('ollama_gui_system_prompt');
       if (savedPrompt) setSystemPrompt(savedPrompt);
+
+      const savedGenOptions = localStorage.getItem('ollama_gui_gen_options');
+      if (savedGenOptions) {
+        try { setGenOptions(JSON.parse(savedGenOptions)); } catch { /* keep defaults */ }
+      }
 
       const savedTheme = localStorage.getItem('ollama_gui_theme');
       if (savedTheme !== null) setIsDarkMode(savedTheme === 'dark');
@@ -332,6 +339,14 @@ const App: React.FC = () => {
   const updateSystemPrompt = (val: string) => {
     setSystemPrompt(val);
     localStorage.setItem('ollama_gui_system_prompt', val);
+  };
+
+  const updateGenOptions = (patch: Partial<GenerationOptions>) => {
+    setGenOptions(prev => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem('ollama_gui_gen_options', JSON.stringify(next));
+      return next;
+    });
   };
 
   const updateBaseUrl = (val: string) => {
@@ -615,6 +630,7 @@ const App: React.FC = () => {
           messages: chatHistory,
           endpoint,
           maxIterations: 5,
+          options: genOptions,
           onAssistantMessage: (message) => {
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
@@ -680,7 +696,7 @@ const App: React.FC = () => {
                 return updated;
               });
             }
-          }, endpoint);
+          }, endpoint, false, genOptions);
           streamOk = true;
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
@@ -1162,7 +1178,42 @@ const App: React.FC = () => {
                      placeholder="Enter the AI's persona..."
                    />
                  </div>
-                 
+
+                 {/* Generation options — num_ctx is the key lever on 8 GB machines */}
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Generation options</label>
+                   <div className="grid grid-cols-2 gap-2">
+                     <div>
+                       <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Context window (num_ctx)</div>
+                       <input
+                         type="number"
+                         min={512}
+                         step={512}
+                         value={genOptions.num_ctx ?? ''}
+                         onChange={(e) => updateGenOptions({ num_ctx: e.target.value === '' ? undefined : Number(e.target.value) })}
+                         placeholder="4096"
+                         className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
+                       />
+                     </div>
+                     <div>
+                       <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Temperature</div>
+                       <input
+                         type="number"
+                         min={0}
+                         max={2}
+                         step={0.1}
+                         value={genOptions.temperature ?? ''}
+                         onChange={(e) => updateGenOptions({ temperature: e.target.value === '' ? undefined : Number(e.target.value) })}
+                         placeholder="model default"
+                         className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
+                       />
+                     </div>
+                   </div>
+                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave temperature blank to use the model default.
+                   </p>
+                 </div>
+
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agentic Mode</label>
                    <div className="flex items-center gap-3">

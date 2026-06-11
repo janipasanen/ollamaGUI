@@ -275,6 +275,26 @@ describe('Agentic Features', () => {
       expect(result.done).toBe(true);
     });
 
+    it('should propagate generation options into the Ollama request (#110)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        body: { getReader: () => ({ read: vi.fn().mockResolvedValue({ done: true, value: undefined }) }) },
+      });
+      global.fetch = mockFetch;
+
+      const generator = agenticChatStream({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'Hello' }],
+        maxIterations: 1,
+        endpoint: 'http://localhost:11434/api/chat',
+        options: { num_ctx: 2048, temperature: 0.1 },
+      });
+      await generator.next();
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.options).toEqual({ num_ctx: 2048, temperature: 0.1 });
+    });
+
     it('should handle tool calls when tools are available', async () => {
       // Register a test tool
       const testTool = {

@@ -14,18 +14,37 @@ export interface OllamaResponse {
   done: boolean;
 }
 
+/** Ollama generation options (subset). num_ctx is the key lever on small-RAM machines. */
+export interface GenerationOptions {
+  num_ctx?: number;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  stop?: string[];
+}
+
+/** Drop undefined/NaN fields; return undefined if nothing meaningful is set. */
+export function cleanGenerationOptions(options?: GenerationOptions): GenerationOptions | undefined {
+  if (!options) return undefined;
+  const entries = Object.entries(options).filter(([, v]) =>
+    v !== undefined && v !== null && !(typeof v === 'number' && Number.isNaN(v)));
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
 export async function fetchOllamaChatStream(
   model: string,
   messages: Message[],
   onChunk: (chunk: Partial<OllamaResponse>) => void,
   endpoint: string = 'http://localhost:11434/api/chat',
-  isCloudModel: boolean = false
+  isCloudModel: boolean = false,
+  options?: GenerationOptions
 ): Promise<void> {
   const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
+  const cleaned = cleanGenerationOptions(options);
   const response = await fetch(apiEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}) }),
   });
 
   if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);

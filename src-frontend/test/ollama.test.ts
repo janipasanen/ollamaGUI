@@ -1,5 +1,40 @@
-import { describe, it, expect, vi } from 'vitest';
-import { fetchOllamaModels, pullOllamaModel, deleteOllamaModel, SUGGESTED_MODELS } from '../services/ollama';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { fetchOllamaModels, pullOllamaModel, deleteOllamaModel, SUGGESTED_MODELS, fetchOllamaChatStream, cleanGenerationOptions } from '../services/ollama';
+
+describe('Generation options (#110)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; }); // don't leak our stub into other suites
+
+  function streamBodyMock() {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: { getReader: () => ({ read: vi.fn().mockResolvedValue({ done: true, value: undefined }) }) },
+    });
+    global.fetch = fetchMock as any;
+    return fetchMock;
+  }
+
+  it('includes options.num_ctx in the chat body when provided', async () => {
+    const fetchMock = streamBodyMock();
+    await fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat', false, { num_ctx: 4096, temperature: 0.2 });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.options).toEqual({ num_ctx: 4096, temperature: 0.2 });
+  });
+
+  it('omits options entirely when none are set', async () => {
+    const fetchMock = streamBodyMock();
+    await fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.options).toBeUndefined();
+  });
+
+  it('cleanGenerationOptions strips undefined/NaN and returns undefined when empty', () => {
+    expect(cleanGenerationOptions({ num_ctx: undefined, temperature: NaN })).toBeUndefined();
+    expect(cleanGenerationOptions(undefined)).toBeUndefined();
+    expect(cleanGenerationOptions({ num_ctx: 2048 })).toEqual({ num_ctx: 2048 });
+  });
+});
 
 describe('Suggested models', () => {
   it('includes ministral-3:3b recommended for 8GB RAM', () => {

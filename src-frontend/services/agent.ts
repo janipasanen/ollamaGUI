@@ -1,4 +1,4 @@
-import { Message } from './ollama';
+import { Message, GenerationOptions, cleanGenerationOptions } from './ollama';
 import { toolRegistry, ToolCall, ToolResult } from './tools';
 
 export interface AgenticChatOptions {
@@ -6,6 +6,8 @@ export interface AgenticChatOptions {
   messages: Message[];
   maxIterations?: number;
   endpoint?: string;
+  /** Ollama generation options (num_ctx, temperature, …) applied to every turn. */
+  options?: GenerationOptions;
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (toolResult: ToolResult) => void;
   onAssistantMessage?: (message: string) => void;
@@ -19,12 +21,15 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     messages,
     maxIterations = 5,
     endpoint = 'http://localhost:11434/api/chat',
+    options: genOptions,
     onToolCall,
     onToolResult,
     onAssistantMessage,
     onComplete,
     onError,
   } = options;
+
+  const cleanedOptions = cleanGenerationOptions(genOptions);
   
   let iteration = 0;
   let hitMaxIterations = false;
@@ -42,6 +47,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       messages: currentMessages,
       stream: true,
       ...(tools.length > 0 ? { tools } : {}),
+      ...(cleanedOptions ? { options: cleanedOptions } : {}),
     };
     
     try {
