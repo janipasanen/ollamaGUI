@@ -47,6 +47,8 @@ import { validateMcpServer, isNonEmptySubmission, validateImageAttachments } fro
 import { formatErrorLine } from './services/errorMessages';
 import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
+import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
+import { registerBrowserTools } from './services/browser-tools';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -609,6 +611,13 @@ const App: React.FC = () => {
       registerCliTool(async (command: string, cwd?: string) => {
         return new Promise<boolean>((resolve) => {
           setPendingApproval({ command, cwd, resolve });
+        });
+      });
+      // Register AI browser-control tools (#74); sensitive actions reuse the
+      // same approval modal as CLI tools.
+      registerBrowserTools(async (action: string, detail: string) => {
+        return new Promise<boolean>((resolve) => {
+          setPendingApproval({ command: `Browser ${action}: ${detail}`, resolve });
         });
       });
 
@@ -2013,15 +2022,22 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  // Grounded assistant replies render [n] as clickable citations (#120);
-                  // ungrounded replies keep full markdown rendering.
-                  msg.role === 'assistant' && msg.sources && msg.sources.length > 0
-                    ? (
-                      <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
-                        <p className="whitespace-pre-wrap">{renderWithCitations(msg.content, msg.sources, dark)}</p>
-                      </div>
-                    )
-                    : <MarkdownMessage content={msg.content} dark={dark} />
+                  // Browser tool results render richly (#75); grounded assistant
+                  // replies render [n] as clickable citations (#120); everything
+                  // else keeps full markdown rendering.
+                  msg.role === 'tool' && msg.name && isBrowserToolName(msg.name)
+                    ? (() => {
+                        let payload: unknown = msg.content;
+                        try { payload = JSON.parse(msg.content); } catch { /* keep raw string */ }
+                        return <BrowserToolResult name={msg.name} payload={payload} dark={dark} />;
+                      })()
+                    : msg.role === 'assistant' && msg.sources && msg.sources.length > 0
+                      ? (
+                        <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
+                          <p className="whitespace-pre-wrap">{renderWithCitations(msg.content, msg.sources, dark)}</p>
+                        </div>
+                      )
+                      : <MarkdownMessage content={msg.content} dark={dark} />
                 )}
                 {/* Inline citation Sources list (#120) */}
                 {msg.role === 'assistant' && msg.sources && (
