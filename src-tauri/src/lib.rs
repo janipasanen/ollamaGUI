@@ -1223,6 +1223,144 @@ async fn apply_edit(path: String, old_string: String, new_string: String) -> Res
     .map_err(|e| e.to_string())?
 }
 
+// ─── Git integration commands (#103) ─────────────────────────────────────────
+//
+// Thin wrappers around `git` subprocess calls. All operations are scoped to
+// the `cwd` parameter and never accept arbitrary git flags — only the specific
+// inputs each function needs.
+
+fn run_git(args: &[&str], cwd: &str) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[derive(Serialize)]
+struct GitStatus {
+    staged: Vec<String>,
+    unstaged: Vec<String>,
+    untracked: Vec<String>,
+}
+
+#[tauri::command]
+async fn git_status(cwd: String) -> Result<GitStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let raw = run_git(&["status", "--porcelain"], &cwd)?;
+        let mut staged = Vec::new();
+        let mut unstaged = Vec::new();
+        let mut untracked = Vec::new();
+        for line in raw.lines() {
+            if line.len() < 3 { continue; }
+            let xy = &line[..2];
+            let path = line[3..].to_string();
+            let x = &xy[..1];
+            let y = &xy[1..2];
+            if x != " " && x != "?" { staged.push(path.clone()); }
+            if y != " " && y != "?" { unstaged.push(path.clone()); }
+            if xy == "??" { untracked.push(path.clone()); }
+        }
+        Ok(GitStatus { staged, unstaged, untracked })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct GitDiff {
+    diff: String,
+}
+
+#[tauri::command]
+async fn git_diff(cwd: String, file: Option<String>, staged: Option<bool>) -> Result<GitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args: Vec<&str> = vec!["diff"];
+        let staged_flag = "--cached";
+        if staged.unwrap_or(false) { args.push(staged_flag); }
+        if let Some(ref f) = file { args.push("--"); args.push(f.as_str()); }
+        let diff = run_git(&args, &cwd)?;
+        Ok(GitDiff { diff })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_stage(cwd: String, files: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args: Vec<&str> = vec!["add", "--"];
+        for f in &files { args.push(f.as_str()); }
+        run_git(&args, &cwd).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_unstage(cwd: String, files: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+        for f in &files { args.push(f.as_str()); }
+        run_git(&args, &cwd).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct GitCommitResult {
+    hash: String,
+}
+
+#[tauri::command]
+async fn git_commit(cwd: String, message: String) -> Result<GitCommitResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git(&["commit", "-m", &message], &cwd)?;
+        let hash = run_git(&["rev-parse", "--short", "HEAD"], &cwd)?;
+        Ok(GitCommitResult { hash: hash.trim().to_string() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct GitLogEntry {
+    hash: String,
+    author: String,
+    date: String,
+    subject: String,
+}
+
+#[tauri::command]
+async fn git_log(cwd: String, n: Option<usize>) -> Result<Vec<GitLogEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let limit = format!("-{}", n.unwrap_or(20));
+        let raw = run_git(&["log", &limit, "--pretty=format:%H\x1f%an\x1f%ai\x1f%s"], &cwd)?;
+        let entries = raw.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.splitn(4, '\x1f').collect();
+                if parts.len() < 4 { return None; }
+                Some(GitLogEntry {
+                    hash: parts[0].chars().take(8).collect(),
+                    author: parts[1].to_string(),
+                    date: parts[2].to_string(),
+                    subject: parts[3].to_string(),
+                })
+            })
+            .collect();
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn probe_binary(name: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1268,6 +1406,12 @@ pub fn run() {
             apply_edit,
             terminal_run,
             terminal_kill,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_commit,
+            git_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
