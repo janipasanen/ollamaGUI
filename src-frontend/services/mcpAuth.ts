@@ -213,6 +213,37 @@ export const tokenStore = {
   },
 };
 
+// ─── Auth metadata store (token endpoint per server, for refresh) ──────────────
+
+const AUTH_META_KEY = 'mcp_auth_meta';
+
+export const authMetaStore = {
+  save(serverId: string, meta: { tokenEndpoint: string }): void {
+    const all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}');
+    all[serverId] = meta;
+    localStorage.setItem(AUTH_META_KEY, JSON.stringify(all));
+  },
+  load(serverId: string): { tokenEndpoint: string } | null {
+    const all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}');
+    return all[serverId] ?? null;
+  },
+};
+
+/**
+ * Resolve a currently-valid OAuth access token for a server, refreshing if the
+ * stored token is expired. Returns null when the server never authenticated.
+ */
+export async function getValidAccessToken(serverId: string): Promise<string | null> {
+  const meta = authMetaStore.load(serverId);
+  const client = loadClients()[serverId];
+  if (meta?.tokenEndpoint && client?.client_id) {
+    const fresh = await getValidTokens(serverId, meta.tokenEndpoint, client.client_id);
+    return fresh?.access_token ?? null;
+  }
+  // No refresh metadata — return the stored token as-is if present.
+  return tokenStore.load(serverId)?.access_token ?? null;
+}
+
 // ─── Full OAuth flow ──────────────────────────────────────────────────────────
 
 /**
@@ -228,6 +259,9 @@ export const tokenStore = {
 export async function performOAuthFlow(serverId: string, serverUrl: string): Promise<OAuthTokens> {
   const metadata = await discoverAuthServer(serverUrl);
   const client = await getOrRegisterClient(serverId, metadata);
+  // Persist what token refresh needs later (public clients aren't saved by getOrRegisterClient).
+  saveClient(serverId, client);
+  authMetaStore.save(serverId, { tokenEndpoint: metadata.token_endpoint });
   const { verifier, challenge } = await generatePkceChallenge();
   const state = generateState();
   const port = randomPort();

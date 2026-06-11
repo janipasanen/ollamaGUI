@@ -40,10 +40,30 @@ function stubMcpResponseBody(requestBody: unknown): string {
 }
 
 import { McpServerConfig, McpTool, McpRequest, McpResponse, McpNotification } from './mcp';
+import { getValidAccessToken } from './mcpAuth';
+
+/** Thrown when an HTTP MCP server returns 401, so the UI can prompt re-authentication. */
+export class McpReauthRequiredError extends Error {
+  constructor(public sessionId: string) {
+    super(`MCP server ${sessionId} requires (re-)authentication`);
+    this.name = 'McpReauthRequiredError';
+  }
+}
 
 export class McpHttpTransport {
   /** Test seam: set to override the real Tauri invoke. */
   static _mockInvoke: ((cmd: string, args: any) => Promise<any>) | null = null;
+
+  /** Resolve the bearer token for a request: a valid OAuth token first, then the static config token. */
+  private static async resolveAuthToken(sessionId: string, staticToken?: string): Promise<string | undefined> {
+    try {
+      const oauth = await getValidAccessToken(sessionId);
+      if (oauth) return oauth;
+    } catch {
+      /* fall back to static token */
+    }
+    return staticToken;
+  }
 
   private static sessions: Map<string, {
     url: string;
@@ -81,6 +101,9 @@ export class McpHttpTransport {
       throw new Error(`Session ${sessionId} not found`);
     }
 
+    // Resolve auth at request time so refreshed OAuth tokens are always current.
+    const authToken = await this.resolveAuthToken(sessionId, session.authToken);
+
     try {
       const callInvoke = McpHttpTransport._mockInvoke ?? invoke;
       const response = await callInvoke('mcp_http_request', {
@@ -91,10 +114,10 @@ export class McpHttpTransport {
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            ...(session.authToken ? { 'Authorization': `Bearer ${session.authToken}` } : {}),
+            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
           },
           body: JSON.stringify(request),
-          authToken: session.authToken,
+          authToken,
         },
       });
 
@@ -105,6 +128,11 @@ export class McpHttpTransport {
         body: string;
         error?: string;
       };
+
+      // 401 → the token is invalid/expired and couldn't be refreshed; prompt re-auth.
+      if (httpResponse.status === 401) {
+        throw new McpReauthRequiredError(sessionId);
+      }
 
       if (!httpResponse.success) {
         throw new Error(httpResponse.error || `HTTP request failed with status ${httpResponse.status}`);
@@ -118,6 +146,7 @@ export class McpHttpTransport {
 
       return parsedResponse.result;
     } catch (error) {
+      if (error instanceof McpReauthRequiredError) throw error; // surface typed re-auth signal as-is
       console.error(`[MCP HTTP] Request failed: ${error}`);
       throw new Error(`MCP HTTP request failed: ${error}`);
     }
@@ -179,6 +208,7 @@ export class McpHttpTransport {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     const body = JSON.stringify({ jsonrpc: '2.0', method, ...(params ? { params } : {}) });
+    const authToken = await this.resolveAuthToken(sessionId, session.authToken);
     try {
       const callInvoke = McpHttpTransport._mockInvoke ?? invoke;
       await callInvoke('mcp_http_request', {
@@ -189,10 +219,10 @@ export class McpHttpTransport {
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            ...(session.authToken ? { 'Authorization': `Bearer ${session.authToken}` } : {}),
+            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
           },
           body,
-          authToken: session.authToken,
+          authToken,
         },
       });
     } catch (e) {
