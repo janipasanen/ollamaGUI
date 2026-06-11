@@ -84,6 +84,7 @@ import {
   createBranch, navigateBranch, getForkInfo, getForkPoints,
   emptyBranchState, migrateToBranchState,
 } from './services/branching';
+import { registerMcpTools, unregisterMcpTools, getRegisteredToolNames } from './services/mcpBridge';
 import {
   Artifact,
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
@@ -513,6 +514,36 @@ const App: React.FC = () => {
       registerBuiltInTools();
       initCustomTools();
       registerImageGenTool(() => loadImageGenConfig());
+      // Register spawn_subagent tool (#104) — isolated sub-agent with scoped context
+      toolRegistry.registerTool({
+        name: 'spawn_subagent',
+        description: 'Spawn an isolated sub-agent with a fresh context to complete a focused task. Only the final result returns to the parent context. Depth is bounded to prevent recursion.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: { type: 'string', description: 'The task for the sub-agent to complete.' },
+            tools: { type: 'array', items: { type: 'string' }, description: 'Optional list of tool names to give the sub-agent. Leave empty for all tools.' },
+          },
+          required: ['task'],
+        },
+        execute: async (params: { task: string; tools?: string[] }) => {
+          let result = '';
+          const subMessages: Message[] = [
+            { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
+            { role: 'user', content: params.task },
+          ];
+          const gen = agenticChatStream({
+            model,
+            messages: subMessages,
+            maxIterations: 3, // bounded depth
+            endpoint: url('/api/chat'),
+            toolFilter: params.tools && params.tools.length > 0 ? params.tools : undefined,
+            onAssistantMessage: (msg) => { result = msg; },
+          });
+          for await (const _m of gen) { /* consume */ }
+          return { result };
+        },
+      });
       // Register remember tool (#95) — agent can persist facts across sessions
       toolRegistry.registerTool({
         name: 'remember',
@@ -3029,28 +3060,17 @@ const App: React.FC = () => {
                                      enabled: true, toolsEnabled: true,
                                    });
 
-                                   const client = await mcpServerManager.connectToServer(server.id);
+                                   await mcpServerManager.connectToServer(server.id);
+                                   // Register MCP tools via service bridge (#102)
+                                   const registeredNames = await registerMcpTools(server, server.toolsEnabled !== false);
+                                   const client = mcpServerManager.getActiveConnection(server.id)!;
                                    const tools = await client.listTools();
-
-                                   // Register MCP tools into toolRegistry so agentic mode can call them
-                                   for (const tool of tools) {
-                                     toolRegistry.registerTool({
-                                       name: `mcp_${server.id}_${tool.name}`,
-                                       description: `[MCP:${server.name}] ${tool.description}`,
-                                       parameters: tool.parameters ?? { type: 'object', properties: {} },
-                                       execute: async (params) => {
-                                         const c = mcpServerManager.getActiveConnection(server.id);
-                                         if (!c) throw new Error(`MCP server ${server.name} not connected`);
-                                         return c.callTool(tool.name, params);
-                                       },
-                                     });
-                                   }
 
                                    setMcpServers(prev =>
                                      prev.map(s => s.id === server.id ? {
                                        ...s,
                                        status: 'connected',
-                                       tools: tools.map(t => ({ ...t, enabled: true })),
+                                       tools: tools.map(t => ({ ...t, enabled: registeredNames.includes(`mcp_${server.id}_${t.name}`) })),
                                        errorMessage: undefined,
                                      } : s)
                                    );
@@ -3102,12 +3122,10 @@ const App: React.FC = () => {
                              )}
                              <button
                                onClick={async () => {
-                                 // Unregister tools and disconnect
+                                 // Unregister tools and disconnect via bridge (#102)
                                  const existing = mcpServers.find(s => s.id === server.id);
                                  if (existing) {
-                                   for (const t of existing.tools) {
-                                     toolRegistry.unregisterTool(`mcp_${server.id}_${t.name}`);
-                                   }
+                                   unregisterMcpTools(server.id, getRegisteredToolNames(existing));
                                  }
                                  mcpServerManager.disconnectFromServer(server.id);
                                  await mcpConfigStore.delete(server.id);

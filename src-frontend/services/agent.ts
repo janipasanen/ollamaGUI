@@ -10,6 +10,11 @@ export interface AgenticChatOptions {
   options?: GenerationOptions;
   /** Structured-output constraint (Ollama `format`): 'json' or a JSON Schema object. */
   format?: 'json' | object;
+  /**
+   * Optional allow-list of tool names. When provided, only these tools are
+   * exposed to the model (used for sub-agent scoping, #104).
+   */
+  toolFilter?: string[];
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (toolResult: ToolResult) => void;
   onAssistantMessage?: (message: string) => void;
@@ -30,19 +35,21 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onAssistantMessage,
     onComplete,
     onError,
+    toolFilter,
   } = options;
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
-  
+
   let iteration = 0;
   let hitMaxIterations = false;
   let currentMessages = [...messages];
 
   while (iteration < maxIterations) {
     iteration++;
-    
-    // Get available tools
-    const tools = toolRegistry.getOllamaToolDefinitions();
+
+    // Get available tools, filtered by toolFilter if provided (#104)
+    const allTools = toolRegistry.getOllamaToolDefinitions();
+    const tools = toolFilter ? allTools.filter(t => toolFilter.includes(t.function?.name ?? t.name)) : allTools;
     
     // Prepare the request
     const requestBody = {
