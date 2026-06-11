@@ -499,6 +499,27 @@ describe('MCP Transport Tests', () => {
       expect(call.params).toEqual({ name: 'do', arguments: { a: 1 } });
     });
 
+    it('filesystem: a quoted spaced path survives tokenization to spawnProcess (#111)', async () => {
+      const mockSpawn = vi.spyOn(TauriMcpStdioTransport, 'spawnProcess');
+      mockSpawn.mockResolvedValue({ sessionId: 'fs', command: 'npx', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse')
+        .mockResolvedValue('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}');
+
+      mcpServerManager.addServer({
+        id: 'fs', name: 'FS', type: 'stdio',
+        command: 'npx -y @modelcontextprotocol/server-filesystem "/Users/me/My Project"',
+        enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('fs');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'npx',
+        ['-y', '@modelcontextprotocol/server-filesystem', '/Users/me/My Project'],
+        undefined,
+      );
+    });
+
     it('discoverTools returns an array (not the wrapper object)', async () => {
       const sent: any[] = [];
       TauriMcpStdioTransport._mockInvoke = async (cmd, args) => {

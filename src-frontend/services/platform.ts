@@ -22,6 +22,13 @@ export async function pickDirectory(): Promise<string | null> {
   }
 }
 
+/** Append a path as a CLI arg to a command, quoting it if it contains spaces. */
+export function appendPathArg(command: string, path: string): string {
+  const arg = /\s/.test(path) ? `"${path}"` : path;
+  const base = command.trimEnd();
+  return base ? `${base} ${arg}` : arg;
+}
+
 /** Open a native file picker. Returns the chosen path, or null if cancelled/unavailable. */
 export async function pickFile(): Promise<string | null> {
   try {

@@ -13,6 +13,7 @@ import {
   isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
+import { pickDirectory, appendPathArg } from './services/platform';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -1474,12 +1475,25 @@ const App: React.FC = () => {
                           <option value="http">HTTP</option>
                         </select>
                         {newMcpServer.type === 'stdio' ? (
-                          <input
-                            placeholder="Command (e.g. npx my-mcp-server)"
-                            value={newMcpServer.command}
-                            onChange={e => setNewMcpServer(s => ({ ...s, command: e.target.value }))}
-                            className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                          />
+                          <>
+                            <input
+                              placeholder="Command (e.g. npx my-mcp-server)"
+                              value={newMcpServer.command}
+                              onChange={e => setNewMcpServer(s => ({ ...s, command: e.target.value }))}
+                              className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                            />
+                            <button
+                              onClick={async () => {
+                                const dir = await pickDirectory();
+                                if (dir) setNewMcpServer(s => ({ ...s, command: appendPathArg(s.command, dir) }));
+                              }}
+                              title="Add an allowed directory"
+                              aria-label="Browse for a directory"
+                              className={`shrink-0 text-xs px-2 py-1.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                            >
+                              📂
+                            </button>
+                          </>
                         ) : (
                           <input
                             placeholder="URL (e.g. https://mcp.example.com)"
