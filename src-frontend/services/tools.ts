@@ -6,10 +6,14 @@ export interface ToolDefinition {
     properties: Record<string, {
       type: string;
       description: string;
+      enum?: string[];
+      items?: Record<string, unknown>;
     }>;
     required?: string[];
   };
   execute: (params: Record<string, any>) => Promise<any>;
+  /** If true, this tool only reads state and never mutates it. Used by readOnly mode and SmartApprove. */
+  readOnly?: boolean;
 }
 
 export interface ToolCall {
