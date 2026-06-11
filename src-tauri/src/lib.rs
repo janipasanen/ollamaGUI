@@ -1361,6 +1361,233 @@ async fn git_log(cwd: String, n: Option<usize>) -> Result<Vec<GitLogEntry>, Stri
     .map_err(|e| e.to_string())?
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// M18 — Multi-format document I/O (#139-#145)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct DocumentContent {
+    text: String,
+    format: String,
+    title: Option<String>,
+    word_count: usize,
+}
+
+/// Collect text nodes inside `include_local` elements from XML bytes.
+/// `paragraph_tags` emit a newline after they close.
+fn extract_xml_text(
+    xml_bytes: &[u8],
+    include_local: &[&[u8]],
+    paragraph_local: &[&[u8]],
+) -> String {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
+    let mut reader = Reader::from_reader(xml_bytes);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut output = String::new();
+    let mut depth: i32 = 0;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let loc = e.local_name();
+                let l = loc.as_ref();
+                if include_local.iter().any(|&t| t == l) {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let loc = e.local_name();
+                let l = loc.as_ref();
+                if include_local.iter().any(|&t| t == l) && depth > 0 {
+                    depth -= 1;
+                }
+                if paragraph_local.iter().any(|&t| t == l) {
+                    output.push('\n');
+                }
+            }
+            Ok(Event::Text(ref e)) if depth > 0 => {
+                if let Ok(t) = e.unescape() {
+                    output.push_str(&t);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    output
+}
+
+fn read_zip_entry(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut entry = zip.by_name(entry_name).map_err(|e| format!("{entry_name}: {e}"))?;
+    let mut buf = Vec::new();
+    entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+fn read_zip_entries_prefix(path: &str, prefix: &str) -> Result<Vec<Vec<u8>>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let names: Vec<String> = (0..zip.len())
+        .filter_map(|i| zip.by_index(i).ok().map(|e| e.name().to_string()))
+        .filter(|n| n.starts_with(prefix) && n.ends_with(".xml"))
+        .collect();
+    let mut results = Vec::new();
+    for name in names {
+        let mut entry = zip.by_name(&name).map_err(|e| e.to_string())?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        results.push(buf);
+    }
+    Ok(results)
+}
+
+fn extract_docx_text(path: &str) -> Result<String, String> {
+    let xml = read_zip_entry(path, "word/document.xml")?;
+    // <w:t> holds text runs; <w:p> is a paragraph
+    Ok(extract_xml_text(&xml, &[b"t"], &[b"p"]))
+}
+
+fn extract_xlsx_text(path: &str) -> Result<String, String> {
+    // Shared strings file
+    let ss_xml = read_zip_entry(path, "xl/sharedStrings.xml").unwrap_or_default();
+    let shared = extract_xml_text(&ss_xml, &[b"t"], &[b"si"]);
+    // Sheet data
+    let sheets = read_zip_entries_prefix(path, "xl/worksheets/sheet")?;
+    let mut out = shared;
+    for s in sheets {
+        out.push_str(&extract_xml_text(&s, &[b"v", b"t"], &[b"row"]));
+    }
+    Ok(out)
+}
+
+fn extract_pptx_text(path: &str) -> Result<String, String> {
+    let slides = read_zip_entries_prefix(path, "ppt/slides/slide")?;
+    let mut out = String::new();
+    for s in slides {
+        // <a:t> is DrawingML text; <a:p> is a paragraph
+        out.push_str(&extract_xml_text(&s, &[b"t"], &[b"p"]));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn extract_odt_text(path: &str) -> Result<String, String> {
+    let xml = read_zip_entry(path, "content.xml")?;
+    Ok(extract_xml_text(&xml, &[b"p", b"h", b"span"], &[b"p", b"h"]))
+}
+
+fn detect_format(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".docx") { "docx" }
+    else if lower.ends_with(".xlsx") { "xlsx" }
+    else if lower.ends_with(".pptx") { "pptx" }
+    else if lower.ends_with(".odt") || lower.ends_with(".ods") || lower.ends_with(".odp") { "odt" }
+    else if lower.ends_with(".pdf") { "pdf" }
+    else if lower.ends_with(".md") || lower.ends_with(".markdown") { "markdown" }
+    else { "text" }
+}
+
+#[tauri::command]
+async fn document_read(path: String) -> Result<DocumentContent, String> {
+    let path = resolve_workspace_path(&path)?;
+    let path_str = path.to_str().ok_or("Invalid path")?;
+    let format = detect_format(path_str);
+
+    let text = match format {
+        "docx" => extract_docx_text(path_str)?,
+        "xlsx" => extract_xlsx_text(path_str)?,
+        "pptx" => extract_pptx_text(path_str)?,
+        "odt" => extract_odt_text(path_str)?,
+        "pdf" => {
+            // Try pdftotext (poppler), fall back to empty
+            let out = std::process::Command::new("pdftotext")
+                .arg(path_str)
+                .arg("-")
+                .output();
+            match out {
+                Ok(o) if o.status.success() =>
+                    String::from_utf8_lossy(&o.stdout).into_owned(),
+                _ => String::new(),
+            }
+        }
+        _ => std::fs::read_to_string(path_str).map_err(|e| e.to_string())?,
+    };
+
+    let word_count = text.split_whitespace().count();
+    Ok(DocumentContent {
+        text,
+        format: format.to_string(),
+        title: None,
+        word_count,
+    })
+}
+
+#[tauri::command]
+async fn document_convert(src: String, dest: String) -> Result<(), String> {
+    let src_path = resolve_workspace_path(&src)?;
+    let dest_path = resolve_workspace_path(&dest)?;
+    let src_s = src_path.to_str().ok_or("Invalid src path")?;
+    let dest_s = dest_path.to_str().ok_or("Invalid dest path")?;
+
+    let out = std::process::Command::new("pandoc")
+        .arg(src_s)
+        .arg("-o")
+        .arg(dest_s)
+        .output()
+        .map_err(|_| "pandoc not found — install Pandoc to enable document conversion".to_string())?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+#[tauri::command]
+async fn document_create(path: String, format: String, content: String) -> Result<(), String> {
+    let dest_path = resolve_workspace_path(&path)?;
+    let dest_s = dest_path.to_str().ok_or("Invalid path")?;
+
+    match format.as_str() {
+        "md" | "markdown" | "txt" | "text" => {
+            std::fs::write(dest_s, content.as_bytes()).map_err(|e| e.to_string())
+        }
+        _ => {
+            // Write a temp markdown file, then convert via pandoc
+            let tmp = format!("{dest_s}.tmp.md");
+            std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+            let out = std::process::Command::new("pandoc")
+                .arg(&tmp)
+                .arg("-o")
+                .arg(dest_s)
+                .output()
+                .map_err(|_| "pandoc not found — install Pandoc to create this document format".to_string())?;
+            let _ = std::fs::remove_file(&tmp);
+            if out.status.success() { Ok(()) } else {
+                Err(String::from_utf8_lossy(&out.stderr).into_owned())
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn document_formats() -> Vec<String> {
+    vec![
+        "docx".to_string(), "xlsx".to_string(), "pptx".to_string(),
+        "odt".to_string(), "ods".to_string(), "odp".to_string(),
+        "pdf".to_string(), "markdown".to_string(), "text".to_string(),
+    ]
+}
+
 #[tauri::command]
 async fn probe_binary(name: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1412,6 +1639,10 @@ pub fn run() {
             git_unstage,
             git_commit,
             git_log,
+            document_read,
+            document_convert,
+            document_create,
+            document_formats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
