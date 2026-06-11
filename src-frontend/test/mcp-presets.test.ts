@@ -26,25 +26,46 @@ describe('MCP server presets', () => {
     expect(fs.command).toContain('server-filesystem');
   });
 
-  it('Atlassian Rovo is the official remote HTTP server with OAuth', () => {
+  it('Atlassian Rovo uses the explicit authv2 remote endpoint', () => {
     const rovo = getMcpPreset('atlassian-rovo')!;
     expect(rovo.type).toBe('http');
     expect(rovo.authRequired).toBe(true);
-    expect(rovo.url).toBe('https://mcp.atlassian.com/v1/mcp');
+    expect(rovo.url).toBe('https://mcp.atlassian.com/v1/mcp/authv2');
   });
 
-  it('credential-based connectors declare secret env fields', () => {
-    for (const key of ['github', 'gitlab', 'jira']) {
-      const p = getMcpPreset(key)!;
-      expect(p.env && p.env.length).toBeGreaterThan(0);
-      expect(p.env!.some(f => f.secret)).toBe(true);
-    }
+  it('GitHub defaults to the maintained remote server with a Docker + legacy variant', () => {
+    const gh = getMcpPreset('github')!;
+    expect(gh.type).toBe('http');
+    expect(gh.url).toBe('https://api.githubcopilot.com/mcp/');
+    expect(gh.authRequired).toBe(true);
+    const docker = gh.variants!.find(v => /docker/i.test(v.label));
+    expect(docker?.command).toContain('ghcr.io/github/github-mcp-server');
+    expect(docker?.env?.some(f => f.key === 'GITHUB_PERSONAL_ACCESS_TOKEN')).toBe(true);
+    expect(gh.variants!.some(v => v.deprecated)).toBe(true); // legacy npm flagged
   });
 
-  it('Database connector targets PostgreSQL', () => {
+  it('GitLab defaults to the in-product HTTP MCP with a deprecated npm fallback', () => {
+    const gl = getMcpPreset('gitlab')!;
+    expect(gl.type).toBe('http');
+    expect(gl.url).toContain('/api/v4/mcp');
+    expect(gl.authRequired).toBe(true);
+    expect(gl.variants!.some(v => v.deprecated && /npm/i.test(v.label))).toBe(true);
+  });
+
+  it('Jira (token) stays stdio with a secret env field', () => {
+    const jira = getMcpPreset('jira')!;
+    expect(jira.type).toBe('stdio');
+    expect(jira.env!.some(f => f.secret)).toBe(true);
+  });
+
+  it('Database defaults to the maintained postgres-mcp; archived server is a flagged variant', () => {
     const db = getMcpPreset('database')!;
     expect(db.type).toBe('stdio');
-    expect(db.command).toContain('postgres');
+    expect(db.command).toContain('postgres-mcp');
+    expect(db.command).not.toContain('server-postgres'); // not the archived reference server by default
+    const archived = db.variants!.find(v => v.command?.includes('server-postgres'));
+    expect(archived?.deprecated).toBe(true);
+    expect(archived?.securityNote).toMatch(/SQL-injection|read-only/i);
   });
 
   it('getMcpPreset returns undefined for an unknown key', () => {

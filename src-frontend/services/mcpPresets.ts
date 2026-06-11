@@ -3,7 +3,8 @@
 // Each preset pre-fills the "Add MCP server" form (name, type, command/url, and
 // any required env-var keys). The user supplies the path/token/URL placeholders,
 // then connects. stdio presets run a local process; http presets connect to a
-// remote MCP endpoint (with OAuth where required).
+// remote MCP endpoint (with OAuth where required). Presets reflect the current
+// (2026) maintained servers; legacy/unsafe options are offered as flagged variants.
 
 import { McpServerType } from './mcpConfig';
 
@@ -18,6 +19,20 @@ export interface McpEnvField {
   secret?: boolean;
 }
 
+/** An alternate way to run the same logical connector (remote vs Docker vs legacy). */
+export interface McpPresetVariant {
+  label: string;
+  type: McpServerType;
+  command?: string;
+  url?: string;
+  env?: McpEnvField[];
+  authRequired?: boolean;
+  /** Marks an outdated/discouraged option. */
+  deprecated?: boolean;
+  /** Security caveat shown as a warning when this option is selected. */
+  securityNote?: string;
+}
+
 export interface McpServerPreset {
   /** Stable catalog key. */
   key: string;
@@ -27,7 +42,7 @@ export interface McpServerPreset {
   icon: string;
   /** Short description of what the server exposes. */
   description: string;
-  /** Transport type. */
+  /** Transport type (the default/recommended option). */
   type: McpServerType;
   /** stdio command line (with placeholders the user edits). */
   command?: string;
@@ -37,9 +52,21 @@ export interface McpServerPreset {
   authRequired?: boolean;
   /** Env-var fields to collect for stdio credential-based servers. */
   env?: McpEnvField[];
+  /** Security caveat shown as a warning in the form. */
+  securityNote?: string;
+  /** Marks the default option as outdated/discouraged. */
+  deprecated?: boolean;
+  /** Alternate run options (remote vs local Docker vs legacy npm, etc.). */
+  variants?: McpPresetVariant[];
   /** Link to the server's documentation. */
   docsUrl: string;
 }
+
+const GITHUB_PAT: McpEnvField = { key: 'GITHUB_PERSONAL_ACCESS_TOKEN', label: 'GitHub personal access token', placeholder: 'ghp_…', secret: true };
+const GITLAB_ENV: McpEnvField[] = [
+  { key: 'GITLAB_PERSONAL_ACCESS_TOKEN', label: 'GitLab personal access token', placeholder: 'glpat-…', secret: true },
+  { key: 'GITLAB_API_URL', label: 'GitLab API URL', placeholder: 'https://gitlab.com/api/v4' },
+];
 
 export const MCP_SERVER_PRESETS: McpServerPreset[] = [
   {
@@ -56,25 +83,48 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     name: 'GitHub',
     icon: '🐙',
     description: 'Browse repos, issues, PRs, and code on GitHub.',
-    type: 'stdio',
-    command: 'npx -y @modelcontextprotocol/server-github',
-    env: [
-      { key: 'GITHUB_PERSONAL_ACCESS_TOKEN', label: 'GitHub personal access token', placeholder: 'ghp_…', secret: true },
-    ],
+    // Default: the maintained official remote server (OAuth/PAT).
+    type: 'http',
+    url: 'https://api.githubcopilot.com/mcp/',
+    authRequired: true,
     docsUrl: 'https://github.com/github/github-mcp-server',
+    variants: [
+      {
+        label: 'Local (Docker)',
+        type: 'stdio',
+        command: 'docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server',
+        env: [GITHUB_PAT],
+      },
+      {
+        label: 'Legacy npm server (deprecated)',
+        type: 'stdio',
+        command: 'npx -y @modelcontextprotocol/server-github',
+        env: [GITHUB_PAT],
+        deprecated: true,
+        securityNote: 'The npm @modelcontextprotocol/server-github is deprecated; prefer the official remote or Docker server.',
+      },
+    ],
   },
   {
     key: 'gitlab',
     name: 'GitLab',
     icon: '🦊',
     description: 'Access GitLab projects, issues, and merge requests.',
-    type: 'stdio',
-    command: 'npx -y @modelcontextprotocol/server-gitlab',
-    env: [
-      { key: 'GITLAB_PERSONAL_ACCESS_TOKEN', label: 'GitLab personal access token', placeholder: 'glpat-…', secret: true },
-      { key: 'GITLAB_API_URL', label: 'GitLab API URL', placeholder: 'https://gitlab.com/api/v4' },
-    ],
+    // Default: GitLab's in-product HTTP MCP (OAuth).
+    type: 'http',
+    url: 'https://gitlab.com/api/v4/mcp',
+    authRequired: true,
     docsUrl: 'https://docs.gitlab.com/user/gitlab_duo/model_context_protocol/mcp_server/',
+    variants: [
+      {
+        label: 'Legacy npm server (deprecated)',
+        type: 'stdio',
+        command: 'npx -y @modelcontextprotocol/server-gitlab',
+        env: GITLAB_ENV,
+        deprecated: true,
+        securityNote: 'The @modelcontextprotocol/server-gitlab npm server is archived; prefer GitLab’s built-in HTTP MCP.',
+      },
+    ],
   },
   {
     key: 'jira',
@@ -96,7 +146,7 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     icon: '🧭',
     description: 'Official Atlassian remote MCP — Jira, Confluence & Compass over OAuth.',
     type: 'http',
-    url: 'https://mcp.atlassian.com/v1/mcp',
+    url: 'https://mcp.atlassian.com/v1/mcp/authv2',
     authRequired: true,
     docsUrl: 'https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/',
   },
@@ -105,15 +155,28 @@ export const MCP_SERVER_PRESETS: McpServerPreset[] = [
     name: 'Database (PostgreSQL)',
     icon: '🗄️',
     description: 'Inspect schema and run read-only queries against PostgreSQL.',
+    // Default: maintained postgres-mcp (Crystal DBA) in restricted/read-only mode.
     type: 'stdio',
-    command: 'npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb',
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
+    command: 'uvx postgres-mcp --access-mode=restricted',
+    env: [
+      { key: 'DATABASE_URI', label: 'PostgreSQL connection URI', placeholder: 'postgresql://user:pass@localhost/db', secret: true },
+    ],
+    docsUrl: 'https://github.com/crystaldba/postgres-mcp',
+    variants: [
+      {
+        label: 'Archived reference server (discouraged)',
+        type: 'stdio',
+        command: 'npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb',
+        deprecated: true,
+        securityNote: 'The archived @modelcontextprotocol/server-postgres can be escaped out of its read-only transaction (SQL-injection); use postgres-mcp instead.',
+      },
+    ],
   },
   {
     key: 'faq',
-    name: 'FAQ / Knowledge base',
+    name: 'Custom / FAQ knowledge base',
     icon: '❓',
-    description: 'Connect a FAQ / knowledge-base MCP server (set its URL or command).',
+    description: 'Connect any custom MCP server — a FAQ/KB or your own (set URL or command).',
     type: 'http',
     url: 'https://your-faq-server.example.com/mcp',
     authRequired: false,

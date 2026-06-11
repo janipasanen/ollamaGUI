@@ -4,7 +4,7 @@ import { ChatSession, storage } from './services/storage';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
-import { MCP_SERVER_PRESETS, McpServerPreset } from './services/mcpPresets';
+import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
 import {
@@ -141,8 +141,8 @@ const App: React.FC = () => {
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [showAddMcpServer, setShowAddMcpServer] = useState(false);
   const [showMcpCatalog, setShowMcpCatalog] = useState(false);
-  const [newMcpServer, setNewMcpServer] = useState<{ name: string; type: 'stdio' | 'http'; command: string; url: string; authRequired: boolean; env: { key: string; value: string }[] }>({
-    name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [],
+  const [newMcpServer, setNewMcpServer] = useState<{ name: string; type: 'stdio' | 'http'; command: string; url: string; authRequired: boolean; env: { key: string; value: string }[]; note: string }>({
+    name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [], note: '',
   });
   const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
 
@@ -312,15 +312,18 @@ const App: React.FC = () => {
     localStorage.setItem('ollama_gui_theme', next ? 'dark' : 'light');
   };
 
-  // Pre-fill the Add-server form from a catalog preset, then open it for editing.
-  const useMcpPreset = (preset: McpServerPreset) => {
+  // Pre-fill the Add-server form from a catalog preset (or one of its variants),
+  // then open it for editing.
+  const useMcpPreset = (preset: McpServerPreset, variant?: McpPresetVariant) => {
+    const src = variant ?? preset;
     setNewMcpServer({
-      name: preset.name,
-      type: preset.type,
-      command: preset.command ?? '',
-      url: preset.url ?? '',
-      authRequired: preset.authRequired ?? false,
-      env: (preset.env ?? []).map(f => ({ key: f.key, value: '' })),
+      name: variant ? `${preset.name} (${variant.label})` : preset.name,
+      type: src.type,
+      command: src.command ?? '',
+      url: src.url ?? '',
+      authRequired: src.authRequired ?? false,
+      env: (src.env ?? []).map(f => ({ key: f.key, value: '' })),
+      note: src.securityNote ?? (src.deprecated ? 'This option is deprecated — prefer the default.' : ''),
     });
     setShowMcpCatalog(false);
     setShowAddMcpServer(true);
@@ -1347,25 +1350,48 @@ const App: React.FC = () => {
                   {showMcpCatalog && (
                     <div className={`rounded-lg border divide-y mb-2 overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700 bg-zinc-900/50' : 'border-zinc-200 divide-zinc-200 bg-zinc-50'}`}>
                       {MCP_SERVER_PRESETS.map(preset => (
-                        <div key={preset.key} className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-100'}`}>
-                          <div className="min-w-0 pr-1">
-                            <div className="flex items-center gap-1.5">
-                              <span>{preset.icon}</span>
-                              <span className="text-xs font-medium truncate">{preset.name}</span>
-                              <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>{preset.type}</span>
-                              {preset.authRequired && (
-                                <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>OAuth</span>
-                              )}
+                        <div key={preset.key} className={`px-3 py-2 ${dark ? 'hover:bg-zinc-700/40' : 'hover:bg-zinc-100'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 pr-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span>{preset.icon}</span>
+                                <span className="text-xs font-medium truncate">{preset.name}</span>
+                                <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>{preset.type}</span>
+                                {preset.authRequired && (
+                                  <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>OAuth</span>
+                                )}
+                                {preset.deprecated && (
+                                  <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700'}`}>deprecated</span>
+                                )}
+                              </div>
+                              <div className={`text-[10px] mt-0.5 truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{preset.description}</div>
                             </div>
-                            <div className={`text-[10px] mt-0.5 truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{preset.description}</div>
+                            <button
+                              onClick={() => useMcpPreset(preset)}
+                              aria-label={`Use ${preset.name} preset`}
+                              className="shrink-0 text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
+                            >
+                              Use
+                            </button>
                           </div>
-                          <button
-                            onClick={() => useMcpPreset(preset)}
-                            aria-label={`Use ${preset.name} preset`}
-                            className="shrink-0 text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
-                          >
-                            Use
-                          </button>
+                          {preset.variants && preset.variants.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-1.5 pl-5">
+                              {preset.variants.map(v => (
+                                <button
+                                  key={v.label}
+                                  onClick={() => useMcpPreset(preset, v)}
+                                  aria-label={`Use ${preset.name} variant ${v.label}`}
+                                  className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                                    v.deprecated
+                                      ? (dark ? 'border-red-800 text-red-300 hover:bg-red-900/30' : 'border-red-300 text-red-600 hover:bg-red-50')
+                                      : (dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')
+                                  }`}
+                                >
+                                  {v.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                       <p className={`text-[10px] px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
@@ -1376,6 +1402,11 @@ const App: React.FC = () => {
 
                   {showAddMcpServer && (
                     <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      {newMcpServer.note && (
+                        <div className={`flex items-start gap-2 rounded px-2 py-1.5 text-[10px] ${dark ? 'bg-red-900/30 border border-red-800 text-red-300' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                          <span>⚠️</span><span>{newMcpServer.note}</span>
+                        </div>
+                      )}
                       <input
                         placeholder="Server name"
                         value={newMcpServer.name}
@@ -1493,7 +1524,7 @@ const App: React.FC = () => {
                               };
                           mcpConfigStore.save(server);
                           setMcpServers(mcpConfigStore.list());
-                          setNewMcpServer({ name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [] });
+                          setNewMcpServer({ name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [], note: '' });
                           setShowAddMcpServer(false);
                         }}
                         className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-1.5 rounded font-semibold transition-colors"

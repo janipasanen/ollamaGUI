@@ -167,6 +167,30 @@ describe('End-to-End Tests', () => {
       });
     });
 
+    it('catalog: selecting a connector variant pre-fills the add form (#108)', async () => {
+      render(<App />);
+      fireEvent.click(screen.getByText('⚙️ Settings'));
+
+      // Open the connector catalog and pick GitHub's Docker variant
+      fireEvent.click(screen.getByText(/📚 Catalog/));
+      fireEvent.click(screen.getByRole('button', { name: /Use GitHub variant Local \(Docker\)/i }));
+
+      // The add form opens pre-filled with the Docker command (stdio)
+      const commandInput = screen.getByPlaceholderText('Command (e.g. npx my-mcp-server)') as HTMLInputElement;
+      expect(commandInput.value).toContain('ghcr.io/github/github-mcp-server');
+      // and the GITHUB_PERSONAL_ACCESS_TOKEN env key is pre-populated
+      expect(screen.getByDisplayValue('GITHUB_PERSONAL_ACCESS_TOKEN')).toBeInTheDocument();
+    });
+
+    it('catalog: selecting the archived Postgres variant shows a security warning (#108)', async () => {
+      render(<App />);
+      fireEvent.click(screen.getByText('⚙️ Settings'));
+      fireEvent.click(screen.getByText(/📚 Catalog/));
+      fireEvent.click(screen.getByRole('button', { name: /Use Database \(PostgreSQL\) variant Archived reference server/i }));
+      // A security caveat banner appears in the form
+      expect(screen.getByText(/SQL-injection|deprecated|read-only/i)).toBeInTheDocument();
+    });
+
     it('should connect to MCP servers', async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
