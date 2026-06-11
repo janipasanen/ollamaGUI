@@ -57,6 +57,11 @@ import {
   startVoiceCall, defaultSpeak, defaultRecordUtterance,
   type CallState, type VoiceCallHandle,
 } from './services/voiceCall';
+import {
+  VoiceSettings,
+  loadVoiceSettings, saveVoiceSettings,
+  recognize, speak, stopSpeaking, isSpeechRecognitionAvailable, isTtsAvailable,
+} from './services/voice';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -323,6 +328,11 @@ const App: React.FC = () => {
   const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
+
+  // Web Speech API voice (#101)
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
+  const [isListening, setIsListening] = useState(false);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
 
   // Voice call mode (#132)
   const [voiceCallActive, setVoiceCallActive] = useState(false);
@@ -1127,6 +1137,10 @@ const App: React.FC = () => {
               return updated;
             });
           }
+          // Auto-speak after response if enabled (#101)
+          if (voiceSettings.autoSpeak && isTtsAvailable() && filtered) {
+            speak(filtered, voiceSettings).catch(() => {});
+          }
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
             // User cancelled — keep partial content, append note
@@ -1621,6 +1635,22 @@ const App: React.FC = () => {
                       aria-label="Thumbs down"
                       className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
                     >👎</button>
+                    {/* Speak button — per-message TTS (#101) */}
+                    {isTtsAvailable() && (
+                      <button
+                        aria-label={speakingMsgId === `msg-${i}` ? 'Stop speaking' : 'Speak message'}
+                        onClick={() => {
+                          if (speakingMsgId === `msg-${i}`) {
+                            stopSpeaking();
+                            setSpeakingMsgId(null);
+                          } else {
+                            setSpeakingMsgId(`msg-${i}`);
+                            speak(msg.content, voiceSettings).then(() => setSpeakingMsgId(null)).catch(() => setSpeakingMsgId(null));
+                          }
+                        }}
+                        className={`text-xs px-1 rounded transition-colors ${speakingMsgId === `msg-${i}` ? 'text-blue-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
+                      >{speakingMsgId === `msg-${i}` ? '⏹' : '🔊'}</button>
+                    )}
                     {/* Action function buttons (#127) */}
                     {getEnabledActions().map(action => (
                       <button
@@ -1780,6 +1810,31 @@ const App: React.FC = () => {
              )}
              {extraModels.length > 0 && hasSameHostConflict([model, ...extraModels], ollamaBaseUrl, connectedModels, connections) && (
                <span className={`text-[9px] shrink-0 ${dark ? 'text-amber-400' : 'text-amber-600'}`} title="These models share a local host and will run sequentially">⚠️ seq</span>
+             )}
+             {isSpeechRecognitionAvailable() && (
+               <button
+                 type="button"
+                 aria-label={isListening ? 'Stop listening' : 'Dictate with microphone'}
+                 onClick={async () => {
+                   if (isListening) { setIsListening(false); return; }
+                   setIsListening(true);
+                   try {
+                     const text = await recognize();
+                     if (text) setInput(prev => prev ? `${prev} ${text}` : text);
+                   } catch (e) {
+                     console.error('Speech recognition error', e);
+                   } finally {
+                     setIsListening(false);
+                   }
+                 }}
+                 className={`px-3 py-3 rounded-xl transition-colors text-sm ${
+                   isListening
+                     ? 'bg-blue-600 hover:bg-blue-500 text-white animate-pulse'
+                     : dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-700'
+                 }`}
+               >
+                 {isListening ? '⏹' : '🎤'}
+               </button>
              )}
              {sttConfig.enabled && (
                <button
@@ -3255,6 +3310,39 @@ const App: React.FC = () => {
                       </p>
                     </div>
                   )}
+                </div>
+
+                {/* Web Speech API voice settings (#101) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Voice (Web Speech API)</label>
+                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Auto-speak responses</span>
+                      <Toggle
+                        checked={voiceSettings.autoSpeak}
+                        onChange={() => { const s = { ...voiceSettings, autoSpeak: !voiceSettings.autoSpeak }; setVoiceSettings(s); saveVoiceSettings(s); }}
+                        dark={dark}
+                        label="Auto-speak responses"
+                      />
+                    </div>
+                    <div className="flex gap-1.5">
+                      <div className="flex-1">
+                        <label className={`text-[10px] block mb-0.5 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Rate</label>
+                        <input type="range" min="0.5" max="2" step="0.1" value={voiceSettings.rate}
+                          onChange={e => { const s = { ...voiceSettings, rate: parseFloat(e.target.value) }; setVoiceSettings(s); saveVoiceSettings(s); }}
+                          className="w-full" />
+                      </div>
+                      <div className="flex-1">
+                        <label className={`text-[10px] block mb-0.5 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Pitch</label>
+                        <input type="range" min="0" max="2" step="0.1" value={voiceSettings.pitch}
+                          onChange={e => { const s = { ...voiceSettings, pitch: parseFloat(e.target.value) }; setVoiceSettings(s); saveVoiceSettings(s); }}
+                          className="w-full" />
+                      </div>
+                    </div>
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                      {isTtsAvailable() ? '✓ TTS available.' : '✗ TTS not available.'} {isSpeechRecognitionAvailable() ? '✓ Dictation available (🎤 in composer).' : '✗ SpeechRecognition not available.'}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Speech-to-Text / Dictation (#131) */}
