@@ -798,13 +798,30 @@ async fn mlx_server_status() -> Result<MlxServerStatus, String> {
     }
 }
 
+/// Check whether an executable is available on PATH (e.g. docker, uvx, npx).
+/// Used by connector UX to detect prerequisites without a shell plugin.
+#[tauri::command]
+async fn probe_binary(name: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(unix)]
+        let probe = std::process::Command::new("which").arg(&name).output();
+        #[cfg(windows)]
+        let probe = std::process::Command::new("where").arg(&name).output();
+        probe.map(|o| o.status.success()).unwrap_or(false)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             run_cli,
+            probe_binary,
             start_oauth_redirect_listener,
             mcp_stdio_spawn,
             mcp_stdio_send,
