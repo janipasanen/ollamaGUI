@@ -6,8 +6,19 @@ describe('MCP server presets', () => {
   it('includes all required connectors', () => {
     const keys = MCP_SERVER_PRESETS.map(p => p.key).sort();
     expect(keys).toEqual(
-      ['atlassian-rovo', 'database', 'faq', 'filesystem', 'github', 'gitlab', 'jira', 'supabase'].sort(),
+      ['atlassian-rovo', 'database', 'faq', 'filesystem', 'github', 'gitlab', 'jira', 'kiion', 'kiion-crm', 'supabase'].sort(),
     );
+  });
+
+  it('Kiion and KiiOn CRM are HTTP remote MCP servers with the given URLs', () => {
+    expect(getMcpPreset('kiion')!.url).toBe('https://mcp.kiion.io/mcp/v1/');
+    expect(getMcpPreset('kiion-crm')!.url).toBe('https://ebwrpsmvnvudoampvhok.supabase.co/functions/v1/dev-mcp-server');
+    expect(getMcpPreset('kiion')!.type).toBe('http');
+    expect(getMcpPreset('kiion-crm')!.type).toBe('http');
+  });
+
+  it('Atlassian Rovo uses the verified authv2 endpoint', () => {
+    expect(getMcpPreset('atlassian-rovo')!.url).toBe('https://mcp.atlassian.com/v1/mcp/authv2');
   });
 
   it('Supabase is an OAuth remote server, project-scoped + read-only by default', () => {
