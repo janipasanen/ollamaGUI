@@ -43,6 +43,11 @@ import { runCloudBrainLocalWorker } from './services/orchestrator';
 import { pickDirectory, appendPathArg, getSystemMemory } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
+import {
+  ImageGenConfig,
+  loadImageGenConfig, saveImageGenConfig,
+  generateImage, registerImageGenTool,
+} from './services/imagegen';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -302,6 +307,9 @@ const App: React.FC = () => {
   const [extraModels, setExtraModels] = useState<string[]>([]);
   const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
+  // Image generation (#130)
+  const [imageGenConfig, setImageGenConfig] = useState<ImageGenConfig>(() => loadImageGenConfig());
+
   // MLX acceleration state (Apple Silicon)
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
   const [mlxSettings, setMlxSettings] = useState<MlxSettings>(DEFAULT_MLX_SETTINGS);
@@ -402,6 +410,7 @@ const App: React.FC = () => {
       // Initialize built-in tools and user-defined tools/functions (#127)
       registerBuiltInTools();
       initCustomTools();
+      registerImageGenTool(() => loadImageGenConfig());
       registerCliTool(async (command: string, cwd?: string) => {
         return new Promise<boolean>((resolve) => {
           setPendingApproval({ command, cwd, resolve });
@@ -806,6 +815,33 @@ const App: React.FC = () => {
   const sendMessage = async (textOverride?: string) => {
     const text = textOverride ?? input;
     if (!text.trim() && attachedImages.length === 0) return;
+
+    // /image <prompt> — generate image directly without LLM (#130)
+    if (text.trimStart().startsWith('/image ')) {
+      const prompt = text.trimStart().slice('/image '.length).trim();
+      if (!prompt) return;
+      setInput('');
+      setIsLoading(true);
+      setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: 'Generating image…' }]);
+      try {
+        const results = await generateImage({ prompt }, imageGenConfig);
+        const imgs = results.map(r => `data:${r.mimeType};base64,${r.image}`);
+        setMessages(prev => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { role: 'assistant', content: `Generated image for: "${prompt}"`, images: imgs };
+          return copy;
+        });
+      } catch (e) {
+        setMessages(prev => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { role: 'assistant', content: `Image generation failed: ${e instanceof Error ? e.message : String(e)}` };
+          return copy;
+        });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
 
     // While a reply streams, enqueue user submissions instead of dropping them.
     if (isLoading && textOverride === undefined) {
@@ -3018,6 +3054,69 @@ const App: React.FC = () => {
                       >{isCreatingModel ? 'Creating…' : 'Create Model'}</button>
                     </div>
                   </div>
+                </div>
+
+                {/* Image Generation (#130) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Image Generation</label>
+                    <Toggle
+                      checked={imageGenConfig.enabled}
+                      onChange={() => { const cfg = { ...imageGenConfig, enabled: !imageGenConfig.enabled }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                      dark={dark}
+                      label="Enable image generation"
+                    />
+                  </div>
+                  {imageGenConfig.enabled && (
+                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={imageGenConfig.backend}
+                          onChange={e => { const cfg = { ...imageGenConfig, backend: e.target.value as any }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        >
+                          <option value="a1111">A1111 / Forge</option>
+                          <option value="comfyui">ComfyUI</option>
+                          <option value="openai">OpenAI DALL-E</option>
+                        </select>
+                      </div>
+                      {imageGenConfig.backend !== 'openai' && (
+                        <input
+                          placeholder="Base URL (e.g. http://127.0.0.1:7860)"
+                          value={imageGenConfig.baseUrl}
+                          onChange={e => { const cfg = { ...imageGenConfig, baseUrl: e.target.value }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      )}
+                      {(imageGenConfig.backend === 'a1111' || imageGenConfig.backend === 'openai') && (
+                        <input
+                          placeholder={imageGenConfig.backend === 'openai' ? 'OpenAI API key (sk-…)' : 'Password (optional)'}
+                          type="password"
+                          value={imageGenConfig.apiKey ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, apiKey: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      )}
+                      <div className="flex gap-1.5">
+                        <input
+                          placeholder="Default size (e.g. 512x512)"
+                          value={imageGenConfig.size ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, size: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                        <input
+                          placeholder="Steps (e.g. 20)"
+                          type="number"
+                          value={imageGenConfig.steps ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, steps: e.target.value ? parseInt(e.target.value) : undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-28 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      </div>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        Use <span className="font-mono">/image &lt;prompt&gt;</span> in the chat to generate an image. The <span className="font-mono">generate_image</span> tool is also available to models.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
               </div>
