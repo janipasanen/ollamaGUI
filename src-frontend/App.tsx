@@ -15,6 +15,7 @@ import {
 import { runCloudBrainLocalWorker } from './services/orchestrator';
 import { pickDirectory, appendPathArg } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme } from './services/theme';
+import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -207,6 +208,9 @@ const App: React.FC = () => {
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
   // Generation options — num_ctx defaults modest for 8 GB machines.
   const [genOptions, setGenOptions] = useState<GenerationOptions>({ num_ctx: 4096 });
+  // Structured output (Ollama `format`): JSON mode or a JSON Schema (#148).
+  const [structuredOutput, setStructuredOutput] = useState<{ enabled: boolean; schema: string }>({ enabled: false, schema: '' });
+  const [schemaError, setSchemaError] = useState<string | null>(null);
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -294,6 +298,11 @@ const App: React.FC = () => {
       const savedGenOptions = localStorage.getItem('ollama_gui_gen_options');
       if (savedGenOptions) {
         try { setGenOptions(JSON.parse(savedGenOptions)); } catch { /* keep defaults */ }
+      }
+
+      const savedStructured = localStorage.getItem('ollama_gui_structured');
+      if (savedStructured) {
+        try { setStructuredOutput(JSON.parse(savedStructured)); } catch { /* keep defaults */ }
       }
 
       const ts = loadThemeSettings();
@@ -486,6 +495,15 @@ const App: React.FC = () => {
       localStorage.setItem('ollama_gui_gen_options', JSON.stringify(next));
       return next;
     });
+  };
+
+  const updateStructuredOutput = (patch: Partial<{ enabled: boolean; schema: string }>) => {
+    setStructuredOutput(prev => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem('ollama_gui_structured', JSON.stringify(next));
+      return next;
+    });
+    setSchemaError(null);
   };
 
   const updateBaseUrl = (val: string) => {
@@ -726,6 +744,15 @@ const App: React.FC = () => {
       return;
     }
 
+    // Structured output: validate the schema client-side and build the Ollama `format`.
+    let format: 'json' | object | undefined;
+    if (structuredOutput.enabled) {
+      const parsed = parseSchemaInput(structuredOutput.schema);
+      if (!parsed.ok) { setSchemaError(parsed.error ?? 'Invalid schema'); return; }
+      setSchemaError(null);
+      format = parsed.schema ?? 'json';
+    }
+
     const userMessage: Message = {
       role: 'user',
       content: text,
@@ -821,6 +848,7 @@ const App: React.FC = () => {
           endpoint,
           maxIterations: 5,
           options: genOptions,
+          format,
           onAssistantMessage: (message) => {
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
@@ -886,7 +914,7 @@ const App: React.FC = () => {
                 return updated;
               });
             }
-          }, endpoint, false, genOptions, abortControllerRef.current?.signal);
+          }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
           streamOk = true;
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
@@ -1271,6 +1299,15 @@ const App: React.FC = () => {
                     Tool execution result
                   </div>
                 )}
+                {/* Structured-output validity badge (#148) */}
+                {msg.role === 'assistant' && msg.content !== '' && structuredOutput.enabled && !(isLoading && i === messages.length - 1) && (() => {
+                  const verdict = classifyResponse(msg.content, parseSchemaInput(structuredOutput.schema).schema);
+                  return (
+                    <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded mt-1 ${verdict === 'valid' ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700') : (dark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700')}`}>
+                      {verdict === 'valid' ? '✓ valid JSON' : '✗ does not match schema'}
+                    </span>
+                  );
+                })()}
                 {/* Thumbs feedback on completed assistant replies (#137) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
                   <div className="flex items-center gap-1 mt-1">
@@ -1552,6 +1589,30 @@ const App: React.FC = () => {
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                      A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave temperature blank to use the model default.
                    </p>
+                 </div>
+
+                 {/* Structured output (#148) */}
+                 <div>
+                   <div className="flex items-center justify-between">
+                     <div className="min-w-0 pr-3">
+                       <div className="text-sm font-medium">Structured output (JSON)</div>
+                       <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Constrain replies to valid JSON via Ollama's <code>format</code>. Add a JSON Schema, or leave blank for plain JSON mode.</div>
+                     </div>
+                     <Toggle dark={dark} label="Structured output"
+                       checked={structuredOutput.enabled}
+                       onChange={() => updateStructuredOutput({ enabled: !structuredOutput.enabled })} />
+                   </div>
+                   {structuredOutput.enabled && (
+                     <div className="mt-2">
+                       <textarea
+                         value={structuredOutput.schema}
+                         onChange={(e) => updateStructuredOutput({ schema: e.target.value })}
+                         placeholder={'{\n  "type": "object",\n  "properties": { "name": { "type": "string" } },\n  "required": ["name"]\n}'}
+                         className={`w-full h-28 border rounded-lg p-2 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'} ${schemaError ? 'border-red-500' : ''}`}
+                       />
+                       {schemaError && <p className="text-[10px] text-red-400 mt-1">⚠️ {schemaError}</p>}
+                     </div>
+                   )}
                  </div>
 
                  <div>

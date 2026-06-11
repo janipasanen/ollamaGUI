@@ -8,6 +8,8 @@ export interface AgenticChatOptions {
   endpoint?: string;
   /** Ollama generation options (num_ctx, temperature, …) applied to every turn. */
   options?: GenerationOptions;
+  /** Structured-output constraint (Ollama `format`): 'json' or a JSON Schema object. */
+  format?: 'json' | object;
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (toolResult: ToolResult) => void;
   onAssistantMessage?: (message: string) => void;
@@ -22,6 +24,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     maxIterations = 5,
     endpoint = 'http://localhost:11434/api/chat',
     options: genOptions,
+    format,
     onToolCall,
     onToolResult,
     onAssistantMessage,
@@ -48,6 +51,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       stream: true,
       ...(tools.length > 0 ? { tools } : {}),
       ...(cleanedOptions ? { options: cleanedOptions } : {}),
+      ...(format ? { format } : {}),
     };
     
     try {

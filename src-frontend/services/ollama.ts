@@ -47,14 +47,15 @@ export async function fetchOllamaChatStream(
   endpoint: string = 'http://localhost:11434/api/chat',
   isCloudModel: boolean = false,
   options?: GenerationOptions,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  format?: 'json' | object
 ): Promise<void> {
   const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
   const cleaned = cleanGenerationOptions(options);
   const response = await fetch(apiEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}) }),
+    body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}), ...(format ? { format } : {}) }),
     signal,
   });
 
