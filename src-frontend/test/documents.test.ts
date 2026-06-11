@@ -3,6 +3,8 @@ import {
   convertDocument,
   cancelConversion,
   checkLibreOffice,
+  setXlsxCell,
+  readOds,
   _mocks,
   type ConvertProgress,
   type Unsubscribe,
@@ -16,6 +18,24 @@ beforeEach(() => {
 afterEach(() => {
   _mocks.invoke = null;
   _mocks.listen = null;
+});
+
+describe('setXlsxCell / readOds (#141, #142)', () => {
+  it('setXlsxCell calls document_xlsx_set_cell with mapped args', async () => {
+    let cmd = ''; let args: Record<string, unknown> = {};
+    _mocks.invoke = async (c, a) => { cmd = c; args = a; return { preview_text: 'B2 = x', changed: true }; };
+    const r = await setXlsxCell('book.xlsx', 'B2', 'x');
+    expect(cmd).toBe('document_xlsx_set_cell');
+    expect(args).toMatchObject({ path: 'book.xlsx', cell: 'B2', value: 'x', sheet: null });
+    expect(r.changed).toBe(true);
+  });
+  it('readOds calls document_ods_read and returns markdown', async () => {
+    let cmd = '';
+    _mocks.invoke = async (c, _a) => { cmd = c; return '## Sheet1\n\n| A |\n| --- |\n'; };
+    const md = await readOds('data.ods');
+    expect(cmd).toBe('document_ods_read');
+    expect(md).toContain('Sheet1');
+  });
 });
 
 // ── convertDocument: command + arg mapping ─────────────────────────────────────

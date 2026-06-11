@@ -367,17 +367,38 @@ pub async fn convert_document_tiered(
     result
 }
 
-/// Tier 1 — bundled-crate conversions (currently `xlsx -> csv`).
-///
-/// DEFERRED (needs xlsx reader wiring): the actual XLSX→CSV serialization is
-/// implemented by the bundled-reader worker; here we keep the routing wrapper
-/// and bookkeeping. When wired, this reads the sheet via `zip` + `quick-xml`
-/// and writes CSV. For now it surfaces a clear, actionable error so the caller
-/// knows the path is recognized but not yet executable.
-fn run_bundled(_job: &str, _from: &str, _to: &str) -> Result<ConvertResult, String> {
-    Err("Bundled xlsx→csv conversion is provided by the document reader module \
-         (#142); route this pair through that command."
-        .to_string())
+/// Escape a single CSV field per RFC 4180 (quote when it contains a comma,
+/// quote, or newline; double internal quotes).
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// Tier 1 — bundled-crate conversions (`xlsx -> csv`) via the pure-Rust
+/// `calamine` reader. Reads the first worksheet and writes RFC-4180 CSV,
+/// fully offline with no external tool.
+fn run_bundled(_job: &str, from: &str, to: &str) -> Result<ConvertResult, String> {
+    use calamine::{open_workbook, Reader, Xlsx};
+    let mut wb: Xlsx<_> = open_workbook(from).map_err(|e| format!("Failed to open xlsx: {e}"))?;
+    let sheet = wb
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or("Workbook has no sheets")?;
+    let range = wb
+        .worksheet_range(&sheet)
+        .map_err(|e| format!("Failed to read sheet '{sheet}': {e}"))?;
+    let mut csv = String::new();
+    for row in range.rows() {
+        let cells: Vec<String> = row.iter().map(|c| csv_escape(&c.to_string())).collect();
+        csv.push_str(&cells.join(","));
+        csv.push('\n');
+    }
+    std::fs::write(to, csv).map_err(|e| format!("Failed to write CSV: {e}"))?;
+    Ok(ConvertResult { engine: Engine::BundledCrate.as_str().to_string(), ok: true })
 }
 
 /// Tier 2 — Pandoc. Spawns `pandoc -f <in> -t <out> -o <dest> <src>`.
@@ -480,6 +501,14 @@ pub async fn check_libreoffice_available() -> Result<LoAvailability, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_escapes_special_fields() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
 
     #[test]
     fn engine_matrix_text_family_routes_to_pandoc() {

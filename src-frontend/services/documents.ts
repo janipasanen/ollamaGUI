@@ -146,6 +146,16 @@ export async function checkLibreOffice(): Promise<LibreOfficeAvailability> {
   return tauriInvoke<LibreOfficeAvailability>('check_libreoffice_available', {});
 }
 
+/** Set a single cell of an existing .xlsx in place (umya), preserving the rest (#141). */
+export async function setXlsxCell(path: string, cell: string, value: string, sheet?: string): Promise<{ preview_text: string; changed: boolean }> {
+  return tauriInvoke('document_xlsx_set_cell', { path, sheet: sheet ?? null, cell, value });
+}
+
+/** Read an .ods spreadsheet into markdown tables (calamine, offline) (#142). */
+export async function readOds(path: string): Promise<string> {
+  return tauriInvoke<string>('document_ods_read', { path });
+}
+
 /** Lower-cased extension of a path without the dot (e.g. 'report.PDF' → 'pdf'). */
 function extOf(path: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(path);

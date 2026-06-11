@@ -343,6 +343,49 @@ fn build_preview(replace: &str) -> String {
     }
 }
 
+// ─── ODS read via calamine (#142) ────────────────────────────────────────────
+
+/// Render a calamine cell range as a GitHub-flavoured markdown table. The first
+/// row is treated as the header.
+pub fn range_to_markdown(range: &calamine::Range<calamine::Data>) -> String {
+    let mut out = String::new();
+    let mut rows = range.rows();
+    if let Some(header) = rows.next() {
+        let cells: Vec<String> = header.iter().map(|c| c.to_string()).collect();
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+        out.push_str(&format!("|{}|\n", vec![" --- "; cells.len().max(1)].join("|")));
+        for row in rows {
+            let cells: Vec<String> = row.iter().map(|c| c.to_string()).collect();
+            out.push_str(&format!("| {} |\n", cells.join(" | ")));
+        }
+    }
+    out
+}
+
+/// Read an `.ods` spreadsheet into markdown tables (one section per sheet),
+/// offline via the pure-Rust `calamine` reader (#142).
+#[tauri::command]
+pub async fn document_ods_read(path: String) -> Result<String, String> {
+    use calamine::{open_workbook, Ods, Reader};
+    let abs = crate::resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut wb: Ods<_> = open_workbook(&abs).map_err(|e| format!("Failed to open ods: {e}"))?;
+        let names = wb.sheet_names();
+        let mut md = String::new();
+        for name in names {
+            let range = wb
+                .worksheet_range(&name)
+                .map_err(|e| format!("Failed to read sheet '{name}': {e}"))?;
+            md.push_str(&format!("## {name}\n\n"));
+            md.push_str(&range_to_markdown(&range));
+            md.push('\n');
+        }
+        Ok::<String, String>(md)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

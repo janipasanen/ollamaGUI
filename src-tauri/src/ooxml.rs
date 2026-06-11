@@ -647,11 +647,83 @@ pub fn xlsx_replace_text(file_bytes: &[u8], find: &str, replace: &str) -> Result
     ooxml_repack(&parts)
 }
 
+// ─── XLSX cell edit via umya-spreadsheet (#141) ──────────────────────────────
+
+/// Set a single cell of an existing `.xlsx` workbook in place, preserving all
+/// other cells and formatting (umya reads → mutates → writes the full model).
+///
+/// `cell` is an A1-style reference (e.g. `"B2"`). `sheet` defaults to the first
+/// worksheet when omitted.
+#[tauri::command]
+pub async fn document_xlsx_set_cell(
+    path: String,
+    sheet: Option<String>,
+    cell: String,
+    value: String,
+) -> Result<EditResult, String> {
+    let abs = crate::resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        xlsx_set_cell_impl(&abs, sheet.as_deref(), &cell, &value)?;
+        Ok::<EditResult, String>(EditResult {
+            preview_text: format!("{cell} = {value}"),
+            changed: true,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Sync core of [`document_xlsx_set_cell`], extracted so it is unit-testable.
+pub fn xlsx_set_cell_impl(
+    path: &std::path::Path,
+    sheet: Option<&str>,
+    cell: &str,
+    value: &str,
+) -> Result<(), String> {
+    let mut book = umya_spreadsheet::reader::xlsx::read(path)
+        .map_err(|e| format!("Failed to read xlsx: {e}"))?;
+    let sheet_name = match sheet {
+        Some(s) => s.to_string(),
+        None => book
+            .get_sheet_collection()
+            .first()
+            .map(|w| w.get_name().to_string())
+            .ok_or("Workbook has no sheets")?,
+    };
+    let ws = book
+        .get_sheet_by_name_mut(&sheet_name)
+        .map_err(|_| format!("Sheet '{sheet_name}' not found"))?;
+    ws.get_cell_mut(cell).set_value(value.to_string());
+    umya_spreadsheet::writer::xlsx::write(&book, path)
+        .map_err(|e| format!("Failed to write xlsx: {e}"))
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xlsx_set_cell_preserves_neighbors() {
+        // Build a workbook with two cells, edit one via umya, assert the other survives.
+        let path = std::env::temp_dir().join("umya_set_cell_test.xlsx");
+        let mut book = umya_spreadsheet::new_file();
+        {
+            let ws = book.get_sheet_by_name_mut("Sheet1").expect("default sheet");
+            ws.get_cell_mut("A1").set_value("keep");
+            ws.get_cell_mut("B2").set_value("old");
+        }
+        umya_spreadsheet::writer::xlsx::write(&book, &path).expect("write");
+
+        xlsx_set_cell_impl(&path, None, "B2", "new").expect("edit");
+
+        let reread = umya_spreadsheet::reader::xlsx::read(&path).expect("reread");
+        let ws = reread.get_sheet_by_name("Sheet1").expect("sheet");
+        assert_eq!(ws.get_value("B2"), "new");
+        assert_eq!(ws.get_value("A1"), "keep"); // neighbor untouched
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// Build a minimal but structurally valid `.docx` in memory. The
     /// `document.xml` is supplied so individual tests can vary the body markup
