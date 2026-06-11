@@ -6,6 +6,18 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tauri::Emitter;
 
+// Multi-format document I/O modules (#140-#143) and browser-infra modules
+// (#66, #68, #72, #73). Each is a self-contained module; pure logic is
+// unit-tested via #[cfg(test)]; runtime-dependent paths are deferred.
+mod document_convert; // #140 tiered converter + LibreOffice detection
+mod ooxml;            // #141 OOXML template-fill + surgical edit
+mod odf;              // #142 ODF edit (mimetype-stored-first)
+mod pdf_tools;        // #143 PDF info/merge/split surface
+mod ax;               // #73 AX-tree serializer + redaction (CDP I/O deferred)
+mod browser_chromium; // #68 Chromium detection (download deferred)
+mod browser_preview;  // #72 native-preview nav guard (add_child deferred)
+mod config_validation; // #66 config-invariant tests
+
 #[derive(Serialize)]
 struct CliOutput {
     stdout: String,
@@ -1643,6 +1655,23 @@ pub fn run() {
             document_convert,
             document_create,
             document_formats,
+            // Tiered converter + edit (#140, #141, #142, #143)
+            document_convert::convert_document_tiered,
+            document_convert::convert_cancel,
+            document_convert::check_libreoffice_available,
+            ooxml::document_edit,
+            odf::document_odf_edit,
+            pdf_tools::document_pdf_info,
+            pdf_tools::document_pdf_merge,
+            pdf_tools::document_pdf_split,
+            // Browser infrastructure (#68 detection, #72 native-preview guard)
+            browser_chromium::browser_chromium_status,
+            browser_chromium::browser_chromium_download,
+            browser_preview::preview_webview_open,
+            browser_preview::preview_webview_navigate,
+            browser_preview::preview_webview_set_bounds,
+            browser_preview::preview_webview_reload,
+            browser_preview::preview_webview_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
