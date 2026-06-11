@@ -6,6 +6,12 @@ import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { performOAuthFlow } from './services/mcpAuth';
 import { mcpServerManager } from './services/mcp';
+import {
+  MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
+  checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
+  isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
+} from './services/mlx';
+import { runCloudBrainLocalWorker } from './services/orchestrator';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -48,6 +54,21 @@ const isCloudModel = (modelName: string): boolean => {
 };
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
+
+// Reusable on/off switch matching the app's toggle styling.
+const Toggle: React.FC<{ checked: boolean; onChange: () => void; disabled?: boolean; dark: boolean; label?: string }> = ({ checked, onChange, disabled, dark, label }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
+    disabled={disabled}
+    onClick={onChange}
+    className={`relative w-12 h-6 rounded-full transition-colors flex items-center shrink-0 ${disabled ? 'opacity-40 cursor-not-allowed' : ''} ${dark ? 'bg-zinc-700' : 'bg-zinc-300'}`}
+  >
+    <span className={`absolute w-5 h-5 rounded-full transition-transform ${checked ? 'translate-x-6 bg-blue-500' : 'translate-x-1 bg-white'}`} />
+  </button>
+);
 
 // Issue 22: standalone component so useState works per code block instance
 const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
@@ -123,6 +144,10 @@ const App: React.FC = () => {
   });
   const [mcpAuthError, setMcpAuthError] = useState<string | null>(null);
 
+  // MLX acceleration state (Apple Silicon)
+  const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
+  const [mlxSettings, setMlxSettings] = useState<MlxSettings>(DEFAULT_MLX_SETTINGS);
+
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -176,6 +201,20 @@ const App: React.FC = () => {
 
       // Load persisted MCP servers
       setMcpServers(mcpConfigStore.list());
+
+      // Load MLX settings + detect availability (graceful no-op if unavailable)
+      const loadedMlx = loadMlxSettings();
+      setMlxSettings(loadedMlx);
+      try {
+        const avail = await checkMlxAvailable();
+        setMlxAvailability(avail);
+        // If MLX is available and full inference was previously enabled, start the server.
+        if (avail.available && loadedMlx.fullInference && loadedMlx.localModel) {
+          startMlxServer(loadedMlx.localModel, loadedMlx.serverPort).catch(() => {});
+        }
+      } catch {
+        setMlxAvailability(null);
+      }
 
       // Initialize built-in tools
       registerBuiltInTools();
@@ -277,6 +316,25 @@ const App: React.FC = () => {
   const updateBaseUrl = (val: string) => {
     setOllamaBaseUrl(val);
     localStorage.setItem('ollama_gui_base_url', val);
+  };
+
+  // Update MLX settings: enforce the toggle hierarchy, persist, and manage the
+  // MLX server lifecycle (start when full inference turns on, stop when off).
+  const updateMlxSettings = (patch: Partial<MlxSettings>) => {
+    setMlxSettings(prev => {
+      const next = saveMlxSettings(applyMlxHierarchy({ ...prev, ...patch }));
+      const available = mlxAvailability?.available ?? false;
+      if (available) {
+        const wasInference = prev.fullInference;
+        const modelChanged = prev.localModel !== next.localModel || prev.serverPort !== next.serverPort;
+        if (next.fullInference && (!wasInference || modelChanged) && next.localModel) {
+          startMlxServer(next.localModel, next.serverPort).catch(() => {});
+        } else if (!next.fullInference && wasInference) {
+          stopMlxServer().catch(() => {});
+        }
+      }
+      return next;
+    });
   };
 
   // Model management
@@ -460,8 +518,69 @@ const App: React.FC = () => {
     try {
       const isCloudModel = models.some(m => m.name === model && m.cloud);
       const endpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+      const cloudEndpoint = 'https://cloud.ollama.ai/api/chat';
+      const mlxActive = !!mlxAvailability && isMlxActive(mlxSettings, mlxAvailability);
 
-      if (isAgenticMode) {
+      if (mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel) {
+        // Multi-agent: cloud model is the brain, local model is the worker.
+        let header = '';
+        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        try {
+          await runCloudBrainLocalWorker({
+            brainModel: mlxSettings.brainModel,
+            workerModel: mlxSettings.workerModel,
+            messages: chatHistory,
+            ollamaEndpoint: url('/api/chat'),
+            cloudEndpoint,
+            mlx: { active: mlxActive, port: mlxSettings.serverPort },
+            signal: abortControllerRef.current?.signal,
+            onPhase: (_phase, label) => {
+              header = `_${label}…_\n\n`;
+              setMessages(prev => [...prev, { role: 'assistant', content: header }] as Message[]);
+            },
+            onDelta: (_phase, fullText) => {
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === 'assistant') {
+                  return [...prev.slice(0, -1), { role: 'assistant', content: header + fullText }] as Message[];
+                }
+                return prev;
+              });
+            },
+          });
+          setMessages(prev => { saveCurrentSession(prev); return prev; });
+        } catch (e) {
+          setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${e instanceof Error ? e.message : 'Orchestration failed'}` }] as Message[]);
+        }
+        setIsLoading(false);
+      } else if (mlxActive && !isAgenticMode) {
+        // Direct MLX inference (full inference backend).
+        let assistantContent = '';
+        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        try {
+          await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta) => {
+            assistantContent += delta;
+            setMessages(prev => {
+              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+              saveCurrentSession(updated);
+              return updated;
+            });
+          }, mlxSettings.serverPort, { signal: abortControllerRef.current?.signal });
+        } catch (streamError) {
+          if (abortControllerRef.current?.signal.aborted) {
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant') {
+                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*' }] as Message[];
+              }
+              return prev;
+            });
+          } else {
+            setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : 'MLX stream failed'} (is the MLX model loaded?)` }] as Message[]);
+          }
+        }
+        setIsLoading(false);
+      } else if (isAgenticMode) {
         // Use agentic loop with tool calling
         const agentStream = agenticChatStream({
           model,
@@ -719,6 +838,16 @@ const App: React.FC = () => {
               {isAgenticMode && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
                   🤖 Agent
+                </span>
+              )}
+              {mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel && (
+                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>
+                  🧠 Brain·Worker
+                </span>
+              )}
+              {mlxAvailability?.available && (mlxSettings.fullInference || mlxSettings.detectIndicate) && (
+                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>
+                  ⚡ MLX{mlxSettings.fullInference ? '' : ' detected'}
                 </span>
               )}
              </div>
@@ -1022,7 +1151,127 @@ const App: React.FC = () => {
                      When enabled, the AI can use tools for advanced functionality
                    </p>
                  </div>
-                 
+
+                 {/* MLX Acceleration (Apple Silicon) */}
+                 <div>
+                   <div className="flex items-center justify-between mb-2">
+                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>MLX Acceleration</label>
+                     <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                       mlxAvailability?.available
+                         ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700')
+                         : (dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500')
+                     }`}>
+                       {mlxAvailability === null ? 'checking…' : mlxAvailability.available ? `available${mlxAvailability.version ? ` · ${mlxAvailability.version}` : ''}` : 'unavailable'}
+                     </span>
+                   </div>
+
+                   {mlxAvailability && !mlxAvailability.available ? (
+                     <p className={`text-[11px] rounded-lg border px-3 py-2 ${dark ? 'border-zinc-700 bg-zinc-900/50 text-zinc-500' : 'border-zinc-200 bg-zinc-50 text-zinc-500'}`}>
+                       {mlxAvailability.reason} MLX features are disabled.
+                     </p>
+                   ) : (
+                     <div className={`rounded-lg border p-3 space-y-3 ${dark ? 'border-zinc-700 bg-zinc-900/40' : 'border-zinc-200 bg-zinc-50'} ${!mlxAvailability?.available ? 'opacity-50' : ''}`}>
+                       {/* 1. Full inference backend (master) */}
+                       <div>
+                         <div className="flex items-center justify-between">
+                           <div className="min-w-0 pr-3">
+                             <div className="text-sm">Full inference backend</div>
+                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Route chat through the local MLX server. Enabling this also enables the options below.</div>
+                           </div>
+                           <Toggle dark={dark} label="Full inference backend"
+                             disabled={!mlxAvailability?.available}
+                             checked={mlxSettings.fullInference}
+                             onChange={() => updateMlxSettings({ fullInference: !mlxSettings.fullInference })} />
+                         </div>
+                         {mlxSettings.fullInference && (
+                           <div className="mt-2 flex gap-2">
+                             <input
+                               type="text"
+                               value={mlxSettings.localModel}
+                               onChange={(e) => updateMlxSettings({ localModel: e.target.value })}
+                               placeholder="mlx-community/Llama-3.2-3B-Instruct-4bit"
+                               className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                             />
+                             <input
+                               type="number"
+                               value={mlxSettings.serverPort}
+                               onChange={(e) => updateMlxSettings({ serverPort: Number(e.target.value) || 8080 })}
+                               className={`w-20 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                             />
+                           </div>
+                         )}
+                       </div>
+
+                       {/* 2. Accelerate embeddings / aux */}
+                       <div className="flex items-center justify-between">
+                         <div className="min-w-0 pr-3">
+                           <div className="text-sm">Accelerate embeddings / aux</div>
+                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Use MLX for embeddings (search, titles). Auto-enabled by full inference.</div>
+                         </div>
+                         <Toggle dark={dark} label="Accelerate embeddings"
+                           disabled={!mlxAvailability?.available || mlxSettings.fullInference}
+                           checked={mlxSettings.accelerateEmbeddings}
+                           onChange={() => updateMlxSettings({ accelerateEmbeddings: !mlxSettings.accelerateEmbeddings })} />
+                       </div>
+
+                       {/* 3. Detect + indicate (base opt-in) */}
+                       <div className="flex items-center justify-between">
+                         <div className="min-w-0 pr-3">
+                           <div className="text-sm">Detect &amp; indicate</div>
+                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Show the MLX accelerator indicator. Auto-enabled by the options above.</div>
+                         </div>
+                         <Toggle dark={dark} label="Detect and indicate"
+                           disabled={!mlxAvailability?.available || mlxSettings.accelerateEmbeddings || mlxSettings.fullInference}
+                           checked={mlxSettings.detectIndicate}
+                           onChange={() => updateMlxSettings({ detectIndicate: !mlxSettings.detectIndicate })} />
+                       </div>
+
+                       {/* 4. Cloud brain / local worker (multi-agent) */}
+                       <div className="pt-1 border-t border-dashed border-zinc-700/50">
+                         <div className="flex items-center justify-between pt-2">
+                           <div className="min-w-0 pr-3">
+                             <div className="text-sm">Cloud brain · local worker</div>
+                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Multi-agent: a cloud model plans, the local model executes.</div>
+                           </div>
+                           <Toggle dark={dark} label="Cloud brain local worker"
+                             disabled={!mlxAvailability?.available}
+                             checked={mlxSettings.cloudBrainLocalWorker}
+                             onChange={() => updateMlxSettings({ cloudBrainLocalWorker: !mlxSettings.cloudBrainLocalWorker })} />
+                         </div>
+                         {mlxSettings.cloudBrainLocalWorker && (
+                           <div className="mt-2 grid grid-cols-2 gap-2">
+                             <div>
+                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Brain (cloud)</div>
+                               <select
+                                 value={mlxSettings.brainModel}
+                                 onChange={(e) => updateMlxSettings({ brainModel: e.target.value })}
+                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                               >
+                                 <option value="">Select cloud model…</option>
+                                 {models.filter(m => m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                               </select>
+                             </div>
+                             <div>
+                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Worker (local)</div>
+                               <select
+                                 value={mlxSettings.workerModel}
+                                 onChange={(e) => updateMlxSettings({ workerModel: e.target.value })}
+                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                               >
+                                 <option value="">Select local model…</option>
+                                 {mlxSettings.fullInference && mlxSettings.localModel && (
+                                   <option value={mlxSettings.localModel}>{mlxSettings.localModel} (MLX)</option>
+                                 )}
+                                 {models.filter(m => !m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                               </select>
+                             </div>
+                           </div>
+                         )}
+                       </div>
+                     </div>
+                   )}
+                 </div>
+
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Available Tools ({toolRegistry.getAllTools().length})</label>
                    <div className={`rounded-lg border divide-y overflow-hidden max-h-48 overflow-y-auto ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>

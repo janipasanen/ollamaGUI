@@ -212,15 +212,12 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-use std::process::{Command, Stdio, Child, ChildStdin, ChildStdout, ChildStderr};
+use std::process::{Command, Child, ChildStdin, ChildStdout, ChildStderr};
 use std::io::{Write, BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use serde::{Serialize, Deserialize};
-use tauri::Manager;
+use serde::Deserialize;
 use reqwest::Client;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct McpStdioCommand {
@@ -412,8 +409,8 @@ async fn mcp_stdio_close(
     session_id: String,
 ) -> Result<McpStdioResponse, String> {
     let mut processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
-    let process = processes.remove(&session_id).ok_or("Session not found")?;
-    
+    let mut process = processes.remove(&session_id).ok_or("Session not found")?;
+
     // Try to kill the process gracefully
     let _ = process.child.kill();
     
@@ -428,15 +425,16 @@ async fn mcp_stdio_close(
 async fn mcp_http_request(
     request: McpHttpRequest,
 ) -> Result<McpHttpResponse, String> {
-    // Initialize HTTP client if not already done
-    let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
-    if client_guard.is_none() {
-        *client_guard = Some(Client::new());
-    }
-    let client = client_guard.as_ref().unwrap().clone();
-    
-    drop(client_guard); // Release the lock early
-    
+    // Initialize HTTP client if not already done. Scope the guard in a block so
+    // it is definitively dropped before the `.await` below (std MutexGuard is !Send).
+    let client = {
+        let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
+        if client_guard.is_none() {
+            *client_guard = Some(Client::new());
+        }
+        client_guard.as_ref().unwrap().clone()
+    };
+
     // Build the request
     let mut req_builder = match request.method.as_str() {
         "GET" => client.get(&request.url),
@@ -464,21 +462,22 @@ async fn mcp_http_request(
     
     // Execute the request
     let response = req_builder.send().await.map_err(|e| e.to_string())?;
-    
-    // Read the response body
-    let body = response.text().await.map_err(|e| e.to_string())?;
-    
-    // Collect response headers
+
+    // Capture status + headers BEFORE consuming the body (.text() moves response).
+    let status = response.status();
     let mut response_headers = HashMap::new();
     for (key, value) in response.headers() {
         if let Ok(value_str) = value.to_str() {
             response_headers.insert(key.to_string(), value_str.to_string());
         }
     }
-    
+
+    // Read the response body
+    let body = response.text().await.map_err(|e| e.to_string())?;
+
     Ok(McpHttpResponse {
-        success: response.status().is_success(),
-        status: response.status().as_u16(),
+        success: status.is_success(),
+        status: status.as_u16(),
         headers: response_headers,
         body,
         error: None,
@@ -489,34 +488,36 @@ async fn mcp_http_request(
 async fn run_cli_command(
     request: CliCommandRequest,
 ) -> Result<CliCommandResponse, String> {
-    // Check command against allowlist/denylist
-    let command_name = request.command.split_whitespace().next().unwrap_or("");
-    
-    let allowlist = CLI_ALLOWLIST.lock().map_err(|e| e.to_string())?;
-    let denylist = CLI_DENYLIST.lock().map_err(|e| e.to_string())?;
-    
-    if denylist.contains(&command_name.to_string()) {
-        return Ok(CliCommandResponse {
-            success: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            error: Some("Command is blocked by security policy".to_string()),
-            timed_out: false,
-        });
+    // Check command against allowlist/denylist. Scope the guards in a block so
+    // they are dropped before the `.await` below (std MutexGuard is !Send).
+    let command_name = request.command.split_whitespace().next().unwrap_or("").to_string();
+    {
+        let allowlist = CLI_ALLOWLIST.lock().map_err(|e| e.to_string())?;
+        let denylist = CLI_DENYLIST.lock().map_err(|e| e.to_string())?;
+
+        if denylist.contains(&command_name) {
+            return Ok(CliCommandResponse {
+                success: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some("Command is blocked by security policy".to_string()),
+                timed_out: false,
+            });
+        }
+
+        if !allowlist.is_empty() && !allowlist.contains(&command_name) {
+            return Ok(CliCommandResponse {
+                success: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some("Command not in allowlist".to_string()),
+                timed_out: false,
+            });
+        }
     }
-    
-    if !allowlist.is_empty() && !allowlist.contains(&command_name.to_string()) {
-        return Ok(CliCommandResponse {
-            success: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            error: Some("Command not in allowlist".to_string()),
-            timed_out: false,
-        });
-    }
-    
+
     let mut cmd = Command::new(&request.command);
     cmd.args(&request.args);
     
@@ -533,64 +534,55 @@ async fn run_cli_command(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    
-    let start_time = Instant::now();
-    let timeout = request.timeout_ms.map(Duration::from_millis);
-    
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    
-    let stdout_handle = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr_handle = child.stderr.take().ok_or("Failed to capture stderr")?;
-    
-    let mut stdout_reader = BufReader::new(stdout_handle);
-    let mut stderr_reader = BufReader::new(stderr_handle);
-    
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    
-    // Read output in background
-    let stdout_task = tauri::async_runtime::spawn(async move {
-        stdout_reader.read_to_string(&mut stdout).unwrap_or(0)
-    });
-    
-    let stderr_task = tauri::async_runtime::spawn(async move {
-        stderr_reader.read_to_string(&mut stderr).unwrap_or(0)
-    });
-    
-    // Wait for process to complete or timeout
-    let status = if let Some(timeout_duration) = timeout {
-        match child.wait_timeout(timeout_duration).map_err(|e| e.to_string())? {
-            Some(status) => status,
-            None => {
-                let _ = child.kill();
-                return Ok(CliCommandResponse {
+
+    let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(30_000));
+
+    // Run on a blocking thread with a timeout (mirrors run_cli). wait_with_output
+    // collects stdout/stderr; recv_timeout enforces the deadline and kills on expiry.
+    tauri::async_runtime::spawn_blocking(move || {
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return Err(e.to_string()),
+        };
+        let pid = child.id();
+        let (tx, rx) = mpsc::channel::<Result<std::process::Output, std::io::Error>>();
+        std::thread::spawn(move || {
+            let _ = tx.send(child.wait_with_output());
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(output)) => Ok(CliCommandResponse {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).chars().take(10_000).collect(),
+                stderr: String::from_utf8_lossy(&output.stderr).chars().take(2_000).collect(),
+                error: None,
+                timed_out: false,
+            }),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => {
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .status();
+                #[cfg(windows)]
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .status();
+
+                Ok(CliCommandResponse {
                     success: false,
                     exit_code: None,
-                    stdout: stdout_task.await.unwrap_or(0).to_string(),
-                    stderr: stderr_task.await.unwrap_or(0).to_string(),
+                    stdout: String::new(),
+                    stderr: format!("Command timed out after {}ms", timeout.as_millis()),
                     error: Some("Command timed out".to_string()),
                     timed_out: true,
-                });
+                })
             }
         }
-    } else {
-        child.wait().map_err(|e| e.to_string())?
-    };
-    
-    // Wait for output tasks to complete
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-    
-    let exit_code = status.code();
-    
-    Ok(CliCommandResponse {
-        success: status.success(),
-        exit_code,
-        stdout,
-        stderr,
-        error: None,
-        timed_out: false,
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -599,6 +591,203 @@ async fn mcp_stdio_check(
 ) -> Result<bool, String> {
     let processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
     Ok(processes.contains_key(&session_id))
+}
+
+// ─── MLX acceleration (Apple Silicon) ────────────────────────────────────────
+//
+// MLX is Apple's array/ML framework for Apple Silicon. When the `mlx-lm` package
+// is installed it ships `mlx_lm.server`, an OpenAI-compatible inference server.
+// These commands detect availability and manage the server lifecycle so the GUI
+// can route inference through MLX when present and cleanly fall back otherwise.
+
+#[derive(Debug, Serialize)]
+struct MlxAvailability {
+    available: bool,
+    apple_silicon: bool,
+    mlx_lm: bool,
+    python: Option<String>,
+    version: Option<String>,
+    reason: String,
+}
+
+struct MlxServer {
+    child: Child,
+    model: String,
+    port: u16,
+}
+
+lazy_static::lazy_static! {
+    static ref MLX_SERVER: Arc<Mutex<Option<MlxServer>>> = Arc::new(Mutex::new(None));
+}
+
+/// Find a usable python interpreter that can import mlx + mlx_lm.
+/// Returns (python_bin, version) on success.
+fn detect_mlx_python() -> Option<(String, String)> {
+    for bin in ["python3", "python"] {
+        let out = Command::new(bin)
+            .args([
+                "-c",
+                "import mlx.core, mlx_lm; print(getattr(mlx_lm, '__version__', 'unknown'))",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        if let Ok(o) = out {
+            if o.status.success() {
+                let version = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                return Some((bin.to_string(), version));
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn check_mlx_available() -> Result<MlxAvailability, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let apple_silicon =
+            std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64";
+
+        if !apple_silicon {
+            return MlxAvailability {
+                available: false,
+                apple_silicon: false,
+                mlx_lm: false,
+                python: None,
+                version: None,
+                reason: "MLX requires Apple Silicon (macOS, aarch64).".to_string(),
+            };
+        }
+
+        match detect_mlx_python() {
+            Some((python, version)) => MlxAvailability {
+                available: true,
+                apple_silicon: true,
+                mlx_lm: true,
+                python: Some(python),
+                version: Some(version),
+                reason: "MLX and mlx-lm are available.".to_string(),
+            },
+            None => MlxAvailability {
+                available: false,
+                apple_silicon: true,
+                mlx_lm: false,
+                python: None,
+                version: None,
+                reason: "mlx-lm not found. Install with: pip install mlx-lm".to_string(),
+            },
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+struct MlxServerStatus {
+    running: bool,
+    model: Option<String>,
+    port: Option<u16>,
+}
+
+#[tauri::command]
+async fn mlx_start_server(model: String, port: u16) -> Result<MlxServerStatus, String> {
+    // If a server is already running with the same model+port, keep it.
+    {
+        let guard = MLX_SERVER.lock().map_err(|e| e.to_string())?;
+        if let Some(existing) = guard.as_ref() {
+            if existing.model == model && existing.port == port {
+                return Ok(MlxServerStatus {
+                    running: true,
+                    model: Some(existing.model.clone()),
+                    port: Some(existing.port),
+                });
+            }
+        }
+    }
+
+    // Stop any existing server first.
+    {
+        let mut guard = MLX_SERVER.lock().map_err(|e| e.to_string())?;
+        if let Some(mut old) = guard.take() {
+            let _ = old.child.kill();
+        }
+    }
+
+    let (python, _version) =
+        detect_mlx_python().ok_or_else(|| "mlx-lm not available".to_string())?;
+
+    let child = Command::new(&python)
+        .args([
+            "-m",
+            "mlx_lm.server",
+            "--model",
+            &model,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start mlx_lm.server: {}", e))?;
+
+    let mut guard = MLX_SERVER.lock().map_err(|e| e.to_string())?;
+    *guard = Some(MlxServer {
+        child,
+        model: model.clone(),
+        port,
+    });
+
+    Ok(MlxServerStatus {
+        running: true,
+        model: Some(model),
+        port: Some(port),
+    })
+}
+
+#[tauri::command]
+async fn mlx_stop_server() -> Result<MlxServerStatus, String> {
+    let mut guard = MLX_SERVER.lock().map_err(|e| e.to_string())?;
+    if let Some(mut server) = guard.take() {
+        let _ = server.child.kill();
+    }
+    Ok(MlxServerStatus {
+        running: false,
+        model: None,
+        port: None,
+    })
+}
+
+#[tauri::command]
+async fn mlx_server_status() -> Result<MlxServerStatus, String> {
+    let mut guard = MLX_SERVER.lock().map_err(|e| e.to_string())?;
+    if let Some(server) = guard.as_mut() {
+        // Reap and check liveness.
+        match server.child.try_wait() {
+            Ok(Some(_)) => {
+                // Process exited.
+                let exited = guard.take();
+                drop(exited);
+                Ok(MlxServerStatus {
+                    running: false,
+                    model: None,
+                    port: None,
+                })
+            }
+            _ => Ok(MlxServerStatus {
+                running: true,
+                model: Some(server.model.clone()),
+                port: Some(server.port),
+            }),
+        }
+    } else {
+        Ok(MlxServerStatus {
+            running: false,
+            model: None,
+            port: None,
+        })
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -616,6 +805,10 @@ pub fn run() {
             mcp_stdio_check,
             mcp_http_request,
             run_cli_command,
+            check_mlx_available,
+            mlx_start_server,
+            mlx_stop_server,
+            mlx_server_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
