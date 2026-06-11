@@ -62,6 +62,11 @@ import {
   loadVoiceSettings, saveVoiceSettings,
   recognize, speak, stopSpeaking, isSpeechRecognitionAvailable, isTtsAvailable,
 } from './services/voice';
+import {
+  SlashCommand,
+  filterCommands, findCommand, runCommand,
+  loadUserCommands, addUserCommand, updateUserCommand, removeUserCommand,
+} from './services/commands';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -328,6 +333,12 @@ const App: React.FC = () => {
   const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
+
+  // Slash commands (#96)
+  const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [userCommands, setUserCommands] = useState<SlashCommand[]>(() => loadUserCommands());
+  const [newCmd, setNewCmd] = useState({ name: '', description: '', template: '' });
 
   // Web Speech API voice (#101)
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
@@ -846,6 +857,29 @@ const App: React.FC = () => {
   const sendMessage = async (textOverride?: string) => {
     const text = textOverride ?? input;
     if (!text.trim() && attachedImages.length === 0) return;
+
+    // Slash commands (#96) — dispatch before /image special case
+    if (text.trimStart().startsWith('/') && !text.trimStart().startsWith('/image ')) {
+      const result = runCommand(text.trim());
+      if (result.kind === 'builtin') {
+        setInput('');
+        setCommandSuggestions([]);
+        if (result.action === 'clear') { startNewChat(); return; }
+        if (result.action === 'help') { setShowHelp(true); return; }
+        return;
+      }
+      if (result.kind === 'prompt') {
+        setInput('');
+        setCommandSuggestions([]);
+        void sendMessage(result.text);
+        return;
+      }
+      if (result.kind === 'unknown') {
+        setInput('');
+        setCommandSuggestions([]);
+        // Unknown slash command — fall through to send as normal message
+      }
+    }
 
     // /image <prompt> — generate image directly without LLM (#130)
     if (text.trimStart().startsWith('/image ')) {
@@ -1758,7 +1792,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          <div className="max-w-3xl mx-auto flex gap-2">
+          <div className="max-w-3xl mx-auto flex gap-2 relative">
             {/* M5 Issue 20: Attach image button */}
              <button
                onClick={() => fileInputRef.current?.click()}
@@ -1772,14 +1806,65 @@ const App: React.FC = () => {
              </button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
 
+             {/* Slash command autocomplete dropdown (#96) */}
+             {commandSuggestions.length > 0 && (
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                 {commandSuggestions.map((cmd, idx) => (
+                   <button
+                     key={cmd.name}
+                     type="button"
+                     onMouseDown={(e) => {
+                       e.preventDefault();
+                       const args = input.includes(' ') ? input.slice(input.indexOf(' ') + 1) : '';
+                       setInput(`/${cmd.name}${args ? ' ' + args : ' '}`);
+                       setCommandSuggestions([]);
+                     }}
+                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
+                       idx === selectedSuggestion
+                         ? (dark ? 'bg-zinc-700' : 'bg-blue-50')
+                         : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
+                     }`}
+                   >
+                     <span className={`font-mono font-semibold ${dark ? 'text-blue-400' : 'text-blue-600'}`}>/{cmd.name}</span>
+                     <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{cmd.description}</span>
+                   </button>
+                 ))}
+               </div>
+             )}
              <input
                id="chat-input"
                type="text"
                value={input}
-               onChange={(e) => setInput(e.target.value)}
+               onChange={(e) => {
+                 const val = e.target.value;
+                 setInput(val);
+                 // Show slash command suggestions when input starts with /
+                 if (val.startsWith('/')) {
+                   const query = val.split(' ')[0];
+                   const suggestions = filterCommands(query);
+                   setCommandSuggestions(suggestions.slice(0, 6));
+                   setSelectedSuggestion(0);
+                 } else {
+                   setCommandSuggestions([]);
+                 }
+               }}
                onKeyDown={(e) => {
+                 if (commandSuggestions.length > 0) {
+                   if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedSuggestion(s => Math.min(s + 1, commandSuggestions.length - 1)); return; }
+                   if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedSuggestion(s => Math.max(s - 1, 0)); return; }
+                   if (e.key === 'Tab' || (e.key === 'Enter' && commandSuggestions.length > 0)) {
+                     e.preventDefault();
+                     const cmd = commandSuggestions[selectedSuggestion];
+                     const args = input.includes(' ') ? input.slice(input.indexOf(' ') + 1) : '';
+                     setInput(`/${cmd.name}${args ? ' ' + args : ' '}`);
+                     setCommandSuggestions([]);
+                     return;
+                   }
+                   if (e.key === 'Escape') { setCommandSuggestions([]); return; }
+                 }
                  if (e.key === 'Enter' && !e.shiftKey) {
                    e.preventDefault();
+                   setCommandSuggestions([]);
                    sendMessage();
                  }
                }}
@@ -3342,6 +3427,37 @@ const App: React.FC = () => {
                     <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                       {isTtsAvailable() ? '✓ TTS available.' : '✗ TTS not available.'} {isSpeechRecognitionAvailable() ? '✓ Dictation available (🎤 in composer).' : '✗ SpeechRecognition not available.'}
                     </p>
+                  </div>
+                </div>
+
+                {/* User-defined slash commands (#96) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Custom Slash Commands ({userCommands.length})</label>
+                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    {userCommands.map(cmd => (
+                      <div key={cmd.name} className="flex items-center gap-1.5">
+                        <span className={`font-mono text-xs ${dark ? 'text-blue-400' : 'text-blue-600'}`}>/{cmd.name}</span>
+                        <span className={`flex-1 text-xs truncate ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{cmd.description}</span>
+                        <button onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                      </div>
+                    ))}
+                    <div className="flex gap-1.5 pt-1">
+                      <input placeholder="name" value={newCmd.name} onChange={e => setNewCmd(v => ({ ...v, name: e.target.value.replace(/[^a-z0-9_-]/gi, '').toLowerCase() }))}
+                        className={`w-24 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <input placeholder="description" value={newCmd.description} onChange={e => setNewCmd(v => ({ ...v, description: e.target.value }))}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    </div>
+                    <input placeholder="Template — use $ARGUMENTS or $1 $2 for substitution" value={newCmd.template} onChange={e => setNewCmd(v => ({ ...v, template: e.target.value }))}
+                      className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    <button
+                      onClick={() => {
+                        if (!newCmd.name || !newCmd.description || !newCmd.template) return;
+                        addUserCommand({ name: newCmd.name, description: newCmd.description, template: newCmd.template });
+                        setUserCommands(loadUserCommands());
+                        setNewCmd({ name: '', description: '', template: '' });
+                      }}
+                      className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >+ Add Command</button>
                   </div>
                 </div>
 
