@@ -4,18 +4,39 @@ async function invoke(cmd: string, args: any): Promise<any> {
     const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
     return await tauriInvoke(cmd, args);
   } catch {
-    // Outside Tauri (tests / browser dev) — return a no-op stub
+    // Outside Tauri (tests / browser dev) — return a spec-shaped stub by method.
     console.warn(`[MCP HTTP] Tauri not available, stubbing ${cmd}`);
     if (cmd === 'mcp_http_request') {
       return {
         success: true,
         status: 200,
         headers: { 'content-type': 'application/json' },
-        body: args?.request?.body || '{"jsonrpc":"2.0","id":1,"result":{}}',
+        body: stubMcpResponseBody(args?.request?.body),
       };
     }
     return { success: false, error: 'Tauri not available' };
   }
+}
+
+/** Produce a spec-shaped JSON-RPC response body for a stubbed MCP request. */
+function stubMcpResponseBody(requestBody: unknown): string {
+  let id: number | string = 1;
+  let method = '';
+  try {
+    const parsed = JSON.parse(typeof requestBody === 'string' ? requestBody : '{}');
+    id = parsed.id ?? 1;
+    method = parsed.method ?? '';
+  } catch { /* fall through to default */ }
+
+  let result: any = {};
+  if (method === 'initialize') {
+    result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'stub', version: '0.0.0' } };
+  } else if (method === 'tools/list') {
+    result = { tools: [] };
+  } else if (method === 'tools/call') {
+    result = { content: [] };
+  }
+  return JSON.stringify({ jsonrpc: '2.0', id, result });
 }
 
 import { McpServerConfig, McpTool, McpRequest, McpResponse, McpNotification } from './mcp';
@@ -108,13 +129,15 @@ export class McpHttpTransport {
       id: 1,
       method: 'initialize',
       params: {
-        capabilities: {
-          tool_calls: true,
-        },
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'Ollama GUI', version: '0.1.0' },
       },
     };
-    
-    return this.sendRequest(sessionId, request);
+
+    const result = await this.sendRequest(sessionId, request);
+    await this.sendNotification(sessionId, 'notifications/initialized');
+    return result;
   }
 
   static async listTools(sessionId: string): Promise<McpTool[]> {
@@ -123,8 +146,14 @@ export class McpHttpTransport {
       id: 2,
       method: 'tools/list',
     };
-    
-    return this.sendRequest(sessionId, request);
+
+    const result = await this.sendRequest(sessionId, request);
+    const tools = Array.isArray(result) ? result : (result?.tools ?? []);
+    return tools.map((t: any) => ({
+      name: t.name,
+      description: t.description ?? '',
+      parameters: t.inputSchema ?? t.parameters ?? { type: 'object', properties: {} },
+    }));
   }
 
   static async callTool(
@@ -137,12 +166,38 @@ export class McpHttpTransport {
       id: 3,
       method: 'tools/call',
       params: {
-        tool_name: toolName,
-        parameters: params,
+        name: toolName,
+        arguments: params,
       },
     };
-    
+
     return this.sendRequest(sessionId, request);
+  }
+
+  /** Fire-and-forget JSON-RPC notification over HTTP (no id; response ignored). */
+  static async sendNotification(sessionId: string, method: string, params?: any): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const body = JSON.stringify({ jsonrpc: '2.0', method, ...(params ? { params } : {}) });
+    try {
+      const callInvoke = McpHttpTransport._mockInvoke ?? invoke;
+      await callInvoke('mcp_http_request', {
+        request: {
+          sessionId,
+          url: session.url,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            ...(session.authToken ? { 'Authorization': `Bearer ${session.authToken}` } : {}),
+          },
+          body,
+          authToken: session.authToken,
+        },
+      });
+    } catch (e) {
+      console.error(`[MCP HTTP] Failed to send notification ${method}: ${e}`);
+    }
   }
 
   static on(sessionId: string, event: string, listener: (data: any) => void): void {

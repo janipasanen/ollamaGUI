@@ -11,6 +11,7 @@ describe('MCP Transport Tests', () => {
     // Reset HTTP transport state
     McpHttpTransport._mockInvoke = null;
     McpHttpTransport.clearSessions();
+    TauriMcpStdioTransport._mockInvoke = null;
     vi.restoreAllMocks();
   });
 
@@ -18,6 +19,7 @@ describe('MCP Transport Tests', () => {
     const servers = mcpServerManager.getAllServers();
     servers.forEach(server => mcpServerManager.disconnectFromServer(server.id));
     McpHttpTransport._mockInvoke = null;
+    TauriMcpStdioTransport._mockInvoke = null;
   });
 
   describe('MCP Stdio Transport', () => {
@@ -395,6 +397,128 @@ describe('MCP Transport Tests', () => {
 
       mcpServerManager.removeServer('test-server');
       expect(mcpServerManager.getServer('test-server')).toBeUndefined();
+    });
+  });
+
+  describe('MCP protocol compliance (#106)', () => {
+    it('stdio: initialize sends protocolVersion + clientInfo and a notifications/initialized', async () => {
+      const sent: any[] = [];
+      // Drive the whole stdio transport through the mock seam.
+      TauriMcpStdioTransport._mockInvoke = async (cmd, args) => {
+        if (cmd === 'mcp_stdio_spawn') return { success: true, session_id: args.sessionId };
+        if (cmd === 'mcp_stdio_send') {
+          const msg = JSON.parse(args.request);
+          sent.push(msg);
+          return { success: true };
+        }
+        if (cmd === 'mcp_stdio_read') {
+          // Respond to the most recent id-bearing request.
+          const lastReq = [...sent].reverse().find(m => m.id != null);
+          if (!lastReq || lastReq._answered) return null;
+          lastReq._answered = true;
+          const result = lastReq.method === 'initialize'
+            ? { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 's', version: '1' } }
+            : { tools: [] };
+          return JSON.stringify({ jsonrpc: '2.0', id: lastReq.id, result });
+        }
+        if (cmd === 'mcp_stdio_close') return { success: true };
+        return { success: false };
+      };
+
+      mcpServerManager.addServer({
+        id: 'proto-stdio', name: 'Proto', type: 'stdio', command: 'echo', enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await mcpServerManager.connectToServer('proto-stdio');
+
+      const init = sent.find(m => m.method === 'initialize');
+      expect(init).toBeDefined();
+      expect(init.params.protocolVersion).toBe('2025-06-18');
+      expect(init.params.clientInfo).toMatchObject({ name: expect.any(String) });
+      expect(init.params.capabilities).toBeDefined();
+      const note = sent.find(m => m.method === 'notifications/initialized');
+      expect(note).toBeDefined();
+      expect(note.id).toBeUndefined(); // notifications carry no id
+    });
+
+    it('stdio: tools/call uses { name, arguments } and tools/list unwraps result.tools', async () => {
+      const sent: any[] = [];
+      TauriMcpStdioTransport._mockInvoke = async (cmd, args) => {
+        if (cmd === 'mcp_stdio_spawn') return { success: true, session_id: args.sessionId };
+        if (cmd === 'mcp_stdio_send') { sent.push(JSON.parse(args.request)); return { success: true }; }
+        if (cmd === 'mcp_stdio_read') {
+          const lastReq = [...sent].reverse().find(m => m.id != null && !m._answered);
+          if (!lastReq) return null;
+          lastReq._answered = true;
+          let result: any = {};
+          if (lastReq.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: {} };
+          else if (lastReq.method === 'tools/list') result = { tools: [{ name: 'echo', description: 'd', inputSchema: { type: 'object', properties: { msg: { type: 'string' } } } }] };
+          else if (lastReq.method === 'tools/call') result = { content: [{ type: 'text', text: 'ok' }] };
+          return JSON.stringify({ jsonrpc: '2.0', id: lastReq.id, result });
+        }
+        return { success: true };
+      };
+
+      const client = new McpStdioClient({
+        id: 'proto2', name: 'P2', type: 'stdio', command: 'echo', enabled: true, toolsEnabled: true,
+      } as McpServerConfig);
+      await client.connect();
+
+      const tools = await client.listTools();
+      expect(Array.isArray(tools)).toBe(true);
+      expect(tools[0]).toMatchObject({ name: 'echo' });
+      expect(tools[0].parameters).toMatchObject({ type: 'object' }); // inputSchema -> parameters
+
+      await client.callTool('echo', { msg: 'hi' });
+      const call = sent.find(m => m.method === 'tools/call');
+      expect(call.params).toEqual({ name: 'echo', arguments: { msg: 'hi' } });
+      expect(call.params.tool_name).toBeUndefined();
+
+      await client.disconnect(); // stop the polling loop so it can't interfere with later tests
+    });
+
+    it('http: initialize is spec-shaped and callTool uses { name, arguments }', async () => {
+      const bodies: any[] = [];
+      McpHttpTransport._mockInvoke = async (_cmd, args) => {
+        const req = JSON.parse(args.request.body);
+        bodies.push(req);
+        const result = req.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 's', version: '1' } }
+          : req.method === 'tools/list' ? { tools: [] } : { content: [] };
+        return { success: true, status: 200, headers: {}, body: JSON.stringify({ jsonrpc: '2.0', id: req.id, result }) };
+      };
+      const cfg = { id: 'h1', name: 'H', type: 'http', url: 'http://localhost:9', enabled: true, toolsEnabled: true } as McpServerConfig;
+      await McpHttpTransport.initializeSession(cfg);
+      await McpHttpTransport.initialize('h1');
+      await McpHttpTransport.callTool('h1', 'do', { a: 1 });
+
+      const init = bodies.find(b => b.method === 'initialize');
+      expect(init.params.protocolVersion).toBe('2025-06-18');
+      expect(init.params.clientInfo).toBeDefined();
+      expect(bodies.some(b => b.method === 'notifications/initialized')).toBe(true);
+      const call = bodies.find(b => b.method === 'tools/call');
+      expect(call.params).toEqual({ name: 'do', arguments: { a: 1 } });
+    });
+
+    it('discoverTools returns an array (not the wrapper object)', async () => {
+      const sent: any[] = [];
+      TauriMcpStdioTransport._mockInvoke = async (cmd, args) => {
+        if (cmd === 'mcp_stdio_spawn') return { success: true, session_id: args.sessionId };
+        if (cmd === 'mcp_stdio_send') { sent.push(JSON.parse(args.request)); return { success: true }; }
+        if (cmd === 'mcp_stdio_read') {
+          const lastReq = [...sent].reverse().find(m => m.id != null && !m._answered);
+          if (!lastReq) return null;
+          lastReq._answered = true;
+          const result = lastReq.method === 'tools/list'
+            ? { tools: [{ name: 't', description: '', inputSchema: {} }] }
+            : { protocolVersion: '2025-06-18', capabilities: {} };
+          return JSON.stringify({ jsonrpc: '2.0', id: lastReq.id, result });
+        }
+        return { success: true };
+      };
+      mcpServerManager.addServer({ id: 'disc', name: 'D', type: 'stdio', command: 'echo', enabled: true, toolsEnabled: true } as McpServerConfig);
+      const tools = await mcpServerManager.discoverTools('disc');
+      expect(Array.isArray(tools)).toBe(true);
+      expect(tools[0]).toMatchObject({ name: 't' });
     });
   });
 });

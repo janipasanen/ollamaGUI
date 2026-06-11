@@ -4,6 +4,25 @@
 import { TauriMcpStdioTransport } from './mcp-tauri';
 import { McpHttpTransport } from './mcp-http';
 
+// MCP protocol handshake constants (spec 2025-06-18).
+export const MCP_PROTOCOL_VERSION = '2025-06-18';
+export const MCP_CLIENT_INFO = { name: 'Ollama GUI', version: '0.1.0' };
+const MCP_INITIALIZE_PARAMS = {
+  protocolVersion: MCP_PROTOCOL_VERSION,
+  capabilities: {},
+  clientInfo: MCP_CLIENT_INFO,
+};
+
+/** Normalize a `tools/list` result (or a raw array) into McpTool[], mapping inputSchema -> parameters. */
+export function normalizeToolsList(result: any): McpTool[] {
+  const tools = Array.isArray(result) ? result : (result?.tools ?? []);
+  return tools.map((t: any) => ({
+    name: t.name,
+    description: t.description ?? '',
+    parameters: t.inputSchema ?? t.parameters ?? { type: 'object', properties: {} },
+  }));
+}
+
 export interface McpServerConfig {
   id: string;
   name: string;
@@ -207,14 +226,13 @@ export class McpStdioClient {
       jsonrpc: '2.0',
       id: this.getNextRequestId(),
       method: 'initialize',
-      params: {
-        capabilities: {
-          tool_calls: true,
-        }
-      }
+      params: MCP_INITIALIZE_PARAMS,
     };
-    
-    return this.sendRequest(request);
+
+    const result = await this.sendRequest(request);
+    // Per spec, confirm readiness with a fire-and-forget notification before tools/list.
+    await this.sendNotification('notifications/initialized');
+    return result;
   }
 
   async listTools(): Promise<McpTool[]> {
@@ -223,8 +241,9 @@ export class McpStdioClient {
       id: this.getNextRequestId(),
       method: 'tools/list',
     };
-    
-    return this.sendRequest(request);
+
+    const result = await this.sendRequest(request);
+    return normalizeToolsList(result);
   }
 
   async callTool(toolName: string, params: any): Promise<any> {
@@ -233,23 +252,34 @@ export class McpStdioClient {
       id: this.getNextRequestId(),
       method: 'tools/call',
       params: {
-        tool_name: toolName,
-        parameters: params,
+        name: toolName,
+        arguments: params,
       }
     };
-    
+
     return this.sendRequest(request);
+  }
+
+  /** Fire-and-forget JSON-RPC notification (no id, no pending request). */
+  private async sendNotification(method: string, params?: any): Promise<void> {
+    if (this.isClosed || !this.tauriClient) return;
+    const notification: McpNotification = { jsonrpc: '2.0', method, ...(params ? { params } : {}) };
+    try {
+      await TauriMcpStdioTransport.sendRequest(this.tauriClient, JSON.stringify(notification));
+    } catch (e) {
+      console.error(`[MCP] Failed to send notification ${method}: ${e}`);
+    }
   }
 
   private async sendRequest(request: McpRequest): Promise<any> {
     if (this.isClosed) {
       throw new Error('MCP connection is closed');
     }
-    
+
     if (!this.tauriClient) {
       throw new Error('MCP Tauri client not initialized');
     }
-    
+
     return new Promise((resolve, reject) => {
       const requestId = request.id != null ? request.id : this.getNextRequestId();
       this.pendingRequests.set(requestId, { resolve, reject });
@@ -369,14 +399,13 @@ export class McpHttpClient {
       jsonrpc: '2.0',
       id: this.getNextRequestId(),
       method: 'initialize',
-      params: {
-        capabilities: {
-          tool_calls: true,
-        }
-      }
+      params: MCP_INITIALIZE_PARAMS,
     };
-    
-    return this.sendRequest(request);
+
+    const result = await this.sendRequest(request);
+    // Notify readiness (HTTP transport posts it without awaiting a JSON-RPC response).
+    await McpHttpTransport.sendNotification(this.config.id, 'notifications/initialized');
+    return result;
   }
 
   async listTools(): Promise<McpTool[]> {
@@ -385,8 +414,9 @@ export class McpHttpClient {
       id: this.getNextRequestId(),
       method: 'tools/list',
     };
-    
-    return this.sendRequest(request);
+
+    const result = await this.sendRequest(request);
+    return normalizeToolsList(result);
   }
 
   async callTool(toolName: string, params: any): Promise<any> {
@@ -395,11 +425,11 @@ export class McpHttpClient {
       id: this.getNextRequestId(),
       method: 'tools/call',
       params: {
-        tool_name: toolName,
-        parameters: params,
+        name: toolName,
+        arguments: params,
       }
     };
-    
+
     return this.sendRequest(request);
   }
 
