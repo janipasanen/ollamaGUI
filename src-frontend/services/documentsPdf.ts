@@ -53,10 +53,7 @@ export async function pdfInfo(path: string): Promise<PdfInfo> {
   return tauriInvoke<PdfInfo>('document_pdf_info', { path });
 }
 
-/**
- * Merge multiple PDFs into a single output file.
- * DEFERRED: rejects until the `lopdf` crate is approved on the Rust side.
- */
+/** Merge multiple PDFs (in order) into a single output file via lopdf. */
 export async function pdfMerge(paths: string[], out: string): Promise<void> {
   return tauriInvoke<void>('document_pdf_merge', { paths, out });
 }
@@ -64,10 +61,19 @@ export async function pdfMerge(paths: string[], out: string): Promise<void> {
 /**
  * Split a PDF into multiple files by page ranges (e.g. `"1-3,5"`).
  * Resolves to the list of written file paths.
- * DEFERRED: rejects until the `lopdf` crate is approved on the Rust side.
  */
 export async function pdfSplit(path: string, ranges: string, outDir: string): Promise<string[]> {
   return tauriInvoke<string[]>('document_pdf_split', { path, ranges, outDir });
+}
+
+/** Extract text from a PDF (bundled, no external tool) via lopdf. */
+export async function pdfExtract(path: string): Promise<string> {
+  return tauriInvoke<string>('document_pdf_extract', { path });
+}
+
+/** Generate a text PDF at `path` from a plain-text / markdown spec. */
+export async function pdfCreate(path: string, text: string): Promise<void> {
+  return tauriInvoke<void>('document_pdf_create', { path, text });
 }
 
 /**

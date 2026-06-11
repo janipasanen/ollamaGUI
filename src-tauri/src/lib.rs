@@ -1664,6 +1664,8 @@ pub fn run() {
             pdf_tools::document_pdf_info,
             pdf_tools::document_pdf_merge,
             pdf_tools::document_pdf_split,
+            pdf_tools::document_pdf_extract,
+            pdf_tools::document_pdf_create,
             // Browser infrastructure (#68 detection, #72 native-preview guard)
             browser_chromium::browser_chromium_status,
             browser_chromium::browser_chromium_download,

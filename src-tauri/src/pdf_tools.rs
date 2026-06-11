@@ -1,22 +1,23 @@
-//! PDF create + extract command surface (#143).
+//! PDF create + extract (#143).
 //!
-//! This module exposes a small, dependency-free PDF command surface that mirrors
-//! the rest of the multi-format document I/O work (#139-#145). It deliberately
-//! shells out to the Poppler utilities (`pdfinfo`, `pdftotext`) that ship with
-//! most desktop installs rather than pulling heavy Rust PDF crates into the
-//! build. Everything degrades gracefully: if the tools are absent we return
-//! a benign "no info" result instead of an error.
+//! Bundled, offline PDF operations backed by the pure-Rust `lopdf` crate:
+//!   - `document_pdf_extract`  — text extraction with no external tool.
+//!   - `document_pdf_create`   — generate a text PDF from a spec.
+//!   - `document_pdf_merge`    — stitch several PDFs into one.
+//!   - `document_pdf_split`    — split by page ranges.
+//!   - `document_pdf_info`     — page count + has-text (Poppler when present,
+//!     lopdf fallback so it works with no external tool).
 //!
-//! DEFERRED (needs crates `pdf-extract` / `printpdf` / `lopdf`):
-//!   - Bundled (no external tool) text extraction and PDF generation.
-//!   - `document_pdf_merge` / `document_pdf_split` real implementations.
-//! The signatures and registration for merge/split exist here so the command
-//! surface is stable; the bodies return a clear "deferred" error until the
-//! `lopdf` crate is approved (see manifest.deferred and the Cargo.toml
-//! sharedEdit marked DEFERRED).
+//! PDF is scoped to CREATE-OR-EXTRACT, explicitly NOT in-place round-trip edit.
+//! High-fidelity docx/html→PDF export routes through the tiered converter
+//! (LibreOffice, CONDITIONAL). Scanned-PDF OCR is out of scope.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::process::Command;
+
+use lopdf::content::{Content, Operation};
+use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
 use crate::resolve_workspace_path;
 
@@ -150,51 +151,195 @@ pub async fn document_pdf_info(path: String) -> Result<PdfInfo, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Merge multiple PDFs into a single output file.
+// ---------------------------------------------------------------------------
+// lopdf-backed generation / extraction (pure Rust, offline)
+// ---------------------------------------------------------------------------
+
+/// Build an in-memory single-or-multi-line text PDF (A4) from `text`.
 ///
-/// DEFERRED (needs `lopdf`): real merging requires parsing and re-stitching the
-/// PDF object graphs, which the bundled crates cannot do. The signature and
-/// registration exist so the command surface is stable; the body returns a
-/// clear error until `lopdf` is approved.
-///
-/// Reference implementation to drop in once the crate is added:
-/// ```ignore
-/// use lopdf::{Document, Object, ObjectId};
-/// // load each Document, renumber objects, append page trees,
-/// // rebuild the /Pages catalog, then doc.save(out)?;
-/// ```
-#[tauri::command]
-pub async fn document_pdf_merge(paths: Vec<String>, out: String) -> Result<(), String> {
-    // Resolve up-front so a bad path still reports a sensible error and the
-    // surface behaves like the other filesystem-scoped commands.
-    for p in &paths {
-        resolve_workspace_path(p)?;
+/// Each `\n` starts a new line; the page uses the standard Helvetica font so the
+/// produced text is extractable by `extract_text` and external readers.
+pub fn build_text_pdf(text: &str) -> Result<Document, String> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+    });
+
+    // One Td per line, stepping down the page by the leading.
+    let leading = 14.0_f32;
+    let mut ops: Vec<Operation> = vec![
+        Operation::new("BT", vec![]),
+        Operation::new("Tf", vec!["F1".into(), 12.into()]),
+        Operation::new("Td", vec![50.into(), 780.into()]),
+    ];
+    let mut first = true;
+    for line in text.split('\n') {
+        if !first {
+            ops.push(Operation::new("Td", vec![0.into(), (-leading).into()]));
+        }
+        first = false;
+        ops.push(Operation::new("Tj", vec![Object::string_literal(line.as_bytes().to_vec())]));
     }
-    resolve_workspace_path(&out)?;
-    Err("PDF merge/split needs the lopdf crate (deferred)".to_string())
+    ops.push(Operation::new("ET", vec![]));
+
+    let content = Content { operations: ops };
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        content.encode().map_err(|e| e.to_string())?,
+    ));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+    });
+
+    let pages = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    doc.compress();
+    Ok(doc)
 }
 
-/// Split a PDF into multiple files by page ranges (e.g. `"1-3,5"`).
+/// Extract all text from a PDF (bundled, no external tool).
+#[tauri::command]
+pub async fn document_pdf_extract(path: String) -> Result<String, String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let doc = Document::load(&abs).map_err(|e| format!("Failed to open PDF: {e}"))?;
+        let pages: Vec<u32> = doc.get_pages().keys().copied().collect();
+        doc.extract_text(&pages).map_err(|e| format!("Text extraction failed: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Generate a text PDF at `path` from a plain-text / markdown spec.
+#[tauri::command]
+pub async fn document_pdf_create(path: String, text: String) -> Result<(), String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut doc = build_text_pdf(&text)?;
+        doc.save(&abs).map_err(|e| format!("Failed to write PDF: {e}"))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Merge multiple PDFs (in order) into a single output file using lopdf.
 ///
-/// DEFERRED (needs `lopdf`): see [`document_pdf_merge`]. Returns the list of
-/// written file paths once implemented. The range parsing
-/// ([`parse_ranges`]) is implemented and tested now so the routing logic is
-/// ready for the crate spike.
+/// Each input document's objects are renumbered into a shared id space, all
+/// pages are collected under a fresh `/Pages` tree, and a new catalog is written.
+#[tauri::command]
+pub async fn document_pdf_merge(paths: Vec<String>, out: String) -> Result<(), String> {
+    let abs_paths: Vec<_> = paths.iter().map(|p| resolve_workspace_path(p)).collect::<Result<_, _>>()?;
+    let abs_out = resolve_workspace_path(&out)?;
+    if abs_paths.is_empty() {
+        return Err("No input PDFs to merge.".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || merge_pdfs(&abs_paths, &abs_out))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn merge_pdfs(paths: &[std::path::PathBuf], out: &std::path::Path) -> Result<(), String> {
+    let mut max_id = 1u32;
+    let mut merged = Document::with_version("1.5");
+    let mut page_ids: Vec<ObjectId> = Vec::new();
+    let mut all_objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
+
+    for path in paths {
+        let mut doc = Document::load(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+        doc.renumber_objects_with(max_id);
+        max_id = doc.max_id + 1;
+        for object_id in doc.get_pages().into_values() {
+            page_ids.push(object_id);
+        }
+        all_objects.extend(doc.objects);
+    }
+
+    // Fresh /Pages node parenting every collected page.
+    let pages_id = (max_id, 0);
+    for pid in &page_ids {
+        if let Some(Object::Dictionary(dict)) = all_objects.get_mut(pid) {
+            dict.set("Parent", pages_id);
+        }
+    }
+    let count = page_ids.len() as i64;
+    let kids: Vec<Object> = page_ids.iter().map(|id| Object::Reference(*id)).collect();
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => kids,
+        "Count" => count,
+    };
+
+    for (id, obj) in all_objects {
+        merged.objects.insert(id, obj);
+    }
+    merged.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = merged.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    merged.trailer.set("Root", catalog_id);
+    merged.max_id = merged.objects.keys().map(|(i, _)| *i).max().unwrap_or(0);
+    merged.renumber_objects();
+    merged.compress();
+    merged.save(out).map_err(|e| format!("Failed to write merged PDF: {e}"))?;
+    Ok(())
+}
+
+/// Split a PDF into multiple files by page ranges (e.g. `"1-3,5"`), one output
+/// file per range. Returns the list of written file paths.
 #[tauri::command]
 pub async fn document_pdf_split(
     path: String,
     ranges: String,
     out_dir: String,
 ) -> Result<Vec<String>, String> {
-    resolve_workspace_path(&path)?;
-    resolve_workspace_path(&out_dir)?;
-    // Parse now so an obviously-malformed spec fails fast even before the crate
-    // lands; an empty result means nothing valid was requested.
+    let abs = resolve_workspace_path(&path)?;
+    let abs_dir = resolve_workspace_path(&out_dir)?;
     let parsed = parse_ranges(&ranges);
     if parsed.is_empty() {
         return Err(format!("No valid page ranges in '{ranges}'."));
     }
-    Err("PDF merge/split needs the lopdf crate (deferred)".to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut written = Vec::new();
+        for (idx, (start, end)) in parsed.iter().enumerate() {
+            let mut doc = Document::load(&abs).map_err(|e| format!("Failed to open PDF: {e}"))?;
+            let total = doc.get_pages().len() as u32;
+            let lo = (*start).max(1);
+            let hi = (*end).min(total);
+            let keep: std::collections::HashSet<u32> = (lo..=hi).collect();
+            let delete: Vec<u32> = (1..=total).filter(|p| !keep.contains(p)).collect();
+            doc.delete_pages(&delete);
+            let out_path = abs_dir.join(format!("split_{}_{}-{}.pdf", idx + 1, lo, hi));
+            doc.save(&out_path).map_err(|e| format!("Failed to write split: {e}"))?;
+            written.push(out_path.to_string_lossy().into_owned());
+        }
+        Ok::<Vec<String>, String>(written)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---------------------------------------------------------------------------
@@ -265,5 +410,34 @@ mod tests {
     fn skips_malformed_segments() {
         // "abc" and "1-x" are dropped; the valid "2" survives.
         assert_eq!(parse_ranges("abc,1-x,2"), vec![(2, 2)]);
+    }
+
+    // ----- lopdf round-trip tests -------------------------------------------
+
+    #[test]
+    fn generate_then_extract_roundtrips_text() {
+        let mut doc = build_text_pdf("Hello PDF world").expect("build");
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save to buffer");
+        let loaded = Document::load_mem(&buf).expect("reload");
+        let pages: Vec<u32> = loaded.get_pages().keys().copied().collect();
+        let text = loaded.extract_text(&pages).expect("extract");
+        assert!(text.contains("Hello PDF world"), "extracted: {text:?}");
+    }
+
+    #[test]
+    fn merge_two_single_page_pdfs_yields_two_pages() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("lopdf_merge_a.pdf");
+        let b = dir.join("lopdf_merge_b.pdf");
+        let out = dir.join("lopdf_merge_out.pdf");
+        build_text_pdf("Page A").unwrap().save(&a).unwrap();
+        build_text_pdf("Page B").unwrap().save(&b).unwrap();
+        merge_pdfs(&[a.clone(), b.clone()], &out).expect("merge");
+        let merged = Document::load(&out).expect("load merged");
+        assert_eq!(merged.get_pages().len(), 2);
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+        let _ = std::fs::remove_file(&out);
     }
 }

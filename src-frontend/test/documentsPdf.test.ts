@@ -3,6 +3,8 @@ import {
   pdfInfo,
   pdfMerge,
   pdfSplit,
+  pdfExtract,
+  pdfCreate,
   readPdfText,
   type PdfInfo,
   _mocks,
@@ -17,6 +19,23 @@ afterEach(() => {
 });
 
 // ── pdfInfo ─────────────────────────────────────────────────────────────────
+
+describe('pdfExtract / pdfCreate (#143)', () => {
+  it('pdfExtract calls document_pdf_extract and returns text', async () => {
+    let cmd = '';
+    _mocks.invoke = async (c, _a) => { cmd = c; return 'extracted text'; };
+    const text = await pdfExtract('doc.pdf');
+    expect(cmd).toBe('document_pdf_extract');
+    expect(text).toBe('extracted text');
+  });
+  it('pdfCreate calls document_pdf_create with path + text', async () => {
+    let args: Record<string, unknown> = {};
+    _mocks.invoke = async (_c, a) => { args = a; return undefined; };
+    await pdfCreate('out.pdf', '# Title\nbody');
+    expect(args.path).toBe('out.pdf');
+    expect(args.text).toBe('# Title\nbody');
+  });
+});
 
 describe('pdfInfo (#143)', () => {
   it('calls document_pdf_info with path', async () => {

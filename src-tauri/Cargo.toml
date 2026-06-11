@@ -35,4 +35,5 @@ sysinfo = "0.33"
 # Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
 zip = "2"
 quick-xml = "0.36"
+lopdf = "0.41.0"
 
