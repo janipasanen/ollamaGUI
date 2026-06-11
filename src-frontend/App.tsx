@@ -49,6 +49,7 @@ import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools } from './services/browser-tools';
+import BrowserPane from './components/BrowserPane';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
@@ -402,6 +403,7 @@ const App: React.FC = () => {
   // Artifact canvas (#99)
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
+  const [showBrowser, setShowBrowser] = useState(false); // browser preview pane (#71)
   const [artifactTab, setArtifactTab] = useState<'preview' | 'code'>('preview');
   const [artifactCopied, setArtifactCopied] = useState(false);
 
@@ -727,6 +729,9 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
         e.preventDefault();
         setIsSidebarOpen(prev => !prev);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        setShowBrowser(prev => !prev); // toggle browser preview (#71)
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
@@ -1918,6 +1923,15 @@ const App: React.FC = () => {
                      🖼
                    </button>
                  )}
+                 {/* Browser preview toggle (#71) */}
+                 <button
+                   onClick={() => setShowBrowser(v => !v)}
+                   title="Toggle browser (Ctrl+B)"
+                   aria-label="Toggle browser preview"
+                   className={`p-2 rounded-md transition-colors ${showBrowser ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                 >
+                   🌐
+                 </button>
                  <button
                    onClick={() => setShowHelp(prev => !prev)}
                    title="Keyboard shortcuts (?)"
@@ -4321,6 +4335,27 @@ const App: React.FC = () => {
            </div>
          )}
     </div>
+
+      {/* Browser preview pane (#71) — docks to the right of the chat area */}
+      {showBrowser && (
+        <div className={`w-[28rem] shrink-0 border-l flex flex-col overflow-hidden ${
+          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
+        }`}>
+          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
+            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
+          }`}>
+            <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>Browser</span>
+            <button
+              onClick={() => setShowBrowser(false)}
+              aria-label="Close browser preview"
+              className={`p-1 rounded text-xs ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}
+            >✕</button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <BrowserPane dark={dark} />
+          </div>
+        </div>
+      )}
 
       {/* Artifact canvas panel (#99) — docks to the right of the chat area */}
       {showArtifacts && currentArtifact && (
