@@ -1,7 +1,6 @@
-/** @tailwind base;
-@tailwind components;
-@tailwind utilities;
-*/
+/* Tailwind v4 — single import pulls in base, components, and utilities. */
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 /* Appearance: accent color drives primary controls via --accent (#136). */
 :root { --accent: #2563eb; }
