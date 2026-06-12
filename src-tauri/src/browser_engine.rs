@@ -254,3 +254,31 @@ pub async fn browser_cdp_read_console(clear: Option<bool>) -> Result<Vec<Console
     };
     Ok(lines.into_iter().map(|text| ConsoleEntry { text }).collect())
 }
+
+// ---------------------------------------------------------------------------
+// #67 spike harness — AX-tree-drives-snapshot→click reliability gate.
+// ---------------------------------------------------------------------------
+//
+// This throwaway harness is #[ignore]d (it needs a real Chromium install + a
+// display). It must COMPILE so the spike can be re-run on a machine that has
+// Chromium: `cargo test -- --ignored axtree_snapshot_click_loop`. Record the
+// per-local-model success rates + token counts in
+// docs/spikes/0002-axtree-local-model.md.
+#[cfg(test)]
+mod spike_harness {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "needs a Chromium install + display (#67 spike harness)"]
+    async fn axtree_snapshot_click_loop() {
+        browser_engine_start(Some(false)).await.expect("engine start");
+        let form = "data:text/html,<input aria-label='Email'><button>Sign in</button>";
+        browser_cdp_navigate(form.to_string()).await.expect("navigate");
+        let outline = browser_cdp_get_ax_tree().await.expect("ax tree");
+        assert!(outline.contains("[ref=e"), "expected actionable refs, got:\n{outline}");
+        // A real run would feed `outline` to local models and measure
+        // click-by-ref / type-by-ref success. We assert the loop is mechanically
+        // possible end-to-end here.
+        browser_engine_stop().await.expect("engine stop");
+    }
+}

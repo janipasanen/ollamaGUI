@@ -199,3 +199,17 @@ Per the project "no heavy/unstable additions in this pass" rule, the following a
 - **DEFERRED:** Tauri `unstable` feature + real command bodies; harness is debug-only /
   `#[ignore]`, throwaway, no crates.
 - Fill §3 on a real macOS build, pick the band, and record the outcome here and in ADR-0001.
+
+---
+
+## Status update — implementation landed
+
+The native child-webview path this spike de-risked is now **implemented as a shipping feature**
+(#72, `src-tauri/src/browser_preview.rs`) using the Tauri `unstable` `window.add_child` API:
+`preview_webview_open/navigate/set_bounds/reload/close` with an `on_navigation` allow-list guard,
+driven by `BrowserPane`'s geometry sync. It compiles against the `unstable` API.
+
+Remaining (manual, on macOS GUI): confirm an X-Frame-Options: DENY site renders in the child webview
+(proving frame-ancestors bypass) and that the pane tracks the host `<div>` across window + split
+resize without jank. If it regresses, the documented fallback is to open external URLs in the system
+browser via the `opener` plugin.

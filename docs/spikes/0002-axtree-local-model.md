@@ -246,3 +246,20 @@ The harness that runs §3 is **explicitly throwaway**:
   write-gate.
 - **Harness is throwaway / `#[ignore]`; no crates, no engine code.** Fill §4, pick the band,
   and record the outcome here and in ADR-0001.
+
+---
+
+## Status update — engine landed; harness ready
+
+The CDP automation engine this spike gated is now **implemented** (#73,
+`src-tauri/src/browser_engine.rs`) and a compiling, `#[ignore]`d harness lives in
+`browser_engine.rs::spike_harness::axtree_snapshot_click_loop`. Run it on a machine with a
+Chromium install:
+
+```
+cargo test --manifest-path src-tauri/Cargo.toml -- --ignored axtree_snapshot_click_loop
+```
+
+Remaining (manual, on-machine): feed the produced `ref=eNN` outline to 2–3 representative local
+Ollama models, record click-by-ref / type-by-ref success rates + token counts in the table above,
+and write the go/no-go. The AX serializer itself is unit-tested (`src-tauri/src/ax.rs`).

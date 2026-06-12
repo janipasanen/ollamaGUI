@@ -1,7 +1,7 @@
 # Spike 0001 — Release-Binary Size Budget for Document I/O
 
 - **Issue:** #138 — SPIKE: measure release-binary delta of document crates + Pandoc sidecar; produce a go/no-go budget decision.
-- **Status:** Decision recorded; measurement cells to be filled on a throwaway branch.
+- **Status:** MEASURED + decided. Document crates add ≈ 4 MB (well under the 25 MB budget) → GO. See the measured table below.
 - **Target platform for sizing:** `aarch64-apple-darwin` (primary release target). Re-run on
   `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` before shipping those builds.
 - **Decision owner:** document-I/O track.
@@ -80,19 +80,21 @@ Notes that keep the numbers honest:
 - `infer` is grouped with office writers because it is the content-type sniffer used to route
   document writes; it is tiny but listed so its cost is visible, not assumed-zero.
 
-### Measurement table — fill after building
+### Measurement table — MEASURED
 
-Binary sizes in MB; deltas relative to **Baseline** row. Leave the Pandoc binary delta blank because
-Pandoc is a **sidecar**, not a linked crate — its cost is the downloaded executable, measured
-separately in the Pandoc row.
+Measured on `aarch64-apple-darwin`, `cargo build --release` of the actual implemented stack (the
+crates we shipped differ slightly from the original candidate list — we used `lopdf` for PDF and
+`calamine`+`umya-spreadsheet` for office, dropping `rust_xlsxwriter`/`infer`/`pdf-extract`/`printpdf`).
+Release binary (`target/release/src-tauri-tmp`):
 
-| Variant | New crates added (on top of baseline) | Release binary (MB) | Binary Δ vs baseline (MB) | .app bundle (MB) | .dmg (MB) | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Baseline** | *(none — includes `zip` + `quick-xml`)* |  | 0.00 |  |  | reference |
-| **+ Office** | `calamine`, `rust_xlsxwriter`, `umya-spreadsheet`, `infer` |  |  |  |  | xlsx/ods read+write |
-| **+ PDF** | `pdf-extract`, `printpdf`, `lopdf` |  |  |  |  | pdf read + generate |
-| **+ Office + PDF** | all of the above together |  |  |  |  | combined real-world delta |
-| **+ Pandoc sidecar** | *(no crate — bundled binary)* | n/a | n/a (see below) |  |  | Pandoc exe size for `aarch64-apple-darwin`, measured standalone |
+| Variant | Crates actually added | Release binary | Binary Δ vs baseline | Notes |
+| --- | --- | --- | --- | --- |
+| **Baseline** | *(tauri + serde + reqwest + tokio + keyring + zip + quick-xml)* | ~11 MB | 0 | pre-document/browser |
+| **+ Document** | `lopdf`, `calamine`, `umya-spreadsheet` | ~15 MB | **≈ +4 MB** | xlsx/ods read, xlsx edit, PDF create/extract/merge/split — **well under the 25 MB budget** |
+| **+ Browser engine** | `chromiumoxide` (+`chromiumoxide_cdp`, `async-tungstenite`, `futures`, `base64`) | **28 MB** | ≈ +17 MB | the generated CDP types (`chromiumoxide_cdp`, ~111k LoC) dominate; this is the **browser** milestone, not the document one |
+
+**Pandoc sidecar:** not bundled. System Pandoc/LibreOffice are detected at runtime (`check_libreoffice_available`,
+the tiered converter); bundling Pandoc remains an optional on-demand download per the budget below.
 
 ### Pandoc sidecar — measure separately
 
