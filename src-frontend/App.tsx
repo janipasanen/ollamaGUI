@@ -50,6 +50,7 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools } from './services/browser-tools';
 import BrowserPane from './components/BrowserPane';
+import { PanelShell } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import DocumentArtifact, { type DocumentArtifactData } from './components/DocumentArtifact';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
@@ -1791,6 +1792,9 @@ const App: React.FC = () => {
       <div className={`flex-1 flex flex-col relative overflow-hidden ${
         isMobile && isSidebarOpen ? 'ml-64' : ''
       }`}>
+        {/* Shared resizable layout shell — owns the chat+dock split (#70/#81).
+            Near-passthrough until a panel registers + opens. */}
+        <PanelShell dark={dark}>
         {/* Header */}
         <header className={`h-14 border-b flex items-center justify-between px-6 transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
@@ -4375,6 +4379,7 @@ const App: React.FC = () => {
              </div>
            </div>
          )}
+        </PanelShell>
     </div>
 
       {/* Browser preview pane (#71) — docks to the right of the chat area */}
