@@ -1827,7 +1827,7 @@ const App: React.FC = () => {
                   }
                 }}
                 aria-label="Select AI model"
-                className={`text-sm border rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                className={`text-sm border rounded-md px-2 py-1 min-w-[10rem] max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
@@ -2409,7 +2409,7 @@ const App: React.FC = () => {
                  value={extraModels}
                  onChange={e => setExtraModels(Array.from(e.target.selectedOptions, o => o.value))}
                  title="Ctrl/Cmd+click to select 1-2 additional models for comparison"
-                 className={`hidden sm:block w-28 text-xs border rounded-xl px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-300 text-zinc-600'}`}
+                 className={`hidden sm:block w-44 text-xs border rounded-xl px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-300 text-zinc-600'}`}
                  style={{ height: '3rem' }}
                >
                  {models.filter(m => m.name !== model).map(m => (
