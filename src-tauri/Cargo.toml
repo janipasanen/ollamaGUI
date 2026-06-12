@@ -35,7 +35,7 @@ aes-gcm = "0.10"
 # Cross-platform system memory detection for the model-fit indicator.
 sysinfo = "0.33"
 # Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
-zip = "2"
+zip = "8"
 quick-xml = "0.36"
 lopdf = "0.41.0"
 calamine = "0.35.0"
