@@ -124,6 +124,12 @@ pub fn first_existing(paths: &[&str], exists: impl Fn(&str) -> bool) -> Option<S
         .map(|p| p.to_string())
 }
 
+/// Resolve a system Chromium-class binary path from the well-known locations,
+/// or `None` if none is installed. Used by the CDP engine (#73) to launch.
+pub fn resolve_system_path() -> Option<String> {
+    first_existing(&candidate_paths(), |p| std::path::Path::new(p).exists())
+}
+
 /// Parse a Chromium-class `--version` line into a bare version string.
 ///
 /// Browsers print lines like:
@@ -278,22 +284,101 @@ pub async fn browser_chromium_status(app: tauri::AppHandle) -> Result<ChromiumSt
 ///   - Unzip with the in-tree `zip` crate, mark the binary executable on Unix,
 ///     and return its absolute path.
 ///
-/// Until then this returns a clear, actionable error so callers fail loudly and
-/// the user is steered toward a system install.
+/// Map (os, arch) to the Chrome-for-Testing platform key, or `None` if the
+/// platform has no published build.
+pub fn cft_platform(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("mac-arm64"),
+        ("macos", "x86_64") => Some("mac-x64"),
+        ("linux", "x86_64") => Some("linux64"),
+        ("windows", _) => Some("win64"),
+        _ => None,
+    }
+}
+
+/// The extracted binary's path within `dir` for a CfT zip of the given platform.
+fn extracted_chrome_path(dir: &std::path::Path, platform: &str) -> std::path::PathBuf {
+    match platform {
+        "mac-arm64" | "mac-x64" => dir
+            .join(format!("chrome-{platform}"))
+            .join("Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+        "win64" | "win32" => dir.join(format!("chrome-{platform}")).join("chrome.exe"),
+        _ => dir.join(format!("chrome-{platform}")).join("chrome"),
+    }
+}
+
+/// Download a Chrome-for-Testing build (user-consented) with progress events,
+/// extract it into the app-data dir, and return the resolved binary path (#68).
 ///
-/// Reference shape for the real implementation:
-/// ```ignore
-/// use tauri::{Emitter, Manager};
-/// let url = snapshot_url(std::env::consts::OS, std::env::consts::ARCH)?;
-/// let dir = app.path().app_data_dir()?.join("chromium");
-/// std::fs::create_dir_all(&dir)?;
-/// // stream `url` -> archive, emit "chromium://progress" per chunk,
-/// // unzip into `dir`, chmod +x on unix, then:
-/// Ok(dir.join(downloaded_binary_name()).to_string_lossy().into_owned())
-/// ```
+/// Emits `chromium://progress` (a 0..1 ratio) as bytes stream in. This is the
+/// explicit fallback when no system Chromium is detected — never auto-invoked.
 #[tauri::command]
-pub async fn browser_chromium_download() -> Result<String, String> {
-    Err("Chromium download not yet implemented — locate a system install".to_string())
+pub async fn browser_chromium_download(app: tauri::AppHandle) -> Result<String, String> {
+    use futures::StreamExt;
+    use std::io::Write;
+    use tauri::{Emitter, Manager};
+
+    let platform = cft_platform(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("No Chrome-for-Testing build for this platform")?;
+
+    // 1. Resolve the stable chrome download URL for this platform.
+    let index: serde_json::Value = reqwest::get(
+        "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json",
+    )
+    .await
+    .map_err(|e| format!("Failed to fetch CfT index: {e}"))?
+    .json()
+    .await
+    .map_err(|e| format!("Bad CfT index JSON: {e}"))?;
+    let url = index["channels"]["Stable"]["downloads"]["chrome"]
+        .as_array()
+        .ok_or("Unexpected CfT index format")?
+        .iter()
+        .find(|d| d["platform"].as_str() == Some(platform))
+        .and_then(|d| d["url"].as_str())
+        .ok_or("No Chromium build for this platform in the CfT index")?
+        .to_string();
+
+    // 2. Stream the archive into app-data, emitting progress.
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("chromium");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let zip_path = dir.join("chrome.zip");
+
+    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        let ratio = if total > 0 { downloaded as f64 / total as f64 } else { 0.0 };
+        let _ = app.emit("chromium://progress", ratio);
+    }
+    drop(file);
+
+    // 3. Extract and locate the binary.
+    let zf = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(zf).map_err(|e| e.to_string())?;
+    archive.extract(&dir).map_err(|e| format!("Failed to extract: {e}"))?;
+    let _ = std::fs::remove_file(&zip_path);
+
+    let bin = extracted_chrome_path(&dir, platform);
+    if !bin.exists() {
+        return Err("Downloaded archive did not contain the expected Chromium binary".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755));
+    }
+    let _ = app.emit("chromium://progress", 1.0_f64);
+    Ok(bin.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +395,25 @@ mod tests {
         // Only paths beginning with "/yes/" "exist".
         let found = first_existing(&paths, |p| p.starts_with("/yes/"));
         assert_eq!(found, Some("/yes/b".to_string()));
+    }
+
+    #[test]
+    fn cft_platform_maps_known_targets() {
+        assert_eq!(cft_platform("macos", "aarch64"), Some("mac-arm64"));
+        assert_eq!(cft_platform("macos", "x86_64"), Some("mac-x64"));
+        assert_eq!(cft_platform("linux", "x86_64"), Some("linux64"));
+        assert_eq!(cft_platform("windows", "x86_64"), Some("win64"));
+        assert_eq!(cft_platform("freebsd", "x86_64"), None);
+    }
+
+    #[test]
+    fn extracted_chrome_path_is_platform_specific() {
+        let dir = std::path::Path::new("/tmp/c");
+        assert!(extracted_chrome_path(dir, "linux64").ends_with("chrome-linux64/chrome"));
+        assert!(extracted_chrome_path(dir, "win64").ends_with("chrome.exe"));
+        assert!(extracted_chrome_path(dir, "mac-arm64")
+            .to_string_lossy()
+            .contains("Google Chrome for Testing.app"));
     }
 
     #[test]

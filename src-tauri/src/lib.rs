@@ -13,9 +13,10 @@ mod document_convert; // #140 tiered converter + LibreOffice detection
 mod ooxml;            // #141 OOXML template-fill + surgical edit
 mod odf;              // #142 ODF edit (mimetype-stored-first)
 mod pdf_tools;        // #143 PDF info/merge/split surface
-mod ax;               // #73 AX-tree serializer + redaction (CDP I/O deferred)
-mod browser_chromium; // #68 Chromium detection (download deferred)
-mod browser_preview;  // #72 native-preview nav guard (add_child deferred)
+mod ax;               // #73 AX-tree serializer + redaction
+mod browser_engine;   // #73 chromiumoxide CDP automation engine
+mod browser_chromium; // #68 Chromium detection
+mod browser_preview;  // #72 native-preview webview (Tauri unstable add_child)
 mod config_validation; // #66 config-invariant tests
 
 #[derive(Serialize)]
@@ -1676,6 +1677,16 @@ pub fn run() {
             browser_preview::preview_webview_set_bounds,
             browser_preview::preview_webview_reload,
             browser_preview::preview_webview_close,
+            // CDP automation engine (#73)
+            browser_engine::browser_engine_start,
+            browser_engine::browser_engine_stop,
+            browser_engine::browser_cdp_navigate,
+            browser_engine::browser_cdp_get_ax_tree,
+            browser_engine::browser_cdp_click,
+            browser_engine::browser_cdp_type,
+            browser_engine::browser_cdp_screenshot,
+            browser_engine::browser_cdp_eval,
+            browser_engine::browser_cdp_read_console,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
