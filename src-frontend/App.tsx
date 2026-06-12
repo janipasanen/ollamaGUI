@@ -64,7 +64,7 @@ import {
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
 import { pickDirectory, appendPathArg, getSystemMemory } from './services/platform';
-import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme } from './services/theme';
+import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 import {
   ImageGenConfig,
@@ -776,6 +776,12 @@ const App: React.FC = () => {
     mq.addEventListener?.('change', onChange);
     return () => mq.removeEventListener?.('change', onChange);
   }, [themeSettings.mode]);
+
+  // Keep the native OS window chrome (macOS title bar / traffic lights) in sync
+  // with the in-app theme so it isn't stuck light while the app is dark.
+  useEffect(() => {
+    void syncWindowTheme(isDarkMode);
+  }, [isDarkMode]);
 
   // Pre-fill the Add-server form from a catalog preset (or one of its variants),
   // then open it for editing.
