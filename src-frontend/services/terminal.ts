@@ -113,3 +113,52 @@ export function clearTerminalSessions(): void {
   _unlisteners.forEach(u => u());
   _unlisteners.clear();
 }
+
+/**
+ * Register the `run_terminal` agent tool (#87/#186).
+ * Runs a shell command and streams its output, returning the full combined
+ * stdout/stderr once done. Optional `wait_ms` caps the maximum wait time.
+ */
+export function registerTerminalTool(): void {
+  // Lazy-import to avoid circular dependency at module load time.
+  import('./tools').then(({ toolRegistry }) => {
+    if (toolRegistry.getTool('run_terminal')) return;
+    toolRegistry.registerTool({
+      name: 'run_terminal',
+      description: 'Run a shell command and return its output. Streams stdout/stderr and waits for the process to finish (up to wait_ms, default 30 s).',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to execute.' },
+          cwd: { type: 'string', description: 'Working directory. Defaults to the workspace root.' },
+          wait_ms: { type: 'number', description: 'Maximum wait time in ms (default 30000).' },
+        },
+        required: ['command'],
+      },
+      execute: async (args: unknown) => {
+        const { command, cwd, wait_ms = 30_000 } = args as { command: string; cwd?: string; wait_ms?: number };
+        const id = await startTerminal(command, cwd);
+        const lines: string[] = [];
+        const deadline = Date.now() + wait_ms;
+
+        await new Promise<void>((resolve) => {
+          const unsub = subscribe(id, (line) => {
+            if (line.done) { unsub(); resolve(); return; }
+            lines.push(`[${line.stream}] ${line.line}`);
+          });
+          // Timeout fallback
+          const timer = setTimeout(() => { unsub(); resolve(); }, Math.max(0, deadline - Date.now()));
+          // Cancel timer if session ends naturally
+          const check = setInterval(() => {
+            const s = getSession(id);
+            if (s && s.status !== 'running') { clearInterval(check); clearTimeout(timer); resolve(); }
+          }, 200);
+        });
+
+        const output = lines.join('\n');
+        const session = getSession(id);
+        return output || `(no output — session status: ${session?.status ?? 'unknown'})`;
+      },
+    });
+  });
+}

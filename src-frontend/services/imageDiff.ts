@@ -101,3 +101,31 @@ export async function diffScreenshots(
 
   return { diffRatio, pass: diffRatio <= threshold, diffDataUrl };
 }
+
+/**
+ * Register the `diff_screenshots` agent tool (#187).
+ * Exposes pixel-diff comparison to the agent so it can verify visual changes
+ * between before/after screenshots taken during a browser-automation flow.
+ */
+export function registerImageDiffTool(): void {
+  import('./tools').then(({ toolRegistry }) => {
+    if (toolRegistry.getTool('diff_screenshots')) return;
+    toolRegistry.registerTool({
+      name: 'diff_screenshots',
+      description: 'Compare two base64 PNG screenshots pixel-by-pixel. Returns pass/fail, diffRatio (0–1), and a diff overlay data URL.',
+      parameters: {
+        type: 'object',
+        properties: {
+          before: { type: 'string', description: 'Base64 (or data-URL) of the before screenshot.' },
+          after: { type: 'string', description: 'Base64 (or data-URL) of the after screenshot.' },
+          threshold: { type: 'number', description: 'Max allowed diff ratio (default 0.01 = 1%).' },
+        },
+        required: ['before', 'after'],
+      },
+      execute: async (args: unknown) => {
+        const { before, after, threshold } = args as { before: string; after: string; threshold?: number };
+        return diffScreenshots(before, after, threshold);
+      },
+    });
+  });
+}

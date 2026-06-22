@@ -114,6 +114,8 @@ import { registerHook, makeReadOnlyHook } from './services/toolHooks';
 import { registerMemoryTools } from './services/crossSessionMemory';
 import { registerPythonTool } from './services/pyodide';
 import { registerCheckpointTools } from './services/checkpoints';
+import { registerTerminalTool } from './services/terminal';
+import { registerImageDiffTool } from './services/imageDiff';
 import { secretSet, secretDelete, secretListRefs, type SecretRef } from './services/secrets';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
@@ -609,6 +611,10 @@ const App: React.FC = () => {
       registerPythonTool();
       // File-state checkpoints (#91/#180) — create_checkpoint / rewind_checkpoint
       registerCheckpointTools();
+      // Streaming terminal sessions (#87/#186) — run_terminal
+      registerTerminalTool();
+      // Visual screenshot diffing (#79/#187) — diff_screenshots
+      registerImageDiffTool();
       // Multi-format document tools (read/create/convert/formats) — #144
       registerDocumentTools();
       initCustomTools();
