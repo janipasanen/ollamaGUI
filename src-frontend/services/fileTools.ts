@@ -10,6 +10,7 @@
  */
 
 import { toolRegistry } from './tools';
+import { proposeEdit } from './diffReview';
 
 export interface DirEntry {
   name: string;
@@ -89,8 +90,13 @@ export function registerFileTools(): void {
       required: ['path', 'content'],
     },
     execute: async (params: Record<string, unknown>) => {
-      await writeFile(params.path as string, params.content as string);
-      return { success: true };
+      const applied = await proposeEdit({
+        path: params.path as string,
+        kind: 'write_file',
+        newString: params.content as string,
+        label: `write ${params.path}`,
+      });
+      return { success: applied };
     },
   });
 
@@ -123,8 +129,14 @@ export function registerFileTools(): void {
       required: ['path', 'old_string', 'new_string'],
     },
     execute: async (params: Record<string, unknown>) => {
-      await applyEdit(params.path as string, params.old_string as string, params.new_string as string);
-      return { success: true };
+      const applied = await proposeEdit({
+        path: params.path as string,
+        kind: 'apply_edit',
+        oldString: params.old_string as string,
+        newString: params.new_string as string,
+        label: `edit ${params.path}`,
+      });
+      return { success: applied };
     },
   });
 }
