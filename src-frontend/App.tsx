@@ -401,6 +401,9 @@ const App: React.FC = () => {
   const [showAddConnection, setShowAddConnection] = useState(false);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
+  // Remote Ollama quick-add state
+  const [newRemoteOllamaUrl, setNewRemoteOllamaUrl] = useState('');
+  const [newRemoteOllamaName, setNewRemoteOllamaName] = useState('');
 
   // Many-models conversation (#126)
   const [extraModels, setExtraModels] = useState<string[]>([]);
@@ -1250,7 +1253,17 @@ const App: React.FC = () => {
 
     try {
       const isCloudModel = models.some(m => m.name === model && m.cloud);
-      const endpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+      // Resolve the connected model + connection for remote routing.
+      const selectedConnectedModel = connectedModels.find(m => m.id === model);
+      const selectedConnection = selectedConnectedModel
+        ? connections.find(c => c.id === selectedConnectedModel.connectionId)
+        : undefined;
+      // Pick the chat endpoint: cloud Ollama > remote Ollama connection > local Ollama.
+      const endpoint = isCloudModel
+        ? 'https://cloud.ollama.ai/api/chat'
+        : selectedConnection?.kind === 'ollama'
+          ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+          : url('/api/chat');
       const cloudEndpoint = 'https://cloud.ollama.ai/api/chat';
       const mlxActive = !!mlxAvailability && isMlxActive(mlxSettings, mlxAvailability);
 
@@ -1316,7 +1329,7 @@ const App: React.FC = () => {
       } else if (isAgenticMode) {
         // Use agentic loop with tool calling
         const agentStream = agenticChatStream({
-          model,
+          model: selectedConnectedModel?.name ?? model,
           messages: chatHistory,
           endpoint,
           maxIterations: autonomySettings.maxIterations,
@@ -1423,8 +1436,9 @@ const App: React.FC = () => {
         );
         setExtraModels([]);
       } else {
-        // Route through OpenAI-compatible connection when model belongs to one (#123)
-        const connectedModel = connectedModels.find(m => m.id === model);
+        // Route through OpenAI-compatible connection when model belongs to one (#123).
+        // Remote Ollama connections use the resolved `endpoint` (already correct above).
+        const connectedModel = selectedConnectedModel;
         const connForModel = connectedModel ? connections.find(c => c.id === connectedModel.connectionId && c.kind === 'openai') : undefined;
 
         // Use regular chat stream
@@ -1451,7 +1465,9 @@ const App: React.FC = () => {
               abortControllerRef.current?.signal
             );
           } else {
-          await fetchOllamaChatStream(model, chatHistory, (chunk) => {
+          // Use bare model name — connected models carry a "connId/name" id prefix.
+          const ollamaModelName = connectedModel?.name ?? model;
+          await fetchOllamaChatStream(ollamaModelName, chatHistory, (chunk) => {
             if (chunk.message?.content) {
               assistantContent += chunk.message.content;
               setMessages(prev => {
@@ -1905,19 +1921,29 @@ const App: React.FC = () => {
                     ))}
                   </optgroup>
                 )}
-                <optgroup label="— Local / Cloud —">
-                  {models.map((m) => (
-                    <option key={m.name} value={m.name}>
-                      {m.name}{m.cloud ? ' ⛅' : ''}
-                    </option>
-                  ))}
-                </optgroup>
+                {models.filter(m => !m.cloud).length > 0 && (
+                  <optgroup label="— Local Ollama —">
+                    {models.filter(m => !m.cloud).map((m) => (
+                      <option key={m.name} value={m.name}>{m.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {models.filter(m => m.cloud).length > 0 && (
+                  <optgroup label="— Cloud Ollama —">
+                    {models.filter(m => m.cloud).map((m) => (
+                      <option key={m.name} value={m.name}>{m.name} ⛅</option>
+                    ))}
+                  </optgroup>
+                )}
                 {/* Extra connection models grouped by connection (#123) */}
                 {connections.filter(c => c.enabled).map(conn => {
                   const connModels = connectedModels.filter(m => m.connectionId === conn.id);
                   if (!connModels.length) return null;
+                  const groupLabel = conn.kind === 'ollama'
+                    ? `— Remote Ollama: ${conn.name} —`
+                    : `— ${conn.name} —`;
                   return (
-                    <optgroup key={conn.id} label={`— ${conn.name} —`}>
+                    <optgroup key={conn.id} label={groupLabel}>
                       {connModels.map(m => (
                         <option key={m.id} value={m.id}>{m.name}</option>
                       ))}
@@ -1930,6 +1956,17 @@ const App: React.FC = () => {
                   ⛅ Cloud
                 </span>
               )}
+              {(() => {
+                const cm = connectedModels.find(m => m.id === model);
+                const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
+                if (!conn) return null;
+                return (
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
+                    title={conn.baseUrl}>
+                    {conn.kind === 'ollama' ? '🌐 Remote' : conn.name}
+                  </span>
+                );
+              })()}
               {isAgenticMode && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
                   🤖 Agent
@@ -2674,7 +2711,7 @@ const App: React.FC = () => {
 
                 {/* M5 Issue 17: Configurable endpoint */}
                 <div>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Ollama Endpoint</label>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Local Ollama Endpoint</label>
                   <input
                     type="text"
                     value={ollamaBaseUrl}
@@ -2685,7 +2722,7 @@ const App: React.FC = () => {
                     }`}
                   />
                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Change this to connect to a remote Ollama instance.
+                    The local Ollama server. Models from this server appear under "Local Ollama" in the model selector.
                   </p>
                   <button
                     onClick={async (e) => {
@@ -2712,6 +2749,82 @@ const App: React.FC = () => {
                   >
                     Test connection
                    </button>
+                 </div>
+
+                 {/* Remote Ollama servers — quick add/remove */}
+                 <div>
+                   <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Remote Ollama Servers</label>
+                   <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     Add remote Ollama instances (e.g. a server on another machine). Their models appear under "Remote Ollama: name" in the model selector.
+                   </p>
+                   {/* Existing remote Ollama connections */}
+                   {connections.filter(c => c.kind === 'ollama').length > 0 && (
+                     <div className="space-y-1 mb-2">
+                       {connections.filter(c => c.kind === 'ollama').map(conn => {
+                         const modelCount = connectedModels.filter(m => m.connectionId === conn.id).length;
+                         return (
+                           <div key={conn.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 border ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
+                             <div className="flex-1 min-w-0">
+                               <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{conn.name}</div>
+                               <div className={`text-[10px] font-mono truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} · {modelCount} model{modelCount !== 1 ? 's' : ''}</div>
+                             </div>
+                             <button
+                               onClick={() => {
+                                 const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
+                                 saveConnections(updated);
+                                 setConnections(updated);
+                               }}
+                               className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-emerald-700 text-emerald-400' : 'border-emerald-400 text-emerald-600') : (dark ? 'border-zinc-600 text-zinc-500' : 'border-zinc-300 text-zinc-400')}`}
+                             >{conn.enabled ? 'On' : 'Off'}</button>
+                             <button
+                               onClick={() => {
+                                 const updated = connections.filter(c => c.id !== conn.id);
+                                 saveConnections(updated);
+                                 setConnections(updated);
+                                 setConnectedModels(prev => prev.filter(m => m.connectionId !== conn.id));
+                               }}
+                               className="shrink-0 text-red-400 hover:text-red-300 text-xs"
+                             >✕</button>
+                           </div>
+                         );
+                       })}
+                     </div>
+                   )}
+                   {/* Quick-add form */}
+                   <div className="flex gap-1 mb-1">
+                     <input
+                       value={newRemoteOllamaName}
+                       onChange={e => setNewRemoteOllamaName(e.target.value)}
+                       placeholder="Name (e.g. Home Server)"
+                       className={`flex-1 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                     />
+                   </div>
+                   <div className="flex gap-1">
+                     <input
+                       value={newRemoteOllamaUrl}
+                       onChange={e => setNewRemoteOllamaUrl(e.target.value)}
+                       placeholder="URL (e.g. http://192.168.1.10:11434)"
+                       className={`flex-1 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                     />
+                     <button
+                       onClick={async () => {
+                         const rawUrl = newRemoteOllamaUrl.trim();
+                         const name = newRemoteOllamaName.trim() || rawUrl;
+                         if (!rawUrl) return;
+                         const conn = addConnection({ name, kind: 'ollama', baseUrl: rawUrl, enabled: true });
+                         const updated = loadConnections();
+                         setConnections(updated);
+                         setNewRemoteOllamaUrl('');
+                         setNewRemoteOllamaName('');
+                         // Fetch models from the new remote server
+                         const { fetchOllamaConnectionModels } = await import('./services/connections');
+                         fetchOllamaConnectionModels(conn).then(newModels => {
+                           setConnectedModels(prev => [...prev.filter(m => m.connectionId !== conn.id), ...newModels]);
+                         }).catch(() => {});
+                       }}
+                       className={`shrink-0 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white`}
+                     >Add</button>
+                   </div>
                  </div>
 
                  {/* System Prompt */}
