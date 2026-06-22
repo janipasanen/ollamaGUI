@@ -120,6 +120,7 @@ import { secretSet, secretDelete, secretListRefs, type SecretRef } from './servi
 import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } from './services/atCommand';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type PendingEdit, type EditDecision } from './services/diffReview';
+import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -328,6 +329,13 @@ const App: React.FC = () => {
   const [newMemoryText, setNewMemoryText] = useState('');
   // Secret store UI state (#173)
   const [secretKeys, setSecretKeys] = useState<SecretRef[]>(() => secretListRefs());
+
+  // Knowledge collection UI state (#117/#188)
+  const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollection[]>([]);
+  const [knowledgeFilesMap, setKnowledgeFilesMap] = useState<Record<string, KnowledgeFile[]>>({});
+  const [expandedCollection, setExpandedCollection] = useState<string | null>(null);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const knowledgeFileInputRef = useRef<HTMLInputElement>(null);
   const [newSecretService, setNewSecretService] = useState('');
   const [newSecretKey, setNewSecretKey] = useState('');
   const [newSecretValue, setNewSecretValue] = useState('');
@@ -709,6 +717,11 @@ const App: React.FC = () => {
 
   // Cleanup diff review callback on unmount (#185)
   useEffect(() => () => clearDiffReviewCallback(), []);
+
+  // Load knowledge collections when Settings panel opens (#117/#188)
+  useEffect(() => {
+    if (isSettingsOpen) void listCollections().then(setKnowledgeCollections);
+  }, [isSettingsOpen]);
 
   // Keep trunk in sync with messages during normal (non-branch-navigating) operation.
   useEffect(() => {
@@ -4723,6 +4736,127 @@ const App: React.FC = () => {
                       className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
                     >Save</button>
                   </div>
+                </div>
+
+                {/* Knowledge Collections (#117/#188) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Knowledge Collections</label>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Create document collections for RAG-based context injection. Reference them with <span className="font-mono">#collection-name</span> in the chat.</p>
+                  <div className="space-y-1 mb-3 max-h-52 overflow-y-auto">
+                    {knowledgeCollections.map(col => (
+                      <div key={col.id} className={`rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                        <div className={`flex items-center gap-2 px-2 py-1.5 text-xs cursor-pointer select-none ${dark ? 'bg-zinc-800 hover:bg-zinc-700/50' : 'bg-white hover:bg-zinc-50'}`}
+                          onClick={() => {
+                            if (expandedCollection === col.id) {
+                              setExpandedCollection(null);
+                            } else {
+                              setExpandedCollection(col.id);
+                              if (!knowledgeFilesMap[col.id]) {
+                                void getFilesForCollection(col.id).then(files =>
+                                  setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }))
+                                );
+                              }
+                            }
+                          }}
+                        >
+                          <span className="opacity-50">{expandedCollection === col.id ? '▼' : '▶'}</span>
+                          <span className={`flex-1 font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{col.name}</span>
+                          <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
+                          <button
+                            type="button"
+                            onClick={async e => {
+                              e.stopPropagation();
+                              if (!confirm(`Delete collection "${col.name}" and all its files?`)) return;
+                              await deleteCollection(col.id);
+                              const updated = await listCollections();
+                              setKnowledgeCollections(updated);
+                              if (expandedCollection === col.id) setExpandedCollection(null);
+                            }}
+                            className="shrink-0 text-red-400 hover:text-red-300 ml-1"
+                            title="Delete collection"
+                          >✕</button>
+                        </div>
+                        {expandedCollection === col.id && (
+                          <div className={`px-2 pb-2 pt-1 ${dark ? 'bg-zinc-800/50' : 'bg-zinc-50'}`}>
+                            <div className="space-y-1 mb-2">
+                              {(knowledgeFilesMap[col.id] ?? []).map(f => (
+                                <div key={f.id} className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${dark ? 'bg-zinc-900 text-zinc-300' : 'bg-white text-zinc-700'}`}>
+                                  <span className="flex-1 font-mono truncate">{f.name}</span>
+                                  <span className={`shrink-0 opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{(f.sizeBytes / 1024).toFixed(1)} KB</span>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      await removeFile(f.id);
+                                      const files = await getFilesForCollection(col.id);
+                                      setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }));
+                                    }}
+                                    className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
+                                    title="Remove file"
+                                  >✕</button>
+                                </div>
+                              ))}
+                              {(knowledgeFilesMap[col.id] ?? []).length === 0 && (
+                                <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No files yet.</p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (knowledgeFileInputRef.current) {
+                                  knowledgeFileInputRef.current.dataset.collectionId = col.id;
+                                  knowledgeFileInputRef.current.click();
+                                }
+                              }}
+                              className={`text-xs px-2 py-1 rounded border ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-700 hover:bg-zinc-100'}`}
+                            >+ Add file</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {knowledgeCollections.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No collections yet.</p>}
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      value={newCollectionName}
+                      onChange={e => setNewCollectionName(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter' && newCollectionName.trim()) {
+                          await createCollection(newCollectionName.trim());
+                          setKnowledgeCollections(await listCollections());
+                          setNewCollectionName('');
+                        }
+                      }}
+                      placeholder="New collection name…"
+                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (newCollectionName.trim()) {
+                          await createCollection(newCollectionName.trim());
+                          setKnowledgeCollections(await listCollections());
+                          setNewCollectionName('');
+                        }
+                      }}
+                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >Create</button>
+                  </div>
+                  {/* Hidden file input for adding documents */}
+                  <input
+                    ref={knowledgeFileInputRef}
+                    type="file"
+                    accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.html,.css,.yaml,.yml,.toml"
+                    className="hidden"
+                    onChange={async e => {
+                      const file = e.target.files?.[0];
+                      const colId = knowledgeFileInputRef.current?.dataset.collectionId;
+                      if (!file || !colId) return;
+                      const text = await file.text();
+                      await addFile(colId, file.name, file.type || 'text/plain', file.size, text);
+                      const files = await getFilesForCollection(colId);
+                      setKnowledgeFilesMap(prev => ({ ...prev, [colId]: files }));
+                      e.target.value = '';
+                    }}
+                  />
                 </div>
 
                 {/* Compaction (#95) */}
