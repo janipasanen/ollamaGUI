@@ -114,6 +114,7 @@ import { registerHook, makeReadOnlyHook } from './services/toolHooks';
 import { registerMemoryTools } from './services/crossSessionMemory';
 import { registerPythonTool } from './services/pyodide';
 import { registerCheckpointTools } from './services/checkpoints';
+import { secretSet, secretDelete, secretListRefs, type SecretRef } from './services/secrets';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -320,6 +321,11 @@ const App: React.FC = () => {
   // Memory (#95)
   const [memoryEntries, setMemoryEntries] = useState<MemoryEntry[]>(() => loadMemory());
   const [newMemoryText, setNewMemoryText] = useState('');
+  // Secret store UI state (#173)
+  const [secretKeys, setSecretKeys] = useState<SecretRef[]>(() => secretListRefs());
+  const [newSecretService, setNewSecretService] = useState('');
+  const [newSecretKey, setNewSecretKey] = useState('');
+  const [newSecretValue, setNewSecretValue] = useState('');
 
   // Compaction (#95)
   const [autoCompact, setAutoCompact] = useState(() => {
@@ -4392,6 +4398,70 @@ const App: React.FC = () => {
                       onClick={() => { if (newMemoryText.trim()) { addMemoryEntry(newMemoryText.trim(), activeProjectId ?? 'global'); setMemoryEntries(loadMemory()); setNewMemoryText(''); } }}
                       className="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
                     >Add</button>
+                  </div>
+                </div>
+
+                {/* Secret Store (#173) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Secret Store</label>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Secrets are stored in the OS keychain (encrypted file fallback). The agent can read them via <span className="font-mono">secret_get</span>. Values are never displayed.</p>
+                  <div className="space-y-1 mb-3 max-h-28 overflow-y-auto">
+                    {secretKeys.map(r => (
+                      <div key={`${r.service}:${r.key}`} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-zinc-700'}`}>
+                        <span className={`shrink-0 font-mono text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{r.service}</span>
+                        <span className="flex-1 font-mono">{r.key}</span>
+                        <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-300'}`}>••••••••</span>
+                        <button
+                          onClick={async () => {
+                            await secretDelete(r.service, r.key);
+                            setSecretKeys(secretListRefs());
+                          }}
+                          className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
+                          title="Delete secret"
+                        >✕</button>
+                      </div>
+                    ))}
+                    {secretKeys.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No secrets stored.</p>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 mb-1">
+                    <input
+                      value={newSecretService}
+                      onChange={e => setNewSecretService(e.target.value)}
+                      placeholder="Service (e.g. openai)"
+                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <input
+                      value={newSecretKey}
+                      onChange={e => setNewSecretKey(e.target.value)}
+                      placeholder="Key (e.g. api_key)"
+                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      type="password"
+                      value={newSecretValue}
+                      onChange={e => setNewSecretValue(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter' && newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
+                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
+                          setSecretKeys(secretListRefs());
+                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
+                        }
+                      }}
+                      placeholder="Value (never stored on disk)"
+                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
+                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
+                          setSecretKeys(secretListRefs());
+                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
+                        }
+                      }}
+                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >Save</button>
                   </div>
                 </div>
 
