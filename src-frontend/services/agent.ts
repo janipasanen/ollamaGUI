@@ -1,7 +1,7 @@
 import { Message, GenerationOptions, cleanGenerationOptions } from './ollama';
 import { toolRegistry, ToolCall, ToolResult } from './tools';
 import { runPreToolUseHooks } from './toolHooks';
-import { isBlockedByReadOnlyMode } from './agentAutonomy';
+import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
 
 export interface AgenticChatOptions {
   model: string;
@@ -19,6 +19,12 @@ export interface AgenticChatOptions {
    * exposed to the model (used for sub-agent scoping, #104).
    */
   toolFilter?: string[];
+  /**
+   * Plan/ask autonomy gate (#88/#89/#189).
+   * Called before each tool execution when shouldAskBeforeToolUse() returns true.
+   * Resolves true to allow, false to block.
+   */
+  onApprovalNeeded?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (toolResult: ToolResult) => void;
   onAssistantMessage?: (message: string) => void;
@@ -41,6 +47,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onComplete,
     onError,
     toolFilter,
+    onApprovalNeeded,
   } = options;
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
@@ -150,8 +157,24 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
               continue;
             }
 
+            // Plan/ask autonomy gate (#88/#89/#189)
+            const approvalArgs = (toolCall.function?.arguments ?? {}) as Record<string, unknown>;
+            if (shouldAskBeforeToolUse(toolIsReadOnly) && onApprovalNeeded) {
+              const approved = await onApprovalNeeded(toolCall.function?.name ?? toolCall.name, approvalArgs);
+              if (!approved) {
+                const blocked: ToolResult = {
+                  name: toolCall.function?.name ?? toolCall.name,
+                  content: `Tool blocked: user denied approval (autonomy level: ${(await import('./agentAutonomy')).getAutonomyLevel()}).`,
+                };
+                if (onToolResult) onToolResult(blocked);
+                currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
+                yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+                continue;
+              }
+            }
+
             // Pre-tool-use hook chain (toolHooks #90)
-            const hookArgs = (toolCall.function?.arguments ?? {}) as Record<string, unknown>;
+            const hookArgs = approvalArgs;
             const hookResult = await runPreToolUseHooks(toolCall.function?.name ?? toolCall.name, hookArgs);
             if (!hookResult.allowed) {
               const blocked: ToolResult = {

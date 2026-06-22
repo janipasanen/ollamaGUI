@@ -128,3 +128,67 @@ export async function isWorkspaceIndexed(workspaceRoot: string): Promise<boolean
   const name = collectionName(workspaceRoot);
   return (await listCollections()).some(c => c.name === name);
 }
+
+// ── Agent tool registration (#94/#194) ───────────────────────────────────────
+
+/** Returns the current workspace root from fileTools (for tool implementations). */
+function getCurrentRoot(): string | null {
+  // fileTools exposes getWorkspaceRoot(); use dynamic import to avoid circular dep.
+  return (globalThis as any).__workspaceRoot ?? null;
+}
+
+/**
+ * Register workspace RAG agent tools (#94/#194).
+ *   - index_workspace: index (or re-index) all text files under the workspace root.
+ *   - query_workspace: semantic search over previously-indexed workspace files.
+ */
+export function registerWorkspaceRagTools(): void {
+  import('./tools').then(({ toolRegistry }) => {
+    if (toolRegistry.getTool('query_workspace')) return;
+
+    // Expose the current root via a global so the tool closures can read it.
+    import('./fileTools').then(({ getWorkspaceRoot }) => {
+      toolRegistry.registerTool({
+        name: 'index_workspace',
+        description: 'Index all text source files in the current workspace for semantic search. Run before query_workspace.',
+        readOnly: true,
+        parameters: {
+          type: 'object',
+          properties: {
+            model: { type: 'string', description: 'Embedding model name (optional, defaults to active model).' },
+          },
+          required: [],
+        },
+        execute: async (args: unknown) => {
+          const root = getWorkspaceRoot();
+          if (!root) return { error: 'No workspace root set — open a project folder first.' };
+          const { model } = (args ?? {}) as { model?: string };
+          const collectionId = await indexWorkspace(root, { model });
+          return { ok: true, collectionId, workspaceRoot: root };
+        },
+      });
+
+      toolRegistry.registerTool({
+        name: 'query_workspace',
+        description: 'Semantic search over indexed workspace source files. Returns the most relevant code/text chunks.',
+        readOnly: true,
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Natural-language question or search query.' },
+            k: { type: 'number', description: 'Number of results to return (default 5).' },
+          },
+          required: ['query'],
+        },
+        execute: async (args: unknown) => {
+          const root = getWorkspaceRoot();
+          if (!root) return { error: 'No workspace root set.' };
+          const { query, k = 5 } = (args ?? {}) as { query: string; k?: number };
+          const chunks = await queryWorkspace(root, query, k);
+          if (chunks.length === 0) return { note: 'No results — run index_workspace first.', chunks: [] };
+          return { chunks: chunks.map(c => ({ file: c.fileName, text: c.text })) };
+        },
+      });
+    });
+  });
+}

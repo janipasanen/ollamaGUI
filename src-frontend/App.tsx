@@ -49,6 +49,7 @@ import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
+import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
 import BrowserPane from './components/BrowserPane';
 import { PanelShell } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
@@ -121,6 +122,10 @@ import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } f
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type PendingEdit, type EditDecision } from './services/diffReview';
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
+import { loadProjectRules } from './services/projectRules';
+import { initOpenApiServers } from './services/openapiTools';
+import { registerWorkspaceRagTools } from './services/workspaceRag';
+import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -372,6 +377,13 @@ const App: React.FC = () => {
     resolve: (approved: boolean) => void;
   } | null>(null);
 
+  // Plan/ask tool-approval modal (#88/#89/#189)
+  const [pendingToolApproval, setPendingToolApproval] = useState<{
+    toolName: string;
+    args: Record<string, unknown>;
+    resolve: (approved: boolean) => void;
+  } | null>(null);
+
   // MCP server management state
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [showAddMcpServer, setShowAddMcpServer] = useState(false);
@@ -427,6 +439,9 @@ const App: React.FC = () => {
 
   // Speech-to-text (#131)
   const [sttConfig, setSttConfig] = useState<SttConfig>(() => loadSttConfig());
+
+  // Web search config (#121/#192)
+  const [webSearchConfig, setWebSearchConfig] = useState<WebSearchConfig>(() => loadWebSearchConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
 
@@ -463,6 +478,9 @@ const App: React.FC = () => {
   const [hashSuggestions, setHashSuggestions] = useState<AutocompleteOption[]>([]);
   const [hashSelected, setHashSelected] = useState(0);
   const [pendingContextBlocks, setPendingContextBlocks] = useState<string[]>([]);
+
+  // Project rules file content (#93/#190)
+  const [projectRulesContent, setProjectRulesContent] = useState<string | null>(null);
 
   // Diff review modal (#84/#185)
   const [pendingDiffEdit, setPendingDiffEdit] = useState<PendingEdit | null>(null);
@@ -647,6 +665,32 @@ const App: React.FC = () => {
       registerTerminalTool();
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
+      // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
+      registerWorkspaceRagTools();
+      // Re-register saved OpenAPI tool servers (#129/#191)
+      void initOpenApiServers();
+      // Web search agent tool (#121/#192) — search_web
+      if (!toolRegistry.getTool('search_web')) {
+        toolRegistry.registerTool({
+          name: 'search_web',
+          description: 'Search the web using DuckDuckGo (or SearXNG if configured). Returns titles, URLs, and snippets.',
+          readOnly: true,
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Search query.' },
+              count: { type: 'number', description: 'Number of results (default 5).' },
+            },
+            required: ['query'],
+          },
+          execute: async (args: unknown) => {
+            const { query, count } = args as { query: string; count?: number };
+            const cfg = loadWebSearchConfig();
+            const results = await webSearch(query, { ...cfg, enabled: true, resultCount: count ?? cfg.resultCount });
+            return { results };
+          },
+        });
+      }
       // Multi-format document tools (read/create/convert/formats) — #144
       registerDocumentTools();
       initCustomTools();
@@ -704,6 +748,14 @@ const App: React.FC = () => {
           setPendingApproval({ command: `Browser ${action}: ${detail}`, resolve });
         });
       });
+      // Browser approval callback for host allow-listing (#77/#193)
+      setBrowserApprovalCallback(async (req) => {
+        const approved = await new Promise<boolean>(resolve =>
+          setPendingApproval({ command: `Browser ${req.action}: ${req.detail}`, resolve })
+        );
+        if (approved && req.url) allowHost(req.url);
+        return { approved };
+      });
 
       try {
         const combined = await refreshModels();
@@ -715,8 +767,8 @@ const App: React.FC = () => {
     loadInitialData();
   }, []);
 
-  // Cleanup diff review callback on unmount (#185)
-  useEffect(() => () => clearDiffReviewCallback(), []);
+  // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
+  useEffect(() => () => { clearDiffReviewCallback(); clearBrowserApprovalCallback(); }, []);
 
   // Load knowledge collections when Settings panel opens (#117/#188)
   useEffect(() => {
@@ -773,12 +825,16 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Sync workspace root, git tools, and per-project model bindings when the active project changes (#83, #103, #171).
+  // Sync workspace root, git tools, project rules, and per-project model bindings when the active project changes (#83, #93, #103, #171, #190, #194).
   useEffect(() => {
     const project = projects.find(p => p.id === activeProjectId);
     if (project?.workspaceRoot) {
       void setWorkspaceRoot(project.workspaceRoot);
       registerGitTools(project.workspaceRoot);
+      // Load AGENTS.md / CLAUDE.md for system-prompt injection (#93/#190)
+      void loadProjectRules(project.workspaceRoot).then(setProjectRulesContent);
+    } else {
+      setProjectRulesContent(null);
     }
     // Apply per-project model overrides if they are set (#171).
     if (project?.model) setModel(project.model);
@@ -1270,11 +1326,23 @@ const App: React.FC = () => {
     const toApiMsg = (m: Message): Message =>
       m.images ? { ...m, images: m.images.map(toApiBase64) } : m;
 
+    // Web search augmentation (#121/#192) — inject search results when enabled
+    let webSearchBlock = '';
+    if (webSearchConfig.enabled && text.trim()) {
+      try {
+        const results = await webSearch(text.trim(), webSearchConfig);
+        webSearchBlock = formatResultsAsContext(results);
+      } catch {
+        // Non-fatal; proceed without search results
+      }
+    }
+
     // Compose system prompt from all context sources (#92/#93/#95)
     const activeProject = projects.find(p => p.id === activeProjectId);
     const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
     const composedSystem = composeSystemPrompt({
-      systemPrompt,
+      systemPrompt: webSearchBlock ? `${webSearchBlock}\n\n${systemPrompt}` : systemPrompt,
+      rulesFileContent: projectRulesContent ?? undefined,
       projectInstructions: activeProject?.instructions,
       memoryBlock: memBlock || undefined,
     });
@@ -1387,6 +1455,11 @@ const App: React.FC = () => {
           signal: abortControllerRef.current?.signal,
           options: genOptions,
           format,
+          // Plan/ask autonomy gate (#88/#89/#189)
+          onApprovalNeeded: (toolName, args) =>
+            new Promise<boolean>(resolve =>
+              setPendingToolApproval({ toolName, args, resolve })
+            ),
           onAssistantMessage: (message) => {
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
@@ -4674,6 +4747,76 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Web Search (#121/#192) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Web Search</label>
+                    <Toggle
+                      dark={dark}
+                      label="Enable web search"
+                      checked={webSearchConfig.enabled}
+                      onChange={() => {
+                        const updated = { ...webSearchConfig, enabled: !webSearchConfig.enabled };
+                        setWebSearchConfig(updated);
+                        saveWebSearchConfig(updated);
+                      }}
+                    />
+                  </div>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                    When enabled, search results are injected into the system prompt before each message. The agent can also call <span className="font-mono">search_web</span> directly.
+                  </p>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <label className={`text-xs w-20 shrink-0 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Provider</label>
+                      <select
+                        value={webSearchConfig.provider}
+                        onChange={e => {
+                          const updated = { ...webSearchConfig, provider: e.target.value as 'duckduckgo' | 'searxng' };
+                          setWebSearchConfig(updated);
+                          saveWebSearchConfig(updated);
+                        }}
+                        className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                      >
+                        <option value="duckduckgo">DuckDuckGo (no key)</option>
+                        <option value="searxng">SearXNG (self-hosted)</option>
+                      </select>
+                    </div>
+                    {webSearchConfig.provider === 'searxng' && (
+                      <div className="flex items-center gap-2">
+                        <label className={`text-xs w-20 shrink-0 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>SearXNG URL</label>
+                        <input
+                          value={webSearchConfig.searxngUrl ?? ''}
+                          onChange={e => {
+                            const updated = { ...webSearchConfig, searxngUrl: e.target.value };
+                            setWebSearchConfig(updated);
+                            saveWebSearchConfig(updated);
+                          }}
+                          placeholder="http://localhost:8888"
+                          className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                        />
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <label className={`text-xs w-20 shrink-0 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Results</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={webSearchConfig.resultCount ?? 5}
+                        onChange={e => {
+                          const n = parseInt(e.target.value, 10);
+                          if (!isNaN(n)) {
+                            const updated = { ...webSearchConfig, resultCount: n };
+                            setWebSearchConfig(updated);
+                            saveWebSearchConfig(updated);
+                          }
+                        }}
+                        className={`w-16 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Secret Store (#173) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
                   <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Secret Store</label>
@@ -5014,6 +5157,40 @@ const App: React.FC = () => {
              </div>
            </div>
          )}
+
+        {/* Tool approval modal (#88/#89/#189) — shown in plan/ask autonomy mode */}
+        {pendingToolApproval && (
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <span>🤖</span> Agent wants to use a tool
+                </h2>
+              </div>
+              <p className={`text-sm mb-3 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                The agent requests permission to call:
+              </p>
+              <div className={`rounded-lg px-4 py-3 font-mono text-sm mb-2 border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-200 text-zinc-900'}`}>
+                <span className={`font-bold ${dark ? 'text-blue-400' : 'text-blue-600'}`}>{pendingToolApproval.toolName}</span>
+              </div>
+              {Object.keys(pendingToolApproval.args).length > 0 && (
+                <pre className={`rounded-lg px-3 py-2 text-xs font-mono mb-4 overflow-auto max-h-40 border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-300' : 'bg-zinc-50 border-zinc-200 text-zinc-700'}`}>
+                  {JSON.stringify(pendingToolApproval.args, null, 2)}
+                </pre>
+              )}
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => { pendingToolApproval.resolve(false); setPendingToolApproval(null); }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-700'}`}
+                >Deny</button>
+                <button
+                  onClick={() => { pendingToolApproval.resolve(true); setPendingToolApproval(null); }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold"
+                >Allow</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Diff review modal (#84/#185) — shown when an agent proposes a file edit */}
         {pendingDiffEdit && (() => {
