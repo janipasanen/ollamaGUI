@@ -1614,6 +1614,198 @@ async fn probe_binary(name: String) -> Result<bool, String> {
     .map_err(|e| e.to_string())
 }
 
+// ── Web fetch (#122) ─────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct FetchedPage {
+    url: String,
+    title: String,
+    text: String,
+    #[serde(rename = "fetchedAt")]
+    fetched_at: u64,
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let lower = html.to_ascii_lowercase();
+    // Drop <script>…</script> and <style>…</style> blocks first.
+    let mut work = html.to_string();
+    for tag in &["script", "style"] {
+        loop {
+            let lo = work.to_ascii_lowercase();
+            let open = format!("<{}", tag);
+            let close = format!("</{}>", tag);
+            match (lo.find(open.as_str()), lo.find(close.as_str())) {
+                (Some(s), Some(e)) if e > s => {
+                    work = format!("{} {}", &work[..s], &work[e + close.len()..]);
+                }
+                _ => break,
+            }
+        }
+    }
+    let _ = lower; // used above via lo
+    // Strip remaining tags char-by-char.
+    let mut in_tag = false;
+    for ch in work.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => { in_tag = false; out.push(' '); }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    // Collapse whitespace.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn extract_html_title(html: &str) -> Option<String> {
+    let lo = html.to_ascii_lowercase();
+    let start = lo.find("<title")? + 6; // past "<title"
+    let after_gt = lo[start..].find('>')? + start + 1;
+    let end = lo[after_gt..].find("</title>").map(|i| i + after_gt)?;
+    let raw = &html[after_gt..end];
+    let clean = raw.trim().to_string();
+    if clean.is_empty() { None } else { Some(clean) }
+}
+
+/// Fetch a URL and return cleaned page text (HTML tags stripped).
+/// Used by the agent's web-fetch tool (#122).
+#[tauri::command]
+async fn fetch_url(
+    url: String,
+    timeout_ms: Option<u64>,
+    max_chars: Option<usize>,
+) -> Result<FetchedPage, String> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(15_000));
+    let max = max_chars.unwrap_or(20_000);
+
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent("Mozilla/5.0 (compatible; OllamaGUI/1.0)")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let final_url = resp.url().to_string();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+
+    let title = extract_html_title(&body).unwrap_or_else(|| final_url.clone());
+    let text: String = strip_html_tags(&body).chars().take(max).collect();
+    let fetched_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(FetchedPage { url: final_url, title, text, fetched_at })
+}
+
+// ── Web search (#121) ─────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct WebSearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+/// Parse DuckDuckGo Lite HTML into search results.
+fn parse_ddg_lite(html: &str, max: usize) -> Vec<WebSearchResult> {
+    let mut results = Vec::new();
+    let lo = html.to_ascii_lowercase();
+    let mut pos = 0;
+    while results.len() < max {
+        // Each result link sits in <a class="result-link" href="...">Title</a>
+        let class_marker = "class=\"result-link\"";
+        let Some(ci) = lo[pos..].find(class_marker) else { break };
+        let abs = pos + ci;
+        // Walk back to find the href on the enclosing <a …>
+        let tag_start = lo[..abs].rfind('<').unwrap_or(abs);
+        let Some(href_i) = lo[tag_start..abs + class_marker.len()].find("href=\"") else { pos = abs + 1; continue };
+        let href_start = tag_start + href_i + 6;
+        let href_end = lo[href_start..].find('"').map(|i| i + href_start).unwrap_or(href_start);
+        let url = html[href_start..href_end].trim().to_string();
+        // Title: text between > and </a>
+        let gt = lo[abs..].find('>').map(|i| i + abs + 1).unwrap_or(abs + 1);
+        let end_a = lo[gt..].find("</a>").map(|i| i + gt).unwrap_or(gt);
+        let title = strip_html_tags(&html[gt..end_a]).trim().to_string();
+        // Snippet follows as <td class="result-snippet">…</td>
+        let snippet_marker = "class=\"result-snippet\"";
+        let snippet = if let Some(si) = lo[end_a..].find(snippet_marker) {
+            let s = end_a + si;
+            let sg = lo[s..].find('>').map(|i| i + s + 1).unwrap_or(s + 1);
+            let se = lo[sg..].find("</td>").map(|i| i + sg).unwrap_or(sg);
+            strip_html_tags(&html[sg..se]).trim().to_string()
+        } else {
+            String::new()
+        };
+        if !url.is_empty() && !title.is_empty() {
+            results.push(WebSearchResult { title, url, snippet });
+        }
+        pos = abs + 1;
+    }
+    results
+}
+
+/// Search via DuckDuckGo Lite (no API key required).
+async fn search_ddg_lite(query: &str, count: usize) -> Result<Vec<WebSearchResult>, String> {
+    let encoded = query.chars().fold(String::new(), |mut s, c| {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+            s.push(c);
+        } else {
+            for b in c.to_string().as_bytes() {
+                s.push_str(&format!("%{:02X}", b));
+            }
+        }
+        s
+    });
+    let url = format!("https://lite.duckduckgo.com/lite/?q={}", encoded);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (compatible; OllamaGUI/1.0)")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = client.get(&url).send().await.map_err(|e| e.to_string())?
+        .text().await.map_err(|e| e.to_string())?;
+    Ok(parse_ddg_lite(&body, count))
+}
+
+/// Search via a self-hosted SearXNG instance (JSON API).
+async fn search_searxng(base_url: &str, query: &str, count: usize) -> Result<Vec<WebSearchResult>, String> {
+    let url = format!("{}/search?q={}&format=json", base_url.trim_end_matches('/'),
+        query.replace(' ', "+"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let data: serde_json::Value = client.get(&url).send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    let results = data["results"].as_array().cloned().unwrap_or_default();
+    Ok(results.into_iter().take(count).filter_map(|r| {
+        let title = r["title"].as_str()?.to_string();
+        let url = r["url"].as_str()?.to_string();
+        let snippet = r["content"].as_str().unwrap_or("").to_string();
+        Some(WebSearchResult { title, url, snippet })
+    }).collect())
+}
+
+/// Web search via DuckDuckGo Lite or a SearXNG instance (#121).
+#[tauri::command]
+async fn web_search(
+    query: String,
+    provider: Option<String>,
+    count: Option<usize>,
+    searxng_url: Option<String>,
+) -> Result<Vec<WebSearchResult>, String> {
+    let n = count.unwrap_or(5).min(20);
+    match provider.as_deref().unwrap_or("duckduckgo") {
+        "searxng" => {
+            let base = searxng_url.ok_or_else(|| "SearXNG URL required for provider=searxng".to_string())?;
+            search_searxng(&base, &query, n).await
+        }
+        _ => search_ddg_lite(&query, n).await,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1687,6 +1879,8 @@ pub fn run() {
             browser_engine::browser_cdp_screenshot,
             browser_engine::browser_cdp_eval,
             browser_engine::browser_cdp_read_console,
+            fetch_url,
+            web_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

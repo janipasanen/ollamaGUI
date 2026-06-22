@@ -1,5 +1,7 @@
 import { Message, GenerationOptions, cleanGenerationOptions } from './ollama';
 import { toolRegistry, ToolCall, ToolResult } from './tools';
+import { runPreToolUseHooks } from './toolHooks';
+import { isBlockedByReadOnlyMode } from './agentAutonomy';
 
 export interface AgenticChatOptions {
   model: string;
@@ -126,6 +128,35 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       if (hasToolCalls && toolCalls.length > 0) {
         for (const toolCall of toolCalls) {
           try {
+            const toolDef = toolRegistry.getTool(toolCall.function?.name ?? toolCall.name);
+            const toolIsReadOnly = (toolDef as any)?.readOnly ?? false;
+
+            // Read-only mode check (agentAutonomy #146)
+            if (isBlockedByReadOnlyMode(toolIsReadOnly)) {
+              const blocked: ToolResult = {
+                name: toolCall.function?.name ?? toolCall.name,
+                content: `Tool blocked: read-only mode is active and '${toolCall.function?.name ?? toolCall.name}' is not a read-only tool.`,
+              };
+              if (onToolResult) onToolResult(blocked);
+              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
+              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              continue;
+            }
+
+            // Pre-tool-use hook chain (toolHooks #90)
+            const hookArgs = (toolCall.function?.arguments ?? {}) as Record<string, unknown>;
+            const hookResult = await runPreToolUseHooks(toolCall.function?.name ?? toolCall.name, hookArgs);
+            if (!hookResult.allowed) {
+              const blocked: ToolResult = {
+                name: toolCall.function?.name ?? toolCall.name,
+                content: `Tool blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
+              };
+              if (onToolResult) onToolResult(blocked);
+              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
+              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              continue;
+            }
+
             const toolResult = await toolRegistry.executeToolCall(toolCall);
             if (onToolResult) {
               onToolResult(toolResult);

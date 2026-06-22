@@ -104,6 +104,13 @@ import {
   Artifact,
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
 } from './services/artifacts';
+import { registerFileTools, setWorkspaceRoot } from './services/fileTools';
+import { registerGitTools } from './services/git';
+import {
+  AgentAutonomySettings, AutonomyLevel,
+  loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
+} from './services/agentAutonomy';
+import { registerHook, makeReadOnlyHook } from './services/toolHooks';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -303,6 +310,9 @@ const App: React.FC = () => {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [showAddProject, setShowAddProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+
+  // Agent autonomy settings (#88, #89, #146)
+  const [autonomySettings, setAutonomySettings] = useState<AgentAutonomySettings>(() => loadAutonomySettings());
 
   // Memory (#95)
   const [memoryEntries, setMemoryEntries] = useState<MemoryEntry[]>(() => loadMemory());
@@ -576,6 +586,11 @@ const App: React.FC = () => {
 
       // Initialize built-in tools and user-defined tools/functions (#127)
       registerBuiltInTools();
+      // File & git tools (#83, #103) — must be called once; workspace root is
+      // set separately when a project is activated (see activeProjectId effect).
+      registerFileTools();
+      // Wire the read-only mode hook (#146) so the hook chain enforces it.
+      registerHook('builtin:read-only', makeReadOnlyHook());
       // Multi-format document tools (read/create/convert/formats) — #144
       registerDocumentTools();
       initCustomTools();
@@ -683,6 +698,15 @@ const App: React.FC = () => {
     // Cleanup
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // Sync workspace root and git tools when the active project changes (#83, #103).
+  useEffect(() => {
+    const project = projects.find(p => p.id === activeProjectId);
+    if (project?.workspaceRoot) {
+      void setWorkspaceRoot(project.workspaceRoot);
+      registerGitTools(project.workspaceRoot);
+    }
+  }, [activeProjectId, projects]);
 
   const startNewChat = useCallback((projectId?: string | null) => {
     setMessages([]);
@@ -2808,13 +2832,23 @@ const App: React.FC = () => {
                  <div>
                    <div className="flex items-center justify-between mb-2">
                      <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>MLX Acceleration</label>
-                     <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                       mlxAvailability?.available
-                         ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700')
-                         : (dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500')
-                     }`}>
-                       {mlxAvailability === null ? 'checking…' : mlxAvailability.available ? `available${mlxAvailability.version ? ` · ${mlxAvailability.version}` : ''}` : 'unavailable'}
-                     </span>
+                     <div className="flex items-center gap-1.5">
+                       <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                         mlxAvailability?.available
+                           ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700')
+                           : (dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500')
+                       }`}>
+                         {mlxAvailability === null ? 'checking…' : mlxAvailability.available ? `available${mlxAvailability.version ? ` · ${mlxAvailability.version}` : ''}` : 'unavailable'}
+                       </span>
+                       <button
+                         onClick={async () => {
+                           setMlxAvailability(null);
+                           try { setMlxAvailability(await checkMlxAvailable()); } catch { setMlxAvailability(null); }
+                         }}
+                         title="Re-check MLX availability"
+                         className={`text-[11px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100'}`}
+                       >↺</button>
+                     </div>
                    </div>
 
                    {mlxAvailability && !mlxAvailability.available ? (
@@ -4179,6 +4213,39 @@ const App: React.FC = () => {
                         <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{p.name}</span>
                         {activeProjectId === p.id && <span className="text-[10px] text-blue-400">active</span>}
                       </div>
+                      {/* Workspace folder picker (#83) */}
+                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Workspace folder</label>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`flex-1 text-xs truncate font-mono px-2 py-1 rounded border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-zinc-50 border-zinc-200 text-zinc-500'}`}>
+                          {p.workspaceRoot || 'No folder selected'}
+                        </span>
+                        <button
+                          onClick={async () => {
+                            const dir = await pickDirectory();
+                            if (dir) {
+                              const updated = { ...p, workspaceRoot: dir };
+                              storage.saveProject(updated);
+                              setProjects(storage.getProjects());
+                              if (activeProjectId === p.id) {
+                                void setWorkspaceRoot(dir);
+                                registerGitTools(dir);
+                              }
+                            }
+                          }}
+                          className={`shrink-0 text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                        >Choose…</button>
+                        {p.workspaceRoot && (
+                          <button
+                            onClick={() => {
+                              const updated = { ...p, workspaceRoot: '' };
+                              storage.saveProject(updated);
+                              setProjects(storage.getProjects());
+                            }}
+                            className="shrink-0 text-[10px] text-red-400 hover:text-red-300"
+                            title="Clear workspace folder"
+                          >✕</button>
+                        )}
+                      </div>
                       <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Instructions (prepended to system prompt)</label>
                       <textarea
                         value={p.instructions}
@@ -4193,6 +4260,60 @@ const App: React.FC = () => {
                       />
                     </div>
                   ))}
+                </div>
+
+                {/* Agent Safety — autonomy levels (#88, #89, #146) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agent Safety</label>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Control how autonomously the agent acts when using tools.</p>
+                  {/* Autonomy level */}
+                  <div className="mb-3">
+                    <label className={`block text-xs mb-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Autonomy level</label>
+                    <div className="flex gap-2">
+                      {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(level => (
+                        <button
+                          key={level}
+                          onClick={() => { const s = { ...autonomySettings, level }; setAutonomySettings(s); saveAutonomySettings(s); }}
+                          className={`flex-1 text-xs py-1 rounded border transition-colors capitalize ${autonomySettings.level === level ? (dark ? 'bg-blue-600 border-blue-500 text-white' : 'bg-blue-600 border-blue-500 text-white') : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')}`}
+                        >{level}</button>
+                      ))}
+                    </div>
+                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                      {autonomySettings.level === 'plan' && 'Agent proposes a plan first; executes only after approval.'}
+                      {autonomySettings.level === 'ask' && 'Agent confirms each mutating tool call before running it.'}
+                      {autonomySettings.level === 'auto' && 'Agent runs all tools without interruption.'}
+                    </p>
+                  </div>
+                  {/* Max iterations */}
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Max iterations</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={autonomySettings.maxIterations}
+                      onChange={e => { const v = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 1)); const s = { ...autonomySettings, maxIterations: v }; setAutonomySettings(s); saveAutonomySettings(s); }}
+                      className={`w-20 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                    />
+                  </div>
+                  {/* Read-only mode */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Read only mode</span>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Block all tools that write or execute; only read tools are allowed.</p>
+                    </div>
+                    <Toggle dark={dark} label="Read only mode" checked={autonomySettings.readOnly} onChange={() => { const s = { ...autonomySettings, readOnly: !autonomySettings.readOnly }; setAutonomySettings(s); saveAutonomySettings(s); }} />
+                  </div>
+                  {/* Smart approve */}
+                  {autonomySettings.level === 'ask' && (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Smart approve</span>
+                        <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Auto-approve safe read tools; only prompt before mutating ones.</p>
+                      </div>
+                      <Toggle dark={dark} label="Smart approve" checked={autonomySettings.smartApprove} onChange={() => { const s = { ...autonomySettings, smartApprove: !autonomySettings.smartApprove }; setAutonomySettings(s); saveAutonomySettings(s); }} />
+                    </div>
+                  )}
                 </div>
 
                 {/* Memory (#95) */}
