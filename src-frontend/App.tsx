@@ -48,7 +48,7 @@ import { formatErrorLine } from './services/errorMessages';
 import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
-import { registerBrowserTools } from './services/browser-tools';
+import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import BrowserPane from './components/BrowserPane';
 import { PanelShell } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
@@ -111,6 +111,8 @@ import {
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
 } from './services/agentAutonomy';
 import { registerHook, makeReadOnlyHook } from './services/toolHooks';
+import { registerMemoryTools } from './services/crossSessionMemory';
+import { registerPythonTool } from './services/pyodide';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -591,6 +593,10 @@ const App: React.FC = () => {
       registerFileTools();
       // Wire the read-only mode hook (#146) so the hook chain enforces it.
       registerHook('builtin:read-only', makeReadOnlyHook());
+      // Cross-session memory tools (#95/#178) — memory_set/get/list/delete
+      registerMemoryTools();
+      // In-browser Python execution via Pyodide (#128/#179)
+      registerPythonTool();
       // Multi-format document tools (read/create/convert/formats) — #144
       registerDocumentTools();
       initCustomTools();
@@ -697,6 +703,16 @@ const App: React.FC = () => {
 
     // Cleanup
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Stop the CDP engine when the app unmounts / user closes the window (#176).
+  useEffect(() => {
+    const handler = () => { void stopBrowserEngine(); };
+    window.addEventListener('beforeunload', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+      void stopBrowserEngine();
+    };
   }, []);
 
   // Sync workspace root and git tools when the active project changes (#83, #103).
@@ -1285,7 +1301,8 @@ const App: React.FC = () => {
           model,
           messages: chatHistory,
           endpoint,
-          maxIterations: 5,
+          maxIterations: autonomySettings.maxIterations,
+          signal: abortControllerRef.current?.signal,
           options: genOptions,
           format,
           onAssistantMessage: (message) => {

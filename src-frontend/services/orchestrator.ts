@@ -61,6 +61,9 @@ async function streamChat(
       if (chunk.message?.content) { acc += chunk.message.content; onText(acc); }
     },
     endpoint,
+    false,
+    undefined,
+    opts.signal,
   );
   return acc;
 }

@@ -382,3 +382,14 @@ export function unregisterBrowserTools(): void {
     toolRegistry.unregisterTool(name);
   }
 }
+
+/** Stop the CDP engine and release the Chromium process. Safe to call multiple times. */
+export async function stopBrowserEngine(): Promise<void> {
+  if (!browserSession.engineConnected) return;
+  try {
+    await tauriInvoke('browser_engine_stop');
+  } finally {
+    browserSession.engineConnected = false;
+    browserBus.emit('engine-status', { connected: false });
+  }
+}

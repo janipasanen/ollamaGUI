@@ -8,6 +8,8 @@ export interface AgenticChatOptions {
   messages: Message[];
   maxIterations?: number;
   endpoint?: string;
+  /** Abort signal — checked at iteration boundaries so Stop button works in agentic mode. */
+  signal?: AbortSignal;
   /** Ollama generation options (num_ctx, temperature, …) applied to every turn. */
   options?: GenerationOptions;
   /** Structured-output constraint (Ollama `format`): 'json' or a JSON Schema object. */
@@ -30,6 +32,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     messages,
     maxIterations = 5,
     endpoint = 'http://localhost:11434/api/chat',
+    signal,
     options: genOptions,
     format,
     onToolCall,
@@ -47,12 +50,15 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
   let currentMessages = [...messages];
 
   while (iteration < maxIterations) {
+    // Check abort at the top of every iteration so the Stop button works.
+    if (signal?.aborted) break;
+
     iteration++;
 
     // Get available tools, filtered by toolFilter if provided (#104)
     const allTools = toolRegistry.getOllamaToolDefinitions();
     const tools = toolFilter ? allTools.filter(t => toolFilter.includes(t.function?.name ?? t.name)) : allTools;
-    
+
     // Prepare the request
     const requestBody = {
       model,
@@ -62,12 +68,13 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       ...(cleanedOptions ? { options: cleanedOptions } : {}),
       ...(format ? { format } : {}),
     };
-    
+
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
+        ...(signal ? { signal } : {}),
       });
       
       if (!response.ok) {
