@@ -27,6 +27,12 @@ export interface Project {
   /** Project-scoped instructions prepended to the system prompt. */
   instructions: string;
   createdAt: number;
+  /** Per-project primary chat model (#171). When set, activating this project switches the model. */
+  model?: string;
+  /** Per-project cloud brain model for MLX orchestration (#171). */
+  brainModel?: string;
+  /** Per-project local worker model for MLX orchestration (#171). */
+  workerModel?: string;
 }
 
 export interface Folder {

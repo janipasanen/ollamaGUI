@@ -1879,6 +1879,8 @@ pub fn run() {
             browser_engine::browser_cdp_screenshot,
             browser_engine::browser_cdp_eval,
             browser_engine::browser_cdp_read_console,
+            browser_engine::browser_cdp_wait_for,
+            browser_engine::browser_cdp_assert,
             fetch_url,
             web_search,
         ])

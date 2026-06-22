@@ -255,6 +255,55 @@ pub async fn browser_cdp_read_console(clear: Option<bool>) -> Result<Vec<Console
     Ok(lines.into_iter().map(|text| ConsoleEntry { text }).collect())
 }
 
+/// Wait until a CSS selector matches an element, up to `timeout_ms` (#181).
+/// Polls every 100 ms using JS. Returns an error string if timed out.
+#[tauri::command]
+pub async fn browser_cdp_wait_for(selector: String, timeout_ms: Option<u64>) -> Result<(), String> {
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+    let js = format!("document.querySelector({}) !== null", serde_json::to_string(&selector).unwrap_or_default());
+    loop {
+        {
+            let mut slot = ENGINE.lock().await;
+            let engine = slot.as_mut().ok_or("Engine not started")?;
+            let eval = engine.page.evaluate(js.clone()).await.map_err(|e| e.to_string())?;
+            let value: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Bool(false));
+            if value.as_bool().unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("Timed out waiting for selector: {selector}"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[derive(Serialize)]
+pub struct AssertResult {
+    pub pass: bool,
+    pub actual: String,
+}
+
+/// Evaluate a JS expression and check whether its string representation equals
+/// `value` (if given) or is truthy (#181). Returns AssertResult { pass, actual }.
+#[tauri::command]
+pub async fn browser_cdp_assert(assertion: String, value: Option<String>) -> Result<AssertResult, String> {
+    let mut slot = ENGINE.lock().await;
+    let engine = slot.as_mut().ok_or("Engine not started")?;
+    let eval = engine.page.evaluate(assertion).await.map_err(|e| e.to_string())?;
+    let raw: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Null);
+    let actual = match &raw {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let pass = match &value {
+        Some(expected) => &actual == expected,
+        None => raw.as_bool().unwrap_or(!raw.is_null()),
+    };
+    Ok(AssertResult { pass, actual })
+}
+
 // ---------------------------------------------------------------------------
 // #67 spike harness — AX-tree-drives-snapshot→click reliability gate.
 // ---------------------------------------------------------------------------

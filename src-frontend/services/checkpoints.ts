@@ -10,6 +10,7 @@
  */
 
 import { readFile, writeFile } from './fileTools';
+import { toolRegistry } from './tools';
 
 export interface Checkpoint {
   id: string;
@@ -77,6 +78,63 @@ export function deleteCheckpoint(id: string): void {
 /** Clear all checkpoints (used in tests and on session end). */
 export function clearCheckpoints(): void {
   sessionStorage.removeItem(STORAGE_KEY);
+}
+
+/**
+ * Register create_checkpoint, list_checkpoints, and rewind_checkpoint tools
+ * in the tool registry so the agent can snapshot and restore files (#91/#180).
+ * Safe to call multiple times — later registrations are no-ops.
+ */
+export function registerCheckpointTools(): void {
+  if (toolRegistry.getTool('create_checkpoint')) return;
+
+  toolRegistry.registerTool({
+    name: 'create_checkpoint',
+    description: 'Snapshot the current content of one or more files so they can be restored later. Call this before any sequence of risky file edits.',
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' }, description: 'Absolute paths to capture.' },
+        label: { type: 'string', description: 'Human-readable name for the checkpoint.' },
+      },
+      required: ['paths', 'label'],
+    },
+    readOnly: true,
+    execute: async (args: unknown) => {
+      const { paths, label } = args as { paths: string[]; label: string };
+      const ckpt = await createCheckpoint(paths, label);
+      return `Checkpoint '${ckpt.label}' created (id=${ckpt.id}), captured ${paths.length} file(s).`;
+    },
+  });
+
+  toolRegistry.registerTool({
+    name: 'list_checkpoints',
+    description: 'List all active file-state checkpoints for this session.',
+    parameters: { type: 'object', properties: {} },
+    readOnly: true,
+    execute: async () => {
+      const all = listCheckpoints();
+      if (all.length === 0) return 'No checkpoints.';
+      return all.map(c => `${c.id}  "${c.label}"  (${new Date(c.createdAt).toLocaleTimeString()}, ${Object.keys(c.files).length} files)`).join('\n');
+    },
+  });
+
+  toolRegistry.registerTool({
+    name: 'rewind_checkpoint',
+    description: 'Restore all files captured in a checkpoint to their saved content. This overwrites current file contents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Checkpoint id returned by create_checkpoint or list_checkpoints.' },
+      },
+      required: ['id'],
+    },
+    execute: async (args: unknown) => {
+      const { id } = args as { id: string };
+      const restored = await rewindToCheckpoint(id);
+      return `Rewound ${restored.length} file(s): ${restored.join(', ')}`;
+    },
+  });
 }
 
 /**

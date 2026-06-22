@@ -113,6 +113,7 @@ import {
 import { registerHook, makeReadOnlyHook } from './services/toolHooks';
 import { registerMemoryTools } from './services/crossSessionMemory';
 import { registerPythonTool } from './services/pyodide';
+import { registerCheckpointTools } from './services/checkpoints';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -597,6 +598,8 @@ const App: React.FC = () => {
       registerMemoryTools();
       // In-browser Python execution via Pyodide (#128/#179)
       registerPythonTool();
+      // File-state checkpoints (#91/#180) — create_checkpoint / rewind_checkpoint
+      registerCheckpointTools();
       // Multi-format document tools (read/create/convert/formats) — #144
       registerDocumentTools();
       initCustomTools();
@@ -715,12 +718,21 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Sync workspace root and git tools when the active project changes (#83, #103).
+  // Sync workspace root, git tools, and per-project model bindings when the active project changes (#83, #103, #171).
   useEffect(() => {
     const project = projects.find(p => p.id === activeProjectId);
     if (project?.workspaceRoot) {
       void setWorkspaceRoot(project.workspaceRoot);
       registerGitTools(project.workspaceRoot);
+    }
+    // Apply per-project model overrides if they are set (#171).
+    if (project?.model) setModel(project.model);
+    if (project?.brainModel || project?.workerModel) {
+      setMlxSettings(prev => ({
+        ...prev,
+        ...(project.brainModel ? { brainModel: project.brainModel } : {}),
+        ...(project.workerModel ? { workerModel: project.workerModel } : {}),
+      }));
     }
   }, [activeProjectId, projects]);
 
@@ -4263,6 +4275,21 @@ const App: React.FC = () => {
                           >✕</button>
                         )}
                       </div>
+                      {/* Per-project model binding (#171) */}
+                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Default model (optional)</label>
+                      <select
+                        value={p.model ?? ''}
+                        onChange={e => {
+                          const updated = { ...p, model: e.target.value || undefined };
+                          storage.saveProject(updated);
+                          setProjects(storage.getProjects());
+                          if (activeProjectId === p.id && updated.model) setModel(updated.model);
+                        }}
+                        className={`w-full text-xs px-2 py-1.5 rounded border mb-2 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                      >
+                        <option value="">— inherit global model —</option>
+                        {models.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                      </select>
                       <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Instructions (prepended to system prompt)</label>
                       <textarea
                         value={p.instructions}
