@@ -117,6 +117,8 @@ import { registerCheckpointTools } from './services/checkpoints';
 import { registerTerminalTool } from './services/terminal';
 import { registerImageDiffTool } from './services/imageDiff';
 import { secretSet, secretDelete, secretListRefs, type SecretRef } from './services/secrets';
+import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } from './services/atCommand';
+import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -443,6 +445,15 @@ const App: React.FC = () => {
   // Slash commands (#96)
   const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+
+  // @-mention file autocomplete (#86/#183)
+  const [atSuggestions, setAtSuggestions] = useState<AtOption[]>([]);
+  const [atSelected, setAtSelected] = useState(0);
+
+  // #-knowledge context injection (#119/#184)
+  const [hashSuggestions, setHashSuggestions] = useState<AutocompleteOption[]>([]);
+  const [hashSelected, setHashSelected] = useState(0);
+  const [pendingContextBlocks, setPendingContextBlocks] = useState<string[]>([]);
   const [userCommands, setUserCommands] = useState<SlashCommand[]>(() => loadUserCommands());
   const [newCmd, setNewCmd] = useState({ name: '', description: '', template: '' });
 
@@ -1146,7 +1157,12 @@ const App: React.FC = () => {
 
   // Send message
   const sendMessage = async (textOverride?: string) => {
-    const text = textOverride ?? input;
+    let text = textOverride ?? input;
+    // Prepend resolved # context blocks (#119/#184)
+    if (pendingContextBlocks.length > 0 && textOverride === undefined) {
+      text = pendingContextBlocks.join('\n\n') + '\n\n' + text;
+      setPendingContextBlocks([]);
+    }
     if (!text.trim() && attachedImages.length === 0) return;
 
     // Slash commands (#96) — dispatch before /image special case
@@ -2441,6 +2457,70 @@ const App: React.FC = () => {
                </div>
              )}
 
+             {/* @-mention file autocomplete dropdown (#86/#183) */}
+             {atSuggestions.length > 0 && (
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                 {atSuggestions.map((opt, idx) => (
+                   <button
+                     key={opt.path}
+                     type="button"
+                     onMouseDown={(e) => {
+                       e.preventDefault();
+                       void resolveAtMention(input, opt.path, opt.label).then(resolved => { setInput(resolved); setAtSuggestions([]); });
+                     }}
+                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
+                       idx === atSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
+                     }`}
+                   >
+                     <span className={`${dark ? 'text-amber-400' : 'text-amber-600'}`}>{opt.kind === 'dir' ? '📁' : '📄'}</span>
+                     <span className={`font-mono text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
+                   </button>
+                 ))}
+               </div>
+             )}
+
+             {/* #-knowledge context dropdown (#119/#184) */}
+             {hashSuggestions.length > 0 && (
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                 {hashSuggestions.map((opt, idx) => (
+                   <button
+                     key={opt.id ?? opt.url ?? opt.label}
+                     type="button"
+                     onMouseDown={(e) => {
+                       e.preventDefault();
+                       const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
+                       const stripped = input.replace(/#\S*$/, '').trim();
+                       void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
+                         const block = buildContextBlock(sources);
+                         if (block) setPendingContextBlocks(prev => [...prev, block]);
+                       });
+                       setInput(stripped);
+                       setHashSuggestions([]);
+                     }}
+                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
+                       idx === hashSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
+                     }`}
+                   >
+                     <span className={`font-semibold ${dark ? 'text-emerald-400' : 'text-emerald-600'}`}>#</span>
+                     <span className={`text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
+                     {opt.sublabel && <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{opt.sublabel}</span>}
+                   </button>
+                 ))}
+               </div>
+             )}
+
+             {/* Pending context chips from # commands (#184) */}
+             {pendingContextBlocks.length > 0 && (
+               <div className="flex flex-wrap gap-1 mb-1">
+                 {pendingContextBlocks.map((_, i) => (
+                   <span key={i} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
+                     <span>#context {i + 1}</span>
+                     <button type="button" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); setPendingContextBlocks(prev => prev.filter((_, j) => j !== i)); }}>×</button>
+                   </span>
+                 ))}
+               </div>
+             )}
+
              {/* Slash command autocomplete dropdown (#96) */}
              {commandSuggestions.length > 0 && (
                <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
@@ -2479,11 +2559,56 @@ const App: React.FC = () => {
                    const suggestions = filterCommands(query);
                    setCommandSuggestions(suggestions.slice(0, 6));
                    setSelectedSuggestion(0);
+                   setAtSuggestions([]);
+                   setHashSuggestions([]);
+                 } else if (isAtTrigger(val)) {
+                   // @-file mention autocomplete (#86/#183)
+                   setCommandSuggestions([]);
+                   setHashSuggestions([]);
+                   void getAtOptions(atQuery(val)).then(opts => { setAtSuggestions(opts); setAtSelected(0); });
+                 } else if (isHashTrigger(val)) {
+                   // #-knowledge autocomplete (#119/#184)
+                   setCommandSuggestions([]);
+                   setAtSuggestions([]);
+                   void getAutocompleteOptions(hashQuery(val)).then(opts => { setHashSuggestions(opts); setHashSelected(0); });
                  } else {
                    setCommandSuggestions([]);
+                   setAtSuggestions([]);
+                   setHashSuggestions([]);
                  }
                }}
                onKeyDown={(e) => {
+                 // @-mention keyboard nav (#183)
+                 if (atSuggestions.length > 0) {
+                   if (e.key === 'ArrowDown') { e.preventDefault(); setAtSelected(s => Math.min(s + 1, atSuggestions.length - 1)); return; }
+                   if (e.key === 'ArrowUp') { e.preventDefault(); setAtSelected(s => Math.max(s - 1, 0)); return; }
+                   if (e.key === 'Tab' || e.key === 'Enter') {
+                     e.preventDefault();
+                     const opt = atSuggestions[atSelected];
+                     void resolveAtMention(input, opt.path, opt.label).then(resolved => { setInput(resolved); setAtSuggestions([]); });
+                     return;
+                   }
+                   if (e.key === 'Escape') { setAtSuggestions([]); return; }
+                 }
+                 // #-knowledge keyboard nav (#184)
+                 if (hashSuggestions.length > 0) {
+                   if (e.key === 'ArrowDown') { e.preventDefault(); setHashSelected(s => Math.min(s + 1, hashSuggestions.length - 1)); return; }
+                   if (e.key === 'ArrowUp') { e.preventDefault(); setHashSelected(s => Math.max(s - 1, 0)); return; }
+                   if (e.key === 'Tab' || e.key === 'Enter') {
+                     e.preventDefault();
+                     const opt = hashSuggestions[hashSelected];
+                     const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
+                     const stripped = input.replace(/#\S*$/, '').trim();
+                     void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
+                       const block = buildContextBlock(sources);
+                       if (block) setPendingContextBlocks(prev => [...prev, block]);
+                     });
+                     setInput(stripped);
+                     setHashSuggestions([]);
+                     return;
+                   }
+                   if (e.key === 'Escape') { setHashSuggestions([]); return; }
+                 }
                  if (commandSuggestions.length > 0) {
                    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedSuggestion(s => Math.min(s + 1, commandSuggestions.length - 1)); return; }
                    if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedSuggestion(s => Math.max(s - 1, 0)); return; }
