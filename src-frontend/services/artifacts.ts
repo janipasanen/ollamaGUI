@@ -71,7 +71,11 @@ export function exportArtifact(artifact: Artifact): void {
     : artifact.kind === 'svg' ? 'svg'
     : artifact.kind === 'markdown' ? 'md'
     : extensionForLanguage(artifact.language);
-  const blob = new Blob([artifact.code], { type: 'text/plain' });
+  const mimeType = artifact.kind === 'html' ? 'text/html'
+    : artifact.kind === 'svg' ? 'image/svg+xml'
+    : artifact.kind === 'markdown' ? 'text/markdown'
+    : 'text/plain';
+  const blob = new Blob([artifact.code], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

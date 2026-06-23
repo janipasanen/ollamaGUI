@@ -8,11 +8,13 @@ import {
 beforeEach(() => {
   localStorage.clear();
   _mocks.invoke = null;
+  _mocks.diffScreenshots = null;
 });
 
 afterEach(() => {
   localStorage.clear();
   _mocks.invoke = null;
+  _mocks.diffScreenshots = null;
 });
 
 function makeScenario(steps: ScenarioStep[]): BrowserScenario {
@@ -126,13 +128,27 @@ describe('scenario runner (#78)', () => {
 });
 
 describe('visual_match step (#78+#79)', () => {
-  it('visual_match step passes through and records screenshots', async () => {
+  it('visual_match step calls diffScreenshots and reports pass', async () => {
     mockInvoke({});
+    _mocks.diffScreenshots = async (_b, _a, _t) => ({ pass: true, diffRatio: 0.0 });
     const scenario = makeScenario([
       { action: 'visual_match', args: { threshold: 0.01 } },
     ]);
     const result = await runScenario(scenario);
     expect(result.stepResults[0].pass).toBe(true);
     expect(result.stepResults[0].beforeScreenshot).toBeDefined();
+    expect(result.stepResults[0].diffRatio).toBe(0.0);
+  });
+
+  it('visual_match step fails when diffRatio exceeds threshold', async () => {
+    mockInvoke({});
+    _mocks.diffScreenshots = async (_b, _a, _t) => ({ pass: false, diffRatio: 0.5 });
+    const scenario = makeScenario([
+      { action: 'visual_match', args: { threshold: 0.01 } },
+    ]);
+    const result = await runScenario(scenario);
+    expect(result.stepResults[0].pass).toBe(false);
+    expect(result.stepResults[0].diffRatio).toBe(0.5);
+    expect(result.stepResults[0].errorMessage).toContain('0.5000');
   });
 });

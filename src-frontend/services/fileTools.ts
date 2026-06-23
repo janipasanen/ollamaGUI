@@ -65,6 +65,7 @@ export function registerFileTools(): void {
   toolRegistry.registerTool({
     name: 'read_file',
     description: 'Read the text content of a file within the workspace.',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {
@@ -103,6 +104,7 @@ export function registerFileTools(): void {
   toolRegistry.registerTool({
     name: 'list_dir',
     description: 'List files and subdirectories within a workspace directory. Directories appear first.',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {

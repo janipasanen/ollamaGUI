@@ -7,6 +7,9 @@ import {
 } from '../services/browser-tools';
 import { toolRegistry } from '../services/tools';
 import { browserSession, browserBus } from '../services/browser';
+import {
+  setBrowserApprovalCallback, clearBrowserApprovalCallback, clearBrowserAllowlist,
+} from '../services/browserApproval';
 
 // A permissive approval callback that records calls and resolves a fixed verdict.
 function makeApproval(verdict: boolean) {
@@ -26,6 +29,8 @@ beforeEach(() => {
   browserSession.engineConnected = false;
   browserSession.currentUrl = '';
   browserSession.lastSnapshotRefs = {};
+  clearBrowserApprovalCallback();
+  clearBrowserAllowlist();
 });
 
 afterEach(() => {
@@ -36,6 +41,8 @@ afterEach(() => {
   browserSession.engineConnected = false;
   browserSession.currentUrl = '';
   browserSession.lastSnapshotRefs = {};
+  clearBrowserApprovalCallback();
+  clearBrowserAllowlist();
 });
 
 // ── Registration ────────────────────────────────────────────────────────────
@@ -124,20 +131,23 @@ describe('sensitive tools require approval and deny on false (#74)', () => {
     expect(invoked).toBe(false);
   });
 
-  it('off-allowlist browser_navigate calls onApprovalRequired and denies on false', async () => {
-    const { cb, calls } = makeApproval(false);
-    let invoked = false;
-    _mocks.invoke = async () => {
-      invoked = true;
-      return {};
-    };
+  it('off-allowlist browser_navigate calls requestBrowserApproval and denies on false', async () => {
+    const { cb } = makeApproval(false);
     registerBrowserTools(cb);
+    // Navigate now routes through requestBrowserApproval (#77/#201).
+    const navCalls: Array<{ action: string }> = [];
+    setBrowserApprovalCallback(async (req) => {
+      navCalls.push({ action: req.action });
+      return { approved: false };
+    });
+    let invoked = false;
+    _mocks.invoke = async () => { invoked = true; return {}; };
 
     const result = await toolRegistry.getTool('browser_navigate')!.execute({
       url: 'https://example.com',
     });
 
-    expect(calls).toEqual([{ action: 'navigate', detail: 'https://example.com' }]);
+    expect(navCalls).toEqual([{ action: 'navigate' }]);
     expect(result).toEqual({ error: 'denied' });
     expect(invoked).toBe(false);
   });

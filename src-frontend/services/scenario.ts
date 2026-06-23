@@ -69,6 +69,8 @@ export function generateScenarioId(): string {
 /** Test seam: override to avoid real Tauri invocations. */
 export const _mocks = {
   invoke: null as ((cmd: string, args: any) => Promise<any>) | null,
+  /** Override diffScreenshots for visual_match tests without loading imageDiff. */
+  diffScreenshots: null as ((before: string, after: string, threshold: number) => Promise<{ pass: boolean; diffRatio: number }>) | null,
 };
 
 async function cdpInvoke(cmd: string, args: any): Promise<any> {
@@ -105,8 +107,22 @@ async function executeStep(step: ScenarioStep): Promise<{ pass: boolean; error?:
         return { pass, error: pass ? undefined : `Assertion failed: expected ${step.args.value}, got ${result?.actual}` };
       }
       case 'visual_match': {
-        // Visual diff handled by caller (imageDiff service)
-        return { pass: true };
+        // Requires before/after screenshots captured by the caller (runScenario).
+        // The step receives them via step.args.before / step.args.after when the
+        // runner passes them in; otherwise we capture fresh shots here as a fallback.
+        const threshold: number = step.args.threshold ?? 0.01;
+        const before: string | undefined = step.args.before;
+        const after: string | undefined = step.args.after;
+        if (!before || !after) {
+          return { pass: false, error: 'visual_match: before/after screenshots not available for this step' };
+        }
+        const diffFn = _mocks.diffScreenshots
+          ?? (await import('./imageDiff')).diffScreenshots;
+        const diff = await diffFn(before, after, threshold);
+        return {
+          pass: diff.pass,
+          error: diff.pass ? undefined : `Visual diff ratio ${diff.diffRatio.toFixed(4)} exceeds threshold ${threshold}`,
+        };
       }
       default:
         return { pass: false, error: `Unknown step action: ${(step as any).action}` };
@@ -130,21 +146,40 @@ export async function runScenario(scenario: BrowserScenario, opts: RunOptions = 
   for (let i = 0; i < scenario.steps.length; i++) {
     const step = scenario.steps[i];
     const beforeScreenshot = await captureScreenshot();
-    const { pass, error } = await executeStep(step);
+    // For visual_match steps, inject the captured screenshots so the executor
+    // can call diffScreenshots without needing its own capture calls.
+    const enrichedStep: ScenarioStep = step.action === 'visual_match'
+      ? { ...step, args: { ...step.args, before: beforeScreenshot, after: undefined } }
+      : step;
+    const { pass, error } = await executeStep(enrichedStep);
     const afterScreenshot = await captureScreenshot();
+    // If this is a visual_match, re-run the diff with the actual after screenshot.
+    let finalPass = pass;
+    let finalError = error;
+    let diffRatio: number | undefined;
+    if (step.action === 'visual_match' && beforeScreenshot && afterScreenshot) {
+      const diffFn = _mocks.diffScreenshots
+        ?? (await import('./imageDiff')).diffScreenshots;
+      const threshold: number = step.args.threshold ?? 0.01;
+      const diff = await diffFn(beforeScreenshot, afterScreenshot, threshold);
+      finalPass = diff.pass;
+      diffRatio = diff.diffRatio;
+      finalError = diff.pass ? undefined : `Visual diff ratio ${diff.diffRatio.toFixed(4)} exceeds threshold ${threshold}`;
+    }
 
     const stepResult: StepResult = {
       stepIndex: i,
-      pass,
+      pass: finalPass,
       beforeScreenshot,
       afterScreenshot,
-      errorMessage: error,
+      diffRatio,
+      errorMessage: finalError,
     };
 
     stepResults.push(stepResult);
     opts.onStep?.(i, stepResult);
 
-    if (!pass) {
+    if (!finalPass) {
       overallPass = false;
       failedStepIndex = i;
       break;

@@ -93,8 +93,12 @@ import {
 } from './services/commands';
 import {
   SavedPrompt,
-  loadPrompts, addPrompt, updatePrompt, removePrompt,
+  loadPrompts, addPrompt, removePrompt,
 } from './services/promptLibrary';
+import {
+  BrowserScenario, ScenarioResult,
+  listScenarios, saveScenario, deleteScenario, generateScenarioId, runScenario,
+} from './services/scenario';
 import {
   BranchState,
   createBranch, navigateBranch, getForkInfo, getForkPoints,
@@ -407,6 +411,12 @@ const App: React.FC = () => {
   const [newCustomTool, setNewCustomTool] = useState({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
   const [newFunction, setNewFunction] = useState<{ kind: 'filter' | 'action'; name: string; code: string; priority: string }>({ kind: 'filter', name: '', code: '', priority: '100' });
 
+  // Browser scenarios (#78/#200)
+  const [scenarios, setScenarios] = useState<BrowserScenario[]>(() => listScenarios());
+  const [scenarioResults, setScenarioResults] = useState<Record<string, ScenarioResult>>({});
+  const [runningScenarioId, setRunningScenarioId] = useState<string | null>(null);
+  const [newScenarioName, setNewScenarioName] = useState('');
+
   // Model presets (#124)
   const [presets, setPresets] = useState<ModelPreset[]>(() => loadPresets());
   const [activePresetId, setActivePresetId] = useState<string | null>(() => loadActivePresetId());
@@ -449,6 +459,7 @@ const App: React.FC = () => {
   const [prompts, setPrompts] = useState<SavedPrompt[]>(() => loadPrompts());
   const [showPromptPicker, setShowPromptPicker] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
+  const [newPromptBody, setNewPromptBody] = useState('');
 
   // Conversation branching (#98)
   const [branchState, setBranchState] = useState<BranchState>(emptyBranchState());
@@ -1243,8 +1254,9 @@ const App: React.FC = () => {
   // Send message
   const sendMessage = async (textOverride?: string) => {
     let text = textOverride ?? input;
-    // Prepend resolved # context blocks (#119/#184)
-    if (pendingContextBlocks.length > 0 && textOverride === undefined) {
+    // Prepend resolved # context blocks (#119/#184). Always clear them after
+    // any send so stale chips don't persist across slash-command / action paths.
+    if (pendingContextBlocks.length > 0) {
       text = pendingContextBlocks.join('\n\n') + '\n\n' + text;
       setPendingContextBlocks([]);
     }
@@ -4465,17 +4477,42 @@ const App: React.FC = () => {
                 {/* Prompt library (#97) */}
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Prompt Library ({prompts.length})</label>
-                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
-                    {prompts.map(p => (
-                      <div key={p.id} className="flex items-center gap-1.5">
-                        <span className={`flex-1 text-xs font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>{p.name}</span>
-                        <span className={`text-[10px] truncate max-w-[120px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.body.slice(0, 40)}</span>
-                        <button onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
-                      </div>
-                    ))}
+                  <div className={`rounded-lg border divide-y overflow-hidden mb-2 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {prompts.length === 0
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No saved prompts. Add one below or click "Save input" to save your current draft.</p>
+                      : prompts.map(p => (
+                        <div key={p.id} className={`flex items-center gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                          <div className="flex-1 min-w-0">
+                            <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>{p.name}</div>
+                            <div className={`text-[10px] truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.body.slice(0, 60)}{p.body.length > 60 ? '…' : ''}</div>
+                          </div>
+                          <button
+                            onClick={() => { setInput(prev => prev ? `${prev}\n${p.body}` : p.body); }}
+                            title="Insert into chat input"
+                            className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                          >Use</button>
+                          <button onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                        </div>
+                      ))
+                    }
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <input placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
+                      className={`border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    <textarea placeholder="Prompt body (or use 'Save input' to save the current draft)" value={newPromptBody} onChange={e => setNewPromptBody(e.target.value)}
+                      rows={2}
+                      className={`border rounded px-2 py-1 text-xs font-mono resize-none focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     <div className="flex gap-1.5">
-                      <input placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
-                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <button
+                        onClick={() => {
+                          if (!newPromptName.trim() || !newPromptBody.trim()) return;
+                          addPrompt({ name: newPromptName.trim(), body: newPromptBody.trim() });
+                          setPrompts(loadPrompts());
+                          setNewPromptName('');
+                          setNewPromptBody('');
+                        }}
+                        className="flex-1 text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
+                      >Save</button>
                       <button
                         onClick={() => {
                           if (!newPromptName.trim() || !input.trim()) return;
@@ -4483,11 +4520,11 @@ const App: React.FC = () => {
                           setPrompts(loadPrompts());
                           setNewPromptName('');
                         }}
-                        title="Save current input as a prompt"
-                        className="text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white whitespace-nowrap"
+                        title="Save current chat input as a prompt"
+                        className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                       >Save input</button>
                     </div>
-                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Prompts appear in the 📋 picker next to the composer when saved.</p>
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Prompts appear in the 📋 picker next to the composer. "Use" inserts them into the input.</p>
                   </div>
                 </div>
 
@@ -5000,6 +5037,88 @@ const App: React.FC = () => {
                       e.target.value = '';
                     }}
                   />
+                </div>
+
+                {/* Browser Scenarios (#78/#200) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Browser Scenarios</label>
+                  <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Record and replay browser UI test flows. Each scenario is a sequence of navigate/click/type/assert/visual_match steps run against the embedded browser.
+                  </p>
+                  <div className={`rounded-lg border divide-y overflow-hidden mb-2 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {scenarios.length === 0
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No scenarios saved yet. Create one below.</p>
+                      : scenarios.map(sc => {
+                        const result = scenarioResults[sc.id];
+                        const isRunning = runningScenarioId === sc.id;
+                        return (
+                          <div key={sc.id} className={`px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{sc.name}</div>
+                                <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{sc.steps.length} step{sc.steps.length !== 1 ? 's' : ''}</div>
+                              </div>
+                              {result && (
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${result.pass ? (dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700') : (dark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700')}`}>
+                                  {result.pass ? '✓ pass' : `✕ fail (step ${result.failedStepIndex ?? 0})`}
+                                </span>
+                              )}
+                              <button
+                                disabled={isRunning}
+                                onClick={async () => {
+                                  setRunningScenarioId(sc.id);
+                                  try {
+                                    const r = await runScenario(sc);
+                                    setScenarioResults(prev => ({ ...prev, [sc.id]: r }));
+                                  } catch (e) {
+                                    console.error('Scenario run error', e);
+                                  } finally {
+                                    setRunningScenarioId(null);
+                                  }
+                                }}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning ? 'opacity-50 cursor-wait' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
+                              >{isRunning ? '…' : '▶ Run'}</button>
+                              <button
+                                onClick={() => { deleteScenario(sc.id); setScenarios(listScenarios()); setScenarioResults(prev => { const n = { ...prev }; delete n[sc.id]; return n; }); }}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}
+                              >✕</button>
+                            </div>
+                            {result && !result.pass && result.stepResults.find(s => !s.pass) && (
+                              <p className={`text-[10px] mt-1 ${dark ? 'text-red-400' : 'text-red-600'}`}>
+                                {result.stepResults.find(s => !s.pass)?.errorMessage}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })
+                    }
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      value={newScenarioName}
+                      onChange={e => setNewScenarioName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newScenarioName.trim()) {
+                          const sc: BrowserScenario = { id: generateScenarioId(), name: newScenarioName.trim(), steps: [], createdAt: Date.now() };
+                          saveScenario(sc);
+                          setScenarios(listScenarios());
+                          setNewScenarioName('');
+                        }
+                      }}
+                      placeholder="New scenario name…"
+                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <button
+                      onClick={() => {
+                        if (!newScenarioName.trim()) return;
+                        const sc: BrowserScenario = { id: generateScenarioId(), name: newScenarioName.trim(), steps: [], createdAt: Date.now() };
+                        saveScenario(sc);
+                        setScenarios(listScenarios());
+                        setNewScenarioName('');
+                      }}
+                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >Create</button>
+                  </div>
                 </div>
 
                 {/* Compaction (#95) */}

@@ -106,11 +106,12 @@ export function registerBrowserTools(
     execute: async (p) => {
       const url = p.url as string;
       // Allowlist: localhost (any port) is always permitted; everything else
-      // must be approved by the user.
+      // must be approved. Use requestBrowserApproval so already-approved hosts
+      // bypass the modal (host allow-list from browserApproval.ts, #77/#201).
       if (!isLocalhostUrl(url)) {
-        if (!(await onApprovalRequired('navigate', url))) {
-          return { error: 'denied' };
-        }
+        const { requestBrowserApproval } = await import('./browserApproval');
+        const result = await requestBrowserApproval({ action: 'navigate', detail: url, url });
+        if (!result.approved) return { error: 'denied' };
       }
       await ensureEngine();
       return tauriInvoke('browser_cdp_navigate', { url });
