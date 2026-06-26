@@ -177,31 +177,6 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   // Panel registration
   // -------------------------------------------------------------------------
 
-  useEffect(() => {
-    // Register with the PanelShell dock. Guarded with optional chaining so the
-    // component is resilient to the registry's exact API surface (and to tests
-    // that stub the module).
-    try {
-      (panelRegistry as any)?.register?.({
-        id: 'browser',
-        title: 'Browser',
-        // The shell renders us with the active dark flag; we keep our own copy in
-        // the prop for direct renders, but expose a renderer for the dock too.
-        render: (darkFlag: boolean) => <BrowserPane dark={darkFlag} />,
-      });
-    } catch {
-      /* registry not available (e.g. isolated test) — non-fatal. */
-    }
-    return () => {
-      try {
-        (panelRegistry as any)?.unregister?.('browser');
-      } catch {
-        /* non-fatal */
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // -------------------------------------------------------------------------
   // ResizeObserver + window resize → set_bounds (external host tracking)
   // -------------------------------------------------------------------------
@@ -348,3 +323,12 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
     </div>
   );
 }
+// Register with the PanelShell dock once at module load. This makes the browser
+// surface available to App.tsx toggles without having to render <BrowserPane /> in
+// the main tree.
+(panelRegistry as any)?.register?.({
+  id: 'browser',
+  title: 'Browser',
+  icon: '🌐',
+  render: (darkFlag: boolean) => <BrowserPane dark={darkFlag} />,
+});

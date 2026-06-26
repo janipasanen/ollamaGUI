@@ -52,7 +52,12 @@ import { registerBrowserTools, stopBrowserEngine } from './services/browser-tool
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
-import DocumentArtifact, { type DocumentArtifactData } from './components/DocumentArtifact';
+import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
+import './components/BrowserPane';
+import './components/FileTreePanel';
+import './components/TerminalPanel';
+import { registerFileTreePanel } from './components/FileTreePanel';
+import { registerTerminalPanel } from './components/TerminalPanel';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import { checkLibreOffice, convertDocument } from './services/documents';
@@ -469,12 +474,10 @@ const App: React.FC = () => {
   const [editContent, setEditContent] = useState('');
 
   // Artifact canvas (#99)
-  const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
-  const [showArtifacts, setShowArtifacts] = useState(false);
-  const [documentArtifact, setDocumentArtifact] = useState<DocumentArtifactData | null>(null); // #145
+  // The panel itself is owned by PanelShell; App only tracks whether an
+  // artifact is available so the toolbar toggle can appear/disappear.
+  const [latestArtifact, setLatestArtifact] = useState<AnyArtifact | null>(null);
   const [showLoOnboarding, setShowLoOnboarding] = useState(false); // LibreOffice onboarding (#145)
-  const [artifactTab, setArtifactTab] = useState<'preview' | 'code'>('preview');
-  const [artifactCopied, setArtifactCopied] = useState(false);
 
   // Slash commands (#96)
   const [commandSuggestions, setCommandSuggestions] = useState<SlashCommand[]>([]);
@@ -676,6 +679,8 @@ const App: React.FC = () => {
       registerCheckpointTools();
       // Streaming terminal sessions (#87/#186) — run_terminal
       registerTerminalTool();
+      registerTerminalPanel();
+      registerFileTreePanel();
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
       // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
@@ -892,6 +897,7 @@ const App: React.FC = () => {
     setInput('');
     setIsTemporary(false);
     setMessageQueue([]);
+    setLatestArtifact(null);
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
@@ -905,6 +911,7 @@ const App: React.FC = () => {
     setInput('');
     setIsTemporary(true);
     setMessageQueue([]);
+    setLatestArtifact(null);
   }, []);
 
   // Promote the current temporary chat into a persisted session.
@@ -942,6 +949,12 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault();
         togglePanel('browser'); // toggle browser preview via PanelShell (#71)
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        e.preventDefault();
+        togglePanel('files'); // toggle file-tree panel via PanelShell (#85)
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
+        e.preventDefault();
+        togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
@@ -1661,9 +1674,8 @@ const App: React.FC = () => {
           const arts = detectArtifacts(filtered);
           const primary = pickPrimaryArtifact(arts);
           if (primary) {
-            setCurrentArtifact(primary);
-            setShowArtifacts(true);
-            setArtifactTab(primary.kind === 'html' || primary.kind === 'svg' ? 'preview' : 'code');
+            setLatestArtifact(primary);
+            showArtifact(primary);
           }
           // Surface agent-created/converted documents in the Artifacts panel (#145).
           // Scan the just-finalized message list (via the messages ref, kept current
@@ -1678,9 +1690,16 @@ const App: React.FC = () => {
               const path: string | undefined = res.path || res.dest;
               if (path) {
                 void readDocument(path)
-                  .then(doc => setDocumentArtifact({ kind: 'document', path, format: doc.format, previewText: doc.text }))
-                  .catch(() => setDocumentArtifact({ kind: 'document', path, format: detectDocumentFormat(path), previewText: '' }))
-                  .finally(() => setShowArtifacts(true));
+                  .then(doc => {
+                    const docArtifact: DocumentArtifactData = { kind: 'document', path, format: doc.format, previewText: doc.text };
+                    setLatestArtifact(docArtifact);
+                    showArtifact(docArtifact);
+                  })
+                  .catch(() => {
+                    const docArtifact: DocumentArtifactData = { kind: 'document', path, format: detectDocumentFormat(path), previewText: '' };
+                    setLatestArtifact(docArtifact);
+                    showArtifact(docArtifact);
+                  });
               }
             } catch { /* non-document or unparseable result — ignore */ }
           }
@@ -2216,16 +2235,25 @@ const App: React.FC = () => {
                    </button>
                  )}
                  {/* Artifact canvas toggle (#99) */}
-                 {currentArtifact && (
+                 {latestArtifact && (
                    <button
-                     onClick={() => setShowArtifacts(v => !v)}
-                     title={showArtifacts ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     aria-label={showArtifacts ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     className={`p-2 rounded-md transition-colors ${showArtifacts ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                     onClick={() => togglePanel('artifacts')}
+                     title={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
+                     aria-label={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
+                     className={`p-2 rounded-md transition-colors ${isPanelOpen('artifacts') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                    >
                      🖼
                    </button>
                  )}
+                 {/* File tree toggle (#85) */}
+                 <button
+                   onClick={() => togglePanel('files')}
+                   title={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
+                   aria-label={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
+                   className={`p-2 rounded-md transition-colors ${isPanelOpen('files') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                 >
+                   📁
+                 </button>
                  {/* Browser preview toggle (#71) */}
                  <button
                    onClick={() => togglePanel('browser')}
@@ -2234,6 +2262,15 @@ const App: React.FC = () => {
                    className={`p-2 rounded-md transition-colors ${isPanelOpen('browser') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                  >
                    🌐
+                 </button>
+                 {/* Terminal toggle (#87) */}
+                 <button
+                   onClick={() => togglePanel('terminal')}
+                   title={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
+                   aria-label={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
+                   className={`p-2 rounded-md transition-colors ${isPanelOpen('terminal') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                 >
+                   ▶
                  </button>
                  <button
                    onClick={() => setShowHelp(prev => !prev)}
@@ -5433,124 +5470,7 @@ const App: React.FC = () => {
     </div>
 
 
-      {/* Document artifact panel (#145) — preview/open/export agent documents */}
-      {showArtifacts && documentArtifact && (
-        <div className={`w-96 shrink-0 border-l flex flex-col overflow-hidden ${
-          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
-        }`}>
-          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
-            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
-          }`}>
-            <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>Document</span>
-            <button
-              onClick={() => setDocumentArtifact(null)}
-              aria-label="Close document panel"
-              className={`p-1 rounded text-xs ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}
-            >✕</button>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto">
-            <DocumentArtifact
-              data={documentArtifact}
-              dark={dark}
-              onOpen={(p) => { void openSource({ id: p, label: p, kind: 'file', fileId: p, url: p }); }}
-              onExport={async (p) => {
-                const lo = await checkLibreOffice().catch(() => ({ available: false }));
-                if (needsOnboarding(!!lo.available)) { setShowLoOnboarding(true); return; }
-                const dest = p.replace(/\.[^.]+$/, '') + '.pdf';
-                try {
-                  await convertDocument(p, dest, 'pdf');
-                  notify(`Exported to ${dest}`);
-                } catch (e) {
-                  notify(formatErrorLine(e, 'generic'));
-                }
-              }}
-            />
-          </div>
-        </div>
-      )}
 
-      {/* Artifact canvas panel (#99) — docks to the right of the chat area */}
-      {showArtifacts && currentArtifact && (
-        <div className={`w-96 shrink-0 border-l flex flex-col overflow-hidden transition-all ${
-          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
-        }`}>
-          {/* Panel header */}
-          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
-            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
-          }`}>
-            <div className="flex items-center gap-2 min-w-0">
-              <span className={`text-xs font-mono px-2 py-0.5 rounded shrink-0 ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}>
-                {currentArtifact.language}
-              </span>
-              <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>
-                Artifact
-              </span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              {/* Tab toggle for html/svg */}
-              {(currentArtifact.kind === 'html' || currentArtifact.kind === 'svg') && (
-                <div className={`flex rounded-lg overflow-hidden border text-xs mr-1 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-                  <button
-                    onClick={() => setArtifactTab('preview')}
-                    className={`px-2 py-1 transition-colors ${artifactTab === 'preview' ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-zinc-200 text-zinc-800') : (dark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-zinc-500 hover:bg-zinc-100')}`}
-                  >Preview</button>
-                  <button
-                    onClick={() => setArtifactTab('code')}
-                    className={`px-2 py-1 transition-colors ${artifactTab === 'code' ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-zinc-200 text-zinc-800') : (dark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-zinc-500 hover:bg-zinc-100')}`}
-                  >Code</button>
-                </div>
-              )}
-              {/* Copy button */}
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(currentArtifact.code);
-                  setArtifactCopied(true);
-                  setTimeout(() => setArtifactCopied(false), 2000);
-                }}
-                aria-label="Copy artifact code"
-                title="Copy"
-                className={`text-xs px-2 py-1 rounded transition-colors ${artifactCopied ? 'text-green-400' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100')}`}
-              >{artifactCopied ? '✓' : '⎘'}</button>
-              {/* Export button */}
-              <button
-                onClick={() => exportArtifact(currentArtifact)}
-                aria-label="Export artifact to file"
-                title="Export to file"
-                className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100'}`}
-              >↓</button>
-              {/* Close */}
-              <button
-                onClick={() => setShowArtifacts(false)}
-                aria-label="Close artifacts panel"
-                className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-500 hover:bg-zinc-100'}`}
-              >✕</button>
-            </div>
-          </div>
-
-          {/* Panel body */}
-          <div className="flex-1 overflow-auto">
-            {(currentArtifact.kind === 'html' || currentArtifact.kind === 'svg') && artifactTab === 'preview' ? (
-              <iframe
-                srcDoc={currentArtifact.code}
-                title="Artifact preview"
-                sandbox="allow-scripts"
-                className="w-full h-full border-0 bg-white"
-              />
-            ) : (
-              <div className="p-2">
-                <SyntaxHighlighter
-                  style={dark ? vscDarkPlus : oneLight}
-                  language={currentArtifact.language}
-                  PreTag="div"
-                  customStyle={{ margin: 0, borderRadius: '0.5rem', fontSize: '0.75rem' }}
-                >
-                  {currentArtifact.code}
-                </SyntaxHighlighter>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

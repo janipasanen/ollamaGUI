@@ -4,8 +4,10 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 // PanelShell is owned by a sibling worker and may not exist standalone, so we
 // mock it here. This keeps the BrowserPane test self-contained (no shared-file
 // integration) while still exercising the registration call.
-const registerSpy = vi.fn();
-const unregisterSpy = vi.fn();
+const { registerSpy, unregisterSpy } = vi.hoisted(() => ({
+  registerSpy: vi.fn(),
+  unregisterSpy: vi.fn(),
+}));
 vi.mock('../components/PanelShell', () => ({
   panelRegistry: {
     register: (...args: any[]) => registerSpy(...args),
@@ -27,7 +29,6 @@ class FakeResizeObserver {
 beforeEach(() => {
   (globalThis as any).ResizeObserver = FakeResizeObserver as any;
   _mocks.invoke = null;
-  registerSpy.mockClear();
   unregisterSpy.mockClear();
   // Reset shared session url so cross-test ordering can't leak an external url.
   browserSession.navUrl = '';

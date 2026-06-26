@@ -104,6 +104,7 @@ export async function killTerminal(id: number): Promise<void> {
   _unlisteners.get(id)?.();
   _unlisteners.delete(id);
   await tauriInvoke<void>('terminal_kill', { session_id: id });
+  window.dispatchEvent(new CustomEvent('ollama-gui:terminal-update'));
 }
 
 /** Clear all sessions (for tests / session reset). */
@@ -112,6 +113,7 @@ export function clearTerminalSessions(): void {
   _subscribers.clear();
   _unlisteners.forEach(u => u());
   _unlisteners.clear();
+  window.dispatchEvent(new CustomEvent('ollama-gui:terminal-update'));
 }
 
 /**
