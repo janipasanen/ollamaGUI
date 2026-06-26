@@ -50,8 +50,7 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
-import BrowserPane from './components/BrowserPane';
-import { PanelShell } from './components/PanelShell';
+import { PanelShell, togglePanel, isPanelOpen } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import DocumentArtifact, { type DocumentArtifactData } from './components/DocumentArtifact';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
@@ -472,7 +471,6 @@ const App: React.FC = () => {
   // Artifact canvas (#99)
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
-  const [showBrowser, setShowBrowser] = useState(false); // browser preview pane (#71)
   const [documentArtifact, setDocumentArtifact] = useState<DocumentArtifactData | null>(null); // #145
   const [showLoOnboarding, setShowLoOnboarding] = useState(false); // LibreOffice onboarding (#145)
   const [artifactTab, setArtifactTab] = useState<'preview' | 'code'>('preview');
@@ -943,7 +941,7 @@ const App: React.FC = () => {
         setIsSidebarOpen(prev => !prev);
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault();
-        setShowBrowser(prev => !prev); // toggle browser preview (#71)
+        togglePanel('browser'); // toggle browser preview via PanelShell (#71)
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
@@ -2230,10 +2228,10 @@ const App: React.FC = () => {
                  )}
                  {/* Browser preview toggle (#71) */}
                  <button
-                   onClick={() => setShowBrowser(v => !v)}
+                   onClick={() => togglePanel('browser')}
                    title="Toggle browser (Ctrl+B)"
                    aria-label="Toggle browser preview"
-                   className={`p-2 rounded-md transition-colors ${showBrowser ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                   className={`p-2 rounded-md transition-colors ${isPanelOpen('browser') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                  >
                    🌐
                  </button>
@@ -5434,26 +5432,6 @@ const App: React.FC = () => {
         </PanelShell>
     </div>
 
-      {/* Browser preview pane (#71) — docks to the right of the chat area */}
-      {showBrowser && (
-        <div className={`w-[28rem] shrink-0 border-l flex flex-col overflow-hidden ${
-          dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'
-        }`}>
-          <div className={`h-14 flex items-center justify-between px-4 shrink-0 border-b ${
-            dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
-          }`}>
-            <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-700'}`}>Browser</span>
-            <button
-              onClick={() => setShowBrowser(false)}
-              aria-label="Close browser preview"
-              className={`p-1 rounded text-xs ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}
-            >✕</button>
-          </div>
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <BrowserPane dark={dark} />
-          </div>
-        </div>
-      )}
 
       {/* Document artifact panel (#145) — preview/open/export agent documents */}
       {showArtifacts && documentArtifact && (

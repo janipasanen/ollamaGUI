@@ -187,7 +187,7 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
         title: 'Browser',
         // The shell renders us with the active dark flag; we keep our own copy in
         // the prop for direct renders, but expose a renderer for the dock too.
-        render: (p: { dark: boolean }) => <BrowserPane dark={p?.dark ?? dark} />,
+        render: (darkFlag: boolean) => <BrowserPane dark={darkFlag} />,
       });
     } catch {
       /* registry not available (e.g. isolated test) — non-fatal. */
