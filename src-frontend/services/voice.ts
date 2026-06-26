@@ -49,7 +49,7 @@ async function defaultRecognize(): Promise<string> {
     rec.interimResults = false;
     rec.lang = navigator.language || 'en-US';
     rec.onresult = (e: SpeechRecognitionEvent) => {
-      const text = Array.from(e.results).map(r => r[0].transcript).join(' ').trim();
+      const text = Array.from(e.results as any).map((r: any) => r[0].transcript).join(' ').trim();
       resolve(text);
     };
     rec.onerror = (e: SpeechRecognitionErrorEvent) => reject(new Error(`SpeechRecognition error: ${e.error}`));

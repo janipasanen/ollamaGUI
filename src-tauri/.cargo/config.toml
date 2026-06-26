@@ -1,0 +1,13 @@
+# Pin the macOS deployment target to 10.15 so the Rust backend and its
+# C/WebKit dependencies do not pick up symbols only available on newer OSes.
+# Users must also export MACOSX_DEPLOYMENT_TARGET=10.15 before invoking npm/cargo.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
+
+[build]
+# Ensure the C compiler (cc/clang) uses the same minimum version when building
+# native dependencies such as OpenSSL, JavaScriptCore bindings, and compression libs.
+rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]

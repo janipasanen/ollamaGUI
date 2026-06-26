@@ -84,6 +84,7 @@ cargo tauri build
 #### macOS
 - **Output**: `.app` bundle and `.dmg` in `src-tauri/target/release/bundle/dmg/`
 - **Requirements**: macOS 10.15+
+- **Build**: Export `MACOSX_DEPLOYMENT_TARGET=10.15` or run `scripts/build-macos-10.15.sh`. The deployment target is also pinned in `src-tauri/.cargo/config.toml`.
 - **Notarization**: Required for Gatekeeper approval
 
 #### Linux

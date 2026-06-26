@@ -11,23 +11,36 @@ export interface ToolDefinition {
     }>;
     required?: string[];
   };
-  execute: (params: Record<string, any>) => Promise<any>;
+  execute: (params: any) => Promise<any>;
   /** If true, this tool only reads state and never mutates it. Used by readOnly mode and SmartApprove. */
   readOnly?: boolean;
 }
 
 export interface ToolCall {
-  id: string;
-  type: 'function';
+  id?: string;
+  type?: 'function';
   function: {
     name: string;
     arguments: string;
   };
+  /** Fallback name used by some LLM outputs (e.g. Ollama tool calls). */
+  name?: string;
+}
+
+export function toolCallName(toolCall: ToolCall): string {
+  return toolCall.name ?? toolCall.function.name;
+}
+
+export function toolCallArgs(toolCall: ToolCall): Record<string, unknown> {
+  const args = toolCall.function.arguments;
+  if (typeof args === 'string') return JSON.parse(args) as Record<string, unknown>;
+  return (args ?? {}) as Record<string, unknown>;
 }
 
 export interface ToolResult {
-  tool_call_id: string;
-  role: 'tool';
+  /** Required by strict OpenAI-compatible APIs; optional for more lenient backends. */
+  tool_call_id?: string;
+  role?: 'tool';
   name: string;
   content: string;
 }
@@ -64,17 +77,18 @@ class ToolRegistry {
   
   async executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
     const tool = this.getTool(toolCall.function.name);
+    const toolName = toolCallName(toolCall);
     if (!tool) {
-      throw new Error(`Tool ${toolCall.function.name} not found`);
+      throw new Error(`Tool ${toolName} not found`);
     }
     
-    const params = JSON.parse(toolCall.function.arguments);
+    const params = toolCallArgs(toolCall);
     const result = await tool.execute(params);
     
     return {
-      tool_call_id: toolCall.id,
+      tool_call_id: toolCall.id ?? 'unknown',
       role: 'tool',
-      name: toolCall.function.name,
+      name: toolName,
       content: JSON.stringify(result),
     };
   }

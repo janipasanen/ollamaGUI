@@ -1,5 +1,5 @@
 import { Message, GenerationOptions, cleanGenerationOptions } from './ollama';
-import { toolRegistry, ToolCall, ToolResult } from './tools';
+import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs } from './tools';
 import { runPreToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
 
@@ -142,14 +142,14 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       if (hasToolCalls && toolCalls.length > 0) {
         for (const toolCall of toolCalls) {
           try {
-            const toolDef = toolRegistry.getTool(toolCall.function?.name ?? toolCall.name);
+            const toolDef = toolRegistry.getTool(toolCallName(toolCall));
             const toolIsReadOnly = (toolDef as any)?.readOnly ?? false;
 
             // Read-only mode check (agentAutonomy #146)
             if (isBlockedByReadOnlyMode(toolIsReadOnly)) {
               const blocked: ToolResult = {
-                name: toolCall.function?.name ?? toolCall.name,
-                content: `Tool blocked: read-only mode is active and '${toolCall.function?.name ?? toolCall.name}' is not a read-only tool.`,
+                name: toolCallName(toolCall),
+                content: `Tool blocked: read-only mode is active and '${toolCallName(toolCall)}' is not a read-only tool.`,
               };
               if (onToolResult) onToolResult(blocked);
               currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
@@ -158,12 +158,12 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
             }
 
             // Plan/ask autonomy gate (#88/#89/#189)
-            const approvalArgs = (toolCall.function?.arguments ?? {}) as Record<string, unknown>;
+            const approvalArgs = toolCallArgs(toolCall);
             if (shouldAskBeforeToolUse(toolIsReadOnly) && onApprovalNeeded) {
-              const approved = await onApprovalNeeded(toolCall.function?.name ?? toolCall.name, approvalArgs);
+              const approved = await onApprovalNeeded(toolCallName(toolCall), approvalArgs);
               if (!approved) {
                 const blocked: ToolResult = {
-                  name: toolCall.function?.name ?? toolCall.name,
+                  name: toolCallName(toolCall),
                   content: `Tool blocked: user denied approval (autonomy level: ${(await import('./agentAutonomy')).getAutonomyLevel()}).`,
                 };
                 if (onToolResult) onToolResult(blocked);
@@ -175,10 +175,10 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
 
             // Pre-tool-use hook chain (toolHooks #90)
             const hookArgs = approvalArgs;
-            const hookResult = await runPreToolUseHooks(toolCall.function?.name ?? toolCall.name, hookArgs);
+            const hookResult = await runPreToolUseHooks(toolCallName(toolCall), hookArgs);
             if (!hookResult.allowed) {
               const blocked: ToolResult = {
-                name: toolCall.function?.name ?? toolCall.name,
+                name: toolCallName(toolCall),
                 content: `Tool blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
               };
               if (onToolResult) onToolResult(blocked);

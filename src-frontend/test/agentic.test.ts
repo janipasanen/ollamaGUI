@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { toolRegistry } from '../services/tools';
+import { toolRegistry, type ToolCall } from '../services/tools';
 import { agenticChatStream } from '../services/agent';
 import { mcpServerManager, McpStdioClient } from '../services/mcp';
 import { CliToolWrapper } from '../services/cli-tool';
@@ -105,7 +105,7 @@ describe('Agentic Features', () => {
 
       toolRegistry.registerTool(testTool);
 
-      const toolCall = {
+      const toolCall: ToolCall = {
         id: 'test-123',
         type: 'function',
         function: {

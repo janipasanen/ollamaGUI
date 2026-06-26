@@ -71,8 +71,8 @@ describe('webSearch with mock (#121)', () => {
     const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://searx' };
     await webSearch('climate change', cfg);
     expect(capturedQuery).toBe('climate change');
-    expect(capturedCfg?.provider).toBe('searxng');
-    expect(capturedCfg?.searxngUrl).toBe('http://searx');
+    expect((capturedCfg as any)?.provider).toBe('searxng');
+    expect((capturedCfg as any)?.searxngUrl).toBe('http://searx');
   });
 });
 

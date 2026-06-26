@@ -10,7 +10,7 @@ import {
 import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
-import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist } from './services/tools';
+import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
@@ -1491,7 +1491,7 @@ const App: React.FC = () => {
               ...prev,
               {
                 role: 'assistant',
-                content: `Calling tool: ${toolCall.function.name}`,
+                content: `Calling tool: ${toolCallName(toolCall)}`,
                 tool_calls: [toolCall],
               },
             ]);
@@ -1778,7 +1778,7 @@ const App: React.FC = () => {
         <h1 className="text-xl font-bold mb-4">Ollama GUI</h1>
 
              <button
-               onClick={startNewChat}
+               onClick={() => startNewChat()}
                aria-label="Start new chat"
                className={`w-full py-2 px-4 rounded-lg transition-colors mb-2 text-sm font-semibold ${
                  dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
@@ -2269,7 +2269,7 @@ const App: React.FC = () => {
                     <div className="text-xs font-mono text-blue-300 mb-1">Tool Call</div>
                     {msg.tool_calls.map((toolCall: any, idx: number) => (
                       <div key={idx} className="text-xs font-mono">
-                        <span className="text-yellow-300">{toolCall.function.name}</span>(
+                        <span className="text-yellow-300">{toolCallName(toolCall)}</span>(
                         <span className="text-green-300">{toolCall.function.arguments}</span>
                         )
                       </div>
@@ -2502,7 +2502,7 @@ const App: React.FC = () => {
               {messages.length > 0 && (
                 <button onClick={saveTemporaryChat} className="px-2 py-0.5 rounded border border-current hover:opacity-80">Save this chat</button>
               )}
-              <button onClick={startNewChat} className="px-2 py-0.5 rounded border border-current hover:opacity-80">Discard</button>
+              <button onClick={() => startNewChat()} className="px-2 py-0.5 rounded border border-current hover:opacity-80">Discard</button>
             </div>
           </div>
         )}

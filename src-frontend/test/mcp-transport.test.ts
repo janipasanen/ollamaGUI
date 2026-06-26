@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mcpServerManager, McpStdioClient, McpHttpClient } from '../services/mcp';
-import type { McpServerConfig } from '../services/mcp';
+import type { McpServerConfig, McpRequest } from '../services/mcp';
 import { McpHttpTransport } from '../services/mcp-http';
 import { TauriMcpStdioTransport } from '../services/mcp-tauri';
 
@@ -226,7 +226,7 @@ describe('MCP Transport Tests', () => {
       try {
         await McpHttpTransport.initializeSession(config);
 
-        const request = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
+        const request: McpRequest = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
         const result = await McpHttpTransport.sendRequest('test-http', request);
 
         expect(result).toEqual({ version: '1.0' });
@@ -259,7 +259,7 @@ describe('MCP Transport Tests', () => {
       McpHttpTransport._mockInvoke = mockInvoke;
       try {
         await McpHttpTransport.initializeSession(config);
-        const request = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
+        const request: McpRequest = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
 
         await expect(McpHttpTransport.sendRequest('test-http', request))
           .rejects
@@ -289,7 +289,7 @@ describe('MCP Transport Tests', () => {
       McpHttpTransport._mockInvoke = mockInvoke;
       try {
         await McpHttpTransport.initializeSession(config);
-        const request = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
+        const request: McpRequest = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} };
 
         await expect(McpHttpTransport.sendRequest('test-http', request))
           .rejects
@@ -684,7 +684,7 @@ describe('MCP Transport Tests', () => {
         expect.objectContaining({ DATABASE_URI: 'postgresql://user:s3cr3t@localhost/mydb' }),
       );
       // Connection string must NOT appear in the command args directly
-      const [, args] = mockSpawn.mock.calls[0];
+      const [, args] = mockSpawn.mock.calls[0] as [string, string[]];
       expect(args.some((a: string) => a.includes('@localhost'))).toBe(false);
     });
   });

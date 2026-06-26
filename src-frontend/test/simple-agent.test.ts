@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { toolRegistry } from '../services/tools';
+import { toolRegistry, type ToolCall } from '../services/tools';
 
 describe('Simple Agentic Tests', () => {
   it('should have working tool registry', () => {
@@ -37,7 +37,7 @@ describe('Simple Agentic Tests', () => {
 
     toolRegistry.registerTool(testTool);
 
-    const toolCall = {
+    const toolCall: ToolCall = {
       id: 'test-123',
       type: 'function',
       function: {

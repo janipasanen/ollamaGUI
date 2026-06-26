@@ -168,7 +168,7 @@ describe('startVoiceCall state machine (#132)', () => {
       speakFn: vi.fn().mockImplementation(async (_text: string, signal: AbortSignal) => {
         return new Promise<void>((resolve) => {
           speakResolve = resolve;
-          signal.addEventListener('abort', resolve);
+          signal.addEventListener('abort', () => resolve());
         });
       }),
     });

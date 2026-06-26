@@ -32,18 +32,22 @@ export interface McpServerConfig {
   args?: string[]; // Extra args appended to a stdio command
   env?: Record<string, string>; // Per-server env vars (credential tokens) for stdio servers
   url?: string; // For HTTP servers
+  headers?: Record<string, string>; // For HTTP servers
   auth?: {
     token?: string;
     type?: 'bearer' | 'basic';
   };
-  enabled: boolean;
-  toolsEnabled: boolean;
+  enabled?: boolean;
+  toolsEnabled?: boolean;
+  tools?: McpTool[];
+  lastConnected?: number;
 }
 
 export interface McpTool {
   name: string;
   description: string;
   parameters: any;
+  enabled?: boolean;
 }
 
 export interface McpRequest {
@@ -174,8 +178,9 @@ export class McpStdioClient {
           }
         }
         // Handle JSON-RPC notification
-        else if (message.method) {
-          this.emitEvent(message.method, message.params);
+        else if ('method' in message) {
+          const notification = message as McpNotification;
+          this.emitEvent(notification.method, notification.params);
         }
       } catch (error) {
         console.error(`[MCP] Error parsing line: ${line}`, error);

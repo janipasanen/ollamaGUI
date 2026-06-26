@@ -6,7 +6,7 @@ export interface MessageFeedback {
 }
 
 export interface Message {
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: string;
   content: string;
   images?: string[];
   name?: string;

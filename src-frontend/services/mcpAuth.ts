@@ -315,11 +315,11 @@ export async function performOAuthFlow(serverId: string, serverUrl: string): Pro
   authUrl.searchParams.set('state', state);
 
   const { invoke } = await import('@tauri-apps/api/core');
-  const { open } = await import('@tauri-apps/plugin-opener');
+  const { openUrl } = await import('@tauri-apps/plugin-opener');
 
   // Start listener before opening browser so we don't miss the redirect
   const listenerPromise = invoke<OAuthRedirectResult>('start_oauth_redirect_listener', { port });
-  await open(authUrl.toString());
+  await openUrl(authUrl.toString());
 
   const redirect = await listenerPromise;
   if (redirect.error) throw new Error(`OAuth error: ${redirect.error}`);

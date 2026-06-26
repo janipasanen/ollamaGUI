@@ -137,7 +137,7 @@ describe('exportArtifact', () => {
       return el;
     });
     exportArtifact(art);
-    expect(capturedEl?.download).toBe('artifact.html');
+    expect((capturedEl as any)?.download).toBe('artifact.html');
   });
 
   it('uses .svg extension for svg kind', () => {
@@ -149,7 +149,7 @@ describe('exportArtifact', () => {
       return el;
     });
     exportArtifact(art);
-    expect(capturedEl?.download).toBe('artifact.svg');
+    expect((capturedEl as any)?.download).toBe('artifact.svg');
   });
 
   it('uses .js extension for javascript code', () => {
@@ -161,6 +161,6 @@ describe('exportArtifact', () => {
       return el;
     });
     exportArtifact(art);
-    expect(capturedEl?.download).toBe('artifact.js');
+    expect((capturedEl as any)?.download).toBe('artifact.js');
   });
 });

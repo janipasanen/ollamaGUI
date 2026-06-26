@@ -31,7 +31,7 @@ describe('defaults (#88)', () => {
 });
 
 describe('setAutonomyLevel (#88)', () => {
-  it.each([['plan'], ['ask'], ['auto']] as [AutonomyLevel][][])('persists %s', (level) => {
+  it.each([['plan'], ['ask'], ['auto']] as AutonomyLevel[][])('persists %s', (level: AutonomyLevel) => {
     setAutonomyLevel(level);
     expect(getAutonomyLevel()).toBe(level);
   });

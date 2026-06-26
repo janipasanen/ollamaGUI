@@ -22,6 +22,11 @@ export interface McpServerConfig {
   url?: string;
   /** Extra HTTP headers forwarded on every request (e.g. X-Gitlab-Mcp-Server-Tool-Name-Prefix). */
   headers?: Record<string, string>;
+  /** HTTP authentication metadata used by the transport layer. */
+  auth?: {
+    token?: string;
+    type?: 'bearer' | 'basic';
+  };
   /** Epoch ms of the last successful connection (persisted; powers auto-reconnect #55). */
   lastConnected?: number;
   // runtime state (not persisted)
@@ -30,6 +35,10 @@ export interface McpServerConfig {
   tools: McpTool[];
   authRequired: boolean;
   authenticated: boolean;
+  /** Whether this server connection is enabled. */
+  enabled?: boolean;
+  /** Whether tools from this server are exposed to the agent. */
+  toolsEnabled?: boolean;
 }
 
 const STORAGE_KEY = 'mcp_servers';

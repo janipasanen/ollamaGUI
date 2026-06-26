@@ -96,7 +96,7 @@ describe('Ollama Service', () => {
 
     const progressUpdates: string[] = [];
     await pullOllamaModel('test-model', (progress) => {
-      progressUpdates.push(progress.status);
+      progressUpdates.push(progress.status ?? 'unknown');
     });
 
     expect(progressUpdates).toContain('downloading');
