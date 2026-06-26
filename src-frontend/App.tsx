@@ -543,6 +543,7 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
 
   // Derived: filtered sessions for search (Issue 18)
   // Search across title/tags/folder/content, then apply archive + folder filters,
@@ -1172,10 +1173,17 @@ const App: React.FC = () => {
     if (folderFilter === id) setFolderFilter(null);
   };
 
-  const deleteSession = (id: string) => {
+  const deleteSession = (id: string, title?: string) => {
+    if (confirmDelete.open) return;
+    setConfirmDelete({ open: true, id, title: title ?? 'this chat' });
+  };
+  const confirmDeleteSession = () => {
+    const { id } = confirmDelete;
+    if (!id) return;
     storage.deleteSession(id);
     setSessions(storage.getSessions());
     if (currentSessionId === id) startNewChat();
+    setConfirmDelete({ open: false, id: '', title: '' });
   };
 
   const generateTitle = (msgs: Message[]): string => {
@@ -1962,7 +1970,7 @@ const App: React.FC = () => {
                   <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} aria-label={`${s.pinned ? 'Unpin' : 'Pin'} session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📌</button>
                   <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" aria-label={`Add tag to session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">🏷</button>
                   <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} aria-label={`${s.archived ? 'Unarchive' : 'Archive'} session: ${s.title}`} className="p-1 text-xs hover:text-amber-400">🗄</button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
                 </div>
               </div>
               {/* tags + folder controls */}
@@ -5242,6 +5250,31 @@ const App: React.FC = () => {
             }`}
           >
             {notification}
+          </div>
+        )}
+        {/* Delete session confirmation dialog */}
+        {confirmDelete.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Delete chat confirmation">
+            <div className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+              <h2 className="text-lg font-bold mb-2">Delete chat?</h2>
+              <p className={`text-sm mb-6 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                This will permanently delete <span className="font-medium">"{confirmDelete.title}"</span>. This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setConfirmDelete({ open: false, id: '', title: '' })}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100'}`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDeleteSession}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
           </div>
         )}
         {/* LibreOffice optional-engine onboarding (#145) */}

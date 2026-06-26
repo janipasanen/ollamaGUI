@@ -103,6 +103,31 @@ describe('App Component', () => {
     });
   });
 
+  describe('Delete chat confirmation', () => {
+    function createSampleSession() {
+      const data = JSON.stringify([
+        { id: 's1', title: 'Sample Chat', messages: [], createdAt: Date.now(), model: 'llama3', tags: [], pinned: false, archived: false },
+      ]);
+      localStorage.setItem('ollama_gui_sessions', data);
+    }
+
+    it('opens a confirmation dialog before deleting a chat', () => {
+      createSampleSession();
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
+      expect(screen.getByRole('dialog', { name: /Delete chat confirmation/i })).toBeInTheDocument();
+      expect(screen.getByText(/Delete chat\?/i)).toBeInTheDocument();
+    });
+
+    it('cancels deletion when the cancel button is clicked', () => {
+      createSampleSession();
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+      expect(screen.queryByRole('dialog', { name: /Delete chat confirmation/i })).not.toBeInTheDocument();
+    });
+  });
+
   describe('Keyboard Shortcuts', () => {
     it('Cmd/Ctrl+K should start new chat', () => {
       render(<App />);

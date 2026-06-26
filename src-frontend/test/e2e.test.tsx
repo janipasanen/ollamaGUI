@@ -299,7 +299,7 @@ describe('End-to-End Tests', () => {
       expect(screen.getByText('Beta conversation')).toBeInTheDocument();
     });
 
-    it('deletes a session from the sidebar', async () => {
+    it('deletes a session from the sidebar after confirmation', async () => {
       seedSession('s-del', 'Deletable conversation');
       render(<App />);
       const title = screen.getByText('Deletable conversation');
@@ -307,6 +307,8 @@ describe('End-to-End Tests', () => {
       const row = title.closest('div')!.parentElement!;
       const deleteBtn = within(row).getByTitle('Delete');
       fireEvent.click(deleteBtn);
+      // Confirm the new confirmation dialog.
+      fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
       await waitFor(() => {
         expect(screen.queryByText('Deletable conversation')).not.toBeInTheDocument();
       });
