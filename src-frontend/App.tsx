@@ -55,6 +55,7 @@ import { PanelShell } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import DocumentArtifact, { type DocumentArtifactData } from './components/DocumentArtifact';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
+import WelcomeScreen from './components/WelcomeScreen';
 import { checkLibreOffice, convertDocument } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
@@ -2227,9 +2228,13 @@ const App: React.FC = () => {
         {/* Messages - Responsive: full width on mobile, padded on desktop */}
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
           {messages.length === 0 && (
-            <div className={`h-full flex items-center justify-center italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-              Start a conversation with your local AI.
-            </div>
+            <WelcomeScreen
+              dark={dark}
+              onPrompt={(prompt) => {
+                setInput(prompt);
+                document.getElementById('chat-input')?.focus();
+              }}
+            />
           )}
             {messages.map((msg, i) => (
               <div key={i} className={`flex flex-col gap-0.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>

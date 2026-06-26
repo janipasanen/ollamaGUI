@@ -65,6 +65,19 @@ describe('App Component', () => {
     expect(screen.getByPlaceholderText(/http:\/\/localhost:11434/i)).toBeInTheDocument();
   });
 
+  describe('Welcome screen', () => {
+    it('fills the composer when a welcome starter prompt is clicked', () => {
+      render(<App />);
+      fireEvent.click(screen.getByText(/Explain quantum computing in simple terms/i));
+      expect(screen.getByPlaceholderText(/Message Ollama/i)).toHaveValue('Explain quantum computing in simple terms');
+    });
+
+    it('shows the welcome screen on a fresh chat', () => {
+      render(<App />);
+      expect(screen.getByText(/What can I help you with today\?/i)).toBeInTheDocument();
+    });
+  });
+
   describe('Keyboard Shortcuts', () => {
     it('Cmd/Ctrl+K should start new chat', () => {
       render(<App />);
