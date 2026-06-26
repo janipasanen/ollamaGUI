@@ -130,9 +130,9 @@ describe('PanelShell resizing', () => {
     const before = readLayout().dockWidth as number;
     const divider = screen.getByTestId('side-divider');
     // Drag left by 80px → dock grows by ~80px (dragging left widens the dock).
-    fireEvent.pointerDown(divider, { clientX: 500, pointerId: 1 });
-    act(() => { fireEvent.pointerMove(window, { clientX: 420 }); });
-    act(() => { fireEvent.pointerUp(window, { clientX: 420 }); });
+    fireEvent.mouseDown(divider, { clientX: 500 });
+    act(() => { fireEvent.mouseMove(window, { clientX: 420 }); });
+    act(() => { fireEvent.mouseUp(window, { clientX: 420 }); });
 
     const after = readLayout().dockWidth as number;
     expect(after).toBe(before + 80);
@@ -146,9 +146,9 @@ describe('PanelShell resizing', () => {
     act(() => openPanel('one'));
     const divider = screen.getByTestId('side-divider');
     // Drag far right → would shrink below 320; clamps at 320.
-    fireEvent.pointerDown(divider, { clientX: 500, pointerId: 1 });
-    act(() => { fireEvent.pointerMove(window, { clientX: 2000 }); });
-    act(() => { fireEvent.pointerUp(window, { clientX: 2000 }); });
+    fireEvent.mouseDown(divider, { clientX: 500 });
+    act(() => { fireEvent.mouseMove(window, { clientX: 2000 }); });
+    act(() => { fireEvent.mouseUp(window, { clientX: 2000 }); });
     expect(readLayout().dockWidth).toBe(320);
   });
 });
@@ -174,9 +174,9 @@ describe('PanelShell bottom dock (#81)', () => {
     const before = readLayout().bottomHeight as number;
     const divider = screen.getByTestId('bottom-divider');
     // Drag up by 60px → bottom dock grows by ~60px.
-    fireEvent.pointerDown(divider, { clientY: 400, pointerId: 1 });
-    act(() => { fireEvent.pointerMove(window, { clientY: 340 }); });
-    act(() => { fireEvent.pointerUp(window, { clientY: 340 }); });
+    fireEvent.mouseDown(divider, { clientY: 400 });
+    act(() => { fireEvent.mouseMove(window, { clientY: 340 }); });
+    act(() => { fireEvent.mouseUp(window, { clientY: 340 }); });
 
     expect(readLayout().bottomHeight).toBe(before + 60);
     expect(screen.getByTestId('bottom-dock')).toHaveStyle({ height: `${before + 60}px` });

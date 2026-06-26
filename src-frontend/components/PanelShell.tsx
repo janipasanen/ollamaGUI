@@ -283,52 +283,71 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
   }, [openSide, activeSideId]);
   const activeSide = openSide.find((p) => p.id === activeSideId) ?? openSide[0] ?? null;
 
-  // ── Pointer-drag resize for the right dock ────────────────────────────────
+  // ── Pointer-drag (with mouse fallback) resize for the right dock ──────────
   const sideDragRef = React.useRef<{ startX: number; startW: number } | null>(null);
-  const onSideDividerDown = (e: React.PointerEvent) => {
-    sideDragRef.current = { startX: e.clientX, startW: layout.dockWidth };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    window.addEventListener('pointermove', onSideDividerMove);
-    window.addEventListener('pointerup', onSideDividerUp);
+  const onSideDividerDown = (e: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    if (sideDragRef.current) return; // prevent double-start when pointer+mouse both fire
+    const clientX = 'clientX' in e ? e.clientX : 0;
+    sideDragRef.current = { startX: clientX, startW: layout.dockWidth };
+    if ('pointerId' in e) {
+      (e.target as Element).setPointerCapture?.((e as React.PointerEvent<HTMLDivElement>).pointerId);
+      window.addEventListener('pointermove', onSideDividerMove);
+      window.addEventListener('pointerup', onSideDividerUp);
+    }
+    // Mouse fallback for environments without pointer event support (e.g. jsdom).
+    window.addEventListener('mousemove', onSideDividerMove);
+    window.addEventListener('mouseup', onSideDividerUp);
   };
-  const onSideDividerMove = (e: PointerEvent) => {
+  const onSideDividerMove = (e: PointerEvent | MouseEvent) => {
     const d = sideDragRef.current;
     if (!d) return;
-    // Dragging left (smaller clientX) widens the right dock.
     openStore.setDockWidth(d.startW + (d.startX - e.clientX));
   };
   const onSideDividerUp = () => {
     sideDragRef.current = null;
     window.removeEventListener('pointermove', onSideDividerMove);
     window.removeEventListener('pointerup', onSideDividerUp);
+    window.removeEventListener('mousemove', onSideDividerMove);
+    window.removeEventListener('mouseup', onSideDividerUp);
   };
 
-  // ── Pointer-drag resize for the bottom dock ───────────────────────────────
+  // ── Pointer-drag (with mouse fallback) resize for the bottom dock ────────
   const bottomDragRef = React.useRef<{ startY: number; startH: number } | null>(null);
-  const onBottomDividerDown = (e: React.PointerEvent) => {
-    bottomDragRef.current = { startY: e.clientY, startH: layout.bottomHeight };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    window.addEventListener('pointermove', onBottomDividerMove);
-    window.addEventListener('pointerup', onBottomDividerUp);
+  const onBottomDividerDown = (e: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    if (bottomDragRef.current) return;
+    const clientY = 'clientY' in e ? e.clientY : 0;
+    bottomDragRef.current = { startY: clientY, startH: layout.bottomHeight };
+    if ('pointerId' in e) {
+      (e.target as Element).setPointerCapture?.((e as React.PointerEvent<HTMLDivElement>).pointerId);
+      window.addEventListener('pointermove', onBottomDividerMove);
+      window.addEventListener('pointerup', onBottomDividerUp);
+    }
+    window.addEventListener('mousemove', onBottomDividerMove);
+    window.addEventListener('mouseup', onBottomDividerUp);
   };
-  const onBottomDividerMove = (e: PointerEvent) => {
+  const onBottomDividerMove = (e: PointerEvent | MouseEvent) => {
     const d = bottomDragRef.current;
     if (!d) return;
-    // Dragging up (smaller clientY) grows the bottom dock.
     openStore.setBottomHeight(d.startH + (d.startY - e.clientY));
   };
   const onBottomDividerUp = () => {
     bottomDragRef.current = null;
     window.removeEventListener('pointermove', onBottomDividerMove);
     window.removeEventListener('pointerup', onBottomDividerUp);
+    window.removeEventListener('mousemove', onBottomDividerMove);
+    window.removeEventListener('mouseup', onBottomDividerUp);
   };
 
   // Detach any in-flight global listeners on unmount.
   React.useEffect(() => () => {
     window.removeEventListener('pointermove', onSideDividerMove);
     window.removeEventListener('pointerup', onSideDividerUp);
+    window.removeEventListener('mousemove', onSideDividerMove);
+    window.removeEventListener('mouseup', onSideDividerUp);
     window.removeEventListener('pointermove', onBottomDividerMove);
     window.removeEventListener('pointerup', onBottomDividerUp);
+    window.removeEventListener('mousemove', onBottomDividerMove);
+    window.removeEventListener('mouseup', onBottomDividerUp);
   }, []);
 
   // On mobile, an open side panel overlays full-width and hides the chat column.
@@ -356,6 +375,7 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
                 aria-orientation="vertical"
                 aria-label="Resize side panel"
                 onPointerDown={onSideDividerDown}
+                onMouseDown={onSideDividerDown}
                 className={`w-1 cursor-col-resize shrink-0 transition-colors ${
                   dark ? 'bg-zinc-700 hover:bg-blue-600' : 'bg-zinc-300 hover:bg-blue-500'
                 }`}
@@ -451,6 +471,7 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
             aria-orientation="horizontal"
             aria-label="Resize bottom panel"
             onPointerDown={onBottomDividerDown}
+            onMouseDown={onBottomDividerDown}
             className={`h-1 cursor-row-resize shrink-0 transition-colors ${
               dark ? 'bg-zinc-700 hover:bg-blue-600' : 'bg-zinc-300 hover:bg-blue-500'
             }`}
