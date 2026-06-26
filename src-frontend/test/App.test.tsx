@@ -78,6 +78,31 @@ describe('App Component', () => {
     });
   });
 
+  describe('Chat scroll behavior', () => {
+    it('shows a scroll-to-bottom button when scrolled up', () => {
+      render(<App />);
+      const container = screen.getByTestId('messages-container');
+      if (!container) throw new Error('messages container not found');
+      // Simulate scrolled-up container
+      Object.defineProperty(container, 'scrollHeight', { value: 1000, configurable: true });
+      Object.defineProperty(container, 'clientHeight', { value: 300, configurable: true });
+      container.scrollTop = 100;
+      fireEvent.scroll(container);
+      expect(screen.getByLabelText(/Scroll to bottom/i)).toBeInTheDocument();
+    });
+
+    it('hides the scroll-to-bottom button when near the bottom', () => {
+      render(<App />);
+      const container = screen.getByTestId('messages-container');
+      if (!container) throw new Error('messages container not found');
+      Object.defineProperty(container, 'scrollHeight', { value: 400, configurable: true });
+      Object.defineProperty(container, 'clientHeight', { value: 300, configurable: true });
+      container.scrollTop = 80;
+      fireEvent.scroll(container);
+      expect(screen.queryByLabelText(/Scroll to bottom/i)).not.toBeInTheDocument();
+    });
+  });
+
   describe('Keyboard Shortcuts', () => {
     it('Cmd/Ctrl+K should start new chat', () => {
       render(<App />);

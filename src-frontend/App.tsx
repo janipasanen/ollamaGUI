@@ -541,6 +541,8 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Derived: filtered sessions for search (Issue 18)
   // Search across title/tags/folder/content, then apply archive + folder filters,
@@ -793,8 +795,22 @@ const App: React.FC = () => {
     if (!onBranch) trunkMessagesRef.current = messages;
   }, [messages, branchState]);
 
-  useEffect(() => {
+  const isNearBottom = useCallback((): boolean => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    const threshold = 60; // px
+    return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setShowScrollButton(false);
+  }, []);
+
+  useEffect(() => {
+    if (isNearBottom()) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
     // Focus input on initial load for better accessibility
     if (messages.length === 0) {
       const input = document.getElementById('chat-input');
@@ -802,7 +818,16 @@ const App: React.FC = () => {
         setTimeout(() => input.focus(), 100);
       }
     }
-  }, [messages]);
+  }, [messages, isNearBottom]);
+
+  // Show/hide the scroll-to-bottom button based on scroll position.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const onScroll = () => setShowScrollButton(!isNearBottom());
+    container.addEventListener('scroll', onScroll);
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [isNearBottom]);
 
   // Responsive design - handle window resize
   useEffect(() => {
@@ -2226,7 +2251,11 @@ const App: React.FC = () => {
         </header>
 
         {/* Messages - Responsive: full width on mobile, padded on desktop */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+        <div
+          ref={messagesContainerRef}
+          data-testid="messages-container"
+          className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 relative"
+        >
           {messages.length === 0 && (
             <WelcomeScreen
               dark={dark}
@@ -2489,6 +2518,17 @@ const App: React.FC = () => {
             </div>
           ))}
           <div ref={messagesEndRef} />
+          {showScrollButton && (
+            <button
+              onClick={scrollToBottom}
+              aria-label="Scroll to bottom"
+              className={`absolute bottom-4 right-4 px-3 py-1.5 rounded-full text-xs shadow-md transition-colors ${
+                dark ? 'bg-zinc-700 text-zinc-100 hover:bg-zinc-600' : 'bg-white text-zinc-700 hover:bg-zinc-100'
+              }`}
+            >
+              ↓ Scroll to bottom
+            </button>
+          )}
         </div>
 
         {/* Storage quota warning */}
