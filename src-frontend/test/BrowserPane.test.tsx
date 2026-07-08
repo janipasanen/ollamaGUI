@@ -15,7 +15,8 @@ vi.mock('../components/PanelShell', () => ({
   },
 }));
 
-import BrowserPane, { _mocks } from '../components/BrowserPane';
+import BrowserPane from '../components/BrowserPane';
+import * as previewClient from '../services/browserPreview';
 import { browserBus, browserSession } from '../services/browser';
 import * as chromiumClient from '../services/browserChromium';
 import { waitFor } from '@testing-library/react';
@@ -30,7 +31,8 @@ class FakeResizeObserver {
 
 beforeEach(() => {
   (globalThis as any).ResizeObserver = FakeResizeObserver as any;
-  _mocks.invoke = null;
+  previewClient._mocks.invoke = null;
+  previewClient._resetPreviewState();
   unregisterSpy.mockClear();
   // Reset shared session url so cross-test ordering can't leak an external url.
   browserSession.navUrl = '';
@@ -42,7 +44,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  _mocks.invoke = null;
+  previewClient._mocks.invoke = null;
+  previewClient._resetPreviewState();
   chromiumClient._mocks.invoke = null;
   chromiumClient._mocks.listen = null;
   delete (window as any).__TAURI_INTERNALS__;
@@ -119,7 +122,7 @@ describe('BrowserPane (#71, #72)', () => {
 
   it('switching to an external url calls preview_webview_open with a rect (mocked invoke)', () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-    _mocks.invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+    previewClient._mocks.invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
       calls.push({ cmd, args });
       return undefined;
     });
@@ -140,7 +143,7 @@ describe('BrowserPane (#71, #72)', () => {
 
   it('a window resize calls preview_webview_set_bounds with a rect (external mode)', () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-    _mocks.invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+    previewClient._mocks.invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
       calls.push({ cmd, args });
       return undefined;
     });
@@ -162,7 +165,7 @@ describe('BrowserPane (#71, #72)', () => {
 
   it('reload in external mode calls preview_webview_reload (mocked invoke)', () => {
     const calls: string[] = [];
-    _mocks.invoke = vi.fn(async (cmd: string) => {
+    previewClient._mocks.invoke = vi.fn(async (cmd: string) => {
       calls.push(cmd);
       return undefined;
     });

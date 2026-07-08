@@ -41,6 +41,14 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#220** Wire `browserPreview.ts` into BrowserPane (remove inline IPC
+  duplication). browserPreview had no test seam and no tests, and BrowserPane
+  re-implemented the `preview_webview_*` calls inline. Added a `_mocks.invoke`
+  seam + `_resetPreviewState` + optimistic `_open` to browserPreview, a new
+  11-test `browserPreview.test.ts`, and delegated BrowserPane's
+  open/close/set_bounds/reload to it (dropping BrowserPane's own tauriInvoke
+  seam). 3 BrowserPane preview tests migrated to the new seam; tsc clean;
+  vitest 1070.
 - [x] **#219** Wire browserSnapshot into browser_snapshot/browser_wait_for +
   fix the AX-tree contract bug. The Rust `browser_cdp_get_ax_tree` returns a
   **string outline**, but `browser_wait_for` read `tree.refs`/`tree.text` (always

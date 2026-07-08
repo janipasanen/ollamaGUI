@@ -34,44 +34,19 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 // services-relative vantage point; the physically-correct paths are used here.
 import { browserSession, browserBus, isLocalhostUrl } from '../services/browser';
 import { panelRegistry } from './PanelShell';
+import { openPreview, setBoundsPreview, reloadPreview, closePreview } from '../services/browserPreview';
 import { getChromiumStatus, downloadChromium, needsChromiumPrompt, type ChromiumStatus } from '../services/browserChromium';
 
 // ---------------------------------------------------------------------------
-// Tauri invoke seam
+// Tauri detection
 // ---------------------------------------------------------------------------
 
-/**
- * Test seam. When `_mocks.invoke` is set, every IPC call routes through it so a
- * test can assert the command name + args (geometry rects, urls) without a live
- * Tauri. When null we dynamic-import the real `@tauri-apps/api/core` — guarded so
- * that in pure browser/jsdom mode (no Tauri) the import failure degrades to a
- * no-op instead of throwing.
- */
-export const _mocks = {
-  invoke: null as ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null,
-};
-
-/** True when we believe a Tauri runtime is present (or a mock is wired in). */
+/** True when a Tauri runtime is present. The native-preview IPC itself goes
+ *  through `services/browserPreview.ts` (which has its own test seam), so this
+ *  component only needs the runtime flag for the browser-mode placeholder note
+ *  and the Chromium consent banner (#217). */
 function hasTauri(): boolean {
-  if (_mocks.invoke) return true;
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as any);
-}
-
-/**
- * Invoke a Tauri command through the mock seam or the real core, returning
- * `undefined` (never throwing) when no runtime is available so the UI can keep
- * working in browser mode.
- */
-async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | undefined> {
-  try {
-    if (_mocks.invoke) return (await _mocks.invoke(cmd, args)) as T;
-    if (!hasTauri()) return undefined;
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<T>(cmd, args);
-  } catch {
-    // Browser mode / missing command — degrade gracefully.
-    return undefined;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,13 +149,13 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   const syncBounds = useCallback(() => {
     if (isLocalhostUrl(browserSession.navUrl)) return;
     const rect = rectOf(hostRef.current);
-    void tauriInvoke('preview_webview_set_bounds', { rect });
+    void setBoundsPreview(rect).catch(() => {});
   }, []);
 
   /** Open/route the native preview for the given external url. */
   const openNativePreview = useCallback((url: string) => {
     const rect = rectOf(hostRef.current);
-    void tauriInvoke('preview_webview_open', { url, rect, allow: [] });
+    void openPreview(url, rect, []).catch(() => {});
   }, []);
 
   // -------------------------------------------------------------------------
@@ -196,7 +171,7 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
         setNavUrl(url);
         if (isLocalhostUrl(url)) {
           // Leaving external mode — tear any native preview down.
-          void tauriInvoke('preview_webview_close', {});
+          void closePreview().catch(() => {});
         } else {
           openNativePreview(url);
         }
@@ -273,7 +248,7 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
     if (isLocalhostUrl(browserSession.navUrl) || isLocal) {
       setIframeKey((k) => k + 1);
     } else {
-      void tauriInvoke('preview_webview_reload', {});
+      void reloadPreview().catch(() => {});
     }
   }, [isLocal]);
 
