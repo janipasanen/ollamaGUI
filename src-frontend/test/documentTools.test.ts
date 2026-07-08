@@ -9,13 +9,16 @@ import {
   type DocumentContent,
   _mocks,
 } from '../services/documentTools';
+import * as pdfClient from '../services/documentsPdf';
 
 beforeEach(() => {
   _mocks.invoke = null;
+  pdfClient._mocks.invoke = null;
 });
 
 afterEach(() => {
   _mocks.invoke = null;
+  pdfClient._mocks.invoke = null;
 });
 
 // ── readDocument ───────────────────────────────────────────────────────────────
@@ -156,6 +159,14 @@ describe('registerDocumentTools (#144)', () => {
     expect(toolRegistry.getTool('document_formats')).toBeDefined();
   });
 
+  it('registers the five PDF tools (#218)', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    registerDocumentTools();
+    for (const name of ['pdf_info', 'pdf_merge', 'pdf_split', 'pdf_extract', 'pdf_create']) {
+      expect(toolRegistry.getTool(name)).toBeDefined();
+    }
+  });
+
   it('document_read is read-only', async () => {
     const { toolRegistry } = await import('../services/tools');
     registerDocumentTools();
@@ -169,5 +180,38 @@ describe('registerDocumentTools (#144)', () => {
     const tool = toolRegistry.getTool('document_read');
     const result = await tool!.execute({ path: 'sample.docx' });
     expect((result as DocumentContent).text).toBe('sample');
+  });
+
+  it('pdf_info tool delegates to pdfInfo and is read-only', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    let captured = '';
+    pdfClient._mocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+      captured = cmd;
+      expect(args.path).toBe('a.pdf');
+      return { pages: 3, has_text: true };
+    };
+    registerDocumentTools();
+    const tool = toolRegistry.getTool('pdf_info');
+    expect(tool?.readOnly).toBe(true);
+    const result = await tool!.execute({ path: 'a.pdf' });
+    expect(captured).toBe('document_pdf_info');
+    expect((result as any).info).toEqual({ pages: 3, has_text: true });
+  });
+
+  it('pdf_create tool delegates to pdfCreate', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    let capturedCmd = '';
+    let capturedArgs: Record<string, unknown> = {};
+    pdfClient._mocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+      capturedCmd = cmd;
+      capturedArgs = args;
+      return undefined;
+    };
+    registerDocumentTools();
+    const tool = toolRegistry.getTool('pdf_create');
+    const result = await tool!.execute({ path: 'out.pdf', text: 'hi' });
+    expect(capturedCmd).toBe('document_pdf_create');
+    expect(capturedArgs).toMatchObject({ path: 'out.pdf', text: 'hi' });
+    expect(result).toEqual({ created: true, path: 'out.pdf' });
   });
 });

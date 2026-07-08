@@ -8,6 +8,8 @@
  * Supported read formats: docx, xlsx, pptx, odt/ods/odp, pdf, markdown, text.
  * Conversion requires Pandoc to be installed on the host machine.
  */
+import { pdfInfo, pdfMerge, pdfSplit, pdfExtract, pdfCreate, type PdfInfo } from './documentsPdf';
+
 
 export interface DocumentContent {
   text: string;
@@ -134,5 +136,62 @@ export function registerDocumentTools(): void {
     parameters: { type: 'object', properties: {} },
     readOnly: true,
     execute: async () => ({ formats: await documentFormats() }),
+  });
+
+  // PDF tools (#218) — wire documentsPdf into the agent tool registry.
+  toolRegistry.registerTool({
+    name: 'pdf_info',
+    description: 'Probe a PDF for its page count and whether it has extractable text.',
+    parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the PDF file' } }, required: ['path'] },
+    readOnly: true,
+    execute: async (p) => ({ info: await pdfInfo(p.path as string) }),
+  });
+
+  toolRegistry.registerTool({
+    name: 'pdf_merge',
+    description: 'Merge multiple PDFs (in order) into a single output file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' }, description: 'PDF file paths to merge, in order' },
+        out: { type: 'string', description: 'Destination output PDF path' },
+      },
+      required: ['paths', 'out'],
+    },
+    execute: async (p) => { await pdfMerge(p.paths as string[], p.out as string); return { merged: true, out: p.out }; },
+  });
+
+  toolRegistry.registerTool({
+    name: 'pdf_split',
+    description: 'Split a PDF into multiple files by page ranges (e.g. "1-3,5").',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Source PDF path' },
+        ranges: { type: 'string', description: 'Page ranges, e.g. "1-3,5"' },
+        outDir: { type: 'string', description: 'Directory to write the split PDFs' },
+      },
+      required: ['path', 'ranges', 'outDir'],
+    },
+    execute: async (p) => ({ files: await pdfSplit(p.path as string, p.ranges as string, p.outDir as string) }),
+  });
+
+  toolRegistry.registerTool({
+    name: 'pdf_extract',
+    description: 'Extract plain text from a PDF (bundled, no external tool).',
+    parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the PDF file' } }, required: ['path'] },
+    readOnly: true,
+    execute: async (p) => ({ text: await pdfExtract(p.path as string) }),
+  });
+
+  toolRegistry.registerTool({
+    name: 'pdf_create',
+    description: 'Generate a text PDF at a path from plain-text / markdown content.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Destination output PDF path' }, text: { type: 'string', description: 'Plain-text or markdown content' } },
+      required: ['path', 'text'],
+    },
+    execute: async (p) => { await pdfCreate(p.path as string, p.text as string); return { created: true, path: p.path }; },
   });
 }

@@ -41,6 +41,10 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#218** Register the PDF tools (pdf_info/merge/split/extract/create) as
+  agent tools — `documentsPdf.ts` was implemented + tested but unreachable from
+  the UI/agent. Wired into `registerDocumentTools`; de-stale'd the "DEFERRED"
+  docs. 3 new documentTools tests; tsc clean; vitest 1053.
 - [x] **#217** Wire the Chromium consent/download prompt into `BrowserPane` —
   `browserChromium.ts` was implemented + tested but imported by nothing. Added a
   non-blocking consent banner (status probe on mount, Download Chromium with

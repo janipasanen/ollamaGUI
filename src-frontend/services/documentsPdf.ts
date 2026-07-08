@@ -6,10 +6,10 @@
  * reuses the existing `document_read` command (which already shells out to
  * `pdftotext` for `.pdf` inputs).
  *
- * `pdfInfo` is fully wired (page count + has_text via Poppler). `pdfMerge` and
- * `pdfSplit` reach commands whose Rust bodies are DEFERRED until the `lopdf`
- * crate is approved — calling them today rejects with a clear "deferred"
- * message, but the client surface is stable so callers can be written now.
+ * `pdfInfo` is fully wired (page count + has_text via Poppler). `pdfMerge`,
+ * `pdfSplit`, `pdfExtract`, and `pdfCreate` use the bundled `lopdf` crate
+ * (implemented in Rust `pdf_tools.rs`); these are registered as agent tools in
+ * `documentTools.ts` (#218).
  */
 
 import type { DocumentContent } from './documentTools';
