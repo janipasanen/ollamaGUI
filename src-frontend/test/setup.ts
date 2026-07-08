@@ -1,7 +1,6 @@
 // Test setup file
 import '@testing-library/jest-dom';
 import { vi } from 'vitest';
-import { CliToolWrapper } from '../services/cli-tool';
 
 // jsdom does not implement URL.createObjectURL / URL.revokeObjectURL
 if (!URL.createObjectURL) {
@@ -77,6 +76,3 @@ const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => 
   
   return { success: false, error: 'Unknown command' };
 });
-
-// Initialize CLI tool with mock
-CliToolWrapper.initializeWithTauri(mockInvoke);

@@ -41,6 +41,12 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#223** Remove the dead `cli-tool.ts` duplicate (`CliToolWrapper`). The
+  production CLI tool is `run_shell_command` (tools.ts, Rust `run_cli`);
+  `CliToolWrapper` was a parallel `run_cli_command`/Rust `run_cli_command` path
+  used only as a test fixture. Deleted `services/cli-tool.ts` + `test/cli-fix.test.ts`,
+  and migrated the `agentic.test.ts` / `setup.ts` / `e2e.test.tsx` fixtures to an
+  inline registry stub. tsc clean; vitest 1065 (90 files).
 - [x] **#222** Wire `document_edit` (OOXML surgical + template fill) and
   `document_odf_edit` (ODF surgical) as agent tools. These Rust commands were
   implemented + tested but had no frontend caller (dead backend, found in the

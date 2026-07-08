@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toolRegistry, type ToolCall } from '../services/tools';
 import { agenticChatStream } from '../services/agent';
 import { mcpServerManager, McpStdioClient } from '../services/mcp';
-import { CliToolWrapper } from '../services/cli-tool';
 
 describe('Agentic Features', () => {
   beforeEach(() => {
@@ -122,61 +121,6 @@ describe('Agentic Features', () => {
         name: 'test_tool',
         content: '{"result":10}',
       });
-    });
-  });
-
-  describe('CLI Tool', () => {
-    it('should register CLI tool in registry', () => {
-      CliToolWrapper.registerAsTool();
-      const cliTool = toolRegistry.getTool('run_cli_command');
-
-      expect(cliTool).toBeDefined();
-      expect(cliTool?.name).toBe('run_cli_command');
-      expect(cliTool?.description).toContain('CLI command');
-    });
-
-    it('should have proper parameter schema', () => {
-      CliToolWrapper.registerAsTool();
-      const cliTool = toolRegistry.getTool('run_cli_command');
-      const ollamaTools = toolRegistry.getOllamaToolDefinitions();
-      const cliToolDef = ollamaTools.find(t => t.function.name === 'run_cli_command');
-
-      expect(cliToolDef).toBeDefined();
-      expect(cliToolDef?.function.parameters.properties.command).toBeDefined();
-      expect(cliToolDef?.function.parameters.properties.args).toBeDefined();
-    });
-
-    it('should handle approval callback', async () => {
-      let approvalCalled = false;
-      let approvedCommand = '';
-
-      CliToolWrapper.setApprovalCallback(async (command: string) => {
-        approvalCalled = true;
-        approvedCommand = command;
-        return true; // Approve all for this test
-      });
-
-      // Test the approval callback directly
-      const testCallback = CliToolWrapper['approvalCallback'];
-      if (testCallback) {
-        const approved = await testCallback('echo');
-        expect(approved).toBe(true);
-        expect(approvalCalled).toBe(true);
-        expect(approvedCommand).toBe('echo');
-      } else {
-        expect.fail('Approval callback not set');
-      }
-    });
-
-    it('should reject when approval denied', async () => {
-      CliToolWrapper.setApprovalCallback(async () => false);
-
-      const result = await CliToolWrapper.executeCommand({
-        command: 'echo test',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('denied');
     });
   });
 
@@ -403,9 +347,22 @@ describe('Agentic Features', () => {
 
   describe('Integration Tests', () => {
     it('should integrate CLI tool with agentic loop', () => {
-      // Register CLI tool
-      CliToolWrapper.registerAsTool();
-      
+      // Register a CLI-style tool in the registry (#223: CliToolWrapper removed;
+      // use an inline stub matching the production tool shape).
+      toolRegistry.registerTool({
+        name: 'run_cli_command',
+        description: 'Run a CLI command on the local machine and return output. Requires user approval.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Shell command to execute' },
+            args: { type: 'array', description: 'Command arguments', items: {} },
+          },
+          required: ['command'],
+        },
+        execute: async () => ({ output: '' }),
+      });
+
       // Verify it's in the tool registry
       const tools = toolRegistry.getOllamaToolDefinitions();
       const cliTool = tools.find(t => t.function.name === 'run_cli_command');
@@ -424,8 +381,20 @@ describe('Agentic Features', () => {
       };
 
       toolRegistry.registerTool(testTool);
-      CliToolWrapper.registerAsTool();
-      
+      toolRegistry.registerTool({
+        name: 'run_cli_command',
+        description: 'Run a CLI command on the local machine and return output. Requires user approval.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Shell command to execute' },
+            args: { type: 'array', description: 'Command arguments', items: {} },
+          },
+          required: ['command'],
+        },
+        execute: async () => ({ output: '' }),
+      });
+
       const allTools = toolRegistry.getOllamaToolDefinitions();
       
       expect(allTools).toHaveLength(2);

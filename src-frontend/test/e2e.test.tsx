@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '../App';
 import { toolRegistry } from '../services/tools';
-import { CliToolWrapper } from '../services/cli-tool';
 import { storage, type ChatSession } from '../services/storage';
 
 describe('End-to-End Tests', () => {
@@ -20,15 +19,6 @@ describe('End-to-End Tests', () => {
       execute: async (params: any) => ({ result: `Processed: ${params.input}` }),
     });
 
-    // Initialize CLI tool with mock that returns snake_case (matching Tauri response format)
-    CliToolWrapper.initializeWithTauri(vi.fn().mockResolvedValue({
-      success: true,
-      exit_code: 0,
-      timed_out: false,
-      stdout: "CLI output",
-      stderr: "",
-      error: null,
-    }));
   });
 
   beforeEach(() => {
@@ -232,28 +222,6 @@ describe('End-to-End Tests', () => {
 
       // test_tool is registered, its ✓ badge should be present
       expect(screen.getByText('test_tool')).toBeInTheDocument();
-    });
-  });
-
-  describe('CLI Tool Integration', () => {
-    it('should register CLI tool in tool registry', () => {
-      // cli tool is registered as run_cli_command
-      CliToolWrapper.registerAsTool();
-      expect(toolRegistry.getTool('run_cli_command')).toBeDefined();
-    });
-
-    it('should handle CLI tool approval', async () => {
-      let approvalCalled = false;
-
-      CliToolWrapper.setApprovalCallback(async (_command: string) => {
-        approvalCalled = true;
-        return true;
-      });
-
-      const result = await CliToolWrapper.executeCommand({ command: 'echo test' });
-
-      expect(approvalCalled).toBe(true);
-      expect(result.success).toBe(true);
     });
   });
 
