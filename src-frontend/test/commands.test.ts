@@ -166,3 +166,31 @@ describe('/model command (#263)', () => {
     expect(filterCommands('model').some(c => c.name === 'model')).toBe(true);
   });
 });
+
+// ── /rename builtin (#269) ────────────────────────────────────────────────────
+
+describe('/rename command (#269)', () => {
+  it('is registered as a builtin command', () => {
+    const cmd = findCommand('rename');
+    expect(cmd).toBeDefined();
+    expect(cmd?.builtin).toBe(true);
+  });
+
+  it('with an argument returns builtin action: rename + arg', () => {
+    const r = runCommand('/rename My chat');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') {
+      expect(r.action).toBe('rename');
+      expect(r.arg).toBe('My chat');
+    }
+  });
+
+  it('with no argument returns builtin action: rename + empty arg', () => {
+    const r = runCommand('/rename');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') {
+      expect(r.action).toBe('rename');
+      expect(r.arg).toBe('');
+    }
+  });
+});

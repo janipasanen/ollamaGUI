@@ -136,7 +136,7 @@ import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime } from './services/formatTime';
-import { chatToMarkdown } from './services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 
@@ -586,6 +586,7 @@ const App: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
+  const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
   const [copiedChat, setCopiedChat] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -1610,6 +1611,19 @@ const App: React.FC = () => {
             showStatusBanner(`Switched model to ${arg}`);
           } else {
             showStatusBanner(`Model "${arg}" not found`);
+          }
+          return;
+        }
+        if (result.action === 'rename') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) {
+            showStatusBanner('Usage: /rename <title>');
+          } else if (currentSessionId) {
+            storage.updateSession(currentSessionId, { title: arg });
+            setSessions(storage.getSessions());
+            showStatusBanner(`Renamed conversation to "${arg}"`);
+          } else {
+            showStatusBanner('Save the chat first to rename it');
           }
           return;
         }
@@ -2878,6 +2892,17 @@ const App: React.FC = () => {
                       }}
                       className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >{copiedMsgIdx === i ? '✓' : '⧉'}</button>
+                    {/* Copy message as Markdown (#268) */}
+                    <button
+                      aria-label="Copy message as Markdown"
+                      title="Copy message as Markdown"
+                      onClick={() => {
+                        navigator.clipboard.writeText(messageToMarkdown(msg));
+                        setCopiedMdMsgIdx(i);
+                        setTimeout(() => setCopiedMdMsgIdx(prev => (prev === i ? null : prev)), 1500);
+                      }}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >{copiedMdMsgIdx === i ? '✓' : '⎘'}</button>
                     {/* Speak button — per-message TTS (#101) */}
                     {isTtsAvailable() && (
                       <button
@@ -3274,6 +3299,19 @@ const App: React.FC = () => {
                      return;
                    }
                    if (e.key === 'Escape') { setCommandSuggestions([]); return; }
+                 }
+                 // Up-arrow in an empty composer edits the last user message (#267)
+                 // — parity with ChatGPT / Cursor quick-edit. Ignored while
+                 // suggestions are open or a generation is in progress.
+                 if (e.key === 'ArrowUp' && input.trim() === '' && !isLoading) {
+                   for (let j = messages.length - 1; j >= 0; j--) {
+                     if (messages[j].role === 'user') {
+                       e.preventDefault();
+                       setEditingIndex(j);
+                       setEditContent(messages[j].content);
+                       return;
+                     }
+                   }
                  }
                  if (e.key === 'Enter' && !e.shiftKey) {
                    e.preventDefault();

@@ -572,3 +572,32 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1262 passed (121 files)** (+5).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M48 — Up-arrow edit, per-message copy-as-Markdown & /rename command (sixteenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#267** Up-arrow edits the last user message. ChatGPT / Cursor / Claude
+  Code let you press Up-arrow in an empty composer to jump straight into
+  editing your last user message; the app only edited via the hover ✏ button.
+  Added an ArrowUp handler in the composer: when the input is empty (and no
+  slash/@/# suggestion menu is open, and nothing is generating) it finds the
+  most recent user message and opens the inline editor.
+- [x] **#268** Per-message Copy-as-Markdown. Cursor / Claude Code can copy an
+  individual reply as formatted Markdown; the app only copied raw content (⧉).
+  Extracted a `messageToMarkdown` helper (role heading + reasoning blockquote +
+  content + tool/image summaries) and added a per-message "Copy message as
+  Markdown" button (⎘) on assistant replies that writes it to the clipboard.
+- [x] **#269** `/rename <title>` slash command. TUI chat tools rename the
+  active thread inline; the app only renamed via the sidebar ✏ button. Added a
+  `/rename` builtin that updates the current session title via
+  `storage.updateSession` and refreshes the sidebar, with usage / "save the
+  chat first" hints and an ephemeral status banner confirmation.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1274 passed (124 files)** (+12).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
