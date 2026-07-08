@@ -632,3 +632,32 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1280 passed (127 files)** (+6).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M50 — Per-session drafts, date separators & theme-toggle shortcut (eighteenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#273** Per-session composer draft persistence. Cursor / Claude Code keep
+  a per-conversation draft; the app used a single global input state, so
+  switching chats carried the previous chat's half-typed text into the loaded
+  chat. Added a `draftsRef` (sessionId → text), restored the saved draft in
+  `loadSession`, and an effect that persists the current input to the active
+  session's draft as it changes.
+- [x] **#274** Date separators between messages. ChatGPT / Cursor render day
+  dividers; the app only showed per-message relative timestamps. Added
+  `formatDayLabel` (Today / Yesterday / "Mon D, YYYY") and `isSameDay` helpers
+  and a divider row before the first message of each new calendar day in the
+  message list (skipped when timestamps are missing).
+- [x] **#275** Toggle dark/light theme via Ctrl/Cmd+Shift+D. The app only
+  toggled theme via settings. Added a global Ctrl/Cmd+Shift+D shortcut (when
+  not typing) that calls `toggleTheme`, and documented it in the
+  keyboard-shortcuts overlay. Moved `updateTheme`/`toggleTheme` above the
+  keydown effect so the closure stays fresh.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1291 passed (130 files)** (+11).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

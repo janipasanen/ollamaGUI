@@ -29,3 +29,36 @@ export function formatMessageTime(ts: number | undefined, now: number = Date.now
   const month = date.toLocaleString('en-US', { month: 'short' });
   return `${month} ${date.getDate()}, ${hh}:${mm}`;
 }
+
+/**
+ * Format a day label for a date separator between messages (#274).
+ * Returns "Today", "Yesterday" or a compact absolute date ("Mon D, YYYY").
+ * Returns an empty string for invalid timestamps.
+ */
+export function formatDayLabel(ts: number | undefined, now: number = Date.now()): string {
+  if (!ts || !Number.isFinite(ts)) return '';
+  const date = new Date(ts);
+  const cur = new Date(now);
+  const sameDay = date.getFullYear() === cur.getFullYear()
+    && date.getMonth() === cur.getMonth()
+    && date.getDate() === cur.getDate();
+  if (sameDay) return 'Today';
+  const yesterday = new Date(cur);
+  yesterday.setDate(cur.getDate() - 1);
+  const isYesterday = date.getFullYear() === yesterday.getFullYear()
+    && date.getMonth() === yesterday.getMonth()
+    && date.getDate() === yesterday.getDate();
+  if (isYesterday) return 'Yesterday';
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  return `${month} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
+/** Whether two timestamps fall on the same calendar day. */
+export function isSameDay(a: number | undefined, b: number | undefined): boolean {
+  if (!a || !b || !Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate();
+}

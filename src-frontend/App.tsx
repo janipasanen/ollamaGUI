@@ -135,7 +135,7 @@ import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _rese
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
-import { formatMessageTime } from './services/formatTime';
+import { formatMessageTime, formatDayLabel, isSameDay } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
@@ -635,6 +635,8 @@ const App: React.FC = () => {
   const prevMsgCountRef = useRef(0);
   // Force a scroll-to-bottom when loading a session so the latest messages show (#258)
   const scrollToEndOnLoadRef = useRef(false);
+  // Per-session composer drafts (#273): sessionId -> unsent input text.
+  const draftsRef = useRef<Record<string, string>>({});
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
 
   // Derived: filtered sessions for search (Issue 18)
@@ -1087,6 +1089,18 @@ const App: React.FC = () => {
     setSessions(storage.getSessions());
   };
 
+  // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
+  const updateTheme = (patch: Partial<ThemeSettings>) => {
+    setThemeSettings(prev => {
+      const next = saveThemeSettings({ ...prev, ...patch });
+      setIsDarkMode(resolveDark(next.mode));
+      applyTheme(next);
+      return next;
+    });
+  };
+
+  const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const active = document.activeElement as HTMLElement;
@@ -1156,6 +1170,9 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        toggleTheme(); // Ctrl/Cmd+Shift+D toggles dark/light (#275)
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
         e.preventDefault();
         // Copy the last assistant reply to the clipboard (#272)
@@ -1179,19 +1196,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages]);
-
-  // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
-  const updateTheme = (patch: Partial<ThemeSettings>) => {
-    setThemeSettings(prev => {
-      const next = saveThemeSettings({ ...prev, ...patch });
-      setIsDarkMode(resolveDark(next.mode));
-      applyTheme(next);
-      return next;
-    });
-  };
-
-  const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme]);
 
   // When mode is 'system', track OS light/dark changes live.
   useEffect(() => {
@@ -1337,11 +1342,18 @@ const App: React.FC = () => {
     setAttachedImages([]);
     setMessageQueue([]);
     setIsTemporary(false);
+    // Restore this session's saved composer draft (#273)
+    setInput(draftsRef.current[session.id] ?? '');
     // Loading a chat should show the latest messages and never a false unread badge (#258)
     prevMsgCountRef.current = session.messages.length;
     setUnreadCount(0);
     scrollToEndOnLoadRef.current = true;
   };
+
+  // Persist the in-progress composer text to the active session's draft (#273).
+  useEffect(() => {
+    if (currentSessionId) draftsRef.current[currentSessionId] = input;
+  }, [input, currentSessionId]);
 
   // ─── Organization actions (#133) ─────────────────────────────────────────
   const togglePin = (id: string) => {
@@ -2756,7 +2768,17 @@ const App: React.FC = () => {
               }}
             />
           )}
-            {messages.map((msg, i) => (
+            {messages.map((msg, i) => {
+              const showDaySeparator = !!msg.ts && (i === 0 || !isSameDay(messages[i - 1].ts, msg.ts));
+              return (
+              <React.Fragment key={i}>
+                {showDaySeparator && (
+                  <div className={`flex items-center gap-2 my-2 text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`} role="separator" aria-label={formatDayLabel(msg.ts, nowTick)}>
+                    <div className={`flex-1 h-px ${dark ? 'bg-zinc-700' : 'bg-zinc-300'}`} />
+                    <span>{formatDayLabel(msg.ts, nowTick)}</span>
+                    <div className={`flex-1 h-px ${dark ? 'bg-zinc-700' : 'bg-zinc-300'}`} />
+                  </div>
+                )}
               <div
                 key={i}
                 data-msg-index={i}
@@ -3032,7 +3054,9 @@ const App: React.FC = () => {
                  );
                })()}
              </div>
-           ))}
+              </React.Fragment>
+              );
+            })}
 
           {/* Many-models reply groups (#126) */}
           {modelGroups.map((group, gi) => (
@@ -5820,6 +5844,7 @@ const App: React.FC = () => {
                   ['Regenerate Last Reply', 'Ctrl+R'],
                   ['Focus Composer', 'Ctrl+L'],
                   ['Copy Last Reply', 'Ctrl+Shift+C'],
+                  ['Toggle Theme', 'Ctrl+Shift+D'],
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],

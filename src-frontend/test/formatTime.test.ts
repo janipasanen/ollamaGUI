@@ -69,3 +69,52 @@ describe('formatMessageTime (#253/#260)', () => {
     expect(formatMessageTime(ts, now)).toBe(`${month} ${d.getDate()}, ${hh}:${mm}`);
   });
 });
+
+import { formatDayLabel, isSameDay } from '../services/formatTime';
+
+describe('formatDayLabel (#274)', () => {
+  it('returns "Today" for a timestamp on the current day', () => {
+    const now = new Date(2026, 6, 9, 12, 0, 0).getTime();
+    expect(formatDayLabel(now, now)).toBe('Today');
+    expect(formatDayLabel(now - 3_600_000, now)).toBe('Today');
+  });
+
+  it('returns "Yesterday" for the previous calendar day', () => {
+    const now = new Date(2026, 6, 9, 0, 5, 0).getTime();
+    const y = new Date(2026, 6, 8, 23, 59, 0).getTime();
+    expect(formatDayLabel(y, now)).toBe('Yesterday');
+  });
+
+  it('returns an absolute date for older days', () => {
+    const now = new Date(2026, 6, 9, 12, 0, 0).getTime();
+    const ts = new Date(2026, 5, 1, 9, 30, 0).getTime();
+    const label = formatDayLabel(ts, now);
+    expect(label).toContain('2026');
+    expect(label).not.toBe('Today');
+    expect(label).not.toBe('Yesterday');
+  });
+
+  it('returns empty string for invalid timestamps', () => {
+    expect(formatDayLabel(undefined)).toBe('');
+    expect(formatDayLabel(0)).toBe('');
+  });
+});
+
+describe('isSameDay (#274)', () => {
+  it('true for two timestamps on the same day', () => {
+    const a = new Date(2026, 6, 9, 0, 0, 0).getTime();
+    const b = new Date(2026, 6, 9, 23, 59, 59).getTime();
+    expect(isSameDay(a, b)).toBe(true);
+  });
+
+  it('false across a midnight boundary', () => {
+    const a = new Date(2026, 6, 9, 23, 59, 0).getTime();
+    const b = new Date(2026, 6, 10, 0, 1, 0).getTime();
+    expect(isSameDay(a, b)).toBe(false);
+  });
+
+  it('false when either timestamp is missing', () => {
+    expect(isSameDay(undefined, 123)).toBe(false);
+    expect(isSameDay(123, undefined)).toBe(false);
+  });
+});
