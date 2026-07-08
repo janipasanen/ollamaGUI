@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, Project, storage, searchSessions, orderSessions } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
@@ -1274,8 +1274,7 @@ const App: React.FC = () => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const imported: ChatSession[] = JSON.parse(ev.target?.result as string);
-        if (!Array.isArray(imported)) throw new Error('Expected array');
+        const imported = parseSessionImport(ev.target?.result as string);
         imported.forEach(s => storage.saveSession(s));
         setSessions(storage.getSessions());
         alert(`Imported ${imported.length} conversation(s).`);

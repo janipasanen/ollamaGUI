@@ -179,3 +179,37 @@ describe('gitLog (#103)', () => {
     expect(capturedCmd).toBe('git_log');
   });
 });
+
+// ── Error propagation (#230) ──────────────────────────────────────────────────
+
+describe('git wrappers propagate backend errors (#230)', () => {
+  const ERR = new Error('not a git repository');
+
+  beforeEach(() => {
+    _mocks.invoke = async () => { throw ERR; };
+  });
+
+  it('gitStatus rejects when the backend rejects', async () => {
+    await expect(gitStatus(CWD)).rejects.toBe(ERR);
+  });
+
+  it('gitDiff rejects when the backend rejects', async () => {
+    await expect(gitDiff(CWD)).rejects.toBe(ERR);
+  });
+
+  it('gitStage rejects when the backend rejects', async () => {
+    await expect(gitStage(CWD, ['a.txt'])).rejects.toBe(ERR);
+  });
+
+  it('gitUnstage rejects when the backend rejects', async () => {
+    await expect(gitUnstage(CWD, ['a.txt'])).rejects.toBe(ERR);
+  });
+
+  it('gitCommit rejects when the backend rejects', async () => {
+    await expect(gitCommit(CWD, 'msg')).rejects.toBe(ERR);
+  });
+
+  it('gitLog rejects when the backend rejects', async () => {
+    await expect(gitLog(CWD)).rejects.toBe(ERR);
+  });
+});

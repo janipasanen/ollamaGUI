@@ -143,3 +143,37 @@ describe('clearTerminalSessions (#87)', () => {
     expect(getSessions()).toHaveLength(0);
   });
 });
+
+// ── Error propagation (#231) ──────────────────────────────────────────────────
+
+describe('terminal wrappers propagate backend errors (#231)', () => {
+  it('startTerminal rejects when terminal_run rejects', async () => {
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'terminal_run') throw new Error('binary not found');
+      throw new Error(`Unexpected: ${cmd}`);
+    };
+    _mocks.listen = async () => () => {};
+    await expect(startTerminal('nonexistent-cmd')).rejects.toThrow('binary not found');
+  });
+
+  it('startTerminal does not register a session when terminal_run rejects', async () => {
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'terminal_run') throw new Error('permission denied');
+      throw new Error(`Unexpected: ${cmd}`);
+    };
+    _mocks.listen = async () => () => {};
+    await expect(startTerminal('cmd')).rejects.toThrow('permission denied');
+    expect(getSessions()).toHaveLength(0);
+  });
+
+  it('killTerminal rejects when terminal_kill rejects', async () => {
+    // Create a session first with a working mock.
+    const id = await startTerminal('ls');
+    // Now make terminal_kill reject.
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'terminal_kill') throw new Error('kill failed');
+      throw new Error(`Unexpected: ${cmd}`);
+    };
+    await expect(killTerminal(id)).rejects.toThrow('kill failed');
+  });
+});

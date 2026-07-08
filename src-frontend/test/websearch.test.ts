@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loadWebSearchConfig, saveWebSearchConfig,
   webSearch, formatResultsAsContext, _mocks,
   type WebSearchConfig, type WebSearchResult,
 } from '../services/websearch';
+
+// Make the Tauri invoke seam controllable for error-path tests (#229).
+const invokeMock = vi.fn();
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
 beforeEach(() => {
   localStorage.clear();
@@ -129,5 +133,45 @@ describe('grounded request assembly (#121)', () => {
     expect(block).toContain('Web search results');
     expect(block).toContain('News');
     expect(block).toContain('https://news.com');
+  });
+});
+
+// ── Error paths (#229) ────────────────────────────────────────────────────────
+
+describe('webSearch error handling (#229)', () => {
+  beforeEach(() => {
+    _mocks.webSearch = null;
+    invokeMock.mockReset();
+  });
+
+  it('returns [] when the Tauri web_search invoke rejects (graceful fallback)', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('network down'));
+    const cfg: WebSearchConfig = { enabled: true, provider: 'duckduckgo' };
+    const results = await webSearch('anything', cfg);
+    expect(results).toEqual([]);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls[0][0]).toBe('web_search');
+  });
+
+  it('does not throw when invoke rejects', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('boom'));
+    const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://x' };
+    await expect(webSearch('q', cfg)).resolves.toEqual([]);
+  });
+
+  it('passes provider/count/searxngUrl to the invoke args', async () => {
+    invokeMock.mockResolvedValueOnce([]);
+    const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://searx:8080', resultCount: 8 };
+    await webSearch('hello', cfg);
+    const args = invokeMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(args).toMatchObject({ query: 'hello', provider: 'searxng', count: 8, searxngUrl: 'http://searx:8080' });
+  });
+});
+
+describe('loadWebSearchConfig corrupt JSON (#229)', () => {
+  it('returns defaults when localStorage holds invalid JSON', () => {
+    localStorage.setItem('ollama_gui_websearch', '{not valid json');
+    const cfg = loadWebSearchConfig();
+    expect(cfg).toEqual({ enabled: false, provider: 'duckduckgo', resultCount: 5 });
   });
 });

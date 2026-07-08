@@ -152,3 +152,35 @@ export function orderSessions(sessions: ChatSession[]): ChatSession[] {
     return (b.createdAt ?? 0) - (a.createdAt ?? 0);
   });
 }
+
+// ─── Conversation import (#232) ───────────────────────────────────────────────
+
+/**
+ * Parse and validate an imported conversations JSON string (#232).
+ *
+ * Extracted from `App.tsx` `handleImportFile` so the error-handling path
+ * (invalid JSON / non-array / malformed entries) is unit-testable.
+ *
+ * @throws {Error} if the text is not valid JSON, is not an array, or contains
+ *   an entry that is not a minimally well-formed `ChatSession`.
+ */
+export function parseSessionImport(text: string): ChatSession[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Invalid JSON');
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('Expected an array of sessions');
+  }
+  return parsed.map((entry, i) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`Session #${i} is not an object`);
+    }
+    const s = entry as Record<string, unknown>;
+    if (typeof s.id !== 'string') throw new Error(`Session #${i} is missing a string id`);
+    if (!Array.isArray(s.messages)) throw new Error(`Session #${i} is missing a messages array`);
+    return migrate(s);
+  });
+}

@@ -87,3 +87,72 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
   non-blocking consent banner (status probe on mount, Download Chromium with
   `onProgress` + Recheck + error surfacing; skipped in browser mode). 5 new
   BrowserPane tests; tsc clean; vitest 1050.
+
+---
+
+## M32 — Test coverage & hardening (fourth analysis pass)
+
+Context: a fresh feature + gap analysis run after M31. The repo is mature
+(vitest 1065, cargo 87). Remaining gaps are narrow coverage holes + one dead
+scaffold + an incomplete help overlay. **No merge to `master`** — work stays
+on `macOS-10.15`.
+
+- [ ] **#224** Add Ollama API error-handling, timeout & abort-signal tests.
+  `ollama.ts` already throws on non-`ok` and accepts `AbortSignal`, but
+  `ollama.test.ts` has no error/timeout/abort cases. AGENTS.md explicitly
+  requires Ollama error-handling + timeout tests.
+- [ ] **#225** Add unit tests for the secrets keychain wrapper
+  (`secret_set/get/delete/listRefs`). Security-sensitive, used by `App.tsx`,
+  currently untested (`secretStore.ts` is a different, already-tested module).
+- [ ] **#226** Add unit tests for `orchestrator.ts` `runCloudBrainLocalWorker`
+  (brain-plan / worker / brain-final). Imported by `App.tsx` + `mlx.ts`, no
+  test file, not imported by any existing test.
+- [ ] **#227** Remove the dead Tauri `greet` template stub
+  (`lib.rs:227` + its `generate_handler!` entry). Not invoked anywhere in the
+  frontend — leftover `cargo tauri init` scaffold.
+- [ ] **#228** Complete the keyboard-shortcuts help overlay. `Ctrl+B` / `Ctrl+F`
+  / `Ctrl+T` are implemented in the `keydown` handler but missing from the `?`
+  overlay.
+
+### Notes from this analysis pass
+- Confirmed **not** gaps (already covered, possibly under a differently-named
+  test file): `systemPrompt` (tested in `projects.test.ts` via
+  `composeSystemPrompt`), `promptLibrary` (tested in `prompts.test.ts`),
+  `mcpPresets` (`mcp-presets.test.ts`), `structuredOutput`
+  (`structured-output.test.ts`), `mcp`/`mcp-http`/`mcp-tauri`
+  (`mcp-transport.test.ts` + `mcpLifecycle`), `mcpConfig` (`mcpBridge.test.ts`
+  + `mcpLifecycle`), `libreOfficeOnboarding` (`documentArtifact.test.tsx`).
+- Borderline (transitively covered, no dedicated file): `db.ts` — factory
+  functions `createMemoryKnowledgeDB`/`createIdbKnowledgeDB` are exercised via
+  `rag`/`knowledge`/`hashCommand`/`workspaceRag` tests. Left out of M32 to
+  avoid scope creep; can be revisited if a regression surfaces.
+
+---
+
+## M33 — Error-path test coverage & robustness (fifth analysis pass)
+
+A fresh feature + gap analysis after M32. The repo is mature (vitest 1065,
+cargo 87). This pass closed **error-path test gaps** across four surfaces
+where happy paths were covered but failure paths were not. No merge to
+`master` — work stays on `macOS-10.15`.
+
+- [x] **#229** WebSearch error-path tests. `websearch.ts` catches a
+  `web_search` invoke rejection → `[]` and a corrupt `localStorage` config →
+  defaults; neither was tested. Added a `vi.mock('@tauri-apps/api/core')` seam
+  + 4 tests (rejection fallback, no-throw, arg mapping, corrupt JSON).
+- [x] **#230** Git service error-propagation tests. All six wrappers
+  (`gitStatus/Diff/Stage/Unstage/Commit/Log`) only had happy-path tests;
+  added 6 tests asserting each propagates the backend rejection (so the UI
+  surfaces git errors instead of swallowing them).
+- [x] **#231** Terminal service error-propagation tests. `startTerminal` /
+  `killTerminal` only had happy-path tests; added 3 tests (terminal_run
+  rejection, no session registered on failure, terminal_kill rejection).
+- [x] **#232** Extract + test conversation import validation. The invalid-
+  JSON / non-array error path lived inlined in `App.tsx handleImportFile`
+  (untested). Extracted `parseSessionImport(text)` into `storage.ts`,
+  wired `App.tsx` to call it, and added 7 tests (valid array, migration,
+  invalid JSON, non-array, missing id, missing messages, non-object entry).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1085 passed (90 files)** (+20).
+- `cargo test --lib` unchanged (87 passed) — no Rust changes this pass.
