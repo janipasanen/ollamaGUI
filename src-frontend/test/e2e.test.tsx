@@ -360,7 +360,7 @@ describe('End-to-End Tests', () => {
       const sendButton = screen.getByText('Send');
 
       // Buttons and inputs are natively focusable — no explicit tabIndex needed
-      expect(input.tagName).toBe('INPUT');
+      expect(input.tagName).toBe('TEXTAREA');
       expect(sendButton.tagName).toBe('BUTTON');
     });
 

@@ -40,8 +40,8 @@ describe('Message timestamps (#253)', () => {
     fireEvent.change(input, { target: { value: 'Hi' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
-    // A <time> element with a HH:MM label should appear on the user message.
-    const times = await waitFor(() => screen.getAllByText(/\d{2}:\d{2}/), { timeout: 3000 });
+    // A <time> element with a relative label ("just now") appears on the user message (#260).
+    const times = await waitFor(() => screen.getAllByText('just now'), { timeout: 3000 });
     expect(times.length).toBeGreaterThanOrEqual(1);
     expect(times[0].tagName.toLowerCase()).toBe('time');
   });
@@ -69,7 +69,7 @@ describe('Message timestamps (#253)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => screen.getByText('Reply'), { timeout: 3000 });
-    const times = screen.getAllByText(/\d{2}:\d{2}/);
+    const times = screen.getAllByText('just now');
     expect(times.length).toBeGreaterThanOrEqual(2); // user + assistant
     expect(times.every((t) => t.tagName.toLowerCase() === 'time')).toBe(true);
   });

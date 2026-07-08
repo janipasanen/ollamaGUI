@@ -488,3 +488,32 @@ on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1231 passed (112 files)** (+13).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M45 — Scroll-to-bottom on load, relative timestamps & multi-line composer (thirteenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude GUI / Cursor / TUIs.
+Three UX/parity gaps found and implemented. No merge to `master` — work stays
+on `macOS-10.15`.
+
+- [x] **#258** Loading a chat now scrolls to the bottom and clears any stale
+  unread badge. Previously opening a long session left the view at the top
+  (Codex/Claude/Cursor jump to the latest message). `loadSession` now sets
+  `prevMsgCountRef` and a `scrollToEndOnLoadRef` flag, resets `unreadCount`,
+  and the messages `useEffect` performs an instant jump-scroll on that load
+  pass (`{ behavior: 'auto' }`).
+- [x] **#259** Multi-line chat composer. The input was a single-line
+  `<input>`; Codex/Claude/Cursor/TUIs all allow multi-line editing with
+  Shift+Enter for newlines and Enter to send. Converted the composer to a
+  `<textarea rows={1}>` with auto-grow (up to ~160px), `Enter` sends,
+  `Shift+Enter` inserts a newline, and height resets after send.
+- [x] **#260** Relative, live-updating message timestamps. Timestamps were
+  static absolute strings; Codex/Claude/Slack show "just now" / "5m ago" /
+  "3h ago" and refresh periodically. `formatMessageTime` now returns relative
+  strings (<1m "just now", <1h "Nm ago", <24h "Nh ago", else absolute) and a
+  60s `nowTick` interval refreshes the rendered times.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1241 passed (114 files)** (+10).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

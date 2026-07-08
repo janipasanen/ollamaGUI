@@ -624,7 +624,11 @@ const App: React.FC = () => {
   const [showScrollButton, setShowScrollButton] = useState(false);
   // New-messages unread badge while the user is scrolled up (#255)
   const [unreadCount, setUnreadCount] = useState(0);
+  // Live tick so relative timestamps ("just now" / "5m ago") stay fresh (#260)
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const prevMsgCountRef = useRef(0);
+  // Force a scroll-to-bottom when loading a session so the latest messages show (#258)
+  const scrollToEndOnLoadRef = useRef(false);
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
 
   // Derived: filtered sessions for search (Issue 18)
@@ -896,6 +900,19 @@ const App: React.FC = () => {
 
   // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
   useEffect(() => () => { clearDiffReviewCallback(); clearBrowserApprovalCallback(); }, []);
+  // Refresh relative timestamps every minute (#260)
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Reset the composer height when the input is cleared after sending (#259)
+  useEffect(() => {
+    if (input === '') {
+      const ta = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+      if (ta) ta.style.height = 'auto';
+    }
+  }, [input]);
 
   // Subscribe to the plan store so the checklist re-renders on update_plan (#239).
   useEffect(() => subscribePlan(setPlanState), []);
@@ -925,6 +942,16 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Keep relative timestamps fresh whenever messages change (#260)
+    setNowTick(Date.now());
+    // Loading a session: jump to the bottom so the latest messages show (#258)
+    if (scrollToEndOnLoadRef.current) {
+      scrollToEndOnLoadRef.current = false;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      setUnreadCount(0);
+      prevMsgCountRef.current = messages.length;
+      return;
+    }
     const added = Math.max(0, messages.length - prevMsgCountRef.current);
     if (isNearBottom()) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1288,6 +1315,10 @@ const App: React.FC = () => {
     setAttachedImages([]);
     setMessageQueue([]);
     setIsTemporary(false);
+    // Loading a chat should show the latest messages and never a false unread badge (#258)
+    prevMsgCountRef.current = session.messages.length;
+    setUnreadCount(0);
+    scrollToEndOnLoadRef.current = true;
   };
 
   // ─── Organization actions (#133) ─────────────────────────────────────────
@@ -2636,10 +2667,10 @@ const App: React.FC = () => {
                   {msg.role === 'assistant' && msg.producedByModel && (
                     <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
                   )}
-                  {/* Per-message timestamp (#253) */}
-                  {formatMessageTime(msg.ts) && (
+                  {/* Per-message timestamp (#253/#260) */}
+                  {formatMessageTime(msg.ts, nowTick) && (
                     <time className="normal-case font-normal text-[10px] opacity-60 ml-auto" title={msg.ts ? new Date(msg.ts).toLocaleString() : undefined}>
-                      {formatMessageTime(msg.ts)}
+                      {formatMessageTime(msg.ts, nowTick)}
                     </time>
                   )}
                 </div>
@@ -3092,14 +3123,18 @@ const App: React.FC = () => {
                  ))}
                </div>
              )}
-             <input
+             <textarea
                id="chat-input"
-               type="text"
+               rows={1}
                value={input}
                onPaste={handlePaste}
                onChange={(e) => {
                  const val = e.target.value;
                  setInput(val);
+                 // Auto-grow the multi-line composer up to a max height (#259)
+                 const ta = e.target;
+                 ta.style.height = 'auto';
+                 ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
                  // Show slash command suggestions when input starts with /
                  if (val.startsWith('/')) {
                    const query = val.split(' ')[0];
@@ -3177,10 +3212,10 @@ const App: React.FC = () => {
                }}
                placeholder="Message Ollama..."
                aria-label="Type your message here"
-               className={`flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+               className={`flex-1 border rounded-xl px-4 py-3 resize-none max-h-40 overflow-y-auto leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
-             />
+             ></textarea>
              {/* Many-models extra-model picker (#126) */}
              {[...models, ...connectedModels].length > 1 && (
                <select
