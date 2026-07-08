@@ -38,3 +38,11 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 - GitHub issue numbers in titles (#202–#207) were planning placeholders; the
   real GitHub issue numbers are #210–#216 (issue numbering is global and was at
   #201 before this work).
+
+
+## Milestone 31 — Unwired-feature wiring pass
+- [x] **#217** Wire the Chromium consent/download prompt into `BrowserPane` —
+  `browserChromium.ts` was implemented + tested but imported by nothing. Added a
+  non-blocking consent banner (status probe on mount, Download Chromium with
+  `onProgress` + Recheck + error surfacing; skipped in browser mode). 5 new
+  BrowserPane tests; tsc clean; vitest 1050.

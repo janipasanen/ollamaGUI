@@ -34,6 +34,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 // services-relative vantage point; the physically-correct paths are used here.
 import { browserSession, browserBus, isLocalhostUrl } from '../services/browser';
 import { panelRegistry } from './PanelShell';
+import { getChromiumStatus, downloadChromium, needsChromiumPrompt, type ChromiumStatus } from '../services/browserChromium';
 
 // ---------------------------------------------------------------------------
 // Tauri invoke seam
@@ -119,6 +120,51 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   // Latest auto-reload flag for use inside stable bus listeners.
   const autoReloadRef = useRef<boolean>(autoReload);
   autoReloadRef.current = autoReload;
+
+  // -------------------------------------------------------------------------
+  // Chromium engine consent (#217). The browser-automation tools need a
+  // Chromium-class engine; if none is found we offer a consented download.
+  // Only checked when a Tauri runtime is present; in browser/test mode we skip.
+  // -------------------------------------------------------------------------
+  const [chromiumStatus, setChromiumStatus] = useState<ChromiumStatus | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasTauri()) return;
+    let cancelled = false;
+    getChromiumStatus()
+      .then((s) => { if (!cancelled) setChromiumStatus(s); })
+      .catch(() => { /* missing engine / command — leave status unknown */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const showChromiumConsent = hasTauri() && chromiumStatus !== null && needsChromiumPrompt(chromiumStatus);
+
+  const handleDownloadChromium = useCallback(async () => {
+    setDownloading(true);
+    setDownloadError(null);
+    setDownloadProgress(0);
+    try {
+      await downloadChromium((r) => setDownloadProgress(r));
+      const s = await getChromiumStatus();
+      setChromiumStatus(s);
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloading(false);
+    }
+  }, []);
+
+  const handleRecheckChromium = useCallback(async () => {
+    setDownloadError(null);
+    try {
+      setChromiumStatus(await getChromiumStatus());
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // -------------------------------------------------------------------------
   // Native-webview geometry sync
@@ -295,6 +341,43 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
           Auto
         </label>
       </div>
+
+      {/* Chromium engine consent banner (#217) */}
+      {showChromiumConsent && (
+        <div
+          data-testid="chromium-consent"
+          className={`flex flex-col gap-2 px-3 py-2 border-b text-sm ${
+            dark ? 'border-zinc-700 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-amber-50 text-zinc-700'
+          }`}
+        >
+          <span>No Chromium engine found for browser automation. Download a Chromium build to enable it.</span>
+          {downloading && (
+            <progress data-testid="chromium-progress" value={downloadProgress} max={1} className="w-full" />
+          )}
+          {downloadError && <span role="alert" data-testid="chromium-error">{downloadError}</span>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadChromium}
+              disabled={downloading}
+              aria-label="Download Chromium"
+              className="text-xs px-3 py-1 rounded font-semibold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 transition-colors"
+            >
+              {downloading ? 'Downloading…' : 'Download Chromium'}
+            </button>
+            <button
+              type="button"
+              onClick={handleRecheckChromium}
+              aria-label="Recheck Chromium"
+              className={`text-xs px-3 py-1 rounded font-medium transition-colors ${
+                dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100'
+              }`}
+            >
+              Recheck
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Surface: iframe (local) or native-webview host placeholder (external) */}
       <div className="flex-1 relative overflow-hidden">

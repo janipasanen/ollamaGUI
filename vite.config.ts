@@ -7,5 +7,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src-frontend/test/setup.ts',
+    // Keep vitest on the src-frontend suites; the Playwright specs live in e2e/.
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
   },
 });

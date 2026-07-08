@@ -17,6 +17,8 @@ vi.mock('../components/PanelShell', () => ({
 
 import BrowserPane, { _mocks } from '../components/BrowserPane';
 import { browserBus, browserSession } from '../services/browser';
+import * as chromiumClient from '../services/browserChromium';
+import { waitFor } from '@testing-library/react';
 
 // Provide a ResizeObserver in jsdom (it isn't implemented there) so the
 // component's observer wiring runs without throwing.
@@ -32,11 +34,18 @@ beforeEach(() => {
   unregisterSpy.mockClear();
   // Reset shared session url so cross-test ordering can't leak an external url.
   browserSession.navUrl = '';
+  // Chromium client test seams (#217).
+  chromiumClient._mocks.invoke = null;
+  chromiumClient._mocks.listen = null;
+  delete (window as any).__TAURI_INTERNALS__;
 });
 
 afterEach(() => {
   cleanup();
   _mocks.invoke = null;
+  chromiumClient._mocks.invoke = null;
+  chromiumClient._mocks.listen = null;
+  delete (window as any).__TAURI_INTERNALS__;
 });
 
 /** Type a url into the address bar and submit the form (clicks Go). */
@@ -167,5 +176,79 @@ describe('BrowserPane (#71, #72)', () => {
   it('renders in dark mode without crashing', () => {
     render(<BrowserPane dark={true} />);
     expect(screen.getByTestId('browser-pane')).toBeInTheDocument();
+  });
+
+  describe('Chromium engine consent banner (#217)', () => {
+    function setTauri() {
+      (window as any).__TAURI_INTERNALS__ = {};
+    }
+
+    it('does not show the consent banner without a Tauri runtime', () => {
+      render(<BrowserPane dark={false} />);
+      expect(screen.queryByTestId('chromium-consent')).not.toBeInTheDocument();
+    });
+
+    it('shows the consent banner when no Chromium engine is found', async () => {
+      setTauri();
+      chromiumClient._mocks.invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'browser_chromium_status') return { found: false, source: 'none' };
+        return undefined;
+      });
+      render(<BrowserPane dark={false} />);
+      await waitFor(() => expect(screen.getByTestId('chromium-consent')).toBeInTheDocument());
+      expect(screen.getByLabelText('Download Chromium')).toBeInTheDocument();
+      expect(screen.getByText(/No Chromium engine found/i)).toBeInTheDocument();
+    });
+
+    it('does not show the banner when a system engine is present', async () => {
+      setTauri();
+      chromiumClient._mocks.invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'browser_chromium_status') return { found: true, source: 'system', path: '/usr/bin/chromium' };
+        return undefined;
+      });
+      render(<BrowserPane dark={false} />);
+      // No banner after the status resolves.
+      await waitFor(() => {
+        expect(chromiumClient._mocks.invoke).toHaveBeenCalled();
+      });
+      expect(screen.queryByTestId('chromium-consent')).not.toBeInTheDocument();
+    });
+
+    it('downloads Chromium and hides the banner on success', async () => {
+      setTauri();
+      let statusCall = 0;
+      chromiumClient._mocks.invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'browser_chromium_status') {
+          statusCall += 1;
+          return statusCall === 1
+            ? { found: false, source: 'none' }
+            : { found: true, source: 'downloaded', path: '/app/chrome' };
+        }
+        if (cmd === 'browser_chromium_download') return '/app/chrome';
+        return undefined;
+      });
+      chromiumClient._mocks.listen = vi.fn(async () => () => {});
+      render(<BrowserPane dark={false} />);
+      await waitFor(() => expect(screen.getByTestId('chromium-consent')).toBeInTheDocument());
+      fireEvent.click(screen.getByLabelText('Download Chromium'));
+      await waitFor(() => expect(screen.queryByTestId('chromium-consent')).not.toBeInTheDocument());
+      expect(chromiumClient._mocks.invoke).toHaveBeenCalledWith('browser_chromium_download', {});
+    });
+
+    it('surfaces a download error without dismissing the banner', async () => {
+      setTauri();
+      chromiumClient._mocks.invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'browser_chromium_status') return { found: false, source: 'none' };
+        if (cmd === 'browser_chromium_download') throw new Error('network down');
+        return undefined;
+      });
+      chromiumClient._mocks.listen = vi.fn(async () => () => {});
+      render(<BrowserPane dark={false} />);
+      await waitFor(() => expect(screen.getByTestId('chromium-consent')).toBeInTheDocument());
+      fireEvent.click(screen.getByLabelText('Download Chromium'));
+      await waitFor(() => expect(screen.getByTestId('chromium-error')).toHaveTextContent('network down'));
+      // Banner stays so the user can retry.
+      expect(screen.getByTestId('chromium-consent')).toBeInTheDocument();
+    });
   });
 });
