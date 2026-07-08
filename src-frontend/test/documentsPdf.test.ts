@@ -152,3 +152,29 @@ describe('readPdfText (#143)', () => {
     expect(doc.word_count).toBe(3);
   });
 });
+
+// ── Error propagation (#236) ──────────────────────────────────────────────────
+
+describe('documentsPdf wrappers propagate backend errors (#236)', () => {
+  const ERR = new Error('poppler not installed');
+
+  beforeEach(() => {
+    _mocks.invoke = async () => { throw ERR; };
+  });
+
+  it('pdfInfo rejects when the backend rejects', async () => {
+    await expect(pdfInfo('doc.pdf')).rejects.toBe(ERR);
+  });
+
+  it('pdfSplit rejects when the backend rejects', async () => {
+    await expect(pdfSplit('big.pdf', '1-3', 'out/')).rejects.toBe(ERR);
+  });
+
+  it('pdfExtract rejects when the backend rejects', async () => {
+    await expect(pdfExtract('doc.pdf')).rejects.toBe(ERR);
+  });
+
+  it('pdfCreate rejects when the backend rejects', async () => {
+    await expect(pdfCreate('out.pdf', 'hello')).rejects.toBe(ERR);
+  });
+});

@@ -182,3 +182,27 @@ to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1092 passed (90 files)** (+7).
 - No Rust changes this pass.
+
+---
+
+## M35 — Browser-tool & PDF error-propagation tests (seventh analysis pass)
+
+A fresh feature + gap analysis after M34. Rust error handling is well-guarded
+(all non-test `unwrap`/`expect` are construction-safe: stdio is always piped,
+char indexing is bounds-checked, `pending_run_start` is gated by
+`is_some()`). The remaining gaps were the last two `tauriInvoke` pass-through
+wrapper families without rejection tests — the browser CDP tools and the PDF
+tools — so backend failures weren't asserted to propagate to the agent loop.
+No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#235** browser-tools CDP wrapper error-propagation tests. The tool
+  `execute` wrappers only had happy-path/approval/AX tests; added 5 rejection
+  tests (`browser_snapshot`, `browser_screenshot`, `browser_read_console`,
+  `browser_navigate` (localhost, engine pre-connected), `browser_click`).
+- [x] **#236** documentsPdf error-propagation tests. Only `pdfMerge` had a
+  rejection test; added 4 for `pdfInfo` / `pdfSplit` / `pdfExtract` /
+  `pdfCreate`.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1101 passed (90 files)** (+9).
+- `cargo test --lib` = 87 passed/1 ignored (no Rust changes this pass).

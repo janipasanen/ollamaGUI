@@ -534,3 +534,41 @@ describe('browser_assert AX-tree contract (#221)', () => {
     expect(result).toMatchObject({ pass: true });
   });
 });
+
+// ── Error propagation (#235) ──────────────────────────────────────────────────
+
+describe('browser CDP wrappers propagate backend errors (#235)', () => {
+  const ERR = new Error('cdp target detached');
+
+  beforeEach(() => {
+    const { cb } = makeApproval(true);
+    registerBrowserTools(cb);
+  });
+
+  it('browser_snapshot rejects when browser_cdp_get_ax_tree rejects', async () => {
+    _mocks.invoke = async () => { throw ERR; };
+    await expect(toolRegistry.getTool('browser_snapshot')!.execute({})).rejects.toBe(ERR);
+  });
+
+  it('browser_screenshot rejects when browser_cdp_screenshot rejects', async () => {
+    _mocks.invoke = async () => { throw ERR; };
+    await expect(toolRegistry.getTool('browser_screenshot')!.execute({ fullPage: false })).rejects.toBe(ERR);
+  });
+
+  it('browser_read_console rejects when browser_cdp_read_console rejects', async () => {
+    _mocks.invoke = async () => { throw ERR; };
+    await expect(toolRegistry.getTool('browser_read_console')!.execute({ clear: false })).rejects.toBe(ERR);
+  });
+
+  it('browser_navigate rejects when browser_cdp_navigate rejects (localhost, engine pre-connected)', async () => {
+    browserSession.engineConnected = true;
+    _mocks.invoke = async () => { throw ERR; };
+    await expect(toolRegistry.getTool('browser_navigate')!.execute({ url: 'http://localhost:1234' })).rejects.toBe(ERR);
+  });
+
+  it('browser_click rejects when browser_cdp_click rejects (engine pre-connected)', async () => {
+    browserSession.engineConnected = true;
+    _mocks.invoke = async () => { throw ERR; };
+    await expect(toolRegistry.getTool('browser_click')!.execute({ ref: 'e7' })).rejects.toBe(ERR);
+  });
+});
