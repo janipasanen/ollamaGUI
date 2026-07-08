@@ -19,6 +19,8 @@ export interface Message {
   producedByModel?: string;
   /** Reasoning/thinking trace from Ollama reasoning models (#241). */
   reasoning?: string;
+  /** Epoch ms when the message was created (#253). */
+  ts?: number;
 }
 
 export interface OllamaResponse {
@@ -58,34 +60,66 @@ export async function fetchOllamaChatStream(
   isCloudModel: boolean = false,
   options?: GenerationOptions,
   signal?: AbortSignal,
-  format?: 'json' | object
+  format?: 'json' | object,
+  /** Optional request/stream timeout in ms (aborts via AbortSignal) (#224). */
+  timeoutMs?: number,
 ): Promise<void> {
   const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
   const cleaned = cleanGenerationOptions(options);
-  const response = await fetch(apiEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}), ...(format ? { format } : {}) }),
-    signal,
-  });
 
-  if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
+  // Combine the caller's AbortSignal with an optional timeout (#224).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let combinedSignal = signal;
+  if (timeoutMs && timeoutMs > 0) {
+    const controller = new AbortController();
+    combinedSignal = controller.signal;
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream: true, ...(cleaned ? { options: cleaned } : {}), ...(format ? { format } : {}) }),
+      signal: combinedSignal,
+    });
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    throw e;
+  }
+
+  if (!response.ok) {
+    if (timer) clearTimeout(timer);
+    throw new Error(`Ollama API error: ${response.statusText}`);
+  }
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
-  if (!reader) throw new Error('Response body is null');
+  if (!reader) {
+    if (timer) clearTimeout(timer);
+    throw new Error('Response body is null');
+  }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        onChunk(JSON.parse(line));
-      } catch (e) {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          onChunk(JSON.parse(line));
+        } catch (e) {
         console.error('Error parsing stream chunk', e);
       }
     }
+  }
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

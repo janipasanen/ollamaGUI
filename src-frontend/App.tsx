@@ -129,11 +129,13 @@ import { registerImageDiffTool } from './services/imageDiff';
 import { secretSet, secretDelete, secretListRefs, type SecretRef } from './services/secrets';
 import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } from './services/atCommand';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
-import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type PendingEdit, type EditDecision } from './services/diffReview';
+import { setDiffReviewCallback, clearDiffReviewCallback, type PendingEdit, type EditDecision } from './services/diffReview';
+import { DiffReviewModal } from './components/DiffReviewModal';
 import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
+import { formatMessageTime } from './services/formatTime';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -1559,6 +1561,7 @@ const App: React.FC = () => {
     const userMessage: Message = {
       role: 'user',
       content: text,
+      ts: Date.now(),
       ...(attachedImages.length > 0 ? { images: [...attachedImages] } : {}),
     };
 
@@ -1630,7 +1633,7 @@ const App: React.FC = () => {
         // Multi-agent: cloud model is the brain, local model is the worker.
         let header = '';
         let orchestratorReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
         try {
           await runCloudBrainLocalWorker({
             brainModel: mlxSettings.brainModel,
@@ -1673,13 +1676,14 @@ const App: React.FC = () => {
         // Direct MLX inference (full inference backend).
         let assistantContent = '';
         let assistantReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
         try {
           await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta, reasoning) => {
             if (reasoning) assistantReasoning += reasoning;
             if (delta) assistantContent += delta;
             setMessages(prev => {
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
+              const last = prev[prev.length - 1];
+              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ts: last?.ts ?? Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
               saveCurrentSession(updated);
               return updated;
             });
@@ -1837,7 +1841,7 @@ const App: React.FC = () => {
         let assistantContent = '';
         let assistantReasoning = '';
         let streamOk = false;
-        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
 
         try {
           if (connForModel && connectedModel) {
@@ -1850,7 +1854,8 @@ const App: React.FC = () => {
                 if (reasoning) assistantReasoning += reasoning;
                 if (delta) assistantContent += delta;
                 setMessages(prev => {
-                  const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
+                  const last = prev[prev.length - 1];
+                  const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ts: last?.ts ?? Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
                   saveCurrentSession(updated);
                   return updated;
                 });
@@ -1869,7 +1874,8 @@ const App: React.FC = () => {
             if (chunk.message?.content) {
               assistantContent += chunk.message.content;
               setMessages(prev => {
-                const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
+                const last = prev[prev.length - 1];
+                const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ts: last?.ts ?? Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
                 saveCurrentSession(updated);
                 return updated;
               });
@@ -2580,6 +2586,12 @@ const App: React.FC = () => {
                   {/* Per-message model label (#97) */}
                   {msg.role === 'assistant' && msg.producedByModel && (
                     <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
+                  )}
+                  {/* Per-message timestamp (#253) */}
+                  {formatMessageTime(msg.ts) && (
+                    <time className="normal-case font-normal text-[10px] opacity-60 ml-auto" title={msg.ts ? new Date(msg.ts).toLocaleString() : undefined}>
+                      {formatMessageTime(msg.ts)}
+                    </time>
                   )}
                 </div>
 
@@ -5730,47 +5742,18 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Diff review modal (#84/#185) — shown when an agent proposes a file edit */}
-        {pendingDiffEdit && (() => {
-          const edit = pendingDiffEdit;
-          const before = edit.kind === 'apply_edit' ? (edit.oldString ?? '') : '';
-          const after = edit.newString;
-          const lines = diffLines(before, after);
-          const resolve = (accepted: boolean) => {
-            diffReviewResolveRef.current?.({ id: edit.id, accepted });
-            diffReviewResolveRef.current = null;
-            setPendingDiffEdit(null);
-          };
-          return (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Review file edit">
-              <div className={`w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden ${dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'}`}>
-                <div className={`flex items-center justify-between px-4 py-3 border-b shrink-0 ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <div>
-                    <span className={`text-sm font-semibold ${dark ? 'text-zinc-100' : 'text-zinc-800'}`}>Review file edit</span>
-                    <span className={`ml-2 text-xs font-mono ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{edit.path}</span>
-                  </div>
-                  <button onClick={() => resolve(false)} aria-label="Reject edit" className={`text-xs px-2 py-1 rounded ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}>✕</button>
-                </div>
-                <div className="overflow-auto flex-1 font-mono text-xs p-2">
-                  {edit.kind === 'write_file' ? (
-                    <pre className={`whitespace-pre-wrap break-all p-2 rounded ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-50 text-zinc-800'}`}>{after}</pre>
-                  ) : (
-                    lines.map((dl, i) => (
-                      <div key={i} className={`px-2 py-0.5 ${dl.kind === 'added' ? (dark ? 'bg-emerald-900/40 text-emerald-300' : 'bg-emerald-50 text-emerald-800') : dl.kind === 'removed' ? (dark ? 'bg-red-900/40 text-red-300 line-through' : 'bg-red-50 text-red-700 line-through') : (dark ? 'text-zinc-400' : 'text-zinc-500')}`}>
-                        <span className="select-none mr-2 opacity-40">{dl.kind === 'added' ? '+' : dl.kind === 'removed' ? '-' : ' '}</span>
-                        {dl.text}
-                      </div>
-                    ))
-                  )}
-                </div>
-                <div className={`flex justify-end gap-2 px-4 py-3 border-t shrink-0 ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <button onClick={() => resolve(false)} className={`px-4 py-2 rounded-lg text-sm font-medium border ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-700 hover:bg-zinc-100'}`}>Reject</button>
-                  <button onClick={() => resolve(true)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white">Accept</button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
+        {/* Diff review modal (#84/#185/#254) — per-hunk accept/reject for apply_edit */}
+        {pendingDiffEdit && (
+          <DiffReviewModal
+            edit={pendingDiffEdit}
+            dark={dark}
+            onResolve={(decision) => {
+              diffReviewResolveRef.current?.(decision);
+              diffReviewResolveRef.current = null;
+              setPendingDiffEdit(null);
+            }}
+          />
+        )}
 
         </PanelShell>
     </div>

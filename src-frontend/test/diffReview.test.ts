@@ -137,3 +137,85 @@ describe('diffLines (#84)', () => {
     expect(lines.every(l => l.kind === 'removed')).toBe(true);
   });
 });
+
+import { groupHunks, mergeHunks } from '../services/diffReview';
+
+describe('per-hunk grouping & merge (#254)', () => {
+  it('groupHunks groups consecutive change lines and separates on context', () => {
+    const before = 'a\nb\nc\nd\ne';
+    const after = 'a\nB\nc\nD\ne';
+    const lines = diffLines(before, after);
+    const hunks = groupHunks(lines);
+    expect(hunks).toHaveLength(2);
+    expect(hunks[0].lineIndices.length).toBe(2); // b→B (removed b + added B)
+    expect(hunks[1].lineIndices.length).toBe(2); // d→D
+  });
+
+  it('groupHunks returns no hunks for identical strings', () => {
+    expect(groupHunks(diffLines('x\ny', 'x\ny'))).toHaveLength(0);
+  });
+
+  it('mergeHunks with all hunks accepted equals the full after', () => {
+    const before = 'a\nb\nc\nd\ne';
+    const after = 'a\nB\nc\nD\ne';
+    const lines = diffLines(before, after);
+    expect(mergeHunks(lines, [true, true])).toBe(after);
+  });
+
+  it('mergeHunks with all hunks rejected equals the original before', () => {
+    const before = 'a\nb\nc\nd\ne';
+    const after = 'a\nB\nc\nD\ne';
+    const lines = diffLines(before, after);
+    expect(mergeHunks(lines, [false, false])).toBe(before);
+  });
+
+  it('mergeHunks with only the first hunk accepted applies just that region', () => {
+    const before = 'a\nb\nc\nd\ne';
+    const after = 'a\nB\nc\nD\ne';
+    const lines = diffLines(before, after);
+    // accept hunk 0 (b→B), reject hunk 1 (keep d)
+    expect(mergeHunks(lines, [true, false])).toBe('a\nB\nc\nd\ne');
+  });
+
+  it('mergeHunks handles pure insertions (added-only hunk)', () => {
+    const before = 'a\nc';
+    const after = 'a\nb\nc';
+    const lines = diffLines(before, after);
+    expect(mergeHunks(lines, [true])).toBe(after);
+    expect(mergeHunks(lines, [false])).toBe(before);
+  });
+
+  it('mergeHunks handles pure deletions (removed-only hunk)', () => {
+    const before = 'a\nb\nc';
+    const after = 'a\nc';
+    const lines = diffLines(before, after);
+    expect(mergeHunks(lines, [true])).toBe(after);
+    expect(mergeHunks(lines, [false])).toBe(before);
+  });
+});
+
+describe('proposeEdit — per-hunk merged content (#254)', () => {
+  it('applies the mergedNewString when provided via the review decision', async () => {
+    let written: Record<string, any> = {};
+    fileMocks.invoke = async (cmd: string, args: any) => {
+      if (cmd === 'apply_edit') written = { old_string: args.old_string, new_string: args.new_string };
+      return undefined;
+    };
+    setDiffReviewCallback(async () => ({ id: 'x', accepted: true, mergedNewString: 'MERGED' }));
+    const applied = await proposeEdit({ path: 'f.ts', kind: 'apply_edit', oldString: 'orig', newString: 'full' });
+    expect(applied).toBe(true);
+    expect(written.old_string).toBe('orig');
+    expect(written.new_string).toBe('MERGED');
+  });
+
+  it('falls back to the full newString when no mergedNewString is provided', async () => {
+    let written: Record<string, any> = {};
+    fileMocks.invoke = async (cmd: string, args: any) => {
+      if (cmd === 'apply_edit') written = { new_string: args.new_string };
+      return undefined;
+    };
+    setDiffReviewCallback(async () => ({ id: 'x', accepted: true }));
+    await proposeEdit({ path: 'f.ts', kind: 'apply_edit', oldString: 'orig', newString: 'full' });
+    expect(written.new_string).toBe('full');
+  });
+});

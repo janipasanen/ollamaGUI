@@ -26,6 +26,8 @@ export interface PendingEdit {
 export interface EditDecision {
   id: string;
   accepted: boolean;
+  /** For per-hunk accept: the merged newString applying only accepted hunks (#254). */
+  mergedNewString?: string;
 }
 
 type ReviewCallback = (edit: PendingEdit) => Promise<EditDecision>;
@@ -68,19 +70,21 @@ export async function proposeEdit(
   const pending: PendingEdit = { ...edit, id: makeEditId(), createdAt: Date.now() };
   _pending.set(pending.id, pending);
 
+  let decision: EditDecision | undefined;
   if (_reviewCallback) {
-    const decision = await _reviewCallback(pending);
+    decision = await _reviewCallback(pending);
     _pending.delete(pending.id);
     if (!decision.accepted) return false;
   } else {
     _pending.delete(pending.id);
   }
 
-  // Apply
+  // Apply. For per-hunk accept, use the merged content if provided (#254).
+  const newContent = decision?.mergedNewString ?? pending.newString;
   if (pending.kind === 'apply_edit' && pending.oldString !== undefined) {
-    await applyEdit(pending.path, pending.oldString, pending.newString);
+    await applyEdit(pending.path, pending.oldString, newContent);
   } else {
-    await writeFile(pending.path, pending.newString);
+    await writeFile(pending.path, newContent);
   }
   return true;
 }
@@ -157,4 +161,61 @@ export function diffLines(before: string, after: string): DiffLine[] {
     }
   }
   return result;
+}
+
+/**
+ * A maximal run of consecutive added/removed lines (a change region) within a
+ * diff. Context lines separate hunks. Used for per-hunk accept/reject (#254).
+ */
+export interface DiffHunk {
+  index: number;
+  /** Indices into the DiffLine[] array that belong to this hunk. */
+  lineIndices: number[];
+}
+
+/** Group consecutive change lines (added/removed) into hunks (#254). */
+export function groupHunks(lines: DiffLine[]): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+  let current: number[] = [];
+  lines.forEach((l, i) => {
+    if (l.kind === 'added' || l.kind === 'removed') {
+      current.push(i);
+    } else if (current.length > 0) {
+      hunks.push({ index: hunks.length, lineIndices: current });
+      current = [];
+    }
+  });
+  if (current.length > 0) hunks.push({ index: hunks.length, lineIndices: current });
+  return hunks;
+}
+
+/**
+ * Reconstruct the merged content applying only the accepted hunks (#254).
+ *
+ * - context lines are always kept;
+ * - an accepted hunk's added lines are included and its removed lines dropped;
+ * - a rejected hunk's added lines are dropped and its removed lines kept
+ *   (i.e. the original text is preserved for that region).
+ */
+export function mergeHunks(lines: DiffLine[], accepted: boolean[]): string {
+  const hunks = groupHunks(lines);
+  const lineToHunk = new Map<number, number>();
+  for (const h of hunks) for (const i of h.lineIndices) lineToHunk.set(i, h.index);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.kind === 'context') {
+      out.push(l.text);
+      continue;
+    }
+    const hunkIdx = lineToHunk.get(i)!;
+    const isAccepted = accepted[hunkIdx];
+    if (l.kind === 'added') {
+      if (isAccepted) out.push(l.text);
+    } else {
+      // removed
+      if (!isAccepted) out.push(l.text);
+    }
+  }
+  return out.join('\n');
 }

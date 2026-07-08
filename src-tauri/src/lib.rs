@@ -223,11 +223,6 @@ fn url_decode(s: &str) -> String {
     result
 }
 
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 use std::process::{Command, Child, ChildStdin, ChildStdout, ChildStderr};
 use std::io::{Write, BufRead, BufReader};
 use std::sync::{Arc, Mutex};
@@ -1812,7 +1807,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             run_cli,
             probe_binary,
             get_system_memory,

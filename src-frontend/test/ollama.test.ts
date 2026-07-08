@@ -147,3 +147,90 @@ describe('Reasoning/thinking pass-through (#241)', () => {
     expect(chunks.some(c => c.thinking === 'top-level reasoning')).toBe(true);
   });
 });
+
+describe('Ollama API error-handling, abort & timeout (#224)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  function readerWithChunks(chunks: Uint8Array[]) {
+    let i = 0;
+    return { read: async () => i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined } };
+  }
+
+  it('fetchOllamaChatStream throws Ollama API error on non-ok response', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, statusText: 'Internal Server Error' }) as any;
+    await expect(
+      fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat'),
+    ).rejects.toThrow(/Ollama API error: Internal Server Error/);
+  });
+
+  it('fetchOllamaChatStream throws when the response body is null', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, body: null }) as any;
+    await expect(
+      fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat'),
+    ).rejects.toThrow('Response body is null');
+  });
+
+  it('fetchOllamaModels throws Ollama API error on non-ok response', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, statusText: 'Not Found' }) as any;
+    await expect(fetchOllamaModels('http://x')).rejects.toThrow(/Ollama API error: Not Found/);
+  });
+
+  it('a malformed stream line is skipped, not thrown', async () => {
+    const enc = new TextEncoder();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: { getReader: () => readerWithChunks([enc.encode('not-json\n{"message":{"content":"ok"}}\n')]) },
+    }) as any;
+    const chunks: any[] = [];
+    await fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], (c) => chunks.push(c), 'http://x/api/chat');
+    expect(chunks.some(c => c.message?.content === 'ok')).toBe(true);
+  });
+
+  it('propagates an abort signal: an already-aborted signal rejects the fetch', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: any) => {
+      if (init?.signal?.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'));
+      return Promise.resolve({ ok: true, body: { getReader: () => readerWithChunks([]) } });
+    });
+    global.fetch = fetchMock as any;
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat', false, undefined, ac.signal),
+    ).rejects.toThrow('aborted');
+  });
+
+  it('timeoutMs aborts a hanging stream', async () => {
+    // A reader that never resolves until the combined signal aborts.
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: any) => {
+      return Promise.resolve({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: () => new Promise<void>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            }),
+          }),
+        },
+      });
+    });
+    global.fetch = fetchMock as any;
+    // Real timers with a short timeout: by the time it fires, the stream is
+    // already awaiting reader.read(), so the abort rejection is handled.
+    await expect(
+      fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 'http://x/api/chat', false, undefined, undefined, undefined, 30),
+    ).rejects.toThrow('aborted');
+  });
+
+  it('timeoutMs is cleared on a successful completion (no dangling timer)', async () => {
+    const enc = new TextEncoder();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: { getReader: () => readerWithChunks([enc.encode('{"message":{"content":"done"}}\n')]) },
+    }) as any;
+    const chunks: any[] = [];
+    await fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], (c) => chunks.push(c), 'http://x/api/chat', false, undefined, undefined, undefined, 1000);
+    expect(chunks.some(c => c.message?.content === 'done')).toBe(true);
+  });
+});

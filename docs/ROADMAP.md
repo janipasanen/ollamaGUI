@@ -413,3 +413,46 @@ by M41. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1181 passed (104 files)** (+24).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M43 — Per-hunk diff, message timestamps & M32 test hardening (eleventh analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude GUI / Cursor / TUIs.
+Two new feature gaps implemented, plus the long-pending M32 test-coverage/cleanup
+items rolled in and M32 closed. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#227** Remove the dead Tauri `greet` template stub. The `greet` command
+  was never invoked from the frontend; removed the function and its
+  `generate_handler!` registration. `cargo test --lib` still green (87 passed).
+- [x] **#224** Ollama API error-handling, abort & timeout tests. Added an
+  optional `timeoutMs` to `fetchOllamaChatStream` that combines the caller's
+  `AbortSignal` with an internal timeout controller (cleared on
+  success/error/abort). Added tests for non-ok errors, null body,
+  `fetchOllamaModels` non-ok, malformed-line skipping, abort-signal
+  propagation, timeout abort of a hanging stream, and timer cleanup.
+- [x] **#225** Secrets keychain wrapper tests. The frontend `secretStore` only
+  had in-memory-fallback coverage; added tests that mock `@tauri-apps/api/core`
+  `invoke` to verify the `secret_set`/`secret_get`/`secret_delete` calls
+  (args + return mapping), null handling, and graceful fallback to the
+  in-memory store when invoke rejects.
+- [x] **#253** Message timestamps. The `Message` interface had no timestamp and
+  the chat rendered none (Claude Code / Cursor / Codex show send times). Added
+  an optional `ts` field, set it on user + assistant messages (and preserved
+  through streaming updates), added a `formatMessageTime` helper (same-day
+  `HH:MM`, older `Mon D, HH:MM`), and render a `<time>` element in each
+  message header. UI + unit tests added.
+- [x] **#254** Per-hunk accept/reject in the diff review modal. The modal only
+  accepted/rejected the whole edit (Cursor / Claude Code accept per-hunk).
+  Extracted a `DiffReviewModal` component with `groupHunks`/`mergeHunks`
+  helpers (consecutive change lines → hunks; reconstruct merged content
+  applying only accepted hunks), per-hunk toggle buttons with `aria-pressed`,
+  an Accept-all/Reject-all toggle, and `EditDecision.mergedNewString` so
+  `proposeEdit` applies the merged content. `write_file` edits keep whole-file
+  accept/reject. Unit + UI tests added.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1218 passed (108 files)** (+37).
+- `cargo test --lib` = 87 passed / 1 ignored (greet stub removed).
+- M32 closed (its remaining items #224/#225/#226/#227/#228 completed across
+  M41–M43).
