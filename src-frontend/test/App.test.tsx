@@ -291,3 +291,29 @@ describe('App Component', () => {
       expect(planBtn!.getAttribute('aria-pressed')).toBe('false');
     });
   });
+
+  // ── Settings input accessible names (#237) ───────────────────────────────────
+  describe('Settings input accessible names (#237)', () => {
+    beforeEach(() => {
+      global.innerWidth = 1024;
+    });
+
+    it('system prompt textarea has an accessible name', () => {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByLabelText(/System prompt/i)).toBeInTheDocument();
+    });
+
+    it('num_ctx and temperature inputs have accessible names', () => {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByLabelText('Context window (num_ctx)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Temperature')).toBeInTheDocument();
+    });
+
+    it('model-pull input has an accessible name', () => {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByLabelText(/Model name to pull/i)).toBeInTheDocument();
+    });
+  });

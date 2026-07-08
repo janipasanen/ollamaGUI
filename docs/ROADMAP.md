@@ -206,3 +206,29 @@ No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1101 passed (90 files)** (+9).
 - `cargo test --lib` = 87 passed/1 ignored (no Rust changes this pass).
+
+---
+
+## M36 — Settings a11y labels & model-pull UI tests (eighth analysis pass)
+
+A fresh feature + gap analysis after M35. Pivoted away from the exhausted
+error-propagation theme. Found: (1) `rg "htmlFor" src-frontend/App.tsx` → 0
+matches — no settings input had a programmatically associated label, and
+several key inputs (system prompt, num_ctx, temperature, model-pull) relied on
+placeholder/visual-only captions; (2) the model-pull UI flow (progress / error
+/ retry / suggested-models) had no UI tests. No merge to `master` — work stays
+on `macOS-10.15`.
+
+- [x] **#237** Accessible names for settings inputs. Added `aria-label` to the
+  system-prompt textarea, num_ctx, temperature, and model-pull inputs (matching
+  the existing pattern used for the advanced sampling inputs). 3 App tests
+  assert each is queryable by accessible name (`getByLabelText`).
+- [x] **#238** Model-pull UI flow tests. New `test/modelPull.test.tsx` with a
+  routed fetch mock (POST /api/pull → ReadableStream, GET /api/tags → model
+  list): Download button for uninstalled suggested models, "Installed ✓" for
+  present ones, error progress + Retry button on a failed pull, and progress
+  text ("Pull complete") on a successful pull.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1108 passed (91 files)** (+7).
+- No Rust changes this pass.

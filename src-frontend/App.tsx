@@ -3187,6 +3187,7 @@ const App: React.FC = () => {
                    <textarea
                      value={systemPrompt}
                      onChange={(e) => updateSystemPrompt(e.target.value)}
+                     aria-label="System prompt"
                      className={`w-full h-28 border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none transition-colors ${
                        dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                      }`}
@@ -3206,6 +3207,7 @@ const App: React.FC = () => {
                          step={512}
                          value={genOptions.num_ctx ?? ''}
                          onChange={(e) => updateGenOptions({ num_ctx: e.target.value === '' ? undefined : Number(e.target.value) })}
+                         aria-label="Context window (num_ctx)"
                          placeholder="4096"
                          className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
                        />
@@ -3219,6 +3221,7 @@ const App: React.FC = () => {
                          step={0.1}
                          value={genOptions.temperature ?? ''}
                          onChange={(e) => updateGenOptions({ temperature: e.target.value === '' ? undefined : Number(e.target.value) })}
+                         aria-label="Temperature"
                          placeholder="model default"
                          className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
                        />
@@ -4304,6 +4307,7 @@ const App: React.FC = () => {
                       value={modelPullInput}
                       onChange={(e) => setModelPullInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handlePullModel()}
+                      aria-label="Model name to pull"
                       placeholder="e.g. ministral-3:3b"
                       className={`flex-1 border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${
                         dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
