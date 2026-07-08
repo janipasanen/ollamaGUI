@@ -239,3 +239,16 @@ describe('/search command (#276)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('search'); expect(r.arg).toBe(''); }
   });
 });
+
+// ── /copy builtin (#279) ──────────────────────────────────────────────────────
+
+describe('/copy command (#279)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('copy')?.builtin).toBe(true);
+  });
+  it('returns builtin action: copy', () => {
+    const r = runCommand('/copy');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('copy');
+  });
+});

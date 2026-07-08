@@ -1674,6 +1674,15 @@ const App: React.FC = () => {
           setTimeout(() => document.getElementById('sidebar-search')?.focus(), 50);
           return;
         }
+        if (result.action === 'copy') {
+          if (messages.length === 0) {
+            showStatusBanner('Nothing to copy — the conversation is empty');
+          } else {
+            void handleCopyMarkdown();
+            showStatusBanner('Copied conversation as Markdown');
+          }
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2182,6 +2191,23 @@ const App: React.FC = () => {
     setMessages(newTrunk);
     void sendMessage(newContent);
     saveCurrentSession(newTrunk, updated);
+  };
+
+  // Delete a single message from the conversation (#280).
+  const deleteMessage = (index: number) => {
+    if (isLoading) return;
+    const updated = messages.filter((_, j) => j !== index);
+    trunkMessagesRef.current = updated;
+    setMessages(updated);
+    saveCurrentSession(updated);
+  };
+
+  // Edit an assistant reply in place (#281) — replace content, no re-stream.
+  const editAssistantMessage = (index: number, newContent: string) => {
+    if (isLoading) return;
+    const updated = messages.map((m, j) => (j === index ? { ...m, content: newContent } : m));
+    setMessages(updated);
+    saveCurrentSession(updated);
   };
 
   // Regenerate the last assistant reply: save the current tail starting at the
@@ -2866,7 +2892,8 @@ const App: React.FC = () => {
                       onKeyDown={e => {
                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                           setEditingIndex(null);
-                          editMessage(i, editContent);
+                          if (msg.role === 'assistant') editAssistantMessage(i, editContent);
+                          else editMessage(i, editContent);
                         } else if (e.key === 'Escape') {
                           setEditingIndex(null);
                         }
@@ -2877,9 +2904,9 @@ const App: React.FC = () => {
                     />
                     <div className="flex gap-2">
                       <button
-                        onClick={() => { setEditingIndex(null); editMessage(i, editContent); }}
+                        onClick={() => { setEditingIndex(null); if (msg.role === 'assistant') editAssistantMessage(i, editContent); else editMessage(i, editContent); }}
                         className="text-xs px-3 py-1 rounded-lg bg-white/20 hover:bg-white/30 font-semibold"
-                      >Send edit</button>
+                      >{msg.role === 'assistant' ? 'Save edit' : 'Send edit'}</button>
                       <button
                         onClick={() => setEditingIndex(null)}
                         className="text-xs px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20"
@@ -3034,17 +3061,37 @@ const App: React.FC = () => {
                         className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                       >{action.name}</button>
                     ))}
+                    {/* Edit assistant reply in place (#281) */}
+                    <button
+                      onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
+                      aria-label="Edit response"
+                      title="Edit response"
+                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >✏</button>
+                    {/* Delete this message (#280) */}
+                    <button
+                      onClick={() => deleteMessage(i)}
+                      aria-label="Delete response"
+                      title="Delete response"
+                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
+                    >🗑</button>
                   </div>
                 )}
                 {/* Edit button on user messages (#98) */}
                 {msg.role === 'user' && !isLoading && editingIndex !== i && (
-                  <div className="flex justify-end mt-1">
+                  <div className="flex justify-end mt-1 gap-1">
                     <button
                       onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
                       aria-label="Edit message"
                       title="Edit (creates a branch)"
                       className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
                     >✏ Edit</button>
+                    <button
+                      onClick={() => deleteMessage(i)}
+                      aria-label="Delete message"
+                      title="Delete message"
+                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-red-500/30 text-white/70"
+                    >🗑 Delete</button>
                   </div>
                 )}
                </div>

@@ -687,3 +687,32 @@ work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1300 passed (133 files)** (+9).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M52 — /copy command, delete-message & edit-assistant-message (twentieth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / TUIs.
+Three message/parity gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#279** `/copy` slash command. TUI chat tools copy a thread to the
+  clipboard; the app copied via the toolbar 📋 button (#261) and downloaded a
+  file via `/export` (#271) but had no slash command. Added a `/copy` builtin
+  that copies the `chatToMarkdown` rendering to the clipboard and confirms via
+  the status banner, with an empty-conversation hint.
+- [x] **#280** Delete a single message. Codex / Claude / Cursor let you remove
+  an individual message; the app could edit and regenerate but not delete one.
+  Added a per-message Delete button (hover-revealed) on both user ("Delete
+  message") and assistant ("Delete response") messages that removes the
+  message, updates the trunk and persists — disabled while generating.
+- [x] **#281** Edit an assistant message in place. Codex / Claude let you edit
+  an assistant reply; the app only edited user messages (and re-sent). Added an
+  "Edit response" button on assistant replies that opens the inline editor;
+  saving replaces the content in place (no re-stream) and persists. Escape
+  cancels. The edit block now branches on role (user → re-send, assistant →
+  in-place replace).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1308 passed (136 files)** (+8).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
