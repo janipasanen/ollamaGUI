@@ -147,7 +147,7 @@ export async function streamOpenAiChat(
   conn: ModelConnection,
   model: string,
   messages: { role: string; content: string }[],
-  onChunk: (delta: string) => void,
+  onChunk: (delta: string, reasoning?: string) => void,
   options?: { temperature?: number },
   signal?: AbortSignal
 ): Promise<void> {
@@ -172,8 +172,11 @@ export async function streamOpenAiChat(
       if (data === '[DONE]') return;
       try {
         const chunk = JSON.parse(data);
-        const delta = chunk?.choices?.[0]?.delta?.content ?? '';
+        const d = chunk?.choices?.[0]?.delta;
+        const delta = d?.content ?? '';
+        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
         if (delta) onChunk(delta);
+        if (reasoning) onChunk('', reasoning);
       } catch {
         // malformed SSE line — skip
       }

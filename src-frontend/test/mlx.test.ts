@@ -140,4 +140,34 @@ describe('fetchMlxChatStream', () => {
     expect(body.messages[0]).toEqual({ role: 'user', content: 'hi' });
     expect(fetchMock.mock.calls[0][0]).toContain(':9000');
   });
+
+  it('passes reasoning_content / thinking deltas as the second onChunk arg (#244)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: sseBody([
+        'data: {"choices":[{"delta":{"reasoning_content":"step 1"}}]}',
+        'data: {"choices":[{"delta":{"content":"ans"}}]}',
+        'data: [DONE]',
+      ]),
+    });
+    const out: string[] = [];
+    const reasons: string[] = [];
+    await fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], (d, r) => { if (d) out.push(d); if (r) reasons.push(r); }, 8080);
+    expect(out.join('')).toBe('ans');
+    expect(reasons).toEqual(['step 1']);
+  });
+
+  it('passes delta.thinking as reasoning (#244)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: sseBody([
+        'data: {"choices":[{"delta":{"thinking":"cot"}}]}',
+        'data: [DONE]',
+      ]),
+    });
+    const reasons: string[] = [];
+    await fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], (_d, r) => { if (r) reasons.push(r); }, 8080);
+    expect(reasons).toEqual(['cot']);
+  });
 });
+

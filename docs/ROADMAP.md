@@ -290,3 +290,29 @@ cost/token display. Two genuine gaps found — one was both missing AND failing
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1133 passed (97 files)** (+9).
 - No Rust changes this pass.
+
+---
+
+## M39 — Copy message & reasoning parity for MLX/remote (comparative analysis)
+
+A comparative functionality analysis vs Codex/Claude/Cursor. Confirmed code
+blocks already have Copy; the 📋 button is the prompt library. Two gaps found
+and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#243** Copy-assistant-message button. The assistant action row had
+  thumbs / speak / regenerate but no copy (Codex/Claude/Cursor all have one).
+  Added a `⧉` Copy button that writes `msg.content` to the clipboard and shows
+  a `✓` copied state for 1.5s (`aria-label="Copy message"`). 1 UI test via the
+  send/receive flow.
+- [x] **#244** Reasoning parity for MLX + OpenAI-compatible connections.
+  Reasoning capture landed for local Ollama (#241), but `streamOpenAiChat`
+  (remote connections) and `fetchMlxChatStream` read only `delta.content`,
+  dropping `reasoning_content`/`thinking` (DeepSeek via remote, etc.). Extended
+  both `onChunk` signatures to `(delta, reasoning?)` (backward compatible) and
+  wired the App.tsx MLX + connection branches to accumulate `assistantReasoning`
+  and persist `msg.reasoning` so the existing `ReasoningBlock` renders it.
+  4 stream tests (2 connections + 2 MLX).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1138 passed (98 files)** (+5).
+- No Rust changes this pass.

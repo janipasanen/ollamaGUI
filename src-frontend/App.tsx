@@ -572,6 +572,7 @@ const App: React.FC = () => {
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
   const [isListening, setIsListening] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
 
   // Voice call mode (#132)
   const [voiceCallActive, setVoiceCallActive] = useState(false);
@@ -1566,12 +1567,14 @@ const App: React.FC = () => {
       } else if (mlxActive && !isAgenticMode) {
         // Direct MLX inference (full inference backend).
         let assistantContent = '';
+        let assistantReasoning = '';
         setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
         try {
-          await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta) => {
-            assistantContent += delta;
+          await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta, reasoning) => {
+            if (reasoning) assistantReasoning += reasoning;
+            if (delta) assistantContent += delta;
             setMessages(prev => {
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
               saveCurrentSession(updated);
               return updated;
             });
@@ -1723,10 +1726,11 @@ const App: React.FC = () => {
               connForModel,
               connectedModel.name,
               chatHistory,
-              (delta) => {
-                assistantContent += delta;
+              (delta, reasoning) => {
+                if (reasoning) assistantReasoning += reasoning;
+                if (delta) assistantContent += delta;
                 setMessages(prev => {
-                  const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+                  const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
                   saveCurrentSession(updated);
                   return updated;
                 });
@@ -2547,6 +2551,17 @@ const App: React.FC = () => {
                       aria-label="Thumbs down"
                       className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
                     >👎</button>
+                    {/* Copy message (#243) */}
+                    <button
+                      aria-label="Copy message"
+                      title="Copy message"
+                      onClick={() => {
+                        navigator.clipboard.writeText(msg.content);
+                        setCopiedMsgIdx(i);
+                        setTimeout(() => setCopiedMsgIdx(prev => (prev === i ? null : prev)), 1500);
+                      }}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >{copiedMsgIdx === i ? '✓' : '⧉'}</button>
                     {/* Speak button — per-message TTS (#101) */}
                     {isTtsAvailable() && (
                       <button

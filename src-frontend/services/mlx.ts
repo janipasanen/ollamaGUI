@@ -158,7 +158,7 @@ function mlxBaseUrl(settings: MlxSettings): string {
 export async function fetchMlxChatStream(
   model: string,
   messages: Message[],
-  onChunk: (delta: string) => void,
+  onChunk: (delta: string, reasoning?: string) => void,
   port: number = 8080,
   options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
 ): Promise<void> {
@@ -197,8 +197,11 @@ export async function fetchMlxChatStream(
       if (data === '[DONE]') return;
       try {
         const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta?.content;
+        const d = parsed.choices?.[0]?.delta;
+        const delta = d?.content;
+        const reasoning = d?.reasoning_content ?? d?.thinking;
         if (delta) onChunk(delta);
+        if (reasoning) onChunk('', reasoning);
       } catch {
         /* skip malformed SSE frame */
       }

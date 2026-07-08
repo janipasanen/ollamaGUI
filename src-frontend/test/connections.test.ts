@@ -215,4 +215,28 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, statusText: 'Unauthorized' } as any);
     await expect(streamOpenAiChat(conn, 'gpt-4', [], () => {})).rejects.toThrow('OpenAI stream error');
   });
+
+  it('passes reasoning_content deltas as the second onChunk arg (#244)', async () => {
+    const deltas: string[] = [];
+    const reasons: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking step"}}]}',
+      'data: {"choices":[{"delta":{"content":"answer"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'gpt-4', [], (d, r) => { if (d) deltas.push(d); if (r) reasons.push(r); });
+    expect(deltas).toEqual(['answer']);
+    expect(reasons).toEqual(['thinking step']);
+  });
+
+  it('passes delta.thinking as reasoning (#244)', async () => {
+    const reasons: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"thinking":"cot"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'gpt-4', [], (_d, r) => { if (r) reasons.push(r); });
+    expect(reasons).toEqual(['cot']);
+  });
 });
+
