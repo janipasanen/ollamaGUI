@@ -9,6 +9,7 @@
  * Conversion requires Pandoc to be installed on the host machine.
  */
 import { pdfInfo, pdfMerge, pdfSplit, pdfExtract, pdfCreate, type PdfInfo } from './documentsPdf';
+import { editDocument, templateFillDocument, editOdfDocument } from './documents';
 
 
 export interface DocumentContent {
@@ -193,5 +194,54 @@ export function registerDocumentTools(): void {
       required: ['path', 'text'],
     },
     execute: async (p) => { await pdfCreate(p.path as string, p.text as string); return { created: true, path: p.path }; },
+  });
+
+  // Office/ODF surgical edit tools (#222) — wire the document_edit /
+  // document_odf_edit Rust commands (previously dead backend) into the agent.
+  toolRegistry.registerTool({
+    name: 'document_edit',
+    description: 'Surgically find/replace text in an OOXML document (.docx/.xlsx/.pptx) in place.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the .docx/.xlsx/.pptx file' },
+        find: { type: 'string', description: 'Exact text to find (must be a unique, non-fragmented run)' },
+        replace: { type: 'string', description: 'Replacement text' },
+      },
+      required: ['path', 'find', 'replace'],
+    },
+    execute: async (p) => editDocument(p.path as string, p.find as string, p.replace as string),
+  });
+
+  toolRegistry.registerTool({
+    name: 'document_template_fill',
+    description: 'Template-fill an OOXML document (.docx/.xlsx/.pptx) in place, substituting every {{key}} placeholder with its value.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the template file' },
+        data: {
+          type: 'object',
+          description: 'Map of placeholder key (without braces) to replacement value',
+        },
+      },
+      required: ['path', 'data'],
+    },
+    execute: async (p) => templateFillDocument(p.path as string, (p.data as Record<string, string>) ?? {}),
+  });
+
+  toolRegistry.registerTool({
+    name: 'document_odf_edit',
+    description: 'Surgically find/replace text in an OpenDocument file (.odt/.ods/.odp) in place.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the .odt/.ods/.odp file' },
+        find: { type: 'string', description: 'Exact text to find (must be a unique, non-fragmented run)' },
+        replace: { type: 'string', description: 'Replacement text' },
+      },
+      required: ['path', 'find', 'replace'],
+    },
+    execute: async (p) => editOdfDocument(p.path as string, p.find as string, p.replace as string),
   });
 }

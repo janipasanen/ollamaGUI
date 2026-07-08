@@ -41,6 +41,13 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#222** Wire `document_edit` (OOXML surgical + template fill) and
+  `document_odf_edit` (ODF surgical) as agent tools. These Rust commands were
+  implemented + tested but had no frontend caller (dead backend, found in the
+  #221 contract audit). Added `editDocument` / `templateFillDocument` /
+  `editOdfDocument` wrappers in documents.ts and registered
+  `document_edit` / `document_template_fill` / `document_odf_edit` tools. 4 new
+  documentTools tests; tsc clean; vitest 1080.
 - [x] **#221** Fix `browser_assert` AX-tree contract bug (same class as #219).
   The Rust `browser_cdp_get_ax_tree` returns a string outline, but `browser_assert`
   read `tree.refs`/`tree.text` (always undefined for a string) → `text_present` and

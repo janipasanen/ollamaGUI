@@ -10,15 +10,18 @@ import {
   _mocks,
 } from '../services/documentTools';
 import * as pdfClient from '../services/documentsPdf';
+import * as docsClient from '../services/documents';
 
 beforeEach(() => {
   _mocks.invoke = null;
   pdfClient._mocks.invoke = null;
+  docsClient._mocks.invoke = null;
 });
 
 afterEach(() => {
   _mocks.invoke = null;
   pdfClient._mocks.invoke = null;
+  docsClient._mocks.invoke = null;
 });
 
 // ── readDocument ───────────────────────────────────────────────────────────────
@@ -213,5 +216,60 @@ describe('registerDocumentTools (#144)', () => {
     expect(capturedCmd).toBe('document_pdf_create');
     expect(capturedArgs).toMatchObject({ path: 'out.pdf', text: 'hi' });
     expect(result).toEqual({ created: true, path: 'out.pdf' });
+  });
+
+  it('registers the three Office/ODF edit tools (#222)', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    registerDocumentTools();
+    for (const name of ['document_edit', 'document_template_fill', 'document_odf_edit']) {
+      expect(toolRegistry.getTool(name)).toBeDefined();
+    }
+  });
+
+  it('document_edit tool delegates with a surgical {find,replace} op (#222)', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    let capturedCmd = '';
+    let capturedArgs: Record<string, unknown> = {};
+    docsClient._mocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+      capturedCmd = cmd;
+      capturedArgs = args;
+      return { preview_text: 'Hello World', changed: true };
+    };
+    registerDocumentTools();
+    const tool = toolRegistry.getTool('document_edit');
+    const result = await tool!.execute({ path: 'a.docx', find: 'Hello', replace: 'World' });
+    expect(capturedCmd).toBe('document_edit');
+    expect(capturedArgs).toMatchObject({ path: 'a.docx', op: { find: 'Hello', replace: 'World' } });
+    expect(result).toEqual({ preview_text: 'Hello World', changed: true });
+  });
+
+  it('document_template_fill tool delegates with a template op (#222)', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    let capturedArgs: Record<string, unknown> = {};
+    docsClient._mocks.invoke = async (_cmd: string, args: Record<string, unknown>) => {
+      capturedArgs = args;
+      return { preview_text: '', changed: true };
+    };
+    registerDocumentTools();
+    const tool = toolRegistry.getTool('document_template_fill');
+    await tool!.execute({ path: 'tmpl.docx', data: { name: 'Ada' } });
+    expect(capturedArgs).toMatchObject({ path: 'tmpl.docx', op: { template: true, data: { name: 'Ada' } } });
+  });
+
+  it('document_odf_edit tool delegates to document_odf_edit (#222)', async () => {
+    const { toolRegistry } = await import('../services/tools');
+    let capturedCmd = '';
+    let capturedArgs: Record<string, unknown> = {};
+    docsClient._mocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+      capturedCmd = cmd;
+      capturedArgs = args;
+      return { preview_text: 'World', changed: true };
+    };
+    registerDocumentTools();
+    const tool = toolRegistry.getTool('document_odf_edit');
+    const result = await tool!.execute({ path: 'a.odt', find: 'Hello', replace: 'World' });
+    expect(capturedCmd).toBe('document_odf_edit');
+    expect(capturedArgs).toMatchObject({ path: 'a.odt', find: 'Hello', replace: 'World' });
+    expect(result).toEqual({ preview_text: 'World', changed: true });
   });
 });

@@ -156,6 +156,37 @@ export async function readOds(path: string): Promise<string> {
   return tauriInvoke<string>('document_ods_read', { path });
 }
 
+/** Result of an in-place Office/ODF surgical edit (#222). */
+export interface EditResult {
+  /** Short preview of the changed region. */
+  preview_text: string;
+  /** Whether the file content actually changed. */
+  changed: boolean;
+}
+
+/**
+ * Surgical find/replace edit on an OOXML document (.docx/.xlsx/.pptx) in place.
+ * The Rust `document_edit` command routes the op to the format-specific editor.
+ */
+export async function editDocument(path: string, find: string, replace: string): Promise<EditResult> {
+  return tauriInvoke<EditResult>('document_edit', { path, op: { find, replace } });
+}
+
+/**
+ * Template-fill an OOXML document (.docx/.xlsx/.pptx) in place, substituting
+ * every `{{key}}` placeholder in `data` with its XML-escaped value.
+ */
+export async function templateFillDocument(path: string, data: Record<string, string>): Promise<EditResult> {
+  return tauriInvoke<EditResult>('document_edit', { path, op: { template: true, data } });
+}
+
+/**
+ * Surgical find/replace edit on an OpenDocument file (.odt/.ods/.odp) in place.
+ */
+export async function editOdfDocument(path: string, find: string, replace: string): Promise<EditResult> {
+  return tauriInvoke<EditResult>('document_odf_edit', { path, find, replace });
+}
+
 /** Lower-cased extension of a path without the dot (e.g. 'report.PDF' → 'pdf'). */
 function extOf(path: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(path);
