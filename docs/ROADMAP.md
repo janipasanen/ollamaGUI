@@ -517,3 +517,33 @@ on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1241 passed (114 files)** (+10).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M46 — Copy-as-Markdown, conversation stats & /model slash command (fourteenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / TUIs.
+Three UX/parity gaps found and implemented. No merge to `master` — work stays
+on `macOS-10.15`.
+
+- [x] **#261** Copy the current conversation as Markdown to the clipboard.
+  Claude Code / Cursor let you copy a whole chat to the clipboard for pasting
+  into notes/docs; the app only offered a per-chat `.md` *file* download
+  (#256). Added a "Copy conversation as Markdown" toolbar button (📋, → ✓ on
+  success) next to Export that writes `chatToMarkdown` output to
+  `navigator.clipboard`, disabled when the chat is empty.
+- [x] **#262** Conversation statistics. Cursor shows context stats and Claude
+  Code shows token counts; the app had a context-budget bar but no per-chat
+  totals. Added a `conversationStats` service (message / user / assistant /
+  word / char / est.-token counts) and an `ConversationStatsButton` toolbar
+  control (ℹ) that opens a small stats popover; hidden for empty chats.
+- [x] **#263** `/model` slash command to switch the active model. Claude Code's
+  TUI `/model` command switches the model inline; the app only switched via the
+  dropdown. Registered `/model` as a builtin slash command: `/model <name>`
+  switches the active model (validated against the loaded model list), `/model`
+  with no argument reports the current model, and an unknown name shows a
+  warning. A brief ephemeral status banner confirms each action.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1257 passed (118 files)** (+16).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

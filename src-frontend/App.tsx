@@ -137,6 +137,8 @@ import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime } from './services/formatTime';
 import { chatToMarkdown } from './services/chatToMarkdown';
+import { computeConversationStats } from './services/conversationStats';
+import { ConversationStatsButton } from './components/ConversationStatsButton';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -584,6 +586,8 @@ const App: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
+  const [copiedChat, setCopiedChat] = useState(false);
+  const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
   // Voice call mode (#132)
   const [voiceCallActive, setVoiceCallActive] = useState(false);
@@ -1479,6 +1483,26 @@ const App: React.FC = () => {
     URL.revokeObjectURL(href);
   };
 
+  // Copy the current conversation as Markdown to the clipboard (#261)
+  const handleCopyMarkdown = async () => {
+    if (messages.length === 0) return;
+    const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+    const md = chatToMarkdown(messages, { title });
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopiedChat(true);
+      setTimeout(() => setCopiedChat(false), 1500);
+    } catch {
+      // Clipboard may be unavailable (permissions/old browsers) — no-op.
+    }
+  };
+
+  // Show a brief ephemeral status banner (used by /model, #263).
+  const showStatusBanner = (text: string) => {
+    setStatusBanner(text);
+    window.setTimeout(() => setStatusBanner(null), 2500);
+  };
+
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1571,6 +1595,18 @@ const App: React.FC = () => {
         setCommandSuggestions([]);
         if (result.action === 'clear') { startNewChat(); return; }
         if (result.action === 'help') { setShowHelp(true); return; }
+        if (result.action === 'model') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) {
+            showStatusBanner(`Current model: ${model}`);
+          } else if (models.some(m => m.name === arg)) {
+            setModel(arg);
+            showStatusBanner(`Switched model to ${arg}`);
+          } else {
+            showStatusBanner(`Model "${arg}" not found`);
+          }
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2582,6 +2618,19 @@ const App: React.FC = () => {
                  >
                    ▶
                  </button>
+                 <ConversationStatsButton
+                   stats={computeConversationStats(messages)}
+                   dark={dark}
+                 />
+                 <button
+                   onClick={handleCopyMarkdown}
+                   title="Copy conversation as Markdown"
+                   aria-label="Copy conversation as Markdown"
+                   disabled={messages.length === 0}
+                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${copiedChat ? (dark ? 'text-green-400' : 'text-green-600') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                 >
+                   {copiedChat ? '✓' : '📋'}
+                 </button>
                  <button
                    onClick={handleExportMarkdown}
                    title="Export conversation as Markdown"
@@ -2614,6 +2663,12 @@ const App: React.FC = () => {
 
         {/* Live plan checklist (#239) */}
         <PlanPanel plan={plan} dark={dark} onClear={clearPlan} />
+
+        {statusBanner && (
+          <div className={`px-4 py-1.5 text-xs text-center border-b ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'}`} role="status" aria-live="polite">
+            {statusBanner}
+          </div>
+        )}
 
         {/* Messages - Responsive: full width on mobile, padded on desktop */}
         <div

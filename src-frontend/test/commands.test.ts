@@ -134,3 +134,35 @@ describe('runCommand (#96)', () => {
     if (r.kind === 'prompt') expect(r.text).toBe('Hello, World!');
   });
 });
+
+// ── /model builtin (#263) ─────────────────────────────────────────────────────
+
+describe('/model command (#263)', () => {
+  it('is registered as a builtin command', () => {
+    const cmd = findCommand('model');
+    expect(cmd).toBeDefined();
+    expect(cmd?.builtin).toBe(true);
+  });
+
+  it('with an argument returns builtin action: model + arg', () => {
+    const r = runCommand('/model llama3');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') {
+      expect(r.action).toBe('model');
+      expect(r.arg).toBe('llama3');
+    }
+  });
+
+  it('with no argument returns builtin action: model + empty arg', () => {
+    const r = runCommand('/model');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') {
+      expect(r.action).toBe('model');
+      expect(r.arg).toBe('');
+    }
+  });
+
+  it('filterCommands surfaces /model', () => {
+    expect(filterCommands('model').some(c => c.name === 'model')).toBe(true);
+  });
+});
