@@ -1170,6 +1170,9 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'End') {
+        e.preventDefault();
+        scrollToBottom(); // Ctrl/Cmd+End jumps to the latest message (#278)
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         toggleTheme(); // Ctrl/Cmd+Shift+D toggles dark/light (#275)
@@ -1196,7 +1199,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom]);
 
   // When mode is 'system', track OS light/dark changes live.
   useEffect(() => {
@@ -1657,6 +1660,18 @@ const App: React.FC = () => {
             handleExportMarkdown();
             showStatusBanner('Exported conversation as Markdown');
           }
+          return;
+        }
+        if (result.action === 'new') {
+          startNewChat();
+          return;
+        }
+        if (result.action === 'search') {
+          const arg = (result.arg ?? '').trim();
+          setIsSidebarOpen(true);
+          if (arg) setSearchQuery(arg);
+          // Focus the sidebar search once it is rendered.
+          setTimeout(() => document.getElementById('sidebar-search')?.focus(), 50);
           return;
         }
         return;
@@ -2314,7 +2329,9 @@ const App: React.FC = () => {
 
         {/* M5 Issue 18: Search */}
         <input
+          id="sidebar-search"
           type="text"
+          aria-label="Search conversations"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search conversations..."
@@ -5845,6 +5862,7 @@ const App: React.FC = () => {
                   ['Focus Composer', 'Ctrl+L'],
                   ['Copy Last Reply', 'Ctrl+Shift+C'],
                   ['Toggle Theme', 'Ctrl+Shift+D'],
+                  ['Scroll to Latest', 'Ctrl+End'],
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],

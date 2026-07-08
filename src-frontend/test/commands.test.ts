@@ -210,3 +210,32 @@ describe('/export command (#271)', () => {
     if (r.kind === 'builtin') expect(r.action).toBe('export');
   });
 });
+
+// ── /new & /search builtins (#277/#276) ───────────────────────────────────────
+
+describe('/new command (#277)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('new')?.builtin).toBe(true);
+  });
+  it('returns builtin action: new', () => {
+    const r = runCommand('/new');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('new');
+  });
+});
+
+describe('/search command (#276)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('search')?.builtin).toBe(true);
+  });
+  it('with an argument returns action: search + arg', () => {
+    const r = runCommand('/search cats');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('search'); expect(r.arg).toBe('cats'); }
+  });
+  it('with no argument returns action: search + empty arg', () => {
+    const r = runCommand('/search');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('search'); expect(r.arg).toBe(''); }
+  });
+});

@@ -28,6 +28,8 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'model', description: 'Switch the active model (e.g. /model llama3)', builtin: true },
   { name: 'rename', description: 'Rename the current conversation (e.g. /rename My chat)', builtin: true },
   { name: 'export', description: 'Download the current conversation as a Markdown file', builtin: true },
+  { name: 'new', description: 'Start a new chat', builtin: true },
+  { name: 'search', description: 'Search conversations (e.g. /search cats)', builtin: true },
   { name: 'review', description: 'Ask the model to review text or code', template: 'Please review the following and provide feedback:\n\n$ARGUMENTS' },
   { name: 'explain', description: 'Ask the model to explain something', template: 'Please explain the following in plain terms:\n\n$ARGUMENTS' },
   { name: 'summarize', description: 'Summarize the provided text', template: 'Please provide a concise summary of the following:\n\n$ARGUMENTS' },
@@ -91,7 +93,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -112,6 +114,8 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'model') return { kind: 'builtin', action: 'model', arg: args };
     if (cmd.name === 'rename') return { kind: 'builtin', action: 'rename', arg: args };
     if (cmd.name === 'export') return { kind: 'builtin', action: 'export' };
+    if (cmd.name === 'new') return { kind: 'builtin', action: 'new' };
+    if (cmd.name === 'search') return { kind: 'builtin', action: 'search', arg: args };
   }
   if (cmd.template) {
     return { kind: 'prompt', text: expandTemplate(cmd.template, args) };

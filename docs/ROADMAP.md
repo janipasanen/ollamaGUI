@@ -661,3 +661,29 @@ TUIs. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1291 passed (130 files)** (+11).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M51 — /search & /new slash commands and scroll-to-bottom shortcut (nineteenth analysis pass)
+
+Comparative functionality analysis vs Codex CLI / Claude Code / Cursor / ChatGPT /
+TUIs. Three TUI/UX-parity gaps found and implemented. No merge to `master` —
+work stays on `macOS-10.15`.
+
+- [x] **#276** `/search [query]` slash command. TUI chat tools search from the
+  command line; the app only searched via the sidebar input. Added a `/search`
+  builtin that opens the sidebar, optionally pre-fills the conversation search
+  query, and focuses the search input (now `id="sidebar-search"`).
+- [x] **#277** `/new` slash command. Claude Code's `/new` starts a fresh
+  conversation; the app only started a new chat via the + button or `/clear`.
+  Added a `/new` builtin (a clearer-named new-chat action) surfaced in the
+  slash autocomplete.
+- [x] **#278** Scroll to the latest message via Ctrl/Cmd+End. ChatGPT / Cursor
+  offer a jump-to-latest shortcut; the app only scrolled to the bottom via the
+  on-canvas button. Added a global Ctrl/Cmd+End shortcut (when not typing)
+  that calls `scrollToBottom` (smooth scroll + clears the unread badge) and
+  documented it in the keyboard-shortcuts overlay.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1300 passed (133 files)** (+9).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
