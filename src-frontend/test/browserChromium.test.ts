@@ -68,7 +68,7 @@ describe('getChromiumStatus (#68)', () => {
 
 // ── downloadChromium ──────────────────────────────────────────────────────────
 
-describe('downloadChromium (#68, deferred)', () => {
+describe('downloadChromium (#68, #213)', () => {
   it('calls the browser_chromium_download command', async () => {
     let capturedCmd = '';
     _mocks.invoke = async (cmd) => {
@@ -85,11 +85,33 @@ describe('downloadChromium (#68, deferred)', () => {
     expect(path).toBe('/app-data/chromium/chrome');
   });
 
-  it('propagates the deferred error from the command', async () => {
-    _mocks.invoke = async () => {
-      throw new Error('Chromium download not yet implemented — locate a system install');
+  it('reports download progress via onProgress (#213)', async () => {
+    const seen: number[] = [];
+    _mocks.listen = async (_event, handler) => {
+      handler(0.25);
+      handler(0.75);
+      return () => {};
     };
-    await expect(downloadChromium()).rejects.toThrow(/not yet implemented/);
+    _mocks.invoke = async () => '/app-data/chromium/chrome';
+    const path = await downloadChromium((r) => seen.push(r));
+    expect(path).toBe('/app-data/chromium/chrome');
+    expect(seen).toEqual([0.25, 0.75]);
+  });
+
+  it('unsubscribes the progress listener after the download resolves', async () => {
+    let unsubscribed = false;
+    _mocks.listen = async () => () => { unsubscribed = true; };
+    _mocks.invoke = async () => '/app-data/chromium/chrome';
+    await downloadChromium(() => {});
+    expect(unsubscribed).toBe(true);
+  });
+
+  it('propagates errors and still unsubscribes the listener', async () => {
+    let unsubscribed = false;
+    _mocks.listen = async () => () => { unsubscribed = true; };
+    _mocks.invoke = async () => { throw new Error('network down'); };
+    await expect(downloadChromium(() => {})).rejects.toThrow(/network down/);
+    expect(unsubscribed).toBe(true);
   });
 });
 

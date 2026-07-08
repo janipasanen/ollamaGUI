@@ -2,9 +2,9 @@ name: Build & Test
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master, macOS-10.15 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master, macOS-10.15 ]
 
 jobs:
   build:
@@ -70,3 +70,28 @@ jobs:
       - name: cargo dependency audit
         working-directory: src-tauri
         run: cargo audit
+
+  # Playwright browser E2E (#16b, #214). Runs on Ubuntu where Chromium is
+  # installable; covers the web UI surface (Tauri-only features excluded).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm install
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright E2E
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7

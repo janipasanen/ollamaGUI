@@ -24,3 +24,8 @@ yarn-error.log*
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Playwright (#214)
+/test-results/
+/playwright-report/
+/playwright/.cache/

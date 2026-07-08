@@ -41,7 +41,7 @@ Based on OpenAI and Claude GUIs:
 - [x] Issue 15: Unit tests (vitest) for services and UI components.
 - [x] Issue 16: Final UI polish, duplicate-code cleanup, type fixes.
 - [x] Issue 17: Final UI polish and error state styling.
-- [ ] Issue 16b: Comprehensive end-to-end testing (Playwright). — not yet done
+- [ ] Issue 16b: Comprehensive end-to-end testing (Playwright). — OPEN (vitest e2e.test.tsx covers jsdom flows; no real-browser suite yet)
 
 ### Milestone 5: Power User Features ✅
 - [x] Issue 17: Configurable Ollama endpoint (replace hardcoded localhost:11434).
@@ -62,11 +62,11 @@ Turn the chat into an agent: Ollama tool-calling loop, CLI/shell tool with appro
   - Frontend approval modal (allow once / always / deny).
   - Configurable allowlist/denylist.
   - Tauri capability/permission wired up.
-- [ ] Issue 21: MCP client — stdio transport / process bridge (Rust, depends on agentic loop).
+- [x] Issue 21: MCP client — stdio transport / process bridge (Rust, depends on agentic loop).  ✅ DONE (commits 148b105 / 2e65100; mcp-transport.test.ts passes)
   - Rust bridge: spawn server process, write JSON-RPC to stdin, stream stdout via events.
   - TS MCP client: `initialize`, `tools/list`, `tools/call` over JSON-RPC 2.0.
   - Handles notifications, request IDs, errors, clean shutdown.
-- [ ] Issue 22: MCP client — HTTP / streamable transport (depends on stdio interface).
+- [x] Issue 22: MCP client — HTTP / streamable transport (depends on stdio interface).  ✅ DONE (mcp-http.ts, mcpBridge.ts, mcp-transport.test.ts)
   - Rust `mcp_http_request` proxy (avoids CORS, attaches auth headers).
   - TS transport implementing the same interface as stdio client.
   - Parses JSON and SSE-framed responses; handles `Mcp-Session-Id`.

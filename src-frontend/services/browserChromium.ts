@@ -40,12 +40,30 @@ export interface ChromiumStatus {
 
 export const _mocks = {
   invoke: null as ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null,
+  listen: null as
+    | ((event: string, handler: (ratio: number) => void) => Promise<() => void>)
+    | null,
 };
 
 async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   if (_mocks.invoke) return _mocks.invoke(cmd, args) as Promise<T>;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<T>(cmd, args);
+}
+
+/** Subscribe to a Tauri event; no-op unsubscribe when not running in Tauri. */
+async function tauriListen(
+  event: string,
+  handler: (ratio: number) => void,
+): Promise<() => void> {
+  if (_mocks.listen) return _mocks.listen(event, handler);
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<number>(event, (e) => handler(e.payload));
+    return unlisten;
+  } catch {
+    return () => {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -62,15 +80,26 @@ export async function getChromiumStatus(): Promise<ChromiumStatus> {
 }
 
 /**
- * Download a Chromium build for the host platform after the user consents.
- * Resolves to the absolute path of the installed binary.
+ * Download a Chromium build for the host platform after the user consents,
+ * streaming download progress to `onProgress` (a 0..1 ratio) and resolving to
+ * the absolute path of the installed binary.
  *
- * NOTE: the Rust body is currently DEFERRED and rejects with
- * "Chromium download not yet implemented — locate a system install"; callers
- * should surface that message and steer the user toward a system install.
+ * The Rust command (`browser_chromium_download`) emits
+ * `chromium://progress` events as bytes stream in; this wrapper subscribes
+ * before invoking and unsubscribes once the download resolves or rejects.
  */
-export async function downloadChromium(): Promise<string> {
-  return tauriInvoke<string>('browser_chromium_download');
+export async function downloadChromium(
+  onProgress?: (ratio: number) => void,
+): Promise<string> {
+  let unlisten: () => void = () => {};
+  if (onProgress) {
+    unlisten = await tauriListen('chromium://progress', onProgress);
+  }
+  try {
+    return await tauriInvoke<string>('browser_chromium_download');
+  } finally {
+    unlisten();
+  }
 }
 
 /**

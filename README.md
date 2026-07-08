@@ -87,14 +87,20 @@ npm run test:watch          # watch mode
 
 # Rust backend tests (browser/document/AX logic, etc.)
 cargo test --manifest-path src-tauri/Cargo.toml
+
+# browser E2E (Playwright, #16b) — drives the Vite dev server with a real
+# Chromium; install the browser once, then run:
+npx playwright install chromium
+npm run test:e2e
 ```
 
 A few Rust integration tests are marked `#[ignore]` because they need a real Chromium
 install + a display; run them explicitly on a capable machine, e.g.
 `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored`.
 
-CI (`.github/workflows/build.yml`) runs type-check, the test suite, the frontend +
-Tauri builds, and a dependency security audit across Ubuntu / Windows / macOS.
+CI (`.github/workflows/build.yml`) runs type-check, the vitest suite, the frontend +
+Tauri builds, a dependency security audit across Ubuntu / Windows / macOS, and a
+Playwright browser E2E job on Ubuntu.
 
 ## Project layout
 

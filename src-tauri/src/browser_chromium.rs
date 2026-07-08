@@ -13,13 +13,10 @@
 //!   - [`detect_version`]    — run `<path> --version` and parse the build number.
 //!   - [`browser_chromium_status`] — the `system | downloaded | none` decision.
 //!
-//! DEFERRED (needs crate `reqwest` streaming + a runtime download dir, and a
-//! Chromium snapshots feed):
-//!   - [`browser_chromium_download`] actually fetches + unzips a Chromium build
-//!     for the host platform, emitting `chromium://progress` events as it goes.
-//!     The signature and registration exist so the command surface is stable;
-//!     the body returns a clear "deferred" error until that work is approved.
-//!     See manifest.deferred for the full plan.
+//!   - [`browser_chromium_download`] resolves the Chrome-for-Testing snapshot
+//!     URL for `(OS, ARCH)`, streams it to `<app-data>/chromium/` emitting
+//!     `chromium://progress` events (0..1 ratio), unzips with the `zip` crate,
+//!     marks the binary executable on Unix, and returns its absolute path.
 
 use serde::Serialize;
 
@@ -176,8 +173,8 @@ pub fn detect_version(path: &str) -> Option<String> {
 ///
 /// This is split out as a pure helper (taking the resolved app-data dir and an
 /// injectable existence check) so the `downloaded` branch of the status logic is
-/// testable without an `AppHandle`. The on-disk layout mirrors what the deferred
-/// downloader will produce: `<app-data>/chromium/<platform-binary>`.
+/// testable without an `AppHandle`. The on-disk layout mirrors what the
+/// downloader produces: `<app-data>/chromium/<platform-binary>`.
 pub fn downloaded_path(app_data_dir: &std::path::Path, exists: impl Fn(&str) -> bool) -> Option<String> {
     let binary = downloaded_binary_name();
     let candidate = app_data_dir.join("chromium").join(binary);
@@ -274,15 +271,12 @@ pub async fn browser_chromium_status(app: tauri::AppHandle) -> Result<ChromiumSt
 
 /// Download a Chromium build for the host platform (consented by the user).
 ///
-/// DEFERRED (needs `reqwest` streaming download + unzip into app-data + a
-/// Chromium snapshots feed):
-///   - Resolve the correct snapshot URL for `(OS, ARCH)`.
-///   - Stream the archive to `<app-data>/chromium/`, emitting
-///     `chromium://progress` events (`{ received, total }`) via
-///     `app.emit("chromium://progress", ...)` so the UI can show a bar —
-///     mirroring the `terminal_run` event pattern already in `lib.rs`.
-///   - Unzip with the in-tree `zip` crate, mark the binary executable on Unix,
-///     and return its absolute path.
+/// Resolves the Chrome-for-Testing `last-known-good-versions` feed for
+/// `(OS, ARCH)`, streams the archive to `<app-data>/chromium/` emitting
+/// `chromium://progress` events (0..1 ratio) via `app.emit`, unzips with the
+/// in-tree `zip` crate, marks the binary executable on Unix, and returns its
+/// absolute path. This is the explicit fallback when no system Chromium is
+/// detected — never auto-invoked.
 ///
 /// Map (os, arch) to the Chrome-for-Testing platform key, or `None` if the
 /// platform has no published build.
