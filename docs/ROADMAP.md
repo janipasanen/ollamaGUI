@@ -456,3 +456,35 @@ items rolled in and M32 closed. No merge to `master` — work stays on `macOS-10
 - `cargo test --lib` = 87 passed / 1 ignored (greet stub removed).
 - M32 closed (its remaining items #224/#225/#226/#227/#228 completed across
   M41–M43).
+
+---
+
+## M44 — New-messages badge, per-chat Markdown export & Escape-to-stop (twelfth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude GUI / Cursor / TUIs.
+Three UX/parity gaps found and implemented. No merge to `master` — work stays
+on `macOS-10.15`.
+
+- [x] **#255** New-messages unread badge on the scroll-to-bottom button. The
+  app auto-scroll-paused when the user scrolled up but gave no indication that
+  new messages had arrived (Slack/Discord/Cursor show an unread count). Added
+  `unreadCount` tracking (messages added while not near the bottom), a
+  `↓ N new` badge on the scroll-to-bottom button, and reset-on-scroll-to-bottom
+  (button click or scrolling back down). Accessible aria-label includes the
+  count.
+- [x] **#256** Per-conversation Markdown export. The app only exported all
+  sessions as a JSON blob (Cursor/Claude export/copy a chat as Markdown). Added
+  a `chatToMarkdown` helper (role headings + model + timestamp + content +
+  reasoning blockquote + tool-call/image summaries) and an "Export
+  conversation as Markdown" toolbar button (⬇️) that downloads a `.md` file
+  for the current chat; disabled when empty.
+- [x] **#257** Escape cancels an in-progress generation. The app only cancelled
+  via the red Cancel button (Codex CLI / Claude Code use Escape/Ctrl+C to
+  interrupt). Added Escape-to-cancel: when a generation is in progress and no
+  search/palette/settings/help overlay is open, Escape aborts the stream. Also
+  moved settings/help Escape handling before the "is typing" guard so Escape
+  closes those overlays regardless of input focus.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1231 passed (112 files)** (+13).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

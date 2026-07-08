@@ -49,8 +49,10 @@ describe('App Component', () => {
 
   it('shows export and import buttons in sidebar', () => {
     render(<App />);
-    expect(screen.getByRole('button', { name: /Export/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Import/i })).toBeInTheDocument();
+    // Exact match: the per-chat "Export conversation as Markdown" toolbar
+    // button (#256) also matches /Export/i, so scope to the sidebar label.
+    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
   });
 
   it('shows attach button in input area', () => {

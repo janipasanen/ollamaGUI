@@ -136,6 +136,7 @@ import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime } from './services/formatTime';
+import { chatToMarkdown } from './services/chatToMarkdown';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -621,6 +622,9 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // New-messages unread badge while the user is scrolled up (#255)
+  const [unreadCount, setUnreadCount] = useState(0);
+  const prevMsgCountRef = useRef(0);
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
 
   // Derived: filtered sessions for search (Issue 18)
@@ -917,12 +921,19 @@ const App: React.FC = () => {
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     setShowScrollButton(false);
+    setUnreadCount(0);
   }, []);
 
   useEffect(() => {
+    const added = Math.max(0, messages.length - prevMsgCountRef.current);
     if (isNearBottom()) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setUnreadCount(0);
+    } else if (added > 0) {
+      // New messages arrived while the user is scrolled up (#255)
+      setUnreadCount(c => c + added);
     }
+    prevMsgCountRef.current = messages.length;
     // Focus input on initial load for better accessibility
     if (messages.length === 0) {
       const input = document.getElementById('chat-input');
@@ -936,7 +947,11 @@ const App: React.FC = () => {
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    const onScroll = () => setShowScrollButton(!isNearBottom());
+    const onScroll = () => {
+      const near = isNearBottom();
+      setShowScrollButton(!near);
+      if (near) setUnreadCount(0);
+    };
     container.addEventListener('scroll', onScroll);
     return () => container.removeEventListener('scroll', onScroll);
   }, [isNearBottom]);
@@ -1056,6 +1071,20 @@ const App: React.FC = () => {
         setPaletteOpen(false);
         return;
       }
+      // Escape cancels an in-progress generation when no overlay is open (#257),
+      // mirroring Codex CLI / Claude Code interrupt behaviour.
+      if (e.key === 'Escape' && isLoading && !chatSearchOpen && !paletteOpen && !isSettingsOpen && !showHelp) {
+        e.preventDefault();
+        abortControllerRef.current?.abort();
+        return;
+      }
+      // Escape closes the settings/help overlays even while focused in an input (#257)
+      if (e.key === 'Escape' && (isSettingsOpen || showHelp)) {
+        e.preventDefault();
+        if (isSettingsOpen) setIsSettingsOpen(false);
+        else setShowHelp(false);
+        return;
+      }
       // Command palette works even while focused in the chat input (#251)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
@@ -1094,10 +1123,6 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
-      } else if (e.key === 'Escape') {
-        if (chatSearchOpen) setChatSearchOpen(false);
-        else if (isSettingsOpen) setIsSettingsOpen(false);
-        else if (showHelp) setShowHelp(false);
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1105,7 +1130,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading]);
 
   // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
   const updateTheme = (patch: Partial<ThemeSettings>) => {
@@ -1404,6 +1429,21 @@ const App: React.FC = () => {
     const a = document.createElement('a');
     a.href = href;
     a.download = 'ollama_gui_sessions.json';
+    a.click();
+    URL.revokeObjectURL(href);
+  };
+
+  // Export the current conversation as a Markdown file (#256)
+  const handleExportMarkdown = () => {
+    if (messages.length === 0) return;
+    const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+    const md = chatToMarkdown(messages, { title });
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    const safe = title.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'chat';
+    a.download = `${safe}.md`;
     a.click();
     URL.revokeObjectURL(href);
   };
@@ -2512,6 +2552,15 @@ const App: React.FC = () => {
                    ▶
                  </button>
                  <button
+                   onClick={handleExportMarkdown}
+                   title="Export conversation as Markdown"
+                   aria-label="Export conversation as Markdown"
+                   disabled={messages.length === 0}
+                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+                 >
+                   ⬇️
+                 </button>
+                 <button
                    onClick={() => setShowHelp(prev => !prev)}
                    title="Keyboard shortcuts (?)"
                    aria-label="Show keyboard shortcuts"
@@ -2848,12 +2897,17 @@ const App: React.FC = () => {
           {showScrollButton && (
             <button
               onClick={scrollToBottom}
-              aria-label="Scroll to bottom"
-              className={`absolute bottom-4 right-4 px-3 py-1.5 rounded-full text-xs shadow-md transition-colors ${
+              aria-label={unreadCount > 0 ? `Scroll to bottom (${unreadCount} new messages)` : 'Scroll to bottom'}
+              className={`absolute bottom-4 right-4 px-3 py-1.5 rounded-full text-xs shadow-md transition-colors flex items-center gap-1.5 ${
                 dark ? 'bg-zinc-700 text-zinc-100 hover:bg-zinc-600' : 'bg-white text-zinc-700 hover:bg-zinc-100'
               }`}
             >
-              ↓ Scroll to bottom
+              <span>↓ Scroll to bottom</span>
+              {unreadCount > 0 && (
+                <span className="bg-blue-600 text-white rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none" aria-hidden="true">
+                  {unreadCount} new
+                </span>
+              )}
             </button>
           )}
         </div>
