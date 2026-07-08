@@ -342,3 +342,39 @@ implemented. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1141 passed (98 files)** (+3).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M41 — In-chat search, shortcuts overlay & many-models reasoning (ninth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude GUI / Cursor / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#247** In-conversation message search (Cmd/Ctrl+F). The app only
+  searched across sessions in the sidebar (`searchSessions`); there was no
+  find-within-current-conversation (Cursor/Claude Code/Codex TUI all have it).
+  Added a `ChatSearch` component (`components/ChatSearch.tsx`) with a
+  `findMessageMatches` helper (searches content + reasoning, case-insensitive),
+  a sticky search bar with match count + prev/next + Enter/Shift+Enter +
+  Escape, message-level ring highlight, and auto-scroll to the current match.
+  Bound to Cmd/Ctrl+F (works even while focused in the chat input).
+- [x] **#248** Complete keyboard-shortcuts help overlay + rebind files panel.
+  The global handler wired Ctrl+B/Ctrl+F/Ctrl+T but the help overlay only
+  listed New Chat / Sidebar / Settings / Close / Help. Completed the overlay to
+  list Find in Chat (Ctrl+F), Toggle Browser (Ctrl+B), Toggle Files
+  (Ctrl+Shift+F), Toggle Terminal (Ctrl+T). Rebound the file-tree panel toggle
+  from Ctrl+F → Ctrl+Shift+F to free Cmd/Ctrl+F for in-conversation search,
+  matching agentic-GUI conventions. Updated the footer hint.
+- [x] **#249** Reasoning/thinking capture in the many-models fan-out.
+  `runManyModels` surfaced only content (`chunk.message.content` / OpenAI
+  `delta.content`) and dropped thinking/reasoning (DeepSeek-R1, Qwen3, etc.) —
+  unlike the single-model paths (#241/#244/#245). Added an optional
+  `reasoning` field to `ModelReply`, surfaced `chunk.message.thinking` /
+  `chunk.thinking` (Ollama) and `reasoning_content` (OpenAI) via a new
+  `onUpdate` reasoning param (backward compatible), and render a
+  `ReasoningBlock` per reply card in the App.tsx many-models UI.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1157 passed (100 files)** (+16).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

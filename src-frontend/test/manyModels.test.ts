@@ -168,3 +168,76 @@ describe('runManyModels (#126)', () => {
     expect(last.state).toBe('error');
   });
 });
+
+// ── runManyModels — reasoning capture (#249) ───────────────────────────────────
+
+describe('runManyModels reasoning capture (#249)', () => {
+  it('surfaces Ollama thinking deltas as reasoning on onUpdate', async () => {
+    const updates: { modelId: string; reasoning?: string }[] = [];
+    const streamOllama = vi.fn().mockImplementation(async (_model: string, _msgs: any[], onChunk: any) => {
+      onChunk({ message: { content: 'Answer', thinking: 'let me think' } });
+      onChunk({ message: { content: ' now', thinking: ' more' } });
+    });
+
+    await runManyModels(
+      ['llama3:8b'],
+      [],
+      (_id, _delta, _state, _err, reasoning) => updates.push({ modelId: 'llama3:8b', reasoning }),
+      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama },
+    );
+
+    const reasoningUpdates = updates.filter((u) => u.reasoning);
+    expect(reasoningUpdates.length).toBeGreaterThan(0);
+    expect(reasoningUpdates.map((u) => u.reasoning).join('')).toBe('let me think more');
+  });
+
+  it('surfaces top-level thinking (no message wrapper) as reasoning', async () => {
+    const seen: string[] = [];
+    const streamOllama = vi.fn().mockImplementation(async (_m: string, _msgs: any[], onChunk: any) => {
+      onChunk({ thinking: 'top-level reasoning' });
+    });
+
+    await runManyModels(
+      ['mistral:7b'],
+      [],
+      (_id, _delta, _state, _err, reasoning) => { if (reasoning) seen.push(reasoning); },
+      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama },
+    );
+
+    expect(seen).toContain('top-level reasoning');
+  });
+
+  it('passes reasoning from the OpenAI-compatible stream callback', async () => {
+    const seen: string[] = [];
+    const streamOpenAi = vi.fn().mockImplementation(async (_conn: any, _model: string, _msgs: any[], onChunk: any) => {
+      onChunk('delta1', 'reasoning-alpha');
+      onChunk('delta2', 'reasoning-beta');
+    });
+
+    await runManyModels(
+      ['rem/gpt4'],
+      [],
+      (_id, _delta, _state, _err, reasoning) => { if (reasoning) seen.push(reasoning); },
+      {
+        defaultBaseUrl: DEFAULT_URL,
+        connectedModels: [remoteC],
+        connections: [connRem],
+        streamOllama: vi.fn(),
+        streamOpenAi,
+      },
+    );
+
+    expect(seen).toEqual(['reasoning-alpha', 'reasoning-beta']);
+  });
+
+  it('ModelReply includes an optional reasoning field', () => {
+    const reply: ModelReply = {
+      modelId: 'x',
+      label: 'X',
+      content: 'hi',
+      state: 'done',
+      reasoning: 'because',
+    };
+    expect(reply.reasoning).toBe('because');
+  });
+});

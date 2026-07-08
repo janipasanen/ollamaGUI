@@ -132,6 +132,7 @@ import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, bu
 import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type PendingEdit, type EditDecision } from './services/diffReview';
 import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
+import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -436,6 +437,10 @@ const App: React.FC = () => {
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // In-conversation search (#247)
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [chatSearchIndex, setChatSearchIndex] = useState(0);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   // Temporary/incognito chat: held in memory only, never persisted (#134).
@@ -631,6 +636,32 @@ const App: React.FC = () => {
     () => estimateConversationTokens(messages) + (input ? estimateTokens(input) : 0),
     [messages, input],
   );
+
+  // In-conversation search matches (#247)
+  const chatSearchMatches = React.useMemo(
+    () => findMessageMatches(messages, chatSearchQuery),
+    [messages, chatSearchQuery],
+  );
+  const chatSearchCurrent = chatSearchMatches.length > 0
+    ? chatSearchMatches[Math.min(chatSearchIndex, chatSearchMatches.length - 1)]
+    : -1;
+
+  // Scroll the current search match into view (#247)
+  useEffect(() => {
+    if (!chatSearchOpen || chatSearchCurrent < 0) return;
+    const el = document.querySelector(`[data-msg-index="${chatSearchCurrent}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [chatSearchOpen, chatSearchCurrent]);
+
+  const goChatSearch = (dir: 1 | -1) => {
+    if (chatSearchMatches.length === 0) return;
+    setChatSearchIndex(prev => {
+      const n = prev + dir;
+      if (n < 0) return chatSearchMatches.length - 1;
+      if (n >= chatSearchMatches.length) return 0;
+      return n;
+    });
+  };
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
 
@@ -1007,6 +1038,28 @@ const App: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const active = document.activeElement as HTMLElement;
       const isTyping = active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable;
+
+      // Escape closes the in-conversation search even while focused in its input (#247)
+      if (e.key === 'Escape' && chatSearchOpen) {
+        e.preventDefault();
+        setChatSearchOpen(false);
+        return;
+      }
+      // In-conversation search works even while focused in the chat input (#247)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setChatSearchOpen(prev => !prev);
+        setChatSearchIndex(0);
+        return;
+      }
+      // File-tree panel toggle moved to Ctrl/Cmd+Shift+F (#248)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        if (isTyping) return;
+        e.preventDefault();
+        togglePanel('files');
+        return;
+      }
+
       if (isTyping) return;
 
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -1021,14 +1074,12 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault();
         togglePanel('browser'); // toggle browser preview via PanelShell (#71)
-      } else if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-        e.preventDefault();
-        togglePanel('files'); // toggle file-tree panel via PanelShell (#85)
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
       } else if (e.key === 'Escape') {
-        if (isSettingsOpen) setIsSettingsOpen(false);
+        if (chatSearchOpen) setChatSearchOpen(false);
+        else if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
@@ -1037,7 +1088,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen]);
 
   // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
   const updateTheme = (patch: Partial<ThemeSettings>) => {
@@ -1696,7 +1747,7 @@ const App: React.FC = () => {
         await runManyModels(
           allModelIds,
           chatHistory,
-          (modelId, delta, state, error) => {
+          (modelId, delta, state, error, reasoning) => {
             setModelGroups(prev => prev.map((g, i) => {
               if (i !== prev.length - 1) return g;
               return {
@@ -1704,6 +1755,7 @@ const App: React.FC = () => {
                 replies: g.replies.map(r => r.modelId !== modelId ? r : {
                   ...r,
                   content: state === 'streaming' ? r.content + delta : r.content,
+                  reasoning: state === 'streaming' && reasoning ? (r.reasoning ?? '') + reasoning : r.reasoning,
                   state,
                   error,
                 }),
@@ -2417,6 +2469,23 @@ const App: React.FC = () => {
           data-testid="messages-container"
           className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 relative"
         >
+          {/* In-conversation search (#247) */}
+          {chatSearchOpen && (
+            <div className="sticky top-0 z-20 flex justify-end pb-1">
+              <div className="w-full max-w-sm">
+                <ChatSearch
+                  query={chatSearchQuery}
+                  onQueryChange={(q) => { setChatSearchQuery(q); setChatSearchIndex(0); }}
+                  matchCount={chatSearchMatches.length}
+                  currentIndex={chatSearchMatches.length > 0 ? Math.min(chatSearchIndex, chatSearchMatches.length - 1) : -1}
+                  onPrev={() => goChatSearch(-1)}
+                  onNext={() => goChatSearch(1)}
+                  onClose={() => setChatSearchOpen(false)}
+                  dark={dark}
+                />
+              </div>
+            </div>
+          )}
           {messages.length === 0 && (
             <WelcomeScreen
               dark={dark}
@@ -2427,7 +2496,11 @@ const App: React.FC = () => {
             />
           )}
             {messages.map((msg, i) => (
-              <div key={i} className={`flex flex-col gap-0.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div
+                key={i}
+                data-msg-index={i}
+                className={`flex flex-col gap-0.5 rounded-lg transition-shadow ${i === chatSearchCurrent ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
+              >
                <div className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
                  msg.role === 'user'
                    ? 'bg-blue-600 text-white rounded-tr-none'
@@ -2664,6 +2737,7 @@ const App: React.FC = () => {
                       {reply.state === 'error' && <span className="text-[9px] text-red-400">✗</span>}
                       {reply.state === 'done' && group.chosenIndex === ri && <span className="text-[9px] text-green-400">✓ chosen</span>}
                     </div>
+                    {reply.reasoning && <ReasoningBlock reasoning={reply.reasoning} dark={dark} />}
                     <div className={`text-sm whitespace-pre-wrap ${reply.state === 'error' ? 'text-red-400' : ''}`}>
                       {reply.state === 'error' ? reply.error : reply.content || <span className="opacity-30">Waiting…</span>}
                     </div>
@@ -3078,7 +3152,7 @@ const App: React.FC = () => {
                 </>
               );
             })()}
-            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
+            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · Cmd+F find · ? for shortcuts
           </div>
 
         {/* Voice Call Overlay (#132) */}
@@ -5389,9 +5463,13 @@ const App: React.FC = () => {
               <div className="space-y-1">
                 {[
                   ['New Chat', 'Ctrl+K'],
+                  ['Find in Chat', 'Ctrl+F'],
                   ['Toggle Sidebar', 'Ctrl+\\'],
+                  ['Toggle Browser', 'Ctrl+B'],
+                  ['Toggle Files', 'Ctrl+Shift+F'],
+                  ['Toggle Terminal', 'Ctrl+T'],
                   ['Open Settings', 'Ctrl+,'],
-                  ['Close Modal', 'Escape'],
+                  ['Close / Search', 'Escape'],
                   ['Show Help', '?'],
                 ].map(([label, key]) => (
                   <div key={key} className={`flex justify-between items-center py-3 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>

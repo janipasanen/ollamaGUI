@@ -21,6 +21,8 @@ export interface ModelReply {
   /** 'streaming' while in progress, 'done', or 'error' */
   state: 'pending' | 'streaming' | 'done' | 'error';
   error?: string;
+  /** Reasoning/thinking trace captured from reasoning models (#249) */
+  reasoning?: string;
 }
 
 export interface ModelGroup {
@@ -97,7 +99,7 @@ export function groupByHost(
 export async function runManyModels(
   modelIds: string[],
   messages: Message[],
-  onUpdate: (modelId: string, delta: string, state: ModelReply['state'], error?: string) => void,
+  onUpdate: (modelId: string, delta: string, state: ModelReply['state'], error?: string, reasoning?: string) => void,
   options: {
     defaultBaseUrl: string;
     connectedModels: ConnectedModel[];
@@ -105,7 +107,7 @@ export async function runManyModels(
     genOptions?: { temperature?: number; num_ctx?: number };
     signal?: AbortSignal;
     streamOllama: (model: string, messages: Message[], onChunk: (chunk: any) => void, endpoint: string, isCloud: boolean, genOptions?: any, signal?: AbortSignal) => Promise<void>;
-    streamOpenAi?: (conn: ModelConnection, model: string, messages: Message[], onChunk: (delta: string) => void, opts?: { temperature?: number }, signal?: AbortSignal) => Promise<void>;
+    streamOpenAi?: (conn: ModelConnection, model: string, messages: Message[], onChunk: (delta: string, reasoning?: string) => void, opts?: { temperature?: number }, signal?: AbortSignal) => Promise<void>;
   }
 ): Promise<void> {
   const { defaultBaseUrl, connectedModels, connections, genOptions, signal, streamOllama, streamOpenAi } = options;
@@ -122,13 +124,15 @@ export async function runManyModels(
         const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
 
         if (conn?.kind === 'openai' && cm && streamOpenAi) {
-          await streamOpenAi(conn, cm.name, messages, (delta) => onUpdate(modelId, delta, 'streaming'), { temperature: genOptions?.temperature }, signal);
+          await streamOpenAi(conn, cm.name, messages, (delta, reasoning) => onUpdate(modelId, delta, 'streaming', undefined, reasoning), { temperature: genOptions?.temperature }, signal);
         } else {
           // Default Ollama path
           const actualModel = cm?.name ?? modelId;
           const endpoint = conn ? `${conn.baseUrl.replace(/\/$/, '')}/api/chat` : `${defaultBaseUrl.replace(/\/$/, '')}/api/chat`;
           await streamOllama(actualModel, messages, (chunk: any) => {
-            if (chunk.message?.content) onUpdate(modelId, chunk.message.content, 'streaming');
+            const reasoning = chunk.message?.thinking ?? chunk.thinking;
+            const delta = chunk.message?.content ?? '';
+            if (delta || reasoning) onUpdate(modelId, delta, 'streaming', undefined, reasoning);
           }, endpoint, false, genOptions, signal);
         }
         onUpdate(modelId, '', 'done');
