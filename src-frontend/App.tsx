@@ -1197,6 +1197,24 @@ const App: React.FC = () => {
     setConfirmDelete({ open: false, id: '', title: '' });
   };
 
+  const closeConfirmDelete = useCallback(() => {
+    setConfirmDelete({ open: false, id: '', title: '' });
+  }, []);
+
+  // Close the delete confirmation on Escape (#202). The global keydown handler
+  // only covers Settings/Help, so this dedicated effect handles the modal.
+  useEffect(() => {
+    if (!confirmDelete.open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeConfirmDelete();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmDelete.open, closeConfirmDelete]);
+
   const generateTitle = (msgs: Message[]): string => {
     const first = msgs.find(m => m.role === 'user')?.content ?? '';
     if (!first.trim()) return 'New Chat';
@@ -5289,15 +5307,24 @@ const App: React.FC = () => {
         )}
         {/* Delete session confirmation dialog */}
         {confirmDelete.open && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Delete chat confirmation">
-            <div className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete chat confirmation"
+            onClick={closeConfirmDelete}
+          >
+            <div
+              className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}
+              onClick={(e) => e.stopPropagation()}
+            >
               <h2 className="text-lg font-bold mb-2">Delete chat?</h2>
               <p className={`text-sm mb-6 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
                 This will permanently delete <span className="font-medium">"{confirmDelete.title}"</span>. This action cannot be undone.
               </p>
               <div className="flex justify-end gap-3">
                 <button
-                  onClick={() => setConfirmDelete({ open: false, id: '', title: '' })}
+                  onClick={closeConfirmDelete}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100'}`}
                 >
                   Cancel

@@ -101,6 +101,22 @@ describe('App Component', () => {
       fireEvent.scroll(container);
       expect(screen.queryByLabelText(/Scroll to bottom/i)).not.toBeInTheDocument();
     });
+ 
+    it('scrolls to bottom and hides the button when clicked', () => {
+      const scrollIntoView = vi.fn();
+      vi.spyOn(window.HTMLElement.prototype, 'scrollIntoView').mockImplementation(scrollIntoView);
+      render(<App />);
+      const container = screen.getByTestId('messages-container');
+      Object.defineProperty(container, 'scrollHeight', { value: 1000, configurable: true });
+      Object.defineProperty(container, 'clientHeight', { value: 300, configurable: true });
+      container.scrollTop = 100;
+      fireEvent.scroll(container);
+      const button = screen.getByLabelText(/Scroll to bottom/i);
+      fireEvent.click(button);
+      expect(scrollIntoView).toHaveBeenCalled();
+      expect(screen.queryByLabelText(/Scroll to bottom/i)).not.toBeInTheDocument();
+      vi.restoreAllMocks();
+    });
   });
 
   describe('Delete chat confirmation', () => {
@@ -124,6 +140,32 @@ describe('App Component', () => {
       render(<App />);
       fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
       fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+      expect(screen.queryByRole('dialog', { name: /Delete chat confirmation/i })).not.toBeInTheDocument();
+    });
+
+    it('removes the session when deletion is confirmed', () => {
+      createSampleSession();
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
+      expect(screen.queryByRole('dialog', { name: /Delete chat confirmation/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Delete session: Sample Chat/i })).not.toBeInTheDocument();
+    });
+
+    it('closes on Escape (#202)', () => {
+      createSampleSession();
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
+      expect(screen.getByRole('dialog', { name: /Delete chat confirmation/i })).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: /Delete chat confirmation/i })).not.toBeInTheDocument();
+    });
+
+    it('closes when the backdrop is clicked (#202)', () => {
+      createSampleSession();
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /Delete session: Sample Chat/i }));
+      fireEvent.click(screen.getByRole('dialog', { name: /Delete chat confirmation/i }));
       expect(screen.queryByRole('dialog', { name: /Delete chat confirmation/i })).not.toBeInTheDocument();
     });
   });
