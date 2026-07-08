@@ -41,6 +41,14 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#221** Fix `browser_assert` AX-tree contract bug (same class as #219).
+  The Rust `browser_cdp_get_ax_tree` returns a string outline, but `browser_assert`
+  read `tree.refs`/`tree.text` (always undefined for a string) → `text_present` and
+  `element_exists` were always false. Routed it through the `normalizeAxTree` helper.
+  Also audited the full Rust↔frontend command surface (63 FE-invoked commands);
+  arg camelCase↔snake_case maps via Tauri, and the only dead Rust commands are
+  `document_edit`/`document_odf_edit` (no FE caller — candidate for a future tool).
+  6 new browser_assert tests; tsc clean; vitest 1076.
 - [x] **#220** Wire `browserPreview.ts` into BrowserPane (remove inline IPC
   duplication). browserPreview had no test seam and no tests, and BrowserPane
   re-implemented the `preview_webview_*` calls inline. Added a `_mocks.invoke`

@@ -467,3 +467,70 @@ describe('AX snapshot session wiring (#219)', () => {
     expect(JSON.stringify(result)).not.toContain('hunter2');
   });
 });
+
+// ── browser_assert AX-tree contract (#221) ────────────────────────────────────
+
+describe('browser_assert AX-tree contract (#221)', () => {
+  it('url_contains does not depend on the AX tree', async () => {
+    const { cb } = makeApproval(true);
+    registerBrowserTools(cb);
+    browserSession.currentUrl = 'https://example.com/docs';
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'url_contains', expected: '/docs' });
+    expect(result).toMatchObject({ pass: true, actual: 'https://example.com/docs' });
+  });
+
+  it('text_present matches against a real string outline (previously broken)', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- button "Submit" [ref=e1]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'text_present', expected: 'Submit' });
+    expect(result).toMatchObject({ pass: true });
+  });
+
+  it('text_present fails when the text is absent from the outline', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- link "Docs" [ref=e7]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'text_present', expected: 'Submit' });
+    expect(result).toMatchObject({ pass: false });
+  });
+
+  it('element_exists matches a ref from a real string outline', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- link "Docs" [ref=e7]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'element_exists', expected: 'e7' });
+    expect(result).toMatchObject({ pass: true });
+  });
+
+  it('element_exists fails for an unknown ref', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- link "Docs" [ref=e7]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'element_exists', expected: 'e99' });
+    expect(result).toMatchObject({ pass: false });
+  });
+
+  it('still works with a structured {refs,text} result (test/legacy shape)', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return { refs: { e1: { role: 'button', name: 'Submit' } }, text: 'Submit' };
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_assert')!.execute({ type: 'text_present', expected: 'Submit' });
+    expect(result).toMatchObject({ pass: true });
+  });
+});

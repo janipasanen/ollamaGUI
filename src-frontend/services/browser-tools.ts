@@ -371,12 +371,11 @@ export function registerBrowserTools(
         return { pass: actual.includes(expected), actual };
       }
 
-      // text_present / element_exists both inspect the live AX tree.
-      const tree = (await tauriInvoke<any>('browser_cdp_get_ax_tree')) as {
-        refs?: Record<string, { role: string; name: string }>;
-        text?: string;
-      };
-      const refsMap = tree?.refs ?? {};
+      // text_present / element_exists both inspect the live AX tree. The Rust
+      // command returns a string outline; normalizeAxTree (#219) handles both
+      // that and the structured {refs,text} test shape.
+      const tree = normalizeAxTree(await tauriInvoke<unknown>('browser_cdp_get_ax_tree'), false);
+      const refsMap = tree.refs;
 
       if (type === 'element_exists') {
         const pass = Object.prototype.hasOwnProperty.call(refsMap, expected);
@@ -384,12 +383,7 @@ export function registerBrowserTools(
       }
 
       // text_present
-      const haystack =
-        typeof tree?.text === 'string'
-          ? tree.text
-          : Object.values(refsMap)
-              .map((r) => r?.name ?? '')
-              .join(' ');
+      const haystack = tree.text || Object.values(refsMap).map((r) => r?.name ?? '').join(' ');
       return { pass: haystack.includes(expected), actual: haystack };
     },
   });
