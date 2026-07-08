@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
@@ -258,3 +258,36 @@ describe('App Component', () => {
     });
   });
 });
+
+  // ── Toggle ARIA state (#234) ──────────────────────────────────────────────────
+  describe('Toggle ARIA state (#234)', () => {
+    // The responsive-design test above shrinks the viewport and never restores
+    // it, so reset to a desktop width before each test here.
+    beforeEach(() => {
+      global.innerWidth = 1024;
+    });
+
+    it('panel toggle buttons expose aria-pressed', () => {
+      render(<App />);
+      const browserToggle = screen.getByRole('button', { name: 'Toggle browser preview' });
+      expect(browserToggle).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('agentic-mode switch exposes role=switch and aria-checked', () => {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      const sw = screen.getByRole('switch', { name: 'Toggle tool calling' });
+      expect(sw).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('autonomy level buttons expose aria-pressed for the active level', () => {
+      render(<App />);
+      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      // Default autonomy level is 'ask' (#88).
+      const askBtn = screen.getAllByRole('button').find(b => b.textContent === 'ask');
+      expect(askBtn).toBeTruthy();
+      expect(askBtn!.getAttribute('aria-pressed')).toBe('true');
+      const planBtn = screen.getAllByRole('button').find(b => b.textContent === 'plan');
+      expect(planBtn!.getAttribute('aria-pressed')).toBe('false');
+    });
+  });

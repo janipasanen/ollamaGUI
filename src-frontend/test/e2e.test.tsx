@@ -129,7 +129,8 @@ describe('End-to-End Tests', () => {
 
       // The toggle button is next to the "Enable tool calling" label
       const toggleSection = screen.getByText('Enable tool calling').closest('div')!;
-      const toggleButton = within(toggleSection).getByRole('button');
+      // The agentic toggle is an accessible switch (role=switch) (#234).
+      const toggleButton = within(toggleSection).getByRole('switch');
       fireEvent.click(toggleButton);
 
       expect(screen.getByText('Enabled')).toBeInTheDocument();

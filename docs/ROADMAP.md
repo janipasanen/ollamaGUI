@@ -156,3 +156,29 @@ where happy paths were covered but failure paths were not. No merge to
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1085 passed (90 files)** (+20).
 - `cargo test --lib` unchanged (87 passed) — no Rust changes this pass.
+
+---
+
+## M34 — Document-tool error tests & toggle ARIA state (sixth analysis pass)
+
+A fresh feature + gap analysis after M33. Found two new gaps: the
+`documentTools` thin wrappers had no rejection tests (same class hardened in
+M33 for git/terminal), and several toggle controls exposed on/off / selected
+state only visually (no ARIA) so screen readers couldn't perceive it. No merge
+to `master` — work stays on `macOS-10.15`.
+
+- [x] **#233** documentTools error-propagation tests. `readDocument` /
+  `convertDocument` / `createDocument` / `documentFormats` are `tauriInvoke`
+  pass-throughs with only happy-path tests; added 4 tests asserting each
+  propagates the backend rejection.
+- [x] **#234** ARIA state on toggle controls. Added `aria-pressed` to the four
+  panel toggle buttons (artifacts / files / browser / terminal); replaced the
+  hand-rolled agentic-mode switch with the accessible `Toggle` component
+  (`role="switch"` + `aria-checked` + `aria-label`); added `aria-pressed` to the
+  plan/ask/auto autonomy segmented buttons. Updated the existing e2e test to
+  query the switch by `role="switch"`; added 3 App tests asserting the ARIA
+  state. (`rg "aria-pressed" src-frontend` was 0 → now matches.)
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1092 passed (90 files)** (+7).
+- No Rust changes this pass.

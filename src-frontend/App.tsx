@@ -2257,6 +2257,7 @@ const App: React.FC = () => {
                      onClick={() => togglePanel('artifacts')}
                      title={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
                      aria-label={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
+                     aria-pressed={isPanelOpen('artifacts')}
                      className={`p-2 rounded-md transition-colors ${isPanelOpen('artifacts') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                    >
                      🖼
@@ -2267,6 +2268,7 @@ const App: React.FC = () => {
                    onClick={() => togglePanel('files')}
                    title={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
                    aria-label={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
+                   aria-pressed={isPanelOpen('files')}
                    className={`p-2 rounded-md transition-colors ${isPanelOpen('files') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                  >
                    📁
@@ -2276,6 +2278,7 @@ const App: React.FC = () => {
                    onClick={() => togglePanel('browser')}
                    title="Toggle browser (Ctrl+B)"
                    aria-label="Toggle browser preview"
+                   aria-pressed={isPanelOpen('browser')}
                    className={`p-2 rounded-md transition-colors ${isPanelOpen('browser') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                  >
                    🌐
@@ -2285,6 +2288,7 @@ const App: React.FC = () => {
                    onClick={() => togglePanel('terminal')}
                    title={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
                    aria-label={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
+                   aria-pressed={isPanelOpen('terminal')}
                    className={`p-2 rounded-md transition-colors ${isPanelOpen('terminal') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
                  >
                    ▶
@@ -3313,12 +3317,7 @@ const App: React.FC = () => {
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agentic Mode</label>
                    <div className="flex items-center gap-3">
                      <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Enable tool calling</span>
-                     <button
-                       onClick={() => setIsAgenticMode(!isAgenticMode)}
-                       className={`relative w-12 h-6 rounded-full transition-colors flex items-center ${dark ? 'bg-zinc-700' : 'bg-zinc-300'}`}
-                     >
-                       <span className={`absolute w-5 h-5 rounded-full transition-transform ${isAgenticMode ? 'translate-x-6 bg-blue-500' : 'translate-x-1 bg-white'}`} />
-                     </button>
+                     <Toggle checked={isAgenticMode} onChange={() => setIsAgenticMode(!isAgenticMode)} dark={dark} label="Toggle tool calling" />
                      <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{isAgenticMode ? 'Enabled' : 'Disabled'}</span>
                    </div>
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
@@ -4811,6 +4810,7 @@ const App: React.FC = () => {
                       {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(level => (
                         <button
                           key={level}
+                          aria-pressed={autonomySettings.level === level}
                           onClick={() => { const s = { ...autonomySettings, level }; setAutonomySettings(s); saveAutonomySettings(s); }}
                           className={`flex-1 text-xs py-1 rounded border transition-colors capitalize ${autonomySettings.level === level ? (dark ? 'bg-blue-600 border-blue-500 text-white' : 'bg-blue-600 border-blue-500 text-white') : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')}`}
                         >{level}</button>

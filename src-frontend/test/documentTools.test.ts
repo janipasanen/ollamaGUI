@@ -273,3 +273,29 @@ describe('registerDocumentTools (#144)', () => {
     expect(result).toEqual({ preview_text: 'World', changed: true });
   });
 });
+
+// ── Error propagation (#233) ──────────────────────────────────────────────────
+
+describe('documentTools wrappers propagate backend errors (#233)', () => {
+  const ERR = new Error('unsupported format');
+
+  beforeEach(() => {
+    _mocks.invoke = async () => { throw ERR; };
+  });
+
+  it('readDocument rejects when the backend rejects', async () => {
+    await expect(readDocument('bad.docx')).rejects.toBe(ERR);
+  });
+
+  it('convertDocument rejects when the backend rejects', async () => {
+    await expect(convertDocument('a.docx', 'b.pdf')).rejects.toBe(ERR);
+  });
+
+  it('createDocument rejects when the backend rejects', async () => {
+    await expect(createDocument('out.docx', 'docx', 'hello')).rejects.toBe(ERR);
+  });
+
+  it('documentFormats rejects when the backend rejects', async () => {
+    await expect(documentFormats()).rejects.toBe(ERR);
+  });
+});
