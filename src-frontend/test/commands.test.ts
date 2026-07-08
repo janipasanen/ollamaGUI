@@ -194,3 +194,19 @@ describe('/rename command (#269)', () => {
     }
   });
 });
+
+// ── /export builtin (#271) ────────────────────────────────────────────────────
+
+describe('/export command (#271)', () => {
+  it('is registered as a builtin command', () => {
+    const cmd = findCommand('export');
+    expect(cmd).toBeDefined();
+    expect(cmd?.builtin).toBe(true);
+  });
+
+  it('returns builtin action: export', () => {
+    const r = runCommand('/export');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('export');
+  });
+});

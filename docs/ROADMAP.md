@@ -601,3 +601,34 @@ TUIs. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1274 passed (124 files)** (+12).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M49 — Regenerate-with-model, /export command & copy-last-reply shortcut (seventeenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#270** Regenerate the last reply with a different model. Codex / Claude /
+  Cursor let you retry the last response with a different model; the app only
+  regenerated with the currently selected model. Added a model-override path
+  through `sendMessage` (`activeModel = modelOverride ?? model`, used for
+  endpoint resolution, the Ollama model name, the auto-compact summarizer and
+  the `producedByModel` stamp), a `modelOverride` param on `regenerateMessage`,
+  and a model-picker dropdown (↺▾) on the regenerate button that switches the
+  active model and re-streams the last turn with the chosen model.
+- [x] **#271** `/export` slash command. TUI chat tools export the active thread;
+  the app only exported via the toolbar ⬇️ button. Added a `/export` builtin
+  that downloads the current conversation as a Markdown file (reusing
+  `handleExportMarkdown` / `chatToMarkdown`) with an empty-conversation hint
+  and a status-banner confirmation.
+- [x] **#272** Copy the last assistant reply via Ctrl/Cmd+Shift+C. Cursor offers
+  a quick "copy last response" shortcut; the app only copied via the
+  per-message ⧉ button. Added a global Ctrl/Cmd+Shift+C shortcut (when not
+  typing) that copies the most recent assistant message to the clipboard and
+  shows a "Copied last reply" toast. Documented in the shortcuts overlay.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1280 passed (127 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

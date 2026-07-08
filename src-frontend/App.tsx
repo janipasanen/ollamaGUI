@@ -587,6 +587,7 @@ const App: React.FC = () => {
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
   const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
+  const [regenMenuIdx, setRegenMenuIdx] = useState<number | null>(null);
   const [copiedChat, setCopiedChat] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -1155,6 +1156,16 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        // Copy the last assistant reply to the clipboard (#272)
+        for (let j = messages.length - 1; j >= 0; j--) {
+          if (messages[j].role === 'assistant' && messages[j].content) {
+            navigator.clipboard.writeText(messages[j].content);
+            notify('Copied last reply');
+            break;
+          }
+        }
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') {
         e.preventDefault();
         regenerateLastResponse(); // Ctrl/Cmd+R regenerates the last reply (#264)
@@ -1584,7 +1595,7 @@ const App: React.FC = () => {
   };
 
   // Send message
-  const sendMessage = async (textOverride?: string) => {
+  const sendMessage = async (textOverride?: string, modelOverride?: string) => {
     let text = textOverride ?? input;
     // Prepend resolved # context blocks (#119/#184). Always clear them after
     // any send so stale chips don't persist across slash-command / action paths.
@@ -1624,6 +1635,15 @@ const App: React.FC = () => {
             showStatusBanner(`Renamed conversation to "${arg}"`);
           } else {
             showStatusBanner('Save the chat first to rename it');
+          }
+          return;
+        }
+        if (result.action === 'export') {
+          if (messages.length === 0) {
+            showStatusBanner('Nothing to export — the conversation is empty');
+          } else {
+            handleExportMarkdown();
+            showStatusBanner('Exported conversation as Markdown');
           }
           return;
         }
@@ -1724,11 +1744,15 @@ const App: React.FC = () => {
       toApiMsg(userMessage),
     ];
 
+    // Model override for "regenerate with a different model" (#270). Falls back
+    // to the active model state for normal sends.
+    const activeModel = modelOverride ?? model;
+
     // Auto-compact when history approaches context limit (#95)
     if (autoCompact && shouldCompact(rawHistory, compactionThreshold)) {
       rawHistory = await compactConversation(rawHistory, {
         thresholdTokens: compactionThreshold,
-        summarizeFn: makeSummarizeFn(model, url('/api/chat')),
+        summarizeFn: makeSummarizeFn(activeModel, url('/api/chat')),
       });
     }
 
@@ -1741,9 +1765,9 @@ const App: React.FC = () => {
     abortControllerRef.current = new AbortController();
 
     try {
-      const isCloudModel = models.some(m => m.name === model && m.cloud);
+      const isCloudModel = models.some(m => m.name === activeModel && m.cloud);
       // Resolve the connected model + connection for remote routing.
-      const selectedConnectedModel = connectedModels.find(m => m.id === model);
+      const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
       const selectedConnection = selectedConnectedModel
         ? connections.find(c => c.id === selectedConnectedModel.connectionId)
         : undefined;
@@ -1992,7 +2016,7 @@ const App: React.FC = () => {
             );
           } else {
           // Use bare model name — connected models carry a "connId/name" id prefix.
-          const ollamaModelName = connectedModel?.name ?? model;
+          const ollamaModelName = connectedModel?.name ?? activeModel;
           await fetchOllamaChatStream(ollamaModelName, chatHistory, (chunk) => {
             const thinking = chunk.message?.thinking ?? chunk.thinking;
             if (thinking) {
@@ -2015,7 +2039,7 @@ const App: React.FC = () => {
           // Stamp producedByModel (#97) and apply filtered content in one update
           setMessages(prev => {
             const last = prev[prev.length - 1];
-            const updatedMsg: Message = { ...last, content: filtered, producedByModel: model, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) };
+            const updatedMsg: Message = { ...last, content: filtered, producedByModel: activeModel, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) };
             const updated = [...prev.slice(0, -1), updatedMsg] as Message[];
             saveCurrentSession(updated);
             return updated;
@@ -2135,7 +2159,7 @@ const App: React.FC = () => {
 
   // Regenerate the last assistant reply: save the current tail starting at the
   // last user message index as a branch, truncate, and re-stream.
-  const regenerateMessage = (assistantIndex: number) => {
+  const regenerateMessage = (assistantIndex: number, modelOverride?: string) => {
     if (isLoading) return;
     // Walk back to find the user message that preceded this assistant turn.
     let userIndex = assistantIndex - 1;
@@ -2146,7 +2170,7 @@ const App: React.FC = () => {
     trunkMessagesRef.current = newTrunk;
     setBranchState(updated);
     setMessages(newTrunk);
-    void sendMessage(messages[userIndex].content);
+    void sendMessage(messages[userIndex].content, modelOverride);
     saveCurrentSession(newTrunk, updated);
   };
 
@@ -2927,6 +2951,37 @@ const App: React.FC = () => {
                         title="Regenerate (creates a branch)"
                         className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                       >↺</button>
+                    )}
+                    {/* Regenerate with a different model (#270) */}
+                    {!isLoading && models.length > 1 && (
+                      <div className="relative">
+                        <button
+                          onClick={() => setRegenMenuIdx(prev => prev === i ? null : i)}
+                          aria-label="Regenerate with a different model"
+                          title="Regenerate with a different model"
+                          className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                        >↺▾</button>
+                        {regenMenuIdx === i && (
+                          <>
+                            <div className="fixed inset-0 z-40" onClick={() => setRegenMenuIdx(null)} />
+                            <div
+                              role="listbox"
+                              aria-label="Regenerate with model"
+                              className={`absolute right-0 top-full z-50 mt-1 w-48 max-h-56 overflow-y-auto rounded-lg border py-1 text-xs shadow-lg ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                            >
+                              {models.map(m => (
+                                <button
+                                  key={m.name}
+                                  role="option"
+                                  aria-selected={m.name === model}
+                                  onClick={() => { setModel(m.name); regenerateMessage(i, m.name); setRegenMenuIdx(null); }}
+                                  className={`w-full text-left px-3 py-1.5 truncate ${m.name === model ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-blue-50 text-blue-700') : (dark ? 'hover:bg-zinc-700/60' : 'hover:bg-zinc-100')}`}
+                                >{m.name}</button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     )}
                     {/* Action function buttons (#127) */}
                     {getEnabledActions().map(action => (
@@ -5764,6 +5819,7 @@ const App: React.FC = () => {
                   ['Open Settings', 'Ctrl+,'],
                   ['Regenerate Last Reply', 'Ctrl+R'],
                   ['Focus Composer', 'Ctrl+L'],
+                  ['Copy Last Reply', 'Ctrl+Shift+C'],
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],
