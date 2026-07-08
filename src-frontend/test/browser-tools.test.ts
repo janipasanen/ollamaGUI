@@ -357,3 +357,113 @@ describe('browser_type secret routing (#74)', () => {
     expect(capturedArgs).toEqual({ refId: 'e2', text: 'ollama', submit: true });
   });
 });
+
+// ── AX-tree snapshot wiring (#219) ────────────────────────────────────────────
+
+describe('AX snapshot session wiring (#219)', () => {
+  it('browser_snapshot publishes refs from a real Rust string outline', async () => {
+    const { cb } = makeApproval(true);
+    const outline = [
+      '- form "Login"',
+      '  - textbox "Email" [ref=e1]',
+      '  - textbox "***" [ref=e2]',
+      '  - button "Sign in" [ref=e3]',
+    ].join('\n');
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return outline;
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+
+    const result = await toolRegistry.getTool('browser_snapshot')!.execute({});
+    // The model reads the outline string.
+    expect(result).toBe(outline);
+    // The parsed ref map was published to the session.
+    expect(browserSession.lastSnapshotRefs).toEqual({
+      e1: { role: 'textbox', name: 'Email' },
+      e2: { role: 'textbox', name: '***' },
+      e3: { role: 'button', name: 'Sign in' },
+    });
+  });
+
+  it('browser_snapshot publishes refs from a structured {refs,text} result', async () => {
+    const { cb } = makeApproval(true);
+    const refs = { e7: { role: 'link', name: 'Docs' } };
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return { refs, text: 'Docs' };
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+
+    await toolRegistry.getTool('browser_snapshot')!.execute({});
+    expect(browserSession.lastSnapshotRefs).toEqual(refs);
+  });
+
+  it('browser_snapshot emits the "snapshot" bus event', async () => {
+    const { cb } = makeApproval(true);
+    let emitted = 0;
+    browserBus.on('snapshot', () => { emitted += 1; });
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- link "Docs" [ref=e7]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    await toolRegistry.getTool('browser_snapshot')!.execute({});
+    expect(emitted).toBe(1);
+  });
+
+  it('browser_wait_for matches text against a real string outline (previously broken)', async () => {
+    const { cb } = makeApproval(true);
+    const outline = '- button "Submit" [ref=e1]';
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return outline;
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+
+    const result = await toolRegistry.getTool('browser_wait_for')!.execute({ text: 'Submit' });
+    expect(result).toMatchObject({ found: true, text: true });
+  });
+
+  it('browser_wait_for matches a ref against a real string outline', async () => {
+    const { cb } = makeApproval(true);
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_get_ax_tree') return '- link "Docs" [ref=e7]';
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    const result = await toolRegistry.getTool('browser_wait_for')!.execute({ ref: 'e7' });
+    expect(result).toMatchObject({ found: true, ref: true });
+  });
+
+  it('a prior browser_snapshot lets browser_type detect a redacted secret field', async () => {
+    const { cb, calls } = makeApproval(true);
+    const cmds: string[] = [];
+    _mocks.invoke = async (cmd, args) => {
+      cmds.push(cmd);
+      if (cmd === 'browser_cdp_type') throw new Error('should not type plaintext secret');
+      if (cmd === 'browser_cdp_get_ax_tree') {
+        return '- textbox "***" [ref=e2]';
+      }
+      return { ok: true };
+    };
+    registerBrowserTools(cb);
+    browserSession.engineConnected = true;
+
+    // First: a snapshot populates lastSnapshotRefs from the outline string.
+    await toolRegistry.getTool('browser_snapshot')!.execute({});
+    expect(browserSession.lastSnapshotRefs.e2).toBeDefined();
+    // The redacted name '***' is not itself a password pattern, but role/name
+    // from the snapshot still index the field; mark it secret to exercise the
+    // credential path end-to-end against the wired snapshot.
+    browserSession.lastSnapshotRefs.e2 = { role: 'password', name: '***' };
+
+    const result = await toolRegistry.getTool('browser_type')!.execute({
+      ref: 'e2',
+      text: 'hunter2',
+    });
+    expect(calls).toEqual([{ action: 'type-secret', detail: 'e2' }]);
+    expect(cmds).not.toContain('browser_cdp_type');
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+});

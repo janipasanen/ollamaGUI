@@ -24,6 +24,7 @@
 
 import { toolRegistry } from './tools';
 import { browserSession, browserBus, isLocalhostUrl } from './browser';
+import { parseSnapshotRefs, updateSessionSnapshot } from './browserSnapshot';
 
 // ---------------------------------------------------------------------------
 // Test seam
@@ -37,6 +38,28 @@ async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): 
   if (_mocks.invoke) return _mocks.invoke(cmd, args) as Promise<T>;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<T>(cmd, args);
+}
+
+/**
+ * Normalize a `browser_cdp_get_ax_tree` result into `{ refs, text }`.
+ *
+ * The Rust command returns the AX outline as a **string** (`serialize_ax_tree`'s
+ * newline-joined lines); some tests/fixtures return a pre-parsed `{ refs, text }`
+ * object. This helper accepts both shapes so the tooling works against the real
+ * backend and the existing mocks. When `populate` is set, the parsed ref map is
+ * published to `browserSession.lastSnapshotRefs` (via `updateSessionSnapshot`,
+ * which also emits the `snapshot` bus event) so `browser_click`/`browser_type`
+ * can detect secret fields on the next acting call.
+ */
+type AxTreeResult = { refs: Record<string, { role: string; name: string }>; text: string };
+function normalizeAxTree(raw: unknown, populate: boolean): AxTreeResult {
+  if (typeof raw === 'string') {
+    const refs = populate ? updateSessionSnapshot(raw) : parseSnapshotRefs(raw);
+    return { refs, text: raw };
+  }
+  const obj = (raw ?? {}) as { refs?: Record<string, { role: string; name: string }>; text?: string };
+  if (populate && obj.refs) browserSession.setLastSnapshotRefs(obj.refs);
+  return { refs: obj.refs ?? {}, text: typeof obj.text === 'string' ? obj.text : '' };
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +149,13 @@ export function registerBrowserTools(
       'Capture the accessibility tree of the current page as a list of interactable refs.',
     parameters: { type: 'object', properties: {} },
     readOnly: true,
-    execute: async () => tauriInvoke('browser_cdp_get_ax_tree'),
+    execute: async () => {
+      // Publish the parsed ref map to the session (so browser_click/type can
+      // detect secret fields) and return the outline the model reads.
+      const raw = await tauriInvoke<unknown>('browser_cdp_get_ax_tree');
+      normalizeAxTree(raw, true);
+      return raw;
+    },
   });
 
   // ── browser_click ────────────────────────────────────────────────────────
@@ -289,18 +318,10 @@ export function registerBrowserTools(
       // match condition; on the first iteration this behaves like a single poll.
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        const tree = (await tauriInvoke<any>('browser_cdp_get_ax_tree')) as {
-          refs?: Record<string, { role: string; name: string }>;
-          text?: string;
-        };
+        const tree = normalizeAxTree(await tauriInvoke<unknown>('browser_cdp_get_ax_tree'), false);
 
-        const refsMap = tree?.refs ?? {};
-        const haystack =
-          typeof tree?.text === 'string'
-            ? tree.text
-            : Object.values(refsMap)
-                .map((r) => r?.name ?? '')
-                .join(' ');
+        const refsMap = tree.refs;
+        const haystack = tree.text || Object.values(refsMap).map((r) => r?.name ?? '').join(' ');
 
         const textMatch = text != null ? haystack.includes(text) : false;
         const refMatch = ref != null ? Object.prototype.hasOwnProperty.call(refsMap, ref) : false;

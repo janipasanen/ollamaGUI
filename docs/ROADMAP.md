@@ -41,6 +41,14 @@ confirmation `6b43872`, scroll-to-bottom `c473ae5`).
 
 
 ## Milestone 31 — Unwired-feature wiring pass
+- [x] **#219** Wire browserSnapshot into browser_snapshot/browser_wait_for +
+  fix the AX-tree contract bug. The Rust `browser_cdp_get_ax_tree` returns a
+  **string outline**, but `browser_wait_for` read `tree.refs`/`tree.text` (always
+  undefined) and `browser_snapshot` never populated `browserSession.lastSnapshotRefs`
+  — so `browser_type` secret-field detection was always false (password-echo risk).
+  Added a `normalizeAxTree` helper (handles string + structured shapes); snapshot
+  now publishes refs via `updateSessionSnapshot`; wait_for matches against the
+  outline. 6 new browser-tools tests; tsc clean; vitest 1059.
 - [x] **#218** Register the PDF tools (pdf_info/merge/split/extract/create) as
   agent tools — `documentsPdf.ts` was implemented + tested but unreachable from
   the UI/agent. Wired into `registerDocumentTools`; de-stale'd the "DEFERRED"
