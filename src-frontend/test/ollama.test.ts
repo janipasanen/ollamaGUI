@@ -114,3 +114,36 @@ describe('Ollama Service', () => {
     }));
   });
 });
+
+describe('Reasoning/thinking pass-through (#241)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  function streamWithLines(lines: string[]) {
+    const enc = new TextEncoder();
+    const chunks = lines.map(l => enc.encode(l));
+    let i = 0;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: { getReader: () => ({ read: async () => i < chunks.length ? { done: false, value: chunks[i++] } : { done: true, value: undefined } }) },
+    });
+    global.fetch = fetchMock as any;
+    return fetchMock;
+  }
+
+  it('passes message.thinking chunks through to onChunk', async () => {
+    streamWithLines(['{"message":{"thinking":"step 1"}}\n', '{"message":{"content":"answer"}}\n']);
+    const chunks: any[] = [];
+    await fetchOllamaChatStream('r1', [{ role: 'user', content: 'hi' }], (c) => chunks.push(c), 'http://x/api/chat');
+    expect(chunks.some(c => c.message?.thinking === 'step 1')).toBe(true);
+    expect(chunks.some(c => c.message?.content === 'answer')).toBe(true);
+  });
+
+  it('passes top-level thinking chunks through to onChunk', async () => {
+    streamWithLines(['{"thinking":"top-level reasoning","response":"","done":false}\n']);
+    const chunks: any[] = [];
+    await fetchOllamaChatStream('r1', [{ role: 'user', content: 'hi' }], (c) => chunks.push(c), 'http://x/api/chat');
+    expect(chunks.some(c => c.thinking === 'top-level reasoning')).toBe(true);
+  });
+});

@@ -17,14 +17,18 @@ export interface Message {
   feedback?: MessageFeedback;
   /** Which model produced this assistant message (#97). */
   producedByModel?: string;
+  /** Reasoning/thinking trace from Ollama reasoning models (#241). */
+  reasoning?: string;
 }
 
 export interface OllamaResponse {
   model: string;
   created_at: string;
-  message?: { role: string; content: string };
+  message?: { role: string; content: string; thinking?: string };
   response: string;
   done: boolean;
+  /** Top-level thinking trace (/api/generate reasoning models) (#241). */
+  thinking?: string;
 }
 
 /** Ollama generation options (subset). num_ctx is the key lever on small-RAM machines. */

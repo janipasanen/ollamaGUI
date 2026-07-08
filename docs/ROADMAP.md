@@ -262,3 +262,31 @@ implemented. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1124 passed (95 files)** (+16).
 - No Rust changes this pass.
+
+---
+
+## M38 — Reasoning/thinking support & context-budget indicator (comparative analysis)
+
+A comparative functionality analysis vs ChatGPT/Claude/o3/Codex. Confirmed
+existing strengths: @-file attach (#86), auto-compaction (#95), diff review,
+cost/token display. Two genuine gaps found — one was both missing AND failing
+(reasoning tokens discarded). No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#241** Reasoning/thinking support. Ollama reasoning models
+  (deepseek-r1, gpt-oss, qwen3) emit `message.thinking` / top-level `thinking`,
+  which the chat stream handler silently dropped (it read only
+  `message.content`). Added `thinking` to `OllamaResponse` + `reasoning` to
+  `Message`; the stream handler now accumulates `chunk.message?.thinking ??
+  chunk.thinking` into `assistantReasoning` and persists it on the assistant
+  message. New collapsible `ReasoningBlock` (💭 Thinking) renders the trace
+  above the assistant content. 2 stream pass-through tests + 3 component tests.
+- [x] **#242** Context-budget indicator. The footer showed an absolute token
+  count but no sense of context-window fullness (Codex/Claude surface this).
+  New `ContextBudget` component renders a fill bar + `%` of
+  `conversationTokens / (num_ctx ?? 4096)`, color-coded green/amber/red at
+  70/90%. 4 component tests.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1133 passed (97 files)** (+9).
+- No Rust changes this pass.

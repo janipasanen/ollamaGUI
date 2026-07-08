@@ -334,6 +334,41 @@ export const ToolResultBlock: React.FC<{ name?: string; content: string; dark: b
   );
 };
 
+// Collapsible reasoning/thinking trace from Ollama reasoning models (#241).
+export const ReasoningBlock: React.FC<{ reasoning: string; dark: boolean }> = ({ reasoning, dark }) => {
+  if (!reasoning.trim()) return null;
+  return (
+    <details className={`mb-2 rounded-lg border ${dark ? 'border-zinc-600 bg-zinc-900/40' : 'border-zinc-300 bg-zinc-50'}`}>
+      <summary className={`cursor-pointer select-none px-3 py-1.5 text-xs flex items-center gap-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+        <span aria-hidden="true">💭</span>
+        <span className="font-semibold">Thinking</span>
+      </summary>
+      <div className={`px-3 pb-2 pt-1 text-xs whitespace-pre-wrap ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+        {reasoning}
+      </div>
+    </details>
+  );
+};
+
+// Context-budget indicator: conversation tokens vs num_ctx (#242).
+export const ContextBudget: React.FC<{ tokens: number; numCtx?: number; dark: boolean }> = ({ tokens, numCtx, dark }) => {
+  const window = numCtx && numCtx > 0 ? numCtx : 4096;
+  const pct = Math.min(100, Math.round((tokens / window) * 100));
+  const color = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-emerald-500';
+  return (
+    <span
+      className="inline-flex items-center gap-1 align-middle"
+      title={`Context: ${tokens} / ${window} tokens (${pct}%)`}
+      aria-label={`Context usage ${pct} percent`}
+    >
+      <span className={`inline-block w-16 h-1.5 rounded-full overflow-hidden ${dark ? 'bg-zinc-700' : 'bg-zinc-200'}`}>
+        <span className={`block h-full ${color}`} style={{ width: `${pct}%` }} />
+      </span>
+      <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{pct}%</span>
+    </span>
+  );
+};
+
 const App: React.FC = () => {
   // Core chat state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -1677,6 +1712,7 @@ const App: React.FC = () => {
 
         // Use regular chat stream
         let assistantContent = '';
+        let assistantReasoning = '';
         let streamOk = false;
         setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
@@ -1702,10 +1738,14 @@ const App: React.FC = () => {
           // Use bare model name — connected models carry a "connId/name" id prefix.
           const ollamaModelName = connectedModel?.name ?? model;
           await fetchOllamaChatStream(ollamaModelName, chatHistory, (chunk) => {
+            const thinking = chunk.message?.thinking ?? chunk.thinking;
+            if (thinking) {
+              assistantReasoning += thinking;
+            }
             if (chunk.message?.content) {
               assistantContent += chunk.message.content;
               setMessages(prev => {
-                const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent }] as Message[];
+                const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
                 saveCurrentSession(updated);
                 return updated;
               });
@@ -1718,7 +1758,7 @@ const App: React.FC = () => {
           // Stamp producedByModel (#97) and apply filtered content in one update
           setMessages(prev => {
             const last = prev[prev.length - 1];
-            const updatedMsg: Message = { ...last, content: filtered, producedByModel: model };
+            const updatedMsg: Message = { ...last, content: filtered, producedByModel: model, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) };
             const updated = [...prev.slice(0, -1), updatedMsg] as Message[];
             saveCurrentSession(updated);
             return updated;
@@ -2414,7 +2454,13 @@ const App: React.FC = () => {
                   </div>
                 )}
 
+                {/* Reasoning/thinking trace from Ollama reasoning models (#241) */}
+                {msg.role === 'assistant' && msg.reasoning && (
+                  <ReasoningBlock reasoning={msg.reasoning} dark={dark} />
+                )}
+
                 {/* Inline edit (#98): show textarea when editing this user message */}
+
                 {editingIndex === i ? (
                   <div className="space-y-2">
                     <textarea
@@ -2994,9 +3040,13 @@ const App: React.FC = () => {
             {(() => {
               const cost = formatCost(conversationTokens);
               return (
-                <span title="Approximate token usage for this conversation (and current draft)">
-                  ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
-                </span>
+                <>
+                  <span title="Approximate token usage for this conversation (and current draft)">
+                    ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
+                  </span>
+                  {' · '}
+                  <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
+                </>
               );
             })()}
             {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · ? for shortcuts
