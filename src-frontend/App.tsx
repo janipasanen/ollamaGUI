@@ -130,6 +130,9 @@ import { secretSet, secretDelete, secretListRefs, type SecretRef } from './servi
 import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } from './services/atCommand';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type PendingEdit, type EditDecision } from './services/diffReview';
+import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
+import PlanPanel from './components/PlanPanel';
+
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
 import { initOpenApiServers } from './services/openapiTools';
@@ -305,6 +308,31 @@ export const MarkdownMessage: React.FC<{ content: string; dark: boolean }> = ({ 
     </ReactMarkdown>
   </div>
 );
+
+// Collapsible tool-result block with a status header (#240).
+// Mirrors agentic GUIs (Codex/Claude) that collapse tool output behind a
+// summary showing the tool name + running/success/error state.
+const TOOL_ERROR_RE = /^(error|tool blocked)/i;
+export const ToolResultBlock: React.FC<{ name?: string; content: string; dark: boolean }> = ({ name, content, dark }) => {
+  const isError = TOOL_ERROR_RE.test(content.trim());
+  const lineCount = content.split('\n').length;
+  const defaultOpen = lineCount <= 12;
+  const preview = (content.split('\n').find(l => l.trim().length > 0) ?? '').slice(0, 80);
+  return (
+    <details open={defaultOpen} className={`rounded-lg border ${dark ? 'border-zinc-600' : 'border-zinc-300'}`}>
+      <summary className={`cursor-pointer select-none px-3 py-1.5 text-xs flex items-center gap-2 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+        <span aria-label={isError ? 'Tool error' : 'Tool success'} className={isError ? 'text-red-400' : 'text-emerald-400'}>
+          {isError ? '✗' : '✓'}
+        </span>
+        <span className="font-mono font-semibold text-blue-400">{name ?? 'tool'}</span>
+        {preview && <span className={`truncate opacity-70 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{preview}</span>}
+      </summary>
+      <div className="px-3 pb-2 pt-1">
+        <MarkdownMessage content={content} dark={dark} />
+      </div>
+    </details>
+  );
+};
 
 const App: React.FC = () => {
   // Core chat state
@@ -499,6 +527,9 @@ const App: React.FC = () => {
   const [pendingDiffEdit, setPendingDiffEdit] = useState<PendingEdit | null>(null);
   const diffReviewResolveRef = useRef<((d: EditDecision) => void) | null>(null);
 
+  // Live plan checklist (#239) — rendered when the agent calls update_plan.
+  const [plan, setPlanState] = useState<PlanItem[]>(() => getPlan());
+
   const [userCommands, setUserCommands] = useState<SlashCommand[]>(() => loadUserCommands());
   const [newCmd, setNewCmd] = useState({ name: '', description: '', template: '' });
 
@@ -677,6 +708,8 @@ const App: React.FC = () => {
       registerPythonTool();
       // File-state checkpoints (#91/#180) — create_checkpoint / rewind_checkpoint
       registerCheckpointTools();
+      // Live plan/todo checklist tool (#239) — update_plan
+      registerPlanTool();
       // Streaming terminal sessions (#87/#186) — run_terminal
       registerTerminalTool();
       registerTerminalPanel();
@@ -787,6 +820,9 @@ const App: React.FC = () => {
 
   // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
   useEffect(() => () => { clearDiffReviewCallback(); clearBrowserApprovalCallback(); }, []);
+
+  // Subscribe to the plan store so the checklist re-renders on update_plan (#239).
+  useEffect(() => subscribePlan(setPlanState), []);
 
   // Load knowledge collections when Settings panel opens (#117/#188)
   useEffect(() => {
@@ -2314,6 +2350,9 @@ const App: React.FC = () => {
            </div>
         </header>
 
+        {/* Live plan checklist (#239) */}
+        <PlanPanel plan={plan} dark={dark} onClear={clearPlan} />
+
         {/* Messages - Responsive: full width on mobile, padded on desktop */}
         <div
           ref={messagesContainerRef}
@@ -2420,7 +2459,9 @@ const App: React.FC = () => {
                           <p className="whitespace-pre-wrap">{renderWithCitations(msg.content, msg.sources, dark)}</p>
                         </div>
                       )
-                      : <MarkdownMessage content={msg.content} dark={dark} />
+                      : msg.role === 'tool'
+                        ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
+                        : <MarkdownMessage content={msg.content} dark={dark} />
                 )}
                 {/* Inline citation Sources list (#120) */}
                 {msg.role === 'assistant' && msg.sources && (
@@ -2437,11 +2478,6 @@ const App: React.FC = () => {
                 )}
                 {isLoading && i === messages.length - 1 && msg.role === 'assistant' && msg.content !== '' && (
                   <span className="inline-block w-0.5 h-4 bg-current opacity-75 animate-pulse ml-0.5 align-middle" />
-                )}
-                {msg.role === 'tool' && (
-                  <div className={`text-xs text-blue-400 mt-1 italic`}>
-                    Tool execution result
-                  </div>
                 )}
                 {/* Structured-output validity badge (#148) */}
                 {msg.role === 'assistant' && msg.content !== '' && structuredOutput.enabled && !(isLoading && i === messages.length - 1) && (() => {

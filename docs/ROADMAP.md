@@ -232,3 +232,33 @@ on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1108 passed (91 files)** (+7).
 - No Rust changes this pass.
+
+---
+
+## M37 — Agentic plan/todo tool & tool-result rendering (comparative analysis)
+
+A comparative functionality analysis against agentic GUIs/TUIs (Codex CLI
+`update_plan`, Claude Code `TodoWrite`, Cursor/Aider todo panels, Codex/Claude
+collapsible tool-call blocks). Baseline confirmed clean: `vitest` 1108 passed,
+no production stubs/TODOs, all Rust commands wired, diff-review + websearch
+grounding + cost/token display already present. Two genuine gaps found and
+implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#239** `update_plan` tool + live checklist UI. The project had no
+  plan/todo tool and no plan visualization (the "plan" autonomy level had no
+  structured surface). New `services/planStore.ts` (plan state + subscribe +
+  `update_plan` tool, registered read-only so it needs no approval), new
+  `components/PlanPanel.tsx` (checklist with ○/▶/✓ status icons + progress
+  count), wired into `App.tsx` above the message list. 8 planStore + 3
+  PlanPanel + 1 App-integration test.
+- [x] **#240** Collapsible tool-result rendering. Tool messages were plain
+  chat bubbles with a "Tool execution result" footer and no status; long
+  output (`browser_snapshot`, `git_diff`, `document_read`) swelled the
+  transcript. New inline `ToolResultBlock` renders a `<details>` with a
+  summary (tool name + ✓/✗ status + one-line preview), collapsed by default
+  for >12-line output, expanded for short output. Browser rich rendering and
+  document artifacts untouched. 4 component tests.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1124 passed (95 files)** (+16).
+- No Rust changes this pass.
