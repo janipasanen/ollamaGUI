@@ -1154,6 +1154,12 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
         e.preventDefault();
         togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        regenerateLastResponse(); // Ctrl/Cmd+R regenerates the last reply (#264)
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        document.getElementById('chat-input')?.focus(); // Ctrl/Cmd+L focuses the composer (#265)
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1161,7 +1167,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages]);
 
   // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
   const updateTheme = (patch: Partial<ThemeSettings>) => {
@@ -2128,6 +2134,16 @@ const App: React.FC = () => {
     setMessages(newTrunk);
     void sendMessage(messages[userIndex].content);
     saveCurrentSession(newTrunk, updated);
+  };
+
+  // Regenerate the most recent assistant reply (#264). Used by the
+  // Ctrl/Cmd+R keyboard shortcut — a no-op when there is no assistant
+  // message to retry or a generation is already in progress.
+  const regenerateLastResponse = () => {
+    if (isLoading) return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') { regenerateMessage(i); return; }
+    }
   };
 
   // Navigate to the previous or next sibling branch at a fork point.
@@ -5708,7 +5724,11 @@ const App: React.FC = () => {
                   ['Toggle Files', 'Ctrl+Shift+F'],
                   ['Toggle Terminal', 'Ctrl+T'],
                   ['Open Settings', 'Ctrl+,'],
-                  ['Close / Search', 'Escape'],
+                  ['Regenerate Last Reply', 'Ctrl+R'],
+                  ['Focus Composer', 'Ctrl+L'],
+                  ['Send Message', 'Enter'],
+                  ['New Line in Composer', 'Shift+Enter'],
+                  ['Stop Generation / Close', 'Escape'],
                   ['Show Help', '?'],
                 ].map(([label, key]) => (
                   <div key={key} className={`flex justify-between items-center py-3 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>

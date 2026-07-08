@@ -547,3 +547,28 @@ on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1257 passed (118 files)** (+16).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M47 — Regenerate & focus-composer shortcuts + complete shortcuts overlay (fifteenth analysis pass)
+
+Comparative functionality analysis vs Codex CLI / Claude Code / Cursor / TUIs.
+Three keyboard-parity gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#264** Regenerate the last response via Ctrl/Cmd+R. Codex CLI and Claude
+  Code retry the last reply with Ctrl+R; the app only regenerated via the
+  on-message button. Added a `regenerateLastResponse` helper (finds the most
+  recent assistant message and calls `regenerateMessage`) and a global
+  Ctrl/Cmd+R shortcut (active when not typing and not already generating).
+- [x] **#265** Focus the chat composer via Ctrl/Cmd+L. Cursor / ChatGPT / Claude
+  Code offer a quick shortcut to jump focus back to the input. Added a global
+  Ctrl/Cmd+L shortcut that focuses the `chat-input` textarea.
+- [x] **#266** Complete the keyboard-shortcuts help overlay. The overlay (?)
+  listed several bindings but omitted active ones. Added: Regenerate Last Reply
+  (Ctrl+R), Focus Composer (Ctrl+L), Send Message (Enter), New Line in Composer
+  (Shift+Enter) and Stop Generation / Close (Escape).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1262 passed (121 files)** (+5).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
