@@ -316,3 +316,29 @@ and implemented. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1138 passed (98 files)** (+5).
 - No Rust changes this pass.
+
+---
+
+## M40 — Agentic reasoning parity & markdown reasoning render (comparative analysis)
+
+Continuation of reasoning/UX parity vs Codex/Claude/Cursor. Two gaps found and
+implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#245** Capture reasoning in the agentic loop. The standalone
+  `agenticChatStream` (agent.ts) read Ollama stream lines directly but only
+  accumulated `message.content`, dropping `message.thinking`/`thinking`
+  (DeepSeek-R1, Qwen3, etc.). Added `onAssistantReasoning?` to
+  `AgenticChatOptions`, accumulate `assistantReasoning` from the stream, invoke
+  the callback, and include `reasoning` on the yielded assistant `Message`.
+  Wired the App.tsx agentic branch to accumulate and persist reasoning so the
+  existing `ReasoningBlock` renders it. 1 new agentic-stream test.
+- [x] **#246** Render `ReasoningBlock` body as markdown. The block previously
+  dumped reasoning text in a `whitespace-pre-wrap` div, so fenced code blocks
+  and lists showed as raw ```` ``` ````/`-` instead of rendered markup. Switched
+  the body to `MarkdownMessage` (same component as assistant content), keeping
+  the `<details>` + 💭 Thinking summary shell. 2 new tests: fenced code →
+  `CodeBlock` with a Copy button; list → `<ul>/<li>` markup.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1141 passed (98 files)** (+3).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

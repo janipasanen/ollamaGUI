@@ -28,6 +28,8 @@ export interface AgenticChatOptions {
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (toolResult: ToolResult) => void;
   onAssistantMessage?: (message: string) => void;
+  /** Reasoning/thinking trace accumulator (#245). */
+  onAssistantReasoning?: (reasoning: string) => void;
   onComplete?: () => void;
   onError?: (error: Error) => void;
 }
@@ -44,6 +46,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onToolCall,
     onToolResult,
     onAssistantMessage,
+    onAssistantReasoning,
     onComplete,
     onError,
     toolFilter,
@@ -96,6 +99,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       }
       
       let assistantMessage = '';
+      let assistantReasoning = '';
       let toolCalls: ToolCall[] = [];
       let hasToolCalls = false;
       
@@ -111,13 +115,21 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
           try {
             const parsed = JSON.parse(line);
             
+            // Capture reasoning/thinking trace (#245)
+            const thinking = parsed.message?.thinking ?? parsed.thinking;
+            if (thinking) {
+              assistantReasoning += thinking;
+              if (onAssistantReasoning) {
+                onAssistantReasoning(assistantReasoning);
+              }
+            }
             // Handle regular message content
             if (parsed.message?.content) {
               assistantMessage += parsed.message.content;
               if (onAssistantMessage) {
                 onAssistantMessage(assistantMessage);
               }
-              yield { role: 'assistant', content: assistantMessage } as Message;
+              yield { role: 'assistant', content: assistantMessage, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message;
             }
             
             // Handle tool calls

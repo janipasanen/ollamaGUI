@@ -343,8 +343,8 @@ export const ReasoningBlock: React.FC<{ reasoning: string; dark: boolean }> = ({
         <span aria-hidden="true">💭</span>
         <span className="font-semibold">Thinking</span>
       </summary>
-      <div className={`px-3 pb-2 pt-1 text-xs whitespace-pre-wrap ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
-        {reasoning}
+      <div className={`px-3 pb-2 pt-1 text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+        <MarkdownMessage content={reasoning} dark={dark} />
       </div>
     </details>
   );
@@ -1595,6 +1595,7 @@ const App: React.FC = () => {
         setIsLoading(false);
       } else if (isAgenticMode) {
         // Use agentic loop with tool calling
+        let agenticReasoning = '';
         const agentStream = agenticChatStream({
           model: selectedConnectedModel?.name ?? model,
           messages: chatHistory,
@@ -1611,15 +1612,28 @@ const App: React.FC = () => {
           onAssistantMessage: (message) => {
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
+              const reasoning = agenticReasoning ? { reasoning: agenticReasoning } : {};
               if (lastMessage.role === 'assistant') {
-                const updated = [...prev.slice(0, -1), { role: 'assistant', content: message }] as Message[];
+                const updated = [...prev.slice(0, -1), { role: 'assistant', content: message, ...reasoning }] as Message[];
                 saveCurrentSession(updated);
                 return updated;
               } else {
-                const updated = [...prev, { role: 'assistant', content: message }] as Message[];
+                const updated = [...prev, { role: 'assistant', content: message, ...reasoning }] as Message[];
                 saveCurrentSession(updated);
                 return updated;
               }
+            });
+          },
+          onAssistantReasoning: (reasoning) => {
+            agenticReasoning = reasoning;
+            setMessages(prev => {
+              const lastMessage = prev[prev.length - 1];
+              if (lastMessage?.role === 'assistant') {
+                const updated = [...prev.slice(0, -1), { ...lastMessage, reasoning }] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              }
+              return prev;
             });
           },
           onToolCall: (toolCall) => {

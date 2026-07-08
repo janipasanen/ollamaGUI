@@ -297,6 +297,51 @@ describe('Agentic Features', () => {
       expect(results.length).toBeGreaterThan(0);
     });
 
+    it('captures reasoning/thinking and surfaces it via onAssistantReasoning (#245)', async () => {
+      const mockFetch = vi.fn();
+      global.fetch = mockFetch;
+
+      let callCount = 0;
+      const mockResponse = {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: vi.fn().mockImplementation(() => {
+              callCount++;
+              if (callCount === 1) {
+                return Promise.resolve({
+                  done: false,
+                  value: Buffer.from('{"message":{"thinking":"let me consider","content":"Answer"}}\n'),
+                });
+              }
+              return Promise.resolve({ done: true, value: undefined });
+            }),
+          }),
+        },
+      };
+      mockFetch.mockResolvedValue(mockResponse);
+
+      let reasoningSeen = '';
+      let assistantContent = '';
+      const generator = agenticChatStream({
+        model: 'r1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        maxIterations: 1,
+        endpoint: 'http://localhost:11434/api/chat',
+        onAssistantReasoning: (r: string) => { reasoningSeen = r; },
+        onAssistantMessage: (m: string) => { assistantContent = m; },
+      } as any);
+
+      const yielded: any[] = [];
+      for await (const message of generator) { yielded.push(message); if (yielded.length >= 3) break; }
+
+      expect(reasoningSeen).toBe('let me consider');
+      expect(assistantContent).toBe('Answer');
+      const assistantMsg = yielded.find(m => m.role === 'assistant' && m.content === 'Answer');
+      expect(assistantMsg).toBeTruthy();
+      expect(assistantMsg.reasoning).toBe('let me consider');
+    });
+
     it('should respect max iterations limit', async () => {
       // Mock fetch to simulate continuous tool calls
       const mockFetch = vi.fn();
