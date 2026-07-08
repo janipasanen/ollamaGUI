@@ -28,6 +28,8 @@ export interface OrchestratorOptions {
   onPhase: (phase: OrchestratorPhase, label: string) => void;
   /** Called with incremental text for the current phase. */
   onDelta: (phase: OrchestratorPhase, fullText: string) => void;
+  /** Called with incremental reasoning/thinking for the current phase (#252). */
+  onReasoning?: (phase: OrchestratorPhase, fullReasoning: string) => void;
   signal?: AbortSignal;
 }
 
@@ -38,15 +40,23 @@ async function streamChat(
   isCloud: boolean,
   opts: OrchestratorOptions,
   onText: (full: string) => void,
+  phase: OrchestratorPhase,
 ): Promise<string> {
   let acc = '';
+  let reasoningAcc = '';
+  const forwardReasoning = () => {
+    if (reasoningAcc && opts.onReasoning) opts.onReasoning(phase, reasoningAcc);
+  };
 
   if (!isCloud && opts.mlx?.active && model === opts.workerModel) {
-    // Worker on MLX server.
+    // Worker on MLX server. fetchMlxChatStream passes (delta, reasoning?) (#244).
     await fetchMlxChatStream(
       model,
       messages,
-      (delta) => { acc += delta; onText(acc); },
+      (delta, reasoning) => {
+        if (reasoning) { reasoningAcc += reasoning; forwardReasoning(); }
+        if (delta) { acc += delta; onText(acc); }
+      },
       opts.mlx.port,
       { signal: opts.signal },
     );
@@ -58,6 +68,8 @@ async function streamChat(
     model,
     messages,
     (chunk) => {
+      const thinking = chunk.message?.thinking ?? chunk.thinking;
+      if (thinking) { reasoningAcc += thinking; forwardReasoning(); }
       if (chunk.message?.content) { acc += chunk.message.content; onText(acc); }
     },
     endpoint,
@@ -96,7 +108,7 @@ export async function runCloudBrainLocalWorker(opts: OrchestratorOptions): Promi
     ...opts.messages.filter(m => m.role !== 'system'),
   ];
   const planText = await streamChat(opts.brainModel, planMessages, true, opts,
-    (full) => opts.onDelta('brain-plan', full));
+    (full) => opts.onDelta('brain-plan', full), 'brain-plan');
 
   // Extract the worker instruction (fallback to the whole plan / original task).
   const instrMatch = planText.match(/INSTRUCTION:\s*([\s\S]+)/i);
@@ -109,7 +121,7 @@ export async function runCloudBrainLocalWorker(opts: OrchestratorOptions): Promi
     { role: 'user', content: workerInstruction },
   ];
   const workerOutput = await streamChat(opts.workerModel, workerMessages, false, opts,
-    (full) => opts.onDelta('worker', full));
+    (full) => opts.onDelta('worker', full), 'worker');
 
   // ── Phase 3: Brain reviews the worker output and synthesizes the final answer ──
   opts.onPhase('brain-final', '🧠 Brain — synthesizing');
@@ -125,7 +137,7 @@ export async function runCloudBrainLocalWorker(opts: OrchestratorOptions): Promi
     { role: 'user', content: 'Produce the final, polished answer for the user.' },
   ];
   const finalAnswer = await streamChat(opts.brainModel, finalMessages, true, opts,
-    (full) => opts.onDelta('brain-final', full));
+    (full) => opts.onDelta('brain-final', full), 'brain-final');
 
   return finalAnswer;
 }

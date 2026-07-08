@@ -378,3 +378,38 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1157 passed (100 files)** (+16).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M42 — Composer drag/drop+paste, command palette & orchestrator reasoning (tenth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude GUI / Cursor / TUIs.
+Three gaps found and implemented; #228 (shortcuts overlay) closed as resolved
+by M41. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#250** Drag-and-drop + paste image attachment in the composer. The app
+  only attached images via the paperclip button; Cursor/Claude/Codex all accept
+  pasted or dragged images. Extracted a shared `attachImageFiles` pipeline
+  (reuses `validateImageAttachments` + `FileReader`) and wired `onDrop`/
+  `onDragOver`/`onDragLeave` to the composer (with a drag-over ring highlight)
+  and `onPaste` to the chat input. Non-image drops/pastes are ignored.
+- [x] **#251** Command palette (Ctrl/Cmd+P). The app bound Ctrl/Cmd+K to "new
+  chat" only and had no unified quick-action palette (Cursor Cmd+K / VS Code
+  Cmd+P / Claude command hub). Added a `CommandPalette` component
+  (`components/CommandPalette.tsx`) with a `filterCommands` helper, a filter
+  input, arrow-key navigation, Enter to run, Escape/backdrop to close, and
+  commands for New Chat / Find in Chat / Toggle Sidebar / Browser / Files /
+  Terminal / Open Settings / Show Shortcuts. Bound to Ctrl/Cmd+P (works while
+  typing). Added to the shortcuts overlay + footer hint.
+- [x] **#252** Reasoning/thinking capture in the cloud-brain orchestrator.
+  `runCloudBrainLocalWorker` streamed each phase via `onDelta` but its
+  `streamChat` helper read only `chunk.message.content` (and the MLX callback
+  only `delta`), dropping thinking — unlike the single-model and many-models
+  paths. Added an `onReasoning(phase, fullReasoning)` callback, surface
+  `chunk.message.thinking`/`chunk.thinking` (Ollama) and the MLX `(delta,
+  reasoning)` delta, and wired the App.tsx orchestrator branch to accumulate +
+  persist `msg.reasoning` so `ReasoningBlock` renders it.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1181 passed (104 files)** (+24).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

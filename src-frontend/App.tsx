@@ -133,6 +133,7 @@ import { setDiffReviewCallback, clearDiffReviewCallback, diffLines, type Pending
 import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
+import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -441,6 +442,8 @@ const App: React.FC = () => {
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchIndex, setChatSearchIndex] = useState(0);
+  // Command palette (#251)
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   // Temporary/incognito chat: held in memory only, never persisted (#134).
@@ -1045,6 +1048,18 @@ const App: React.FC = () => {
         setChatSearchOpen(false);
         return;
       }
+      // Escape closes the command palette even while focused in its input (#251)
+      if (e.key === 'Escape' && paletteOpen) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        return;
+      }
+      // Command palette works even while focused in the chat input (#251)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setPaletteOpen(prev => !prev);
+        return;
+      }
       // In-conversation search works even while focused in the chat input (#247)
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -1088,7 +1103,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen]);
 
   // Update appearance settings: persist, re-apply accent/density, re-resolve dark.
   const updateTheme = (patch: Partial<ThemeSettings>) => {
@@ -1414,12 +1429,11 @@ const App: React.FC = () => {
   const toApiBase64 = (img: string) => img.startsWith('data:') ? (img.split(',')[1] ?? '') : img;
   const toDisplayUrl = (img: string) => img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`;
 
-  // M5 Issue 20: Image attachments
-  const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
+  // M5 Issue 20: Image attachments — shared attach pipeline used by the
+  // file picker, drag-and-drop, and clipboard paste (#250).
+  const attachImageFiles = (files: File[]) => {
     // Shared validation: count cap, MIME allowlist, size limit (#31/#59).
-    const { valid, errors } = validateImageAttachments(Array.from(files), attachedImages.length);
+    const { valid, errors } = validateImageAttachments(files, attachedImages.length);
     if (errors.length > 0) alert(errors.join('\n'));
     valid.forEach(file => {
       const reader = new FileReader();
@@ -1429,7 +1443,36 @@ const App: React.FC = () => {
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    attachImageFiles(Array.from(files));
     e.target.value = '';
+  };
+
+  // Drag-and-drop image attachment onto the composer (#250)
+  const [isDragOver, setIsDragOver] = useState(false);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    const images = files.filter(f => f.type.startsWith('image/'));
+    if (images.length > 0) attachImageFiles(images);
+  };
+
+  // Paste image from clipboard into the composer (#250)
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const images = items
+      .filter(item => item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((f): f is File => !!f);
+    if (images.length > 0) {
+      e.preventDefault();
+      attachImageFiles(images);
+    }
   };
 
   const cancelStream = () => {
@@ -1586,6 +1629,7 @@ const App: React.FC = () => {
       if (mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel) {
         // Multi-agent: cloud model is the brain, local model is the worker.
         let header = '';
+        let orchestratorReasoning = '';
         setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
         try {
           await runCloudBrainLocalWorker({
@@ -1598,13 +1642,23 @@ const App: React.FC = () => {
             signal: abortControllerRef.current?.signal,
             onPhase: (_phase, label) => {
               header = `_${label}…_\n\n`;
-              setMessages(prev => [...prev, { role: 'assistant', content: header }] as Message[]);
+              setMessages(prev => [...prev, { role: 'assistant', content: header, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[]);
             },
             onDelta: (_phase, fullText) => {
               setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last?.role === 'assistant') {
-                  return [...prev.slice(0, -1), { role: 'assistant', content: header + fullText }] as Message[];
+                  return [...prev.slice(0, -1), { role: 'assistant', content: header + fullText, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[];
+                }
+                return prev;
+              });
+            },
+            onReasoning: (_phase, fullReasoning) => {
+              orchestratorReasoning = fullReasoning;
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === 'assistant') {
+                  return [...prev.slice(0, -1), { ...last, reasoning: orchestratorReasoning }] as Message[];
                 }
                 return prev;
               });
@@ -1977,6 +2031,18 @@ const App: React.FC = () => {
   };
 
   const dark = isDarkMode;
+
+  // Command palette actions (#251)
+  const paletteCommands: PaletteCommand[] = [
+    { id: 'new-chat', label: 'New Chat', hint: 'Ctrl+K', run: () => startNewChat() },
+    { id: 'find', label: 'Find in Chat', hint: 'Ctrl+F', run: () => { setChatSearchOpen(true); setChatSearchIndex(0); } },
+    { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+\\', run: () => setIsSidebarOpen(prev => !prev) },
+    { id: 'toggle-browser', label: 'Toggle Browser', hint: 'Ctrl+B', run: () => togglePanel('browser') },
+    { id: 'toggle-files', label: 'Toggle Files', hint: 'Ctrl+Shift+F', run: () => togglePanel('files') },
+    { id: 'toggle-terminal', label: 'Toggle Terminal', hint: 'Ctrl+T', run: () => togglePanel('terminal') },
+    { id: 'open-settings', label: 'Open Settings', hint: 'Ctrl+,', run: () => setIsSettingsOpen(true) },
+    { id: 'show-help', label: 'Show Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
+  ];
 
   return (
     <div className={`flex h-screen font-sans transition-colors duration-300 ${
@@ -2802,9 +2868,15 @@ const App: React.FC = () => {
         )}
 
         {/* Input Area - Responsive: full width on mobile, constrained on desktop */}
-        <div className={`p-4 md:p-6 pb-6 pt-2 shrink-0 ${
-          dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'
-        }`}>
+        <div
+          data-testid="composer-dropzone"
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+          onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDragOver(false); }}
+          className={`p-4 md:p-6 pb-6 pt-2 shrink-0 rounded-xl transition-colors ${
+            isDragOver ? (dark ? 'bg-blue-900/30 ring-2 ring-blue-500' : 'bg-blue-50 ring-2 ring-blue-400') : ''
+          } ${dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'}`}
+        >
           {/* M5 Issue 20: Image thumbnails preview */}
           {attachedImages.length > 0 && (
             <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
@@ -2958,6 +3030,7 @@ const App: React.FC = () => {
                id="chat-input"
                type="text"
                value={input}
+               onPaste={handlePaste}
                onChange={(e) => {
                  const val = e.target.value;
                  setInput(val);
@@ -3152,7 +3225,7 @@ const App: React.FC = () => {
                 </>
               );
             })()}
-            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · Cmd+F find · ? for shortcuts
+            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · Cmd+F find · Cmd+P commands · ? for shortcuts
           </div>
 
         {/* Voice Call Overlay (#132) */}
@@ -5450,6 +5523,15 @@ const App: React.FC = () => {
          )}
        </div>
 
+        {/* Command palette (#251) */}
+        {paletteOpen && (
+          <CommandPalette
+            commands={paletteCommands}
+            onClose={() => setPaletteOpen(false)}
+            dark={dark}
+          />
+        )}
+
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -5463,6 +5545,7 @@ const App: React.FC = () => {
               <div className="space-y-1">
                 {[
                   ['New Chat', 'Ctrl+K'],
+                  ['Command Palette', 'Ctrl+P'],
                   ['Find in Chat', 'Ctrl+F'],
                   ['Toggle Sidebar', 'Ctrl+\\'],
                   ['Toggle Browser', 'Ctrl+B'],
