@@ -251,8 +251,12 @@ const Mermaid: React.FC<{ code: string; dark: boolean }> = ({ code, dark }) => {
 };
 
 // Issue 22: standalone component so useState works per code block instance
+const CODE_COLLAPSE_THRESHOLD = 20; // lines before collapse kicks in (#312)
 const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
   const [copied, setCopied] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(false);
+  const lineCount = code.split('\n').length;
+  const shouldCollapse = lineCount > CODE_COLLAPSE_THRESHOLD;
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
     setCopied(true);
@@ -263,27 +267,45 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
       <div className={`flex items-center justify-between px-4 py-1.5 rounded-t-md text-xs ${
         dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-300 text-zinc-600'
       }`}>
-        <span className="font-mono">{lang}</span>
-        <button
-          onClick={handleCopy}
-          className={`transition-all px-2 py-0.5 rounded ${
-            copied
-              ? 'text-green-400'
-              : (dark ? 'text-zinc-400 hover:text-zinc-200 opacity-0 group-hover:opacity-100' : 'text-zinc-500 hover:text-zinc-800 opacity-0 group-hover:opacity-100')
-          }`}
-        >
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+        <span className="font-mono">{lang}{shouldCollapse && <span className="opacity-60 ml-1">({lineCount} lines)</span>}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopy}
+            className={`transition-all px-2 py-0.5 rounded ${
+              copied
+                ? 'text-green-400'
+                : (dark ? 'text-zinc-400 hover:text-zinc-200 opacity-0 group-hover:opacity-100' : 'text-zinc-500 hover:text-zinc-800 opacity-0 group-hover:opacity-100')
+            }`}
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
       </div>
-      <SyntaxHighlighter
-        style={dark ? vscDarkPlus : oneLight}
-        language={lang}
-        PreTag="div"
-        customStyle={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
-        {...props}
-      >
-        {code}
-      </SyntaxHighlighter>
+      <div className={shouldCollapse && !expanded ? 'max-h-96 overflow-hidden relative' : ''}>
+        <SyntaxHighlighter
+          style={dark ? vscDarkPlus : oneLight}
+          language={lang}
+          PreTag="div"
+          customStyle={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
+          {...props}
+        >
+          {code}
+        </SyntaxHighlighter>
+        {shouldCollapse && !expanded && (
+          <div className={`absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t ${dark ? 'from-zinc-900' : 'from-white'} to-transparent flex items-end justify-center pb-1`}>
+            <button
+              onClick={() => setExpanded(true)}
+              className={`text-xs px-3 py-1 rounded-full ${dark ? 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-700 hover:bg-zinc-300'}`}
+            >Show all {lineCount} lines</button>
+          </div>
+        )}
+      </div>
+      {shouldCollapse && expanded && (
+        <button
+          onClick={() => setExpanded(false)}
+          className={`w-full text-xs py-1 ${dark ? 'bg-zinc-700 text-zinc-400 hover:text-zinc-200' : 'bg-zinc-300 text-zinc-600 hover:text-zinc-800'}`}
+        >Collapse</button>
+      )}
     </div>
   );
 });
@@ -1937,6 +1959,16 @@ const App: React.FC = () => {
           deleteSession(currentSessionId, title);
           return;
         }
+        if (result.action === 'models') {
+          if (models.length === 0) { showStatusBanner('No models available — check your Ollama connection'); return; }
+          const local = models.filter(m => !m.cloud).map(m => `  ${m.name}${m.parameterSize ? ` (${m.parameterSize})` : ''}${m.quantization ? ` ${m.quantization}` : ''}`);
+          const cloud = models.filter(m => m.cloud).map(m => `  ${m.name} ⛅`);
+          const parts: string[] = [];
+          if (local.length > 0) parts.push(`Local (${local.length}):\n${local.join('\n')}`);
+          if (cloud.length > 0) parts.push(`Cloud (${cloud.length}):\n${cloud.join('\n')}`);
+          showStatusBanner(parts.join('\n') || 'No models available');
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2929,14 +2961,14 @@ const App: React.FC = () => {
                 {models.filter(m => !m.cloud).length > 0 && (
                   <optgroup label="— Local Ollama —">
                     {models.filter(m => !m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}</option>
+                      <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}</option>
                     ))}
                   </optgroup>
                 )}
                 {models.filter(m => m.cloud).length > 0 && (
                   <optgroup label="— Cloud Ollama —">
                     {models.filter(m => m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name} ⛅</option>
+                      <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
                     ))}
                   </optgroup>
                 )}

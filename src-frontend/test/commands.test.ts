@@ -466,3 +466,17 @@ describe('/delete command (#311)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('delete'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /models builtin (#314) ────────────────────────────────────────────────────
+
+describe('/models command (#314)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('models')?.builtin).toBe(true);
+  });
+  it('returns action: models with no arg', () => {
+    const r = runCommand('/models');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('models'); expect(r.arg).toBeUndefined(); }
+  });
+});

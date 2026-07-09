@@ -1001,3 +1001,33 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1399 passed (151 files)** (+6).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M63 — Code block collapse, model info in selector & /models command (thirty-first analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / LM Studio / Open
+WebUI / TUIs. Three gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#312** Collapsible long code blocks with expand/collapse. Codex and
+  Claude collapse long code blocks behind an expand affordance, keeping the chat
+  scrollable. The app's `CodeBlock` always rendered at full height — a 200-line
+  dump dominated the screen. Added a 20-line threshold: blocks exceeding it get
+  a `max-h-96` clamp with a "Show all N lines" gradient overlay button; clicking
+  expands to full height with a "Collapse" button at the bottom. The header shows
+  the line count when collapsible.
+- [x] **#313** Parameter size and quantization in the model selector dropdown.
+  LM Studio and Open WebUI show model metadata in the picker. The app's
+  `ModelInfo` carried `parameterSize`, `quantization`, and `size` but the
+  dropdown only showed the bare name. Appended parameter size and quantization to
+  each local model option and parameter size to each cloud model option.
+- [x] **#314** `/models` slash command. Codex CLI and Claude Code TUIs have a
+  command to list available models. The app's `/model` showed the current model
+  but didn't list all. Added a `/models` builtin (distinct from `/model`) that
+  lists all local and cloud models with parameter size and quantization in the
+  status banner.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1405 passed (152 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
