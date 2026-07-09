@@ -81,3 +81,33 @@ describe('Retry button on failed messages (#299)', () => {
     await waitFor(() => expect(document.body.textContent).toContain('Hello there'), { timeout: 3000 });
   });
 });
+
+
+// ── stop reason + prompt token count (#391, #392) ──────────────────────────────
+
+describe('Stop reason + prompt tokens (#391, #392)', () => {
+  it('renders the stop reason and prompt→completion tokens', async () => {
+    global.fetch = modelsThenStream([
+      '{"message":{"content":"Partial answer"}}\n',
+      '{"done":true,"eval_count":40,"eval_duration":500000000,"prompt_eval_count":210,"done_reason":"length"}\n',
+    ]);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(document.body.textContent).toContain('Partial answer'), { timeout: 3000 });
+    await waitFor(() => expect(screen.getByText(/length-limited/)).toBeInTheDocument(), { timeout: 3000 });
+    expect(screen.getByText('210→40 tokens')).toBeInTheDocument();
+  });
+
+  it('renders the stop reason for a normal stop', async () => {
+    global.fetch = modelsThenStream([
+      '{"message":{"content":"All done"}}\n',
+      '{"done":true,"eval_count":5,"eval_duration":50000000,"done_reason":"stop"}\n',
+    ]);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(document.body.textContent).toContain('All done'), { timeout: 3000 });
+    await waitFor(() => expect(screen.getByText(/stopped/)).toBeInTheDocument(), { timeout: 3000 });
+  });
+});

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -3180,7 +3180,7 @@ ${lines.join('\n')}`;
         let assistantContent = '';
         let assistantReasoning = '';
         let streamOk = false;
-        let genStats: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number } | undefined;
+        let genStats: GenStats | undefined;
         setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
 
         try {
@@ -3466,6 +3466,7 @@ ${lines.join('\n')}`;
         : url('/api/chat');
     const ollamaModelName = selectedConnectedModel?.name ?? model;
     let continuedContent = '';
+    let contGenStats: GenStats | undefined;
     try {
       await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
         if (chunk.message?.content) {
@@ -3477,11 +3478,12 @@ ${lines.join('\n')}`;
             return updated;
           });
         }
+        if (chunk.done) contGenStats = computeGenStats(chunk);
       }, contEndpoint, false, genOptions, abortControllerRef.current?.signal);
       // Final save
       setMessages(prev => {
         const last = prev[prev.length - 1];
-        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false }] as Message[];
+        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false, ...(contGenStats ? { genStats: contGenStats } : {}) }] as Message[];
         saveCurrentSession(updated);
         return updated;
       });
@@ -4363,17 +4365,31 @@ ${lines.join('\n')}`;
                     >≈{formatTokenCount(estimateTokens(msg.content))}t</span>
                   )}
                 </div>
-                {/* Generation speed indicator (#297) */}
+                {/* Generation stats: speed, prompt→completion tokens, stop reason (#297, #391, #392) */}
                 {msg.role === 'assistant' && msg.genStats && (
-                  <div className={`text-[10px] -mt-1 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                  <div
+                    className={`text-[10px] -mt-1 mb-1 flex flex-wrap items-center gap-x-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}
+                    aria-label="Assistant message generation stats"
+                  >
                     {msg.genStats.tokensPerSec !== undefined && (
                       <span title="Generation speed">
                         {msg.genStats.tokensPerSec.toFixed(1)} tok/s
                       </span>
                     )}
-                    {msg.genStats.tokensPerSec !== undefined && msg.genStats.evalCount !== undefined && ' · '}
-                    {msg.genStats.evalCount !== undefined && (
+                    {msg.genStats.promptCount !== undefined && msg.genStats.evalCount !== undefined ? (
+                      <span title="Prompt → completion tokens consumed">
+                        {msg.genStats.promptCount}→{msg.genStats.evalCount} tokens
+                      </span>
+                    ) : msg.genStats.evalCount !== undefined ? (
                       <span title="Tokens generated">{msg.genStats.evalCount} tokens</span>
+                    ) : null}
+                    {msg.genStats.stopReason !== undefined && (
+                      <span
+                        title={`Generation stopped: ${msg.genStats.stopReason}`}
+                        className={`px-1 rounded ${msg.genStats.stopReason === 'length-limited' ? (dark ? 'text-amber-400' : 'text-amber-600') : ''}`}
+                      >
+                        · {msg.genStats.stopReason}
+                      </span>
                     )}
                   </div>
                 )}

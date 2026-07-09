@@ -33,8 +33,10 @@ describe('Ollama connection status indicator (#324)', () => {
   it('shows connected (green) after models load successfully', async () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
-    const dot = await screen.findByLabelText('Ollama connection status');
-    expect(dot.className).toContain('bg-emerald-500');
+    await waitFor(() => {
+      const dot = screen.getByLabelText('Ollama connection status');
+      expect(dot.className).toContain('bg-emerald-500');
+    });
   });
 
   it('shows disconnected (red) when the model fetch fails', async () => {

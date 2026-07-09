@@ -21,8 +21,8 @@ export interface Message {
   reasoning?: string;
   /** Epoch ms when the message was created (#253). */
   ts?: number;
-  /** Generation stats from the final Ollama stream chunk (#297). */
-  genStats?: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number };
+  /** Generation stats from the final Ollama stream chunk (#297, #391, #392). */
+  genStats?: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number; promptCount?: number; stopReason?: string };
   /** True when this assistant message is an error placeholder (#299). */
   isError?: boolean;
   /** True when the user cancelled generation mid-stream (#303). */
@@ -44,6 +44,8 @@ export interface OllamaResponse {
   load_duration?: number;
   prompt_eval_count?: number;
   prompt_eval_duration?: number;
+  /** Why generation stopped (`stop`/`length`/`tool_calls`/`load`) (#391). */
+  done_reason?: string;
 }
 
 /**
@@ -51,24 +53,55 @@ export interface OllamaResponse {
  * from the final `done:true` Ollama stream chunk (#297).
  * Ollama reports durations in nanoseconds.
  */
-export function computeGenStats(chunk: Partial<OllamaResponse>): {
+export interface GenStats {
   tokensPerSec?: number;
   evalCount?: number;
   totalDurationMs?: number;
-} | undefined {
+  /** Prompt/context tokens consumed (#392). */
+  promptCount?: number;
+  /** Why generation stopped (#391). */
+  stopReason?: string;
+}
+
+/**
+ * Map Ollama's `done_reason` to a short, human-readable label (#391).
+ * `load` means the model was only loaded (no generation) — treated as no reason.
+ */
+export function describeStopReason(reason?: string): string | undefined {
+  if (!reason) return undefined;
+  switch (reason) {
+    case 'stop': return 'stopped';
+    case 'length': return 'length-limited';
+    case 'tool_calls': return 'tool call';
+    case 'load': return undefined;
+    default: return reason;
+  }
+}
+
+export function computeGenStats(chunk: Partial<OllamaResponse>): GenStats | undefined {
   const evalCount = chunk.eval_count;
   const evalDurationNs = chunk.eval_duration;
   const totalDurationNs = chunk.total_duration;
-  if (typeof evalCount !== 'number' || evalCount <= 0) return undefined;
-  const result: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number } = {
-    evalCount,
-  };
-  if (typeof evalDurationNs === 'number' && evalDurationNs > 0) {
-    result.tokensPerSec = evalCount / (evalDurationNs / 1e9);
+  // Allow stats to surface even when no completion tokens were generated
+  // (e.g. a pure tool_calls turn), as long as there is a stop reason or
+  // prompt tokens to report.
+  const hasCompletion = typeof evalCount === 'number' && evalCount > 0;
+  const stopReason = describeStopReason(chunk.done_reason);
+  const promptCount = chunk.prompt_eval_count;
+  const hasPrompt = typeof promptCount === 'number' && promptCount > 0;
+  if (!hasCompletion && !stopReason && !hasPrompt) return undefined;
+  const result: GenStats = {};
+  if (hasCompletion) {
+    result.evalCount = evalCount;
+    if (typeof evalDurationNs === 'number' && evalDurationNs > 0) {
+      result.tokensPerSec = evalCount / (evalDurationNs / 1e9);
+    }
   }
   if (typeof totalDurationNs === 'number' && totalDurationNs > 0) {
     result.totalDurationMs = Math.round(totalDurationNs / 1e6);
   }
+  if (hasPrompt) result.promptCount = promptCount;
+  if (stopReason) result.stopReason = stopReason;
   return result;
 }
 

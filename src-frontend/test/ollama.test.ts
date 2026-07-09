@@ -255,3 +255,38 @@ describe('computeGenStats (#297)', () => {
     expect(computeGenStats({ eval_count: 0 })).toBeUndefined();
   });
 });
+
+// ── stop reason + prompt token count (#391, #392) ─────────────────────────────
+
+describe('computeGenStats stop reason + prompt tokens (#391, #392)', () => {
+  it('captures done_reason as a human-readable stopReason', () => {
+    const stats = computeGenStats({ eval_count: 12, eval_duration: 100_000_000, done_reason: 'length' });
+    expect(stats?.stopReason).toBe('length-limited');
+    expect(stats?.evalCount).toBe(12);
+  });
+
+  it('maps stop / tool_calls / load reasons', () => {
+    expect(computeGenStats({ eval_count: 1, done_reason: 'stop' })?.stopReason).toBe('stopped');
+    expect(computeGenStats({ eval_count: 1, done_reason: 'tool_calls' })?.stopReason).toBe('tool call');
+    // load-only turns into no stop reason
+    expect(computeGenStats({ eval_count: 1, done_reason: 'load' })?.stopReason).toBeUndefined();
+  });
+
+  it('captures prompt_eval_count as promptCount', () => {
+    const stats = computeGenStats({ eval_count: 30, prompt_eval_count: 128, done_reason: 'stop' });
+    expect(stats?.promptCount).toBe(128);
+    expect(stats?.evalCount).toBe(30);
+  });
+
+  it('returns stats for a pure tool_calls turn with zero completion tokens', () => {
+    const stats = computeGenStats({ eval_count: 0, prompt_eval_count: 50, done_reason: 'tool_calls' });
+    expect(stats?.stopReason).toBe('tool call');
+    expect(stats?.promptCount).toBe(50);
+    expect(stats?.evalCount).toBeUndefined();
+  });
+
+  it('returns undefined when there is nothing to report', () => {
+    expect(computeGenStats({ done_reason: 'load' })).toBeUndefined();
+    expect(computeGenStats({ eval_count: 0, prompt_eval_count: 0 })).toBeUndefined();
+  });
+});
