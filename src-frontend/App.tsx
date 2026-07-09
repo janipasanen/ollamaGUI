@@ -50,7 +50,7 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
-import { PanelShell, togglePanel, isPanelOpen } from './components/PanelShell';
+import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
 import './components/BrowserPane';
@@ -455,6 +455,10 @@ const App: React.FC = () => {
   // Temporary/incognito chat: held in memory only, never persisted (#134).
   const [isTemporary, setIsTemporary] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [zenMode, setZenMode] = useState(false);
+  const [notifyOnComplete, setNotifyOnComplete] = useState<boolean>(() => {
+    try { return localStorage.getItem('ollama_gui_notify_complete') === 'true'; } catch { return false; }
+  });
   const [isMobile, setIsMobile] = useState(false);
   const [isAgenticMode, setIsAgenticMode] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<{
@@ -1113,6 +1117,20 @@ const App: React.FC = () => {
   };
 
   const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+
+  // Zen/Focus mode (#309): hides sidebar, closes panels, simplifies header.
+  const toggleZenMode = () => {
+    setZenMode(prev => {
+      const next = !prev;
+      if (next) {
+        setIsSidebarOpen(false);
+        closeAllPanels();
+      } else {
+        setIsSidebarOpen(true);
+      }
+      return next;
+    });
+  };
   // Ref for conversation-switch fn (defined after loadSession, called from the
   // keyboard handler that runs earlier) — avoids use-before-declaration (#300).
   const switchConversationRef = useRef<(direction: 1 | -1) => void>(() => {});
@@ -1214,6 +1232,9 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '[') {
         e.preventDefault();
         switchConversationRef.current(-1); // Previous conversation (#300)
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        toggleZenMode(); // Zen/Focus mode (#309)
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1910,6 +1931,12 @@ const App: React.FC = () => {
           })();
           return;
         }
+        if (result.action === 'delete') {
+          if (!currentSessionId) { showStatusBanner('No conversation to delete'); return; }
+          const title = sessions.find(s => s.id === currentSessionId)?.title ?? 'this chat';
+          deleteSession(currentSessionId, title);
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2347,7 +2374,7 @@ const App: React.FC = () => {
             speak(filtered, voiceSettings).catch(() => {});
           }
           // Browser notification when generation completes and tab is unfocused (#307)
-          if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          if (notifyOnComplete && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
             const snippet = filtered.slice(0, 100).replace(/\n/g, ' ');
             try {
               new Notification(`Reply from ${activeModel}`, { body: snippet || 'Generation complete' });
@@ -2603,7 +2630,7 @@ const App: React.FC = () => {
 
       {/* Sidebar - Responsive: hidden on mobile by default, toggleable */}
       <div className={`transition-all duration-300 border-r flex flex-col absolute md:relative z-40 ${
-        isSidebarOpen ? 'w-64 p-4' : 'w-0 overflow-hidden p-0 border-none'
+        (isSidebarOpen && !zenMode) ? 'w-64 p-4' : 'w-0 overflow-hidden p-0 border-none'
       } ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'} ${
         isMobile && !isSidebarOpen ? 'hidden' : ''
       }`}>
@@ -2849,7 +2876,7 @@ const App: React.FC = () => {
 
       {/* Main Chat Area - Responsive: full width on mobile, adjusts for sidebar on desktop */}
       <div className={`flex-1 flex flex-col relative overflow-hidden ${
-        isMobile && isSidebarOpen ? 'ml-64' : ''
+        isMobile && isSidebarOpen && !zenMode ? 'ml-64' : ''
       }`}>
         {/* Shared resizable layout shell — owns the chat+dock split (#70/#81).
             Near-passthrough until a panel registers + opens. */}
@@ -5627,6 +5654,28 @@ const App: React.FC = () => {
                       {isTtsAvailable() ? '✓ TTS available.' : '✗ TTS not available.'} {isSpeechRecognitionAvailable() ? '✓ Dictation available (🎤 in composer).' : '✗ SpeechRecognition not available.'}
                     </p>
                   </div>
+                  {/* Notify on completion (#310) */}
+                  <div className={`rounded-lg border p-3 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Notify on completion</span>
+                      <Toggle
+                        checked={notifyOnComplete}
+                        onChange={() => {
+                          const next = !notifyOnComplete;
+                          setNotifyOnComplete(next);
+                          try { localStorage.setItem('ollama_gui_notify_complete', String(next)); } catch { /* ignore */ }
+                          if (next && 'Notification' in window && Notification.permission !== 'granted') {
+                            Notification.requestPermission().catch(() => {});
+                          }
+                        }}
+                        dark={dark}
+                        label="Notify on completion"
+                      />
+                    </div>
+                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                      Shows a browser notification when a reply finishes while the tab is in the background.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Prompt library (#97) */}
@@ -6341,6 +6390,7 @@ const App: React.FC = () => {
                   ['Focus Composer', 'Ctrl+L'],
                   ['Copy Last Reply', 'Ctrl+Shift+C'],
                   ['Toggle Theme', 'Ctrl+Shift+D'],
+                  ['Zen/Focus Mode', 'Ctrl+Shift+Z'],
                   ['Scroll to Latest', 'Ctrl+End'],
                   ['Next Conversation', 'Ctrl+]'],
                   ['Previous Conversation', 'Ctrl+['],

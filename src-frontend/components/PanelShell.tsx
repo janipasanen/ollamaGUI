@@ -210,6 +210,11 @@ export function togglePanel(id: string): void {
   openStore.toggle(id);
 }
 
+/** Close all currently open panels. Used by zen/focus mode (#309). */
+export function closeAllPanels(): void {
+  panelRegistry.list().forEach(p => openStore.close(p.id));
+}
+
 /** Whether a panel is currently open. */
 export function isPanelOpen(id: string): boolean {
   return openStore.isOpen(id);

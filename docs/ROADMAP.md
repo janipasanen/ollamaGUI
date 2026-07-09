@@ -974,3 +974,30 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1393 passed (150 files)** (+4).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M62 — Zen mode, notification permission & /delete command (thirtieth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#309** Zen/Focus mode (Ctrl+Shift+Z). Codex CLI and Claude Code have
+  minimal, distraction-free interfaces; many chat GUIs offer a focus/zen mode.
+  The app always showed the sidebar, header, and side panels. Added a zen mode
+  toggle that hides the sidebar, closes all open panels, and restores them when
+  toggled off. Added to the keyboard shortcuts help overlay.
+- [x] **#310** Browser notification permission request flow. The app fired a
+  browser Notification on completion (#307) but only when permission was already
+  granted — there was no way to request it. Added a "Notify on completion"
+  settings toggle that calls `Notification.requestPermission()` when enabled and
+  persists to localStorage. Notifications only fire when the toggle is on.
+- [x] **#311** `/delete` slash command. The app let users delete conversations
+  via the sidebar ✕ button but had no slash command for it. Added a `/delete`
+  builtin that triggers the delete confirmation dialog for the current
+  conversation — mirroring the sidebar delete action.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1399 passed (151 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

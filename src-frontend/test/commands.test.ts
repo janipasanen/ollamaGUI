@@ -452,3 +452,17 @@ describe('/compact command (#305)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('compact'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /delete builtin (#311) ────────────────────────────────────────────────────
+
+describe('/delete command (#311)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('delete')?.builtin).toBe(true);
+  });
+  it('returns action: delete with no arg', () => {
+    const r = runCommand('/delete');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('delete'); expect(r.arg).toBeUndefined(); }
+  });
+});

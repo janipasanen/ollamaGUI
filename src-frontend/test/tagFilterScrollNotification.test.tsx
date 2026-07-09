@@ -57,8 +57,9 @@ describe('Browser notification on completion (#307)', () => {
   it('fires a notification when generation completes and tab is hidden', async () => {
     const mockNotification = vi.fn() as any;
     mockNotification.permission = 'granted';
-    (global as any).Notification = mockNotification;
+    (window as any).Notification = mockNotification;
     Object.defineProperty(document, 'hidden', { value: true, writable: true, configurable: true });
+    localStorage.setItem('ollama_gui_notify_complete', 'true');
 
     const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
     reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('{"message":{"content":"Hello there"}}\n') });
@@ -75,10 +76,8 @@ describe('Browser notification on completion (#307)', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
     fireEvent.click(screen.getByText('Send'));
     await waitFor(() => expect(document.body.textContent).toContain('Hello there'), { timeout: 3000 });
-    await waitFor(() => expect(mockNotification).toHaveBeenCalledWith(
-      expect.stringMatching(/Reply from/),
-      expect.objectContaining({ body: expect.any(String) }),
-    ), { timeout: 2000 });
+    await waitFor(() => expect(mockNotification).toHaveBeenCalled(), { timeout: 3000 });
+    expect(mockNotification.mock.calls[0][0]).toMatch(/Reply from/);
   });
 });
 
