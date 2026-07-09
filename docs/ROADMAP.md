@@ -1031,3 +1031,33 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1405 passed (152 files)** (+6).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M64 — System prompt presets, /pull command & sidebar message counts (thirty-second analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / LM
+Studio / TUIs. Three gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#315** System prompt preset templates. Claude Code and Codex let users
+  quickly switch the AI's persona/role. The app had a free-text system prompt
+  field but no preset templates. Added a "Persona presets" dropdown next to the
+  system prompt textarea in settings with five built-in presets: Default, Coding
+  assistant, Creative writer, Concise responder, Translator, and Custom (clear).
+  Selecting one fills the textarea.
+- [x] **#316** `/pull <model>` slash command. The app pulled models via the
+  settings UI but had no slash command for it. Added a `/pull` builtin that
+  triggers `handlePullModel` for the given model name, shows a "Pulling…"
+  status banner, and auto-selects the model when done. No-arg shows usage.
+- [x] **#317** Message count per session in the sidebar. ChatGPT and many chat
+  GUIs show the message count next to each conversation. The app showed only the
+  title and tags. Added a compact "N msgs" count below each session title for
+  sessions with messages; empty sessions show no count.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1412 passed (153 files)** (+7).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+- Fixed two existing tests affected by the sidebar title structure change
+  (`pinArchiveCommands.test.tsx` selector) and the presets dropdown aria-label
+  (`App.test.tsx` accessible-name match).

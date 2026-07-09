@@ -1969,6 +1969,13 @@ const App: React.FC = () => {
           showStatusBanner(parts.join('\n') || 'No models available');
           return;
         }
+        if (result.action === 'pull') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /pull <model-name>'); return; }
+          showStatusBanner(`Pulling ${arg}…`);
+          void handlePullModel(arg);
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2828,7 +2835,12 @@ const App: React.FC = () => {
                     className={`flex-1 text-sm px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                   />
                 ) : (
-                  <span className="truncate text-sm flex-1">{s.pinned ? '📌 ' : ''}{s.title}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="truncate text-sm block">{s.pinned ? '📌 ' : ''}{s.title}</span>
+                    {s.messages.length > 0 && (
+                      <span className={`text-[9px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{s.messages.length} {s.messages.length === 1 ? 'msg' : 'msgs'}</span>
+                    )}
+                  </div>
                 )}
                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                   <button onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }} title="Rename" aria-label={`Rename session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">✏️</button>
@@ -4290,6 +4302,23 @@ const App: React.FC = () => {
                  {/* System Prompt */}
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>System Prompt</label>
+                   {/* System prompt presets (#315) */}
+                   <div className="flex gap-2 mb-2">
+                     <select
+                       aria-label="Persona presets"
+                       onChange={(e) => { if (e.target.value) { updateSystemPrompt(e.target.value); e.target.value = ''; } }}
+                       className={`text-xs border rounded-lg px-2 py-1 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'}`}
+                       defaultValue=""
+                     >
+                       <option value="" disabled>Apply preset…</option>
+                       <option value="You are a helpful assistant.">Default</option>
+                       <option value="You are an expert software engineer. Write clean, well-structured code with comments where needed. Explain your reasoning briefly.">Coding assistant</option>
+                       <option value="You are a creative writing assistant. Help users craft engaging stories, poems, and prose with vivid language and imagination.">Creative writer</option>
+                       <option value="You are a concise assistant. Answer briefly and to the point. Avoid unnecessary elaboration.">Concise responder</option>
+                       <option value="You are a professional translator. Translate text accurately while preserving tone, context, and cultural nuances.">Translator</option>
+                       <option value="">Custom (clear)</option>
+                     </select>
+                   </div>
                    <textarea
                      value={systemPrompt}
                      onChange={(e) => updateSystemPrompt(e.target.value)}

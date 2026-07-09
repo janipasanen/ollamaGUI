@@ -480,3 +480,17 @@ describe('/models command (#314)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('models'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /pull builtin (#316) ──────────────────────────────────────────────────────
+
+describe('/pull command (#316)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('pull')?.builtin).toBe(true);
+  });
+  it('with a model name returns action: pull + arg', () => {
+    const r = runCommand('/pull llama3');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('pull'); expect(r.arg).toBe('llama3'); }
+  });
+});

@@ -46,12 +46,12 @@ describe('/pin slash command (#282)', () => {
     fireEvent.change(composer, { target: { value: '/pin' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Pinned conversation')).toBeInTheDocument();
-    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.flex-1')?.textContent ?? '')).toContain('📌'));
+    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.block')?.textContent ?? '')).toContain('📌'));
 
     fireEvent.change(composer, { target: { value: '/pin' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Unpinned conversation')).toBeInTheDocument();
-    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.flex-1')?.textContent ?? '')).not.toContain('📌'));
+    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.block')?.textContent ?? '')).not.toContain('📌'));
   });
 });
 
