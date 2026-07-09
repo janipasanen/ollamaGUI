@@ -1683,6 +1683,20 @@ const App: React.FC = () => {
           }
           return;
         }
+        if (result.action === 'pin') {
+          if (!currentSessionId) { showStatusBanner('Save the chat first to pin it'); return; }
+          const wasPinned = !!sessions.find(x => x.id === currentSessionId)?.pinned;
+          togglePin(currentSessionId);
+          showStatusBanner(wasPinned ? 'Unpinned conversation' : 'Pinned conversation');
+          return;
+        }
+        if (result.action === 'archive') {
+          if (!currentSessionId) { showStatusBanner('Save the chat first to archive it'); return; }
+          const wasArchived = !!sessions.find(x => x.id === currentSessionId)?.archived;
+          toggleArchive(currentSessionId);
+          showStatusBanner(wasArchived ? 'Unarchived conversation' : 'Archived conversation');
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2208,6 +2222,14 @@ const App: React.FC = () => {
     const updated = messages.map((m, j) => (j === index ? { ...m, content: newContent } : m));
     setMessages(updated);
     saveCurrentSession(updated);
+  };
+
+  // Quote a message into the composer as a Markdown blockquote draft (#284).
+  const quoteMessage = (index: number) => {
+    const quoted = messages[index]?.content.split('\n').map(l => `> ${l}`).join('\n') ?? '';
+    if (!quoted) return;
+    setInput(prev => (prev.trim() ? `${prev}\n\n${quoted}\n` : `${quoted}\n`));
+    setTimeout(() => document.getElementById('chat-input')?.focus(), 0);
   };
 
   // Regenerate the last assistant reply: save the current tail starting at the
@@ -3075,6 +3097,13 @@ const App: React.FC = () => {
                       title="Delete response"
                       className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
                     >🗑</button>
+                    {/* Quote message into the composer (#284) */}
+                    <button
+                      onClick={() => quoteMessage(i)}
+                      aria-label="Quote response"
+                      title="Quote into composer"
+                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >❝</button>
                   </div>
                 )}
                 {/* Edit button on user messages (#98) */}
@@ -3092,6 +3121,12 @@ const App: React.FC = () => {
                       title="Delete message"
                       className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-red-500/30 text-white/70"
                     >🗑 Delete</button>
+                    <button
+                      onClick={() => quoteMessage(i)}
+                      aria-label="Quote message"
+                      title="Quote into composer"
+                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
+                    >❝ Quote</button>
                   </div>
                 )}
                </div>

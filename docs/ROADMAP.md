@@ -716,3 +716,30 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1308 passed (136 files)** (+8).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M53 — /pin & /archive commands and quote-message-into-composer (twenty-first analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three parity gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#282** `/pin` slash command. TUI chat tools pin the active thread from
+  the command line; the app only pinned via the sidebar 📌 button. Added a
+  `/pin` builtin that toggles the current session's pinned state (via
+  `togglePin`) and confirms via the status banner, with a save-first hint for
+  temporary chats.
+- [x] **#283** `/archive` slash command. Added a `/archive` builtin that
+  toggles the current session's archived state (via `toggleArchive`) and
+  confirms via the status banner, with a save-first hint.
+- [x] **#284** Quote a message into the composer. ChatGPT / Cursor let you
+  quote/reply to a specific message; the app had copy and edit but no
+  quote-into-composer. Added a per-message Quote button (❝ — "Quote response"
+  on assistant replies, "Quote message" on user messages) that inserts the
+  message content as a Markdown blockquote draft (each line prefixed `> `),
+  appending to any existing draft, and focuses the composer.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1316 passed (138 files)** (+8).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

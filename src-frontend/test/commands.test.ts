@@ -252,3 +252,27 @@ describe('/copy command (#279)', () => {
     if (r.kind === 'builtin') expect(r.action).toBe('copy');
   });
 });
+
+// ── /pin & /archive builtins (#282/#283) ──────────────────────────────────────
+
+describe('/pin command (#282)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('pin')?.builtin).toBe(true);
+  });
+  it('returns builtin action: pin', () => {
+    const r = runCommand('/pin');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('pin');
+  });
+});
+
+describe('/archive command (#283)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('archive')?.builtin).toBe(true);
+  });
+  it('returns builtin action: archive', () => {
+    const r = runCommand('/archive');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('archive');
+  });
+});
