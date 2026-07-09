@@ -1118,3 +1118,32 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1423 passed (155 files)** (+4).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M67 — Connection status, params badge & /params command (thirty-fifth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / LM
+Studio / Open WebUI / TUIs. Three gaps found and implemented. No merge to
+`master` — work stays on `macOS-10.15`.
+
+- [x] **#324** Ollama connection status indicator in the header. Codex CLI and
+  LM Studio show a live connection/health indicator so the user knows whether
+  the backend is reachable. The app had no such indicator — model fetch failures
+  were only logged to the console. Added an `ollamaConnected` state (`null` =
+  unknown, `true`/`false` after the first model fetch) and a small coloured
+  status dot in the chat header (green = connected, red = disconnected, gray =
+  unknown) with a tooltip showing the base URL.
+- [x] **#325** Generation parameters badge in the chat header. ChatGPT and Open
+  WebUI surface the active temperature/context settings compactly so users can
+  see the current configuration at a glance. The app only exposed these in the
+  settings panel. Added a compact `T:<temp> · CTX:<num_ctx>` badge next to the
+  model selector that reflects the current `genOptions` (defaults shown when
+  unset) with a full tooltip listing all parameters.
+- [x] **#326** `/params` slash command to show all generation options. Each
+  parameter had its own command (`/temp`, `/ctx`, etc.) but there was no single
+  command to display the complete generation configuration. Added the `/params`
+  builtin that shows a status banner with Temperature, Context, Top-p, Top-k,
+  Max tokens, and Stop sequences in one line.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1433 passed (156 files)** (+10).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

@@ -404,6 +404,7 @@ const App: React.FC = () => {
   const [input, setInput] = useState('');
   const [model, setModel] = useState('llama3');
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [systemMemory, setSystemMemory] = useState<SystemMemory | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -733,6 +734,7 @@ const App: React.FC = () => {
 
   const refreshModels = useCallback(async () => {
     const availableModels = await fetchOllamaModels(url('/api/tags'));
+    setOllamaConnected(true);
     const cloudModels = await fetchCloudModels();
     const combined: ModelInfo[] = [
       ...availableModels.map(m => ({ ...m, cloud: isCloudModel(m.name) })), // preserve size/quant
@@ -946,6 +948,7 @@ const App: React.FC = () => {
         if (combined.length > 0) setModel(combined[0].name);
       } catch (e) {
         console.error('Failed to load models', e);
+        setOllamaConnected(false);
       }
     }
     loadInitialData();
@@ -2034,6 +2037,12 @@ const App: React.FC = () => {
           void handleDeleteModel(arg);
           return;
         }
+        if (result.action === 'params') {
+          showStatusBanner(
+            `Temperature: ${genOptions.temperature ?? 'default'} · Context: ${genOptions.num_ctx ?? 4096} · Top-p: ${genOptions.top_p ?? 'default'} · Top-k: ${genOptions.top_k ?? 'default'} · Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict} · Stop: [${genOptions.stop && genOptions.stop.length ? genOptions.stop.join(', ') : ''}]`
+          );
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -3004,6 +3013,18 @@ const App: React.FC = () => {
              >
                ☰
              </button>
+              {/* Ollama connection status indicator (#324) */}
+              <span
+                aria-label="Ollama connection status"
+                title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
+                className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+                  ollamaConnected === null
+                    ? 'bg-zinc-400'
+                    : ollamaConnected
+                      ? 'bg-emerald-500'
+                      : 'bg-red-500'
+                }`}
+              />
               <select
                 value={activePresetId ? `preset:${activePresetId}` : model}
                 onChange={(e) => {
@@ -3104,6 +3125,14 @@ const App: React.FC = () => {
                   ⚡ MLX{mlxSettings.fullInference ? '' : ' detected'}
                 </span>
               )}
+              {/* Generation parameters badge (#325) */}
+              <span
+                aria-label="Generation parameters"
+                title={`Temperature: ${genOptions.temperature ?? 'default'} · Context: ${genOptions.num_ctx ?? 4096} · Top-p: ${genOptions.top_p ?? 'default'} · Top-k: ${genOptions.top_k ?? 'default'} · Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict}`}
+                className={`text-xs px-2 py-0.5 rounded-full font-mono ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
+              >
+                T:{genOptions.temperature ?? 'def'} · CTX:{genOptions.num_ctx ?? 4096}
+              </span>
              </div>
            <div className="flex items-center gap-3">
              {/* On mobile, show only essential buttons; others go in mobile menu */}

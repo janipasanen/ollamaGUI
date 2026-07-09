@@ -508,3 +508,17 @@ describe('/remove command (#318)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('remove'); expect(r.arg).toBe('llama3'); }
   });
 });
+
+
+// ── /params builtin (#326) ────────────────────────────────────────────────────
+
+describe('/params command (#326)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('params')?.builtin).toBe(true);
+  });
+  it('returns action: params with no arg', () => {
+    const r = runCommand('/params');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('params'); expect(r.arg).toBeUndefined(); }
+  });
+});
