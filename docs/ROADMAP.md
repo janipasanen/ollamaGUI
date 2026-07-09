@@ -1087,3 +1087,34 @@ found and implemented. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1419 passed (154 files)** (+7).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M66 — Pin shortcut, recent models & /export json (thirty-fourth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / LM
+Studio / TUIs. Three gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#321** Keyboard shortcut to pin/unpin the current conversation
+  (Ctrl+Shift+P). The app pinned conversations via the sidebar 📌 button or
+  `/pin` command but had no keyboard shortcut. Added Ctrl+Shift+P to toggle pin
+  on the current conversation with a status banner confirmation. Fixed the
+  command palette shortcut (Ctrl+P) to not trigger on Ctrl+Shift+P. Added to the
+  help overlay.
+- [x] **#322** Recent models tracking and quick-switch. LM Studio and Open WebUI
+  show recently used models at the top of the picker. The app's model selector
+  listed all models with no recency tracking. Added a `recentModels` state that
+  tracks the last 5 used models in localStorage (updated on every `sendMessage`)
+  and displays them in a "— Recent —" optgroup at the top of the model selector
+  dropdown.
+- [x] **#323** `/export json` slash command. The app exported all sessions as
+  JSON via a UI button and the current conversation as Markdown via `/export`.
+  There was no way to export just the current conversation as JSON from the
+  command line. Extended the `/export` command to accept a `json` argument —
+  `/export json` downloads the current conversation (with session metadata) as a
+  `.json` file.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1423 passed (155 files)** (+4).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

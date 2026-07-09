@@ -27,7 +27,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'help', description: 'Show keyboard shortcuts and help', builtin: true },
   { name: 'model', description: 'Switch the active model (e.g. /model llama3)', builtin: true },
   { name: 'rename', description: 'Rename the current conversation (e.g. /rename My chat)', builtin: true },
-  { name: 'export', description: 'Download the current conversation as a Markdown file', builtin: true },
+  { name: 'export', description: 'Export conversation as Markdown or JSON (e.g. /export json)', builtin: true },
   { name: 'new', description: 'Start a new chat', builtin: true },
   { name: 'search', description: 'Search conversations (e.g. /search cats)', builtin: true },
   { name: 'copy', description: 'Copy the current conversation as Markdown to the clipboard', builtin: true },
@@ -133,7 +133,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'help') return { kind: 'builtin', action: 'help' };
     if (cmd.name === 'model') return { kind: 'builtin', action: 'model', arg: args };
     if (cmd.name === 'rename') return { kind: 'builtin', action: 'rename', arg: args };
-    if (cmd.name === 'export') return { kind: 'builtin', action: 'export' };
+    if (cmd.name === 'export') return { kind: 'builtin', action: 'export', arg: args };
     if (cmd.name === 'new') return { kind: 'builtin', action: 'new' };
     if (cmd.name === 'search') return { kind: 'builtin', action: 'search', arg: args };
     if (cmd.name === 'copy') return { kind: 'builtin', action: 'copy' };

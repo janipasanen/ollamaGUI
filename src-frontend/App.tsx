@@ -479,6 +479,9 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [zenMode, setZenMode] = useState(false);
   const [contextWarningDismissed, setContextWarningDismissed] = useState(false);
+  const [recentModels, setRecentModels] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_recent_models') ?? '[]'); } catch { return []; }
+  });
   const [playSoundOnComplete, setPlaySoundOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('ollama_gui_sound_complete') === 'true'; } catch { return false; }
   });
@@ -1215,7 +1218,7 @@ const App: React.FC = () => {
         return;
       }
       // Command palette works even while focused in the chat input (#251)
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
         return;
@@ -1283,6 +1286,13 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         toggleZenMode(); // Zen/Focus mode (#309)
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        if (currentSessionId) {
+          const wasPinned = !!sessions.find(x => x.id === currentSessionId)?.pinned;
+          togglePin(currentSessionId);
+          showStatusBanner(wasPinned ? 'Unpinned conversation' : 'Pinned conversation');
+        }
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1290,7 +1300,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions]);
 
   // When mode is 'system', track OS light/dark changes live.
   useEffect(() => {
@@ -1792,8 +1802,23 @@ const App: React.FC = () => {
           return;
         }
         if (result.action === 'export') {
+          const arg = (result.arg ?? '').trim().toLowerCase();
           if (messages.length === 0) {
             showStatusBanner('Nothing to export — the conversation is empty');
+          } else if (arg === 'json') {
+            // Export the current conversation as a JSON file (#323)
+            const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+            const session = currentSessionId ? sessions.find(s => s.id === currentSessionId) : null;
+            const exportData = session ?? { id: currentSessionId ?? 'temp', title, messages, model, createdAt: Date.now() };
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const href = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = href;
+            const safe = title.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'chat';
+            a.download = `${safe}.json`;
+            a.click();
+            URL.revokeObjectURL(href);
+            showStatusBanner('Exported conversation as JSON');
           } else {
             handleExportMarkdown();
             showStatusBanner('Exported conversation as Markdown');
@@ -2109,6 +2134,12 @@ const App: React.FC = () => {
     // Model override for "regenerate with a different model" (#270). Falls back
     // to the active model state for normal sends.
     const activeModel = modelOverride ?? model;
+    // Track recent model usage (#322)
+    setRecentModels(prev => {
+      const next = [activeModel, ...prev.filter(m => m !== activeModel)].slice(0, 5);
+      try { localStorage.setItem('ollama_gui_recent_models', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
 
     // Auto-compact when history approaches context limit (#95)
     if (autoCompact && shouldCompact(rawHistory, compactionThreshold)) {
@@ -2996,6 +3027,13 @@ const App: React.FC = () => {
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
+                {recentModels.length > 0 && !activePresetId && (
+                  <optgroup label="— Recent —">
+                    {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                      <option key={`recent:${m}`} value={m}>{m}</option>
+                    ))}
+                  </optgroup>
+                )}
                 {presets.length > 0 && (
                   <optgroup label="— Presets —">
                     {presets.map(p => (
@@ -6513,6 +6551,7 @@ const App: React.FC = () => {
                   ['Copy Last Reply', 'Ctrl+Shift+C'],
                   ['Toggle Theme', 'Ctrl+Shift+D'],
                   ['Zen/Focus Mode', 'Ctrl+Shift+Z'],
+                  ['Pin/Unpin Conversation', 'Ctrl+Shift+P'],
                   ['Scroll to Latest', 'Ctrl+End'],
                   ['Next Conversation', 'Ctrl+]'],
                   ['Previous Conversation', 'Ctrl+['],
