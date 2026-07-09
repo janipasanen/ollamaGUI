@@ -250,9 +250,15 @@ const Mermaid: React.FC<{ code: string; dark: boolean }> = ({ code, dark }) => {
   );
 };
 
+// Code word-wrap toggle (#336): global setting shared with every CodeBlock
+// via Context so it can be read/toggled without prop-drilling through
+// MarkdownMessage.
+const CodeWordWrapContext = React.createContext<{ wordWrap: boolean; toggle: () => void }>({ wordWrap: false, toggle: () => {} });
+
 // Issue 22: standalone component so useState works per code block instance
 const CODE_COLLAPSE_THRESHOLD = 20; // lines before collapse kicks in (#312)
 const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
+  const { wordWrap, toggle } = React.useContext(CodeWordWrapContext);
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const lineCount = code.split('\n').length;
@@ -279,6 +285,19 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
           >
             {copied ? 'Copied!' : 'Copy'}
           </button>
+          <button
+            onClick={toggle}
+            aria-label={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}
+            aria-pressed={wordWrap}
+            title={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}
+            className={`transition-all px-2 py-0.5 rounded ${
+              wordWrap
+                ? 'text-blue-400'
+                : (dark ? 'text-zinc-400 hover:text-zinc-200 opacity-0 group-hover:opacity-100' : 'text-zinc-500 hover:text-zinc-800 opacity-0 group-hover:opacity-100')
+            }`}
+          >
+            {wordWrap ? 'Wrap ✓' : 'Wrap'}
+          </button>
         </div>
       </div>
       <div className={shouldCollapse && !expanded ? 'max-h-96 overflow-hidden relative' : ''}>
@@ -286,7 +305,7 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
           style={dark ? vscDarkPlus : oneLight}
           language={lang}
           PreTag="div"
-          customStyle={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
+          customStyle={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0, whiteSpace: wordWrap ? 'pre-wrap' : 'pre', wordBreak: wordWrap ? 'break-word' : 'normal', overflowWrap: wordWrap ? 'break-word' : 'normal' }}
           {...props}
         >
           {code}
@@ -453,6 +472,17 @@ const App: React.FC = () => {
   const [autoCompact, setAutoCompact] = useState(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_auto_compact') ?? 'false'); } catch { return false; }
   });
+  // Code word-wrap toggle (#336) — global setting shared with every CodeBlock.
+  const [codeWordWrap, setCodeWordWrap] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_code_wordwrap') ?? 'false'); } catch { return false; }
+  });
+  const toggleCodeWordWrap = useCallback(() => {
+    setCodeWordWrap(prev => {
+      const next = !prev;
+      localStorage.setItem('ollama_gui_code_wordwrap', JSON.stringify(next));
+      return next;
+    });
+  }, []);
   const [compactionThreshold, setCompactionThreshold] = useState(() => {
     const v = parseInt(localStorage.getItem('ollama_gui_compact_threshold') ?? '3000', 10);
     return isNaN(v) ? 3000 : v;
@@ -680,6 +710,10 @@ const App: React.FC = () => {
   const promptHistoryRef = useRef<string[]>([]);
   const historyNavIndexRef = useRef<number>(-1);
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
+  // Bulk selection / bulk archive-delete (#338)
+  const [bulkSelectMode, setBulkSelectMode] = useState(false);
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
 
   // Derived: filtered sessions for search (Issue 18)
   // Search across title/tags/folder/content, then apply archive + folder filters,
@@ -1581,6 +1615,33 @@ const App: React.FC = () => {
     setConfirmDelete({ open: false, id: '', title: '' });
   }, []);
 
+  // ─── Bulk selection / bulk archive-delete (#338) ─────────────────────────
+  const toggleBulkSelected = (id: string) => {
+    setBulkSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const enterBulkSelect = () => { setBulkSelectMode(true); setBulkSelectedIds(new Set()); };
+  const exitBulkSelect = () => { setBulkSelectMode(false); setBulkSelectedIds(new Set()); };
+  const bulkArchiveSelected = () => {
+    bulkSelectedIds.forEach(id => {
+      const sess = sessions.find(x => x.id === id);
+      storage.updateSession(id, { archived: !sess?.archived });
+    });
+    setSessions(storage.getSessions());
+    exitBulkSelect();
+  };
+  const bulkDeleteSelected = () => { setConfirmBulkDelete(true); };
+  const confirmBulkDeleteSession = () => {
+    bulkSelectedIds.forEach(id => storage.deleteSession(id));
+    setSessions(storage.getSessions());
+    if (currentSessionId && bulkSelectedIds.has(currentSessionId)) startNewChat();
+    setConfirmBulkDelete(false);
+    exitBulkSelect();
+  };
+
   // Close the delete confirmation on Escape (#202). The global keydown handler
   // only covers Settings/Help, so this dedicated effect handles the modal.
   useEffect(() => {
@@ -1868,8 +1929,13 @@ const App: React.FC = () => {
           return;
         }
         if (result.action === 'copy') {
+          const arg = (result.arg ?? '').trim().toLowerCase();
           if (messages.length === 0) {
             showStatusBanner('Nothing to copy — the conversation is empty');
+          } else if (arg === 'txt') {
+            const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+            const txt = chatToPlainText(messages, { title });
+            navigator.clipboard?.writeText(txt).then(() => showStatusBanner('Copied conversation as plain text')).catch(() => showStatusBanner('Clipboard unavailable'));
           } else {
             void handleCopyMarkdown();
             showStatusBanner('Copied conversation as Markdown');
@@ -2781,6 +2847,7 @@ const App: React.FC = () => {
   ];
 
   return (
+    <CodeWordWrapContext.Provider value={{ wordWrap: codeWordWrap, toggle: toggleCodeWordWrap }}>
     <div className={`flex h-screen font-sans transition-colors duration-300 ${
       dark ? 'bg-zinc-900 text-zinc-100' : 'bg-zinc-100 text-zinc-900'
     }`}>
@@ -2896,6 +2963,38 @@ const App: React.FC = () => {
           ))}
         </div>
 
+        {/* Bulk selection toggle + action bar (#338) */}
+        <div className="flex items-center gap-1 mb-2 flex-wrap">
+          {bulkSelectMode ? (
+            <>
+              <span className={`text-[10px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{bulkSelectedIds.size} selected</span>
+              <button
+                onClick={bulkArchiveSelected}
+                disabled={bulkSelectedIds.size === 0}
+                aria-label="Bulk archive selected"
+                className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-600 text-white border-amber-600 disabled:opacity-50"
+              >🗄 Archive ({bulkSelectedIds.size})</button>
+              <button
+                onClick={bulkDeleteSelected}
+                disabled={bulkSelectedIds.size === 0}
+                aria-label="Bulk delete selected"
+                className="text-[10px] px-2 py-0.5 rounded-full border bg-red-600 text-white border-red-600 disabled:opacity-50"
+              >✕ Delete ({bulkSelectedIds.size})</button>
+              <button
+                onClick={exitBulkSelect}
+                aria-label="Exit bulk select mode"
+                className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
+              >Cancel</button>
+            </>
+          ) : (
+            <button
+              onClick={enterBulkSelect}
+              aria-label="Enter bulk select mode"
+              className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
+            >☑ Select</button>
+          )}
+        </div>
+
         {/* Folder chips + archived toggle (#133) */}
         <div className="flex items-center flex-wrap gap-1 mb-2">
           <button
@@ -2952,7 +3051,7 @@ const App: React.FC = () => {
                        <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{bucket}</p>
                      )}
                    <div
-                     onClick={() => loadSession(s)}
+                     onClick={() => bulkSelectMode ? toggleBulkSelected(s.id) : loadSession(s)}
                      role="button"
                      tabIndex={0}
                      onKeyDown={(e) => {
@@ -2977,6 +3076,16 @@ const App: React.FC = () => {
                      }`}
                    >
               <div className="flex items-center justify-between">
+                {bulkSelectMode && (
+                  <input
+                    type="checkbox"
+                    checked={bulkSelectedIds.has(s.id)}
+                    onChange={() => toggleBulkSelected(s.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select session: ${s.title}`}
+                    className="shrink-0 mr-1"
+                  />
+                )}
                 {renamingSessionId === s.id ? (
                   <input
                     autoFocus
@@ -6779,6 +6888,40 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+        {/* Bulk delete confirmation dialog (#338) */}
+        {confirmBulkDelete && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Bulk delete confirmation"
+            onClick={() => setConfirmBulkDelete(false)}
+          >
+            <div
+              className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-lg font-bold mb-2">Delete {bulkSelectedIds.size} conversations?</h2>
+              <p className={`text-sm mb-6 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                This will permanently delete {bulkSelectedIds.size} conversation{bulkSelectedIds.size === 1 ? '' : 's'}. This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setConfirmBulkDelete(false)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100'}`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmBulkDeleteSession}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* LibreOffice optional-engine onboarding (#145) */}
         <LibreOfficeOnboarding
           open={showLoOnboarding}
@@ -6910,6 +7053,7 @@ const App: React.FC = () => {
 
 
     </div>
+    </CodeWordWrapContext.Provider>
   );
 }
 

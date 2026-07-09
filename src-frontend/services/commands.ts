@@ -30,7 +30,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'export', description: 'Export conversation as Markdown or JSON (e.g. /export json)', builtin: true },
   { name: 'new', description: 'Start a new chat', builtin: true },
   { name: 'search', description: 'Search conversations (e.g. /search cats)', builtin: true },
-  { name: 'copy', description: 'Copy the current conversation as Markdown to the clipboard', builtin: true },
+  { name: 'copy', description: 'Copy the conversation as Markdown or plain text (e.g. /copy txt)', builtin: true },
   { name: 'pin', description: 'Pin or unpin the current conversation', builtin: true },
   { name: 'archive', description: 'Archive or unarchive the current conversation', builtin: true },
   { name: 'tag', description: 'Tag the current conversation (e.g. /tag work)', builtin: true },
@@ -139,7 +139,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'export') return { kind: 'builtin', action: 'export', arg: args };
     if (cmd.name === 'new') return { kind: 'builtin', action: 'new' };
     if (cmd.name === 'search') return { kind: 'builtin', action: 'search', arg: args };
-    if (cmd.name === 'copy') return { kind: 'builtin', action: 'copy' };
+    if (cmd.name === 'copy') return { kind: 'builtin', action: 'copy', arg: args };
     if (cmd.name === 'pin') return { kind: 'builtin', action: 'pin' };
     if (cmd.name === 'archive') return { kind: 'builtin', action: 'archive' };
     if (cmd.name === 'tag') return { kind: 'builtin', action: 'tag', arg: args };

@@ -1238,3 +1238,31 @@ gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1477 passed (160 files)** (+9).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M71 — Code word-wrap, /copy txt & bulk sidebar actions (thirty-ninth analysis pass)
+
+Comparative gap analysis vs Codex CLI / Claude Code / ChatGPT. Three gaps found
+and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#336** Word-wrap toggle for code blocks. Codex CLI and many TUIs wrap
+  long code lines instead of horizontal-scrolling. The app's code blocks used
+  `overflow-x-auto` with no wrap option. Added a global `codeWordWrap` state
+  (persisted to `localStorage`, `ollama_gui_code_wordwrap`) shared with every
+  `CodeBlock` via a `CodeWordWrapContext`, plus a per-block "Wrap" toggle button
+  in the code header. When enabled, code uses `white-space: pre-wrap;
+  word-break: break-word` instead of scrolling.
+- [x] **#337** `/copy txt` plain-text clipboard copy. `/copy` copied the
+  conversation as Markdown and `/export txt` downloaded plain text, but there
+  was no way to copy plain text to the clipboard directly. Extended `/copy` to
+  accept a `txt` argument that copies the conversation as plain text (via
+  `chatToPlainText`) to the clipboard, mirroring `/export txt`.
+- [x] **#338** Bulk selection and bulk archive/delete in the conversation list.
+  ChatGPT lets users multi-select conversations and bulk-archive or bulk-delete
+  them; the app only supported per-conversation hover actions. Added a "Select"
+  toggle in the sidebar that reveals checkboxes on session rows. In select mode,
+  clicking a row toggles its selection instead of loading it. A bulk action bar
+  offers Archive (N), Delete (N) (with a confirmation dialog), and Cancel.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1487 passed (161 files)** (+10).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

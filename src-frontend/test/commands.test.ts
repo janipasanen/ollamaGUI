@@ -550,3 +550,19 @@ describe('/id command (#331)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('id'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /copy txt variant (#337) ──────────────────────────────────────────────────
+
+describe('/copy command (#337)', () => {
+  it('with no arg returns action: copy + undefined arg', () => {
+    const r = runCommand('/copy');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('copy'); expect(r.arg).toBe(''); }
+  });
+  it('with txt arg returns action: copy + arg txt', () => {
+    const r = runCommand('/copy txt');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('copy'); expect(r.arg).toBe('txt'); }
+  });
+});
