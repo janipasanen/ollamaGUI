@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatToMarkdown, messageToMarkdown } from '../services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText } from '../services/chatToMarkdown';
 import type { Message } from '../services/ollama';
 
 const now = new Date(2026, 2, 5, 10, 0, 0).getTime();
@@ -84,5 +84,44 @@ describe('messageToMarkdown (#268)', () => {
   it('composes the same per-message body as chatToMarkdown', () => {
     const msg: Message = { role: 'user', content: 'Hi', ts: now };
     expect(messageToMarkdown(msg, now)).toBe(chatToMarkdown([msg], { now }));
+  });
+});
+
+
+// ── Plain-text export (#333) ─────────────────────────────────────────────────
+
+describe('chatToPlainText (#333)', () => {
+  it('renders Role: content without markdown syntax', () => {
+    const txt = chatToPlainText([
+      { role: 'user', content: 'Hello', ts: now },
+      { role: 'assistant', content: 'Hi **there**', ts: now },
+    ]);
+    expect(txt).toContain('User:');
+    expect(txt).toContain('Hello');
+    expect(txt).toContain('Assistant:');
+    expect(txt).toContain('Hi there');
+    expect(txt).not.toContain('**');
+  });
+
+  it('strips code fences, headers, links, and list markers', () => {
+    const msg: Message = { role: 'assistant', content: '## Title\n\nSee [link](https://x.com)\n\n```js\nconst x = 1;\n```\n\n- item', ts: now };
+    const txt = messageToPlainText(msg);
+    expect(txt).not.toContain('##');
+    expect(txt).not.toContain('```');
+    expect(txt).toContain('link');
+    expect(txt).toContain('const x = 1;');
+    expect(txt).toContain('item');
+  });
+
+  it('includes a title header when provided', () => {
+    const txt = chatToPlainText([{ role: 'user', content: 'Hi', ts: now }], { title: 'My Chat' });
+    expect(txt.startsWith('My Chat')).toBe(true);
+  });
+
+  it('summarises image attachments and tool calls', () => {
+    const msg: Message = { role: 'assistant', content: 'ok', images: ['data:image/png;base64,AAA'], tool_calls: [{ function: { name: 'search' } } as any], ts: now };
+    const txt = messageToPlainText(msg);
+    expect(txt).toContain('1 image attachment');
+    expect(txt).toContain('Tool calls: search');
   });
 });

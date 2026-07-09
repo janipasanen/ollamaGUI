@@ -93,7 +93,7 @@ import {
 } from './services/voice';
 import {
   SlashCommand,
-  filterCommands, findCommand, runCommand,
+  filterCommands, findCommand, runCommand, getAllCommands,
   loadUserCommands, addUserCommand, updateUserCommand, removeUserCommand,
 } from './services/commands';
 import {
@@ -136,7 +136,7 @@ import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
-import { chatToMarkdown, messageToMarkdown } from './services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown, chatToPlainText } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 
@@ -1836,6 +1836,19 @@ const App: React.FC = () => {
             a.click();
             URL.revokeObjectURL(href);
             showStatusBanner('Exported conversation as JSON');
+          } else if (arg === 'txt') {
+            // Export the current conversation as plain text (#333)
+            const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+            const txt = chatToPlainText(messages, { title });
+            const blob = new Blob([txt], { type: 'text/plain' });
+            const href = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = href;
+            const safe = title.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'chat';
+            a.download = `${safe}.txt`;
+            a.click();
+            URL.revokeObjectURL(href);
+            showStatusBanner('Exported conversation as plain text');
           } else {
             handleExportMarkdown();
             showStatusBanner('Exported conversation as Markdown');
@@ -2982,9 +2995,18 @@ const App: React.FC = () => {
                 ) : (
                   <div className="flex-1 min-w-0">
                     <span className="truncate text-sm block">{s.pinned ? '📌 ' : ''}{s.title}</span>
-                    {s.messages.length > 0 && (
-                      <span className={`text-[9px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{s.messages.length} {s.messages.length === 1 ? 'msg' : 'msgs'}</span>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {s.messages.length > 0 && (
+                        <span className={`text-[9px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{s.messages.length} {s.messages.length === 1 ? 'msg' : 'msgs'}</span>
+                      )}
+                      {/* Per-session model badge (#334) */}
+                      {s.model && (
+                        <span
+                          title={`Model: ${s.model}`}
+                          className={`text-[9px] truncate max-w-[8rem] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}
+                        >{s.model}</span>
+                      )}
+                    </div>
                   </div>
                 )}
                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -6651,7 +6673,7 @@ const App: React.FC = () => {
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-md rounded-2xl p-6 shadow-2xl ${
+            <div className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-6">
@@ -6688,6 +6710,18 @@ const App: React.FC = () => {
                   </div>
                 ))}
               </div>
+
+              {/* Slash command reference (#335) */}
+              <h3 className={`text-sm font-bold mt-6 mb-3 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Slash Commands</h3>
+              <div className="max-h-60 overflow-y-auto space-y-1" aria-label="Slash commands">
+                {getAllCommands().filter(c => c.builtin).map(c => (
+                  <div key={c.name} className={`flex justify-between items-start gap-2 py-1.5 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                    <code className={`text-xs font-mono shrink-0 ${dark ? 'text-blue-300' : 'text-blue-600'}`}>/{c.name}</code>
+                    <span className={`text-[11px] text-right ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{c.description}</span>
+                  </div>
+                ))}
+              </div>
+
               <p className={`text-[10px] mt-4 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                 Shortcuts work when not typing in an input field.
               </p>

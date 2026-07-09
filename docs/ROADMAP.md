@@ -1212,3 +1212,29 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1468 passed (159 files)** (+16).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M70 — Plain-text export, model badge & slash command reference (thirty-eighth analysis pass)
+
+Comparative gap analysis vs Codex CLI / Claude Code / LM Studio / ChatGPT. Three
+gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#333** `/export txt` plain-text export. The app exported conversations as
+  Markdown (`/export`) and JSON (`/export json`) but had no plain-text export,
+  which Codex CLI and TUIs favour for piping into other tools. Added a
+  `chatToPlainText` / `messageToPlainText` helper to `services/chatToMarkdown.ts`
+  that strips markdown syntax to a simple "Role: content" format, and extended
+  `/export` to accept a `txt` argument that downloads a `.txt` file.
+- [x] **#334** Per-session model badge in the sidebar. LM Studio and Open WebUI
+  show which model a conversation used, helping users identify chats in a
+  multi-model setup. The session rows showed only the title and message count.
+  Added a compact, truncated model label to each session row (with a
+  "Model: <name>" tooltip) using `session.model`.
+- [x] **#335** Slash command reference in the help overlay. Codex CLI and Claude
+  Code show their available commands in the help/reference view. The app's help
+  overlay (`?` or `/help`) listed only keyboard shortcuts. Added a "Slash
+  Commands" section that lists every builtin command (name + description) from
+  `getAllCommands()`, in a scrollable area alongside the existing shortcuts.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1477 passed (160 files)** (+9).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

@@ -61,3 +61,73 @@ export function chatToMarkdown(
   }
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
+
+// ─── Plain-text export (#333) ────────────────────────────────────────────────
+
+/**
+ * Render a single message to a plain-text line for `.txt` export (#333).
+ * Strips markdown syntax down to a simple "Role: content" format.
+ */
+export function messageToPlainText(m: Message): string {
+  const role = m.role.charAt(0).toUpperCase() + m.role.slice(1);
+  const lines: string[] = [`${role}:`];
+  if (m.reasoning && m.reasoning.trim()) {
+    lines.push('[Thinking]', m.reasoning.trim());
+  }
+  if (m.content && m.content.trim()) {
+    lines.push(stripMarkdown(m.content));
+  }
+  if (m.tool_calls && m.tool_calls.length > 0) {
+    const names = m.tool_calls.map(tc => (tc as any)?.function?.name ?? (tc as any)?.name ?? 'tool');
+    lines.push(`[Tool calls: ${names.join(', ')}]`);
+  }
+  if (m.images && m.images.length > 0) {
+    lines.push(`[${m.images.length} image attachment${m.images.length > 1 ? 's' : ''}]`);
+  }
+  return lines.join('\n').trim();
+}
+
+/** Strip common markdown formatting to plain text. */
+function stripMarkdown(md: string): string {
+  return md
+    // Fenced code blocks → keep content indented
+    .replace(/```[\w-]*\n([\s\S]*?)```/g, (_m, code) => code.trim())
+    // Inline code
+    .replace(/`([^`]+)`/g, '$1')
+    // Images
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    // Links
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Bold/italic
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    // Headers
+    .replace(/^#{1,6}\s+/gm, '')
+    // Blockquotes
+    .replace(/^>\s?/gm, '')
+    // Horizontal rules
+    .replace(/^---+$/gm, '')
+    // List markers (keep text)
+    .replace(/^[\s]*[-*+]\s+/gm, '')
+    .replace(/^[\s]*\d+\.\s+/gm, '')
+    .trim();
+}
+
+/**
+ * Render a conversation to a plain-text string for `.txt` export (#333).
+ */
+export function chatToPlainText(
+  messages: Message[],
+  opts: { title?: string } = {},
+): string {
+  const lines: string[] = [];
+  if (opts.title) {
+    lines.push(opts.title, '');
+  }
+  for (const m of messages) {
+    lines.push(messageToPlainText(m), '');
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
