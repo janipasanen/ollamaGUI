@@ -505,6 +505,8 @@ const App: React.FC = () => {
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [systemMemory, setSystemMemory] = useState<SystemMemory | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Live agentic phase indicator: 'Thinking…' / 'Running: <tool>' / 'Waiting for approval' (#394).
+  const [agentStatus, setAgentStatus] = useState<string | null>(null);
 
   // Session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -3045,6 +3047,7 @@ ${lines.join('\n')}`;
         // Use agentic loop with tool calling
         let agenticReasoning = '';
         let agenticGenStats: GenStats | undefined;
+        setAgentStatus('Thinking…');
         const agentStream = agenticChatStream({
           model: selectedConnectedModel?.name ?? model,
           messages: chatHistory,
@@ -3055,10 +3058,12 @@ ${lines.join('\n')}`;
           format,
           // Plan/ask autonomy gate (#88/#89/#189)
           onApprovalNeeded: (toolName, args) =>
-            new Promise<boolean>(resolve =>
-              setPendingToolApproval({ toolName, args, resolve })
-            ),
+            new Promise<boolean>(resolve => {
+              setAgentStatus(`Waiting for approval: ${toolName}`);
+              setPendingToolApproval({ toolName, args, resolve });
+            }),
           onAssistantMessage: (message) => {
+            setAgentStatus('Thinking…');
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
               const reasoning = agenticReasoning ? { reasoning: agenticReasoning } : {};
@@ -3087,6 +3092,7 @@ ${lines.join('\n')}`;
           },
           onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
+            setAgentStatus(`Running: ${toolCallName(toolCall)}`);
             setMessages(prev => [
               ...prev,
               {
@@ -3097,6 +3103,7 @@ ${lines.join('\n')}`;
             ]);
           },
           onToolResult: (toolResult) => {
+            setAgentStatus('Thinking…');
             setMessages(prev => [
               ...prev,
               {
@@ -3108,6 +3115,7 @@ ${lines.join('\n')}`;
           },
           onComplete: () => {
             setIsLoading(false);
+            setAgentStatus(null);
           },
           onError: (error) => {
             setMessages(prev => [
@@ -3115,6 +3123,7 @@ ${lines.join('\n')}`;
               { role: 'assistant', content: formatErrorLine(error, 'ollama'), isError: true },
             ]);
             setIsLoading(false);
+            setAgentStatus(null);
           },
         });
 
@@ -4100,6 +4109,16 @@ ${lines.join('\n')}`;
               {isAgenticMode && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
                   🤖 Agent
+                </span>
+              )}
+              {isAgenticMode && isLoading && agentStatus && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  aria-label={`Agent status: ${agentStatus}`}
+                  className={`text-xs px-2 py-0.5 rounded-full animate-pulse ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-200 text-zinc-700'}`}
+                >
+                  {agentStatus}
                 </span>
               )}
               {mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel && (
