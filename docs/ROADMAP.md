@@ -1147,3 +1147,33 @@ Studio / Open WebUI / TUIs. Three gaps found and implemented. No merge to
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1433 passed (156 files)** (+10).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M68 — Sidebar sort, /stats command & keyboard session nav (thirty-sixth analysis pass)
+
+Comparative functionality analysis vs Codex CLI / Claude Code / ChatGPT / Open
+WebUI / TUIs. Three gaps found and implemented. No merge to `master` — work
+stays on `macOS-10.15`.
+
+- [x] **#327** Conversation-list sort options in the sidebar. ChatGPT and Open
+  WebUI let users change the sort order of the conversation list; the app only
+  sorted pinned-first then newest-first with no UI to change it. Added a
+  `sortMode` state (`recent` / `name` / `messages`) with a compact sort selector
+  in the sidebar, persisted to `localStorage` (`ollama_gui_sort_mode`). Added a
+  `sortSessions` helper in `services/storage.ts` that applies the chosen
+  ordering while keeping pinned sessions on top. `filteredSessions` now uses
+  `sortSessions` instead of `orderSessions`.
+- [x] **#328** `/stats` slash command for conversation statistics. The app
+  exposed stats (message count, user/assistant split, words, characters, est.
+  tokens) only via the ℹ toolbar button — no command-line equivalent. Added the
+  `/stats` builtin that shows the full breakdown in the status banner, giving
+  TUI/command-line parity with the stats button.
+- [x] **#329** Keyboard arrow navigation in the conversation list. Codex CLI and
+  TUIs let users move through a list with ArrowUp/ArrowDown. Session rows were
+  individually focusable with an Enter handler but had no arrow-key movement
+  between rows. Added ArrowUp/ArrowDown handling on session rows that moves
+  focus to the previous/next visible session; Enter loads the focused session.
+  The existing Ctrl+] / Ctrl+[ next/prev-conversation shortcuts are unchanged.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1452 passed (158 files)** (+19).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

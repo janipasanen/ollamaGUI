@@ -153,6 +153,38 @@ export function orderSessions(sessions: ChatSession[]): ChatSession[] {
   });
 }
 
+// ─── Conversation-list sort options (#327) ──────────────────────────────────
+
+export type SortMode = 'recent' | 'name' | 'messages';
+
+/**
+ * Order sessions by the user-selected sort mode. Pinned sessions always float
+ * to the top regardless of the chosen ordering, matching `orderSessions`.
+ */
+export function sortSessions(sessions: ChatSession[], mode: SortMode): ChatSession[] {
+  const pinnedFirst = (a: ChatSession, b: ChatSession) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return 0;
+  };
+  switch (mode) {
+    case 'name':
+      return [...sessions].sort((a, b) => {
+        const p = pinnedFirst(a, b);
+        if (p !== 0) return p;
+        return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+      });
+    case 'messages':
+      return [...sessions].sort((a, b) => {
+        const p = pinnedFirst(a, b);
+        if (p !== 0) return p;
+        return b.messages.length - a.messages.length;
+      });
+    case 'recent':
+    default:
+      return orderSessions(sessions);
+  }
+}
+
 // ─── Conversation import (#232) ───────────────────────────────────────────────
 
 /**

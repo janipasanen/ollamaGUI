@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, parseSessionImport } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
@@ -417,6 +417,7 @@ const App: React.FC = () => {
   // Transient toast notification (#58 and general feedback)
   const [notification, setNotification] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('recent');
   // Organization (#133)
   const [folders, setFolders] = useState<Folder[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -681,15 +682,16 @@ const App: React.FC = () => {
   // Search across title/tags/folder/content, then apply archive + folder filters,
   // ordered pinned-first (#133). Memoized so sidebar filtering doesn't re-run on
   // every unrelated render (#32).
-  const filteredSessions = React.useMemo(() => orderSessions(
+  const filteredSessions = React.useMemo(() => sortSessions(
     searchSessions(sessions, searchQuery, folders)
       .filter(s => (showArchived ? !!s.archived : !s.archived))
       .filter(s => folderFilter === null || s.folderId === folderFilter)
       // Filter by tag (#306): null = no tag filter
       .filter(s => tagFilter === null || (s.tags ?? []).includes(tagFilter))
       // Filter by active project (#92): null = no project = show unscoped sessions
-      .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId)
-  ), [sessions, searchQuery, folders, showArchived, folderFilter, tagFilter, activeProjectId]);
+      .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId),
+    sortMode
+  ), [sessions, searchQuery, folders, showArchived, folderFilter, tagFilter, activeProjectId, sortMode]);
 
   // Conversation token estimate, memoized so it only recomputes when the
   // messages or current draft change (#32, #62).
@@ -751,7 +753,11 @@ const App: React.FC = () => {
       const savedUrl = localStorage.getItem('ollama_gui_base_url');
       if (savedUrl) setOllamaBaseUrl(savedUrl);
 
-      const savedPrompt = localStorage.getItem('ollama_gui_system_prompt');
+      const savedSortMode = localStorage.getItem('ollama_gui_sort_mode');
+    if (savedSortMode === 'recent' || savedSortMode === 'name' || savedSortMode === 'messages') {
+      setSortMode(savedSortMode as SortMode);
+    }
+    const savedPrompt = localStorage.getItem('ollama_gui_system_prompt');
       if (savedPrompt) setSystemPrompt(savedPrompt);
 
       const savedGenOptions = localStorage.getItem('ollama_gui_gen_options');
@@ -2043,6 +2049,13 @@ const App: React.FC = () => {
           );
           return;
         }
+        if (result.action === 'stats') {
+          const st = computeConversationStats(messages);
+          showStatusBanner(
+            `Messages: ${st.totalMessages} · User/Assistant: ${st.userMessages}/${st.assistantMessages} · Words: ${st.words.toLocaleString()} · Characters: ${st.characters.toLocaleString()} · Est. tokens: ${formatTokenCount(st.tokens)}`
+          );
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2839,6 +2852,20 @@ const App: React.FC = () => {
           }`}
         />
 
+        {/* Conversation-list sort selector (#327) */}
+        <div className="flex items-center gap-1 mb-2">
+          <span className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Sort:</span>
+          {(['recent', 'name', 'messages'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => { setSortMode(m); localStorage.setItem('ollama_gui_sort_mode', m); }}
+              aria-label={`Sort by ${m}`}
+              aria-pressed={sortMode === m}
+              className={`text-[10px] px-2 py-0.5 rounded-full border ${sortMode === m ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
+            >{m === 'recent' ? 'Recent' : m === 'name' ? 'Name' : 'Messages'}</button>
+          ))}
+        </div>
+
         {/* Folder chips + archived toggle (#133) */}
         <div className="flex items-center flex-wrap gap-1 mb-2">
           <button
@@ -2885,7 +2912,20 @@ const App: React.FC = () => {
                      onClick={() => loadSession(s)}
                      role="button"
                      tabIndex={0}
-                     onKeyDown={(e) => e.key === 'Enter' && loadSession(s)}
+                     onKeyDown={(e) => {
+                       if (e.key === 'Enter') { loadSession(s); return; }
+                       // Arrow-key navigation between session rows (#329)
+                       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                         e.preventDefault();
+                         const list = e.currentTarget.parentElement;
+                         if (!list) return;
+                         const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]'));
+                         const idx = rows.indexOf(e.currentTarget);
+                         if (idx === -1) return;
+                         const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+                         rows[nextIdx]?.focus();
+                       }
+                     }}
                      aria-label={`Load session: ${s.title}`}
                      className={`group p-2 rounded-md cursor-pointer transition-colors ${
                        currentSessionId === s.id

@@ -522,3 +522,17 @@ describe('/params command (#326)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('params'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /stats builtin (#328) ─────────────────────────────────────────────────────
+
+describe('/stats command (#328)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('stats')?.builtin).toBe(true);
+  });
+  it('returns action: stats with no arg', () => {
+    const r = runCommand('/stats');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('stats'); expect(r.arg).toBeUndefined(); }
+  });
+});
