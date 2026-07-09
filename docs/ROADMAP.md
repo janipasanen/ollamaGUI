@@ -853,3 +853,36 @@ TUIs. Three gaps found and implemented — completing command-line control of ev
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1366 passed (146 files)** (+15).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M58 — Generation speed, /topk command & retry button (twenty-sixth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / LM Studio / Open
+WebUI / ChatGPT / TUIs. Three gaps found and implemented. No merge to `master` —
+work stays on `macOS-10.15`.
+
+- [x] **#297** Generation speed indicator (tokens/sec). LM Studio, Open WebUI,
+  and other Ollama GUIs display generation speed and token counts after a reply
+  completes; Codex / Claude show response timing. The Ollama API sends
+  `eval_count`, `eval_duration`, and `total_duration` in the final `done:true`
+  stream chunk, but the app ignored them. Extended `OllamaResponse` with the
+  stats fields, added `computeGenStats()` (converts nanosecond durations to
+  tokens/sec + ms), stamped `genStats` on the assistant message, and rendered
+  "tok/s" and "tokens" in the message header.
+- [x] **#298** `/topk <value>` slash command. The app exposes `top_k` in the
+  settings panel and has `/temp`, `/ctx`, `/topp`, `/predict`, `/stop` commands,
+  but `top_k` was the last `GenerationOptions` field without a command. Added a
+  `/topk` builtin: with a non-negative integer it sets and persists
+  `genOptions.top_k` (0 = disabled); with no argument it shows the current value
+  ("Top-k: default" when unset); negative values show a hint.
+- [x] **#299** Retry button on failed/error messages. When a generation fails
+  (network error, timeout), the app replaced the partial reply with an error
+  line but offered no quick retry — Codex / Claude GUIs show a Retry affordance
+  after failures. Added an `isError` flag to error assistant messages and
+  rendered a "↻ Retry" button that removes the error placeholder and re-sends
+  the last user prompt.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1377 passed (147 files)** (+11).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

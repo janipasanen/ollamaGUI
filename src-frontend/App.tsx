@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -1812,6 +1812,15 @@ const App: React.FC = () => {
           showStatusBanner(`Stop sequences set to ${seqs.length}`);
           return;
         }
+        if (result.action === 'topk') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Top-k: ${genOptions.top_k ?? 'default'}`); return; }
+          const v = Math.round(Number(arg));
+          if (!Number.isFinite(v) || v < 0) { showStatusBanner('Top-k must be a non-negative integer'); return; }
+          updateGenOptions({ top_k: v });
+          showStatusBanner(v === 0 ? 'Top-k set to 0 (disabled)' : `Top-k set to ${v}`);
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2087,7 +2096,7 @@ const App: React.FC = () => {
           onError: (error) => {
             setMessages(prev => [
               ...prev,
-              { role: 'assistant', content: formatErrorLine(error, 'ollama') },
+              { role: 'assistant', content: formatErrorLine(error, 'ollama'), isError: true },
             ]);
             setIsLoading(false);
           },
@@ -2157,6 +2166,7 @@ const App: React.FC = () => {
         let assistantContent = '';
         let assistantReasoning = '';
         let streamOk = false;
+        let genStats: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number } | undefined;
         setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
 
         try {
@@ -2196,6 +2206,7 @@ const App: React.FC = () => {
                 return updated;
               });
             }
+            if (chunk.done) { genStats = computeGenStats(chunk); }
           }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
           }
           streamOk = true;
@@ -2204,7 +2215,7 @@ const App: React.FC = () => {
           // Stamp producedByModel (#97) and apply filtered content in one update
           setMessages(prev => {
             const last = prev[prev.length - 1];
-            const updatedMsg: Message = { ...last, content: filtered, producedByModel: activeModel, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) };
+            const updatedMsg: Message = { ...last, content: filtered, producedByModel: activeModel, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}), ...(genStats ? { genStats } : {}) };
             const updated = [...prev.slice(0, -1), updatedMsg] as Message[];
             saveCurrentSession(updated);
             return updated;
@@ -2260,7 +2271,7 @@ const App: React.FC = () => {
             // Network/server failure — roll back partial message
             setMessages(prev => {
               const withoutPartial = prev.slice(0, -1);
-              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, 'ollama') }] as Message[];
+              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, 'ollama'), isError: true }] as Message[];
             });
           }
         }
@@ -2270,7 +2281,7 @@ const App: React.FC = () => {
     } catch (error) {
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', content: formatErrorLine(error, 'ollama') },
+        { role: 'assistant', content: formatErrorLine(error, 'ollama'), isError: true },
       ]);
       setIsLoading(false);
     } finally {
@@ -2372,6 +2383,22 @@ const App: React.FC = () => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'assistant') { regenerateMessage(i); return; }
     }
+  };
+
+  // Retry a failed assistant message (#299). Removes the error placeholder
+  // and re-sends the last user prompt — parity with Codex / Claude retry
+  // affordances after a generation failure.
+  const retryFailedMessage = (errorIndex: number) => {
+    if (isLoading) return;
+    let userIndex = errorIndex - 1;
+    while (userIndex >= 0 && messages[userIndex].role !== 'user') userIndex--;
+    if (userIndex < 0) return;
+    const userContent = messages[userIndex].content;
+    const trimmed = messages.slice(0, errorIndex);
+    trunkMessagesRef.current = trimmed;
+    setMessages(trimmed);
+    saveCurrentSession(trimmed);
+    void sendMessage(userContent);
   };
 
   // Navigate to the previous or next sibling branch at a fork point.
@@ -2986,6 +3013,20 @@ const App: React.FC = () => {
                     </time>
                   )}
                 </div>
+                {/* Generation speed indicator (#297) */}
+                {msg.role === 'assistant' && msg.genStats && (
+                  <div className={`text-[10px] -mt-1 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    {msg.genStats.tokensPerSec !== undefined && (
+                      <span title="Generation speed">
+                        {msg.genStats.tokensPerSec.toFixed(1)} tok/s
+                      </span>
+                    )}
+                    {msg.genStats.tokensPerSec !== undefined && msg.genStats.evalCount !== undefined && ' · '}
+                    {msg.genStats.evalCount !== undefined && (
+                      <span title="Tokens generated">{msg.genStats.evalCount} tokens</span>
+                    )}
+                  </div>
+                )}
 
                 {/* M5 Issue 20: Show attached images */}
                 {msg.images && msg.images.length > 0 && (
@@ -3112,6 +3153,16 @@ const App: React.FC = () => {
                     </span>
                   );
                 })()}
+                {/* Retry button on failed/error assistant messages (#299) */}
+                {msg.role === 'assistant' && msg.isError && (
+                  <button
+                    onClick={() => retryFailedMessage(i)}
+                    aria-label="Retry failed message"
+                    title="Retry — re-send the last prompt"
+                    disabled={isLoading}
+                    className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-red-900/50 text-red-300 hover:bg-red-800/60' : 'bg-red-100 text-red-700 hover:bg-red-200'} disabled:opacity-40`}
+                  >↻ Retry</button>
+                )}
                 {/* Thumbs feedback on completed assistant replies (#137) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
                   <div className="flex items-center gap-1 mt-1 flex-wrap">

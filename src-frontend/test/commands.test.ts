@@ -410,3 +410,17 @@ describe('/stop command (#296)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('stop'); expect(r.arg).toBe('<|end|>,\\n\\nUser'); }
   });
 });
+
+
+// ── /topk builtin (#298) ──────────────────────────────────────────────────────
+
+describe('/topk command (#298)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('topk')?.builtin).toBe(true);
+  });
+  it('with a value returns action: topk + arg', () => {
+    const r = runCommand('/topk 40');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('topk'); expect(r.arg).toBe('40'); }
+  });
+});

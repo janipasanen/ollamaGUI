@@ -154,3 +154,31 @@ describe('/stop slash command (#296)', () => {
     expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').stop).toEqual([]);
   });
 });
+
+
+describe('/topk slash command (#298)', () => {
+  it('sets top-k and persists it', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topk 40' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-k set to 40')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').top_k).toBe(40);
+  });
+
+  it('reports the current top-k with no argument', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-k: default')).toBeInTheDocument();
+  });
+
+  it('rejects negative values', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topk -5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-k must be a non-negative integer')).toBeInTheDocument();
+  });
+});

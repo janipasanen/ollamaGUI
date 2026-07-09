@@ -21,6 +21,10 @@ export interface Message {
   reasoning?: string;
   /** Epoch ms when the message was created (#253). */
   ts?: number;
+  /** Generation stats from the final Ollama stream chunk (#297). */
+  genStats?: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number };
+  /** True when this assistant message is an error placeholder (#299). */
+  isError?: boolean;
 }
 
 export interface OllamaResponse {
@@ -31,6 +35,39 @@ export interface OllamaResponse {
   done: boolean;
   /** Top-level thinking trace (/api/generate reasoning models) (#241). */
   thinking?: string;
+  /** Generation stats from the final done:true chunk (#297). */
+  eval_count?: number;
+  eval_duration?: number;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+}
+
+/**
+ * Compute generation stats (tokens/sec, eval count, total duration in ms)
+ * from the final `done:true` Ollama stream chunk (#297).
+ * Ollama reports durations in nanoseconds.
+ */
+export function computeGenStats(chunk: Partial<OllamaResponse>): {
+  tokensPerSec?: number;
+  evalCount?: number;
+  totalDurationMs?: number;
+} | undefined {
+  const evalCount = chunk.eval_count;
+  const evalDurationNs = chunk.eval_duration;
+  const totalDurationNs = chunk.total_duration;
+  if (typeof evalCount !== 'number' || evalCount <= 0) return undefined;
+  const result: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number } = {
+    evalCount,
+  };
+  if (typeof evalDurationNs === 'number' && evalDurationNs > 0) {
+    result.tokensPerSec = evalCount / (evalDurationNs / 1e9);
+  }
+  if (typeof totalDurationNs === 'number' && totalDurationNs > 0) {
+    result.totalDurationMs = Math.round(totalDurationNs / 1e6);
+  }
+  return result;
 }
 
 /** Ollama generation options (subset). num_ctx is the key lever on small-RAM machines. */

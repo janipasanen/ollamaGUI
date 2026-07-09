@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchOllamaModels, pullOllamaModel, deleteOllamaModel, SUGGESTED_MODELS, fetchOllamaChatStream, cleanGenerationOptions } from '../services/ollama';
+import { fetchOllamaModels, pullOllamaModel, deleteOllamaModel, SUGGESTED_MODELS, fetchOllamaChatStream, cleanGenerationOptions, computeGenStats } from '../services/ollama';
 
 describe('Generation options (#110)', () => {
   let origFetch: typeof global.fetch;
@@ -232,5 +232,26 @@ describe('Ollama API error-handling, abort & timeout (#224)', () => {
     const chunks: any[] = [];
     await fetchOllamaChatStream('m', [{ role: 'user', content: 'hi' }], (c) => chunks.push(c), 'http://x/api/chat', false, undefined, undefined, undefined, 1000);
     expect(chunks.some(c => c.message?.content === 'done')).toBe(true);
+  });
+});
+
+
+// ── computeGenStats (#297) ────────────────────────────────────────────────────
+
+describe('computeGenStats (#297)', () => {
+  it('computes tokens/sec from eval_count and eval_duration (nanoseconds)', () => {
+    const stats = computeGenStats({ eval_count: 100, eval_duration: 1_000_000_000 });
+    expect(stats?.tokensPerSec).toBeCloseTo(100, 1);
+    expect(stats?.evalCount).toBe(100);
+  });
+
+  it('computes total duration in ms from nanoseconds', () => {
+    const stats = computeGenStats({ eval_count: 50, total_duration: 2_000_000_000 });
+    expect(stats?.totalDurationMs).toBe(2000);
+  });
+
+  it('returns undefined when eval_count is missing or zero', () => {
+    expect(computeGenStats({})).toBeUndefined();
+    expect(computeGenStats({ eval_count: 0 })).toBeUndefined();
   });
 });
