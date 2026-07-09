@@ -947,3 +947,30 @@ Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1389 passed (149 files)** (+6).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M61 — Tag filter, completion notification & scroll-to-top (twenty-ninth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#306** Click-to-filter by tag in the sidebar. The app displayed tags on
+  sessions but clicking a tag only exposed the remove (×) button — there was no
+  way to filter sessions by tag. Made the tag text clickable to toggle a tag
+  filter that narrows the sidebar to sessions with that tag. Added a clear-filter
+  chip ("🏷 tag ✕") next to the folder/archive filter chips.
+- [x] **#307** Browser notification when generation completes (tab unfocused).
+  When a user switches away from the app while a generation is running, there
+  was no indication when it completed. Added a browser `Notification` (with the
+  model name and a reply snippet) that fires when generation finishes and
+  `document.hidden` is true, requiring `Notification.permission === 'granted'`.
+- [x] **#308** Scroll-to-top button (Back to top). The app had a scroll-to-bottom
+  button but no scroll-to-top. Added a "↑ Back to top" button that appears when
+  the user scrolls down past 300px and smooth-scrolls to the first message on
+  click.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1393 passed (150 files)** (+4).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

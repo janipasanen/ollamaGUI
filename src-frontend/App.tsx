@@ -398,6 +398,7 @@ const App: React.FC = () => {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   // Projects (#92)
   const [projects, setProjects] = useState<Project[]>(() => storage.getProjects());
@@ -630,6 +631,7 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [showScrollTopButton, setShowScrollTopButton] = useState(false);
   // New-messages unread badge while the user is scrolled up (#255)
   const [unreadCount, setUnreadCount] = useState(0);
   // Live tick so relative timestamps ("just now" / "5m ago") stay fresh (#260)
@@ -649,9 +651,11 @@ const App: React.FC = () => {
     searchSessions(sessions, searchQuery, folders)
       .filter(s => (showArchived ? !!s.archived : !s.archived))
       .filter(s => folderFilter === null || s.folderId === folderFilter)
+      // Filter by tag (#306): null = no tag filter
+      .filter(s => tagFilter === null || (s.tags ?? []).includes(tagFilter))
       // Filter by active project (#92): null = no project = show unscoped sessions
       .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId)
-  ), [sessions, searchQuery, folders, showArchived, folderFilter, activeProjectId]);
+  ), [sessions, searchQuery, folders, showArchived, folderFilter, tagFilter, activeProjectId]);
 
   // Conversation token estimate, memoized so it only recomputes when the
   // messages or current draft change (#32, #62).
@@ -951,6 +955,12 @@ const App: React.FC = () => {
     setUnreadCount(0);
   }, []);
 
+  const scrollToTop = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTo({ top: 0, behavior: 'smooth' });
+    setShowScrollTopButton(false);
+  }, []);
+
   useEffect(() => {
     // Keep relative timestamps fresh whenever messages change (#260)
     setNowTick(Date.now());
@@ -987,6 +997,7 @@ const App: React.FC = () => {
     const onScroll = () => {
       const near = isNearBottom();
       setShowScrollButton(!near);
+      setShowScrollTopButton(container.scrollTop > 300);
       if (near) setUnreadCount(0);
     };
     container.addEventListener('scroll', onScroll);
@@ -2335,6 +2346,13 @@ const App: React.FC = () => {
           if (voiceSettings.autoSpeak && isTtsAvailable() && filtered) {
             speak(filtered, voiceSettings).catch(() => {});
           }
+          // Browser notification when generation completes and tab is unfocused (#307)
+          if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+            const snippet = filtered.slice(0, 100).replace(/\n/g, ' ');
+            try {
+              new Notification(`Reply from ${activeModel}`, { body: snippet || 'Generation complete' });
+            } catch { /* notifications may be blocked — silently ignore */ }
+          }
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
             // User cancelled — keep partial content, append note (#303)
@@ -2702,6 +2720,12 @@ const App: React.FC = () => {
             onClick={() => { setShowArchived(v => !v); setFolderFilter(null); }}
             className={`text-[10px] px-2 py-0.5 rounded-full border ${showArchived ? 'bg-amber-600 text-white border-amber-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
           >🗄 Archived</button>
+          {tagFilter && (
+            <button
+              className="text-[10px] px-2 py-0.5 rounded-full border bg-blue-600 text-white border-blue-600 inline-flex items-center gap-1"
+              onClick={() => setTagFilter(null)}
+            >🏷 {tagFilter} ✕</button>
+          )}
         </div>
 
         {/* Session list */}
@@ -2760,8 +2784,9 @@ const App: React.FC = () => {
               {((s.tags && s.tags.length > 0) || folders.length > 0) && (
                 <div className="flex items-center flex-wrap gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
                   {(s.tags ?? []).map(tag => (
-                    <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}>
-                      {tag}<button onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
+                    <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${tagFilter === tag ? 'bg-blue-600 text-white' : (dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600')}`}>
+                      <button onClick={() => setTagFilter(prev => prev === tag ? null : tag)} className="hover:underline" title={tagFilter === tag ? 'Clear tag filter' : 'Filter by tag'}>{tag}</button>
+                      <button onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
                     </span>
                   ))}
                   {folders.length > 0 && (
@@ -3556,6 +3581,15 @@ const App: React.FC = () => {
             </div>
           ))}
           <div ref={messagesEndRef} />
+          {showScrollTopButton && (
+            <button
+              onClick={scrollToTop}
+              aria-label="Scroll to top"
+              className={`absolute top-4 right-4 px-3 py-1.5 rounded-full text-xs shadow-md transition-colors ${
+                dark ? 'bg-zinc-700 text-zinc-100 hover:bg-zinc-600' : 'bg-white text-zinc-700 hover:bg-zinc-100'
+              }`}
+            >↑ Back to top</button>
+          )}
           {showScrollButton && (
             <button
               onClick={scrollToBottom}
