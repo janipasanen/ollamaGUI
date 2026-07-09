@@ -494,3 +494,17 @@ describe('/pull command (#316)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('pull'); expect(r.arg).toBe('llama3'); }
   });
 });
+
+
+// ── /remove builtin (#318) ────────────────────────────────────────────────────
+
+describe('/remove command (#318)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('remove')?.builtin).toBe(true);
+  });
+  it('with a model name returns action: remove + arg', () => {
+    const r = runCommand('/remove llama3');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('remove'); expect(r.arg).toBe('llama3'); }
+  });
+});

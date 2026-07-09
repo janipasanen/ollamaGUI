@@ -478,6 +478,10 @@ const App: React.FC = () => {
   const [isTemporary, setIsTemporary] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [zenMode, setZenMode] = useState(false);
+  const [contextWarningDismissed, setContextWarningDismissed] = useState(false);
+  const [playSoundOnComplete, setPlaySoundOnComplete] = useState<boolean>(() => {
+    try { return localStorage.getItem('ollama_gui_sound_complete') === 'true'; } catch { return false; }
+  });
   const [notifyOnComplete, setNotifyOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('ollama_gui_notify_complete') === 'true'; } catch { return false; }
   });
@@ -689,6 +693,12 @@ const App: React.FC = () => {
     () => estimateConversationTokens(messages) + (input ? estimateTokens(input) : 0),
     [messages, input],
   );
+
+  // Context limit warning (#319) — show a banner when usage exceeds 80%.
+  const contextPct = genOptions.num_ctx ? Math.round((conversationTokens / genOptions.num_ctx) * 100) : 0;
+  const showContextWarning = contextPct >= 80 && !contextWarningDismissed;
+  // Auto-reset the dismissed flag when usage drops below 80%.
+  useEffect(() => { if (contextPct < 80) setContextWarningDismissed(false); }, [contextPct]);
 
   // In-conversation search matches (#247)
   const chatSearchMatches = React.useMemo(
@@ -1139,6 +1149,22 @@ const App: React.FC = () => {
   };
 
   const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+
+  // Play a short beep via Web Audio API (#320).
+  const playCompletionSound = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+    } catch { /* AudioContext may be blocked — silently ignore */ }
+  }, []);
 
   // Zen/Focus mode (#309): hides sidebar, closes panels, simplifies header.
   const toggleZenMode = () => {
@@ -1976,6 +2002,13 @@ const App: React.FC = () => {
           void handlePullModel(arg);
           return;
         }
+        if (result.action === 'remove') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /remove <model-name>'); return; }
+          if (!models.some(m => m.name === arg)) { showStatusBanner(`Model "${arg}" not found`); return; }
+          void handleDeleteModel(arg);
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {
@@ -2419,6 +2452,8 @@ const App: React.FC = () => {
               new Notification(`Reply from ${activeModel}`, { body: snippet || 'Generation complete' });
             } catch { /* notifications may be blocked — silently ignore */ }
           }
+          // Completion sound (#320)
+          if (playSoundOnComplete) playCompletionSound();
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
             // User cancelled — keep partial content, append note (#303)
@@ -3196,6 +3231,13 @@ const App: React.FC = () => {
           data-testid="messages-container"
           className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 relative"
         >
+          {/* Context limit warning (#319) */}
+          {showContextWarning && (
+            <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs mb-2 ${dark ? 'bg-amber-900/40 border border-amber-700/50 text-amber-300' : 'bg-amber-50 border border-amber-300 text-amber-800'}`}>
+              <span>⚠ Context window ${contextPct}% full — consider /compact or /ctx ${Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
+              <button onClick={() => setContextWarningDismissed(true)} aria-label="Dismiss context warning" className={`shrink-0 ${dark ? 'text-amber-400 hover:text-amber-200' : 'text-amber-600 hover:text-amber-400'}`}>✕</button>
+            </div>
+          )}
           {/* In-conversation search (#247) */}
           {chatSearchOpen && (
             <div className="sticky top-0 z-20 flex justify-end pb-1">
@@ -5735,6 +5777,25 @@ const App: React.FC = () => {
                     </div>
                     <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                       Shows a browser notification when a reply finishes while the tab is in the background.
+                    </p>
+                  </div>
+                  {/* Completion sound (#320) */}
+                  <div className={`rounded-lg border p-3 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Play sound on completion</span>
+                      <Toggle
+                        checked={playSoundOnComplete}
+                        onChange={() => {
+                          const next = !playSoundOnComplete;
+                          setPlaySoundOnComplete(next);
+                          try { localStorage.setItem('ollama_gui_sound_complete', String(next)); } catch { /* ignore */ }
+                        }}
+                        dark={dark}
+                        label="Play sound on completion"
+                      />
+                    </div>
+                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                      Plays a short beep when a reply finishes.
                     </p>
                   </div>
                 </div>

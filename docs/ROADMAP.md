@@ -1061,3 +1061,29 @@ stays on `macOS-10.15`.
 - Fixed two existing tests affected by the sidebar title structure change
   (`pinArchiveCommands.test.tsx` selector) and the presets dropdown aria-label
   (`App.test.tsx` accessible-name match).
+
+---
+
+## M65 — /remove command, context warning & completion sound (thirty-third analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / TUIs. Three gaps
+found and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#318** `/remove <model>` slash command. The app deleted models via the
+  settings UI (`handleDeleteModel` with confirmation) but had no slash command.
+  Added a `/remove` builtin that triggers `handleDeleteModel` for the given model
+  name. No-arg shows usage; unknown model shows "not found".
+- [x] **#319** Context limit warning banner. The app showed a `ContextBudget`
+  progress bar in the footer but provided no explicit warning when the
+  conversation was about to exceed the context window. Added a dismissible amber
+  warning banner at the top of the chat area when context usage exceeds 80%,
+  suggesting `/compact` or `/ctx <larger>`. Auto-resets the dismissed flag when
+  usage drops back below 80%.
+- [x] **#320** Optional completion sound. Codex CLI and some TUIs provide audio
+  feedback when a long-running task completes. Added a "Play sound on completion"
+  settings toggle that plays a short 880 Hz beep via the Web Audio API when a
+  reply finishes. Persisted to localStorage; off by default.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1419 passed (154 files)** (+7).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
