@@ -156,3 +156,48 @@ describe('agenticChatStream', () => {
     expect(completeCb).toHaveBeenCalledOnce();
   });
 });
+
+
+// ── final-turn generation stats (#391, #392) ──────────────────────────────────
+
+describe('agenticChatStream onGenStats (#391, #392)', () => {
+  beforeEach(() => {
+    for (const t of toolRegistry.getAllTools()) toolRegistry.unregisterTool(t.name);
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it('emits final-turn genStats with stop reason and prompt tokens', async () => {
+    const fetchMock = makeFetchMock([
+      { message: { role: 'assistant', content: 'Done.' } },
+      { done: true, eval_count: 8, eval_duration: 100_000_000, prompt_eval_count: 60, done_reason: 'stop' },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    let captured: { stopReason?: string; promptCount?: number; evalCount?: number } | undefined;
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'Hi' }],
+      onGenStats: (stats) => { captured = stats; },
+    })) { /* drain */ }
+
+    expect(captured?.stopReason).toBe('stopped');
+    expect(captured?.promptCount).toBe(60);
+    expect(captured?.evalCount).toBe(8);
+  });
+
+  it('does not emit onGenStats when the final chunk has no stats', async () => {
+    const fetchMock = makeFetchMock([
+      { message: { role: 'assistant', content: 'No stats here.' } },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    let called = false;
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'Hi' }],
+      onGenStats: () => { called = true; },
+    })) { /* drain */ }
+
+    expect(called).toBe(false);
+  });
+});

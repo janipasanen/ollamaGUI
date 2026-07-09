@@ -1,4 +1,4 @@
-import { Message, GenerationOptions, cleanGenerationOptions } from './ollama';
+import { Message, GenerationOptions, cleanGenerationOptions, computeGenStats, type GenStats } from './ollama';
 import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs } from './tools';
 import { runPreToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
@@ -30,6 +30,8 @@ export interface AgenticChatOptions {
   onAssistantMessage?: (message: string) => void;
   /** Reasoning/thinking trace accumulator (#245). */
   onAssistantReasoning?: (reasoning: string) => void;
+  /** Final-turn generation stats (stop reason, tokens) (#391, #392). */
+  onGenStats?: (stats: GenStats) => void;
   onComplete?: () => void;
   onError?: (error: Error) => void;
 }
@@ -47,6 +49,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onToolResult,
     onAssistantMessage,
     onAssistantReasoning,
+    onGenStats,
     onComplete,
     onError,
     toolFilter,
@@ -102,6 +105,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       let assistantReasoning = '';
       let toolCalls: ToolCall[] = [];
       let hasToolCalls = false;
+      let turnStats: GenStats | undefined;
       
       // Process the stream
       while (true) {
@@ -132,6 +136,9 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
               yield { role: 'assistant', content: assistantMessage, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message;
             }
             
+            // Capture final-chunk generation stats for this turn (#391, #392).
+            if (parsed.done) turnStats = computeGenStats(parsed);
+
             // Handle tool calls
             if (parsed.message?.tool_calls) {
               hasToolCalls = true;
@@ -239,7 +246,8 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
         continue;
       }
 
-      // No more tool calls, we're done
+      // No more tool calls, we're done — surface the final turn's stats.
+      if (onGenStats && turnStats) onGenStats(turnStats);
       break;
     } catch (error) {
       if (onError) {

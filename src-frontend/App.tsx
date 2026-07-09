@@ -3044,6 +3044,7 @@ ${lines.join('\n')}`;
       } else if (isAgenticMode) {
         // Use agentic loop with tool calling
         let agenticReasoning = '';
+        let agenticGenStats: GenStats | undefined;
         const agentStream = agenticChatStream({
           model: selectedConnectedModel?.name ?? model,
           messages: chatHistory,
@@ -3084,6 +3085,7 @@ ${lines.join('\n')}`;
               return prev;
             });
           },
+          onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
             setMessages(prev => [
               ...prev,
@@ -3118,6 +3120,19 @@ ${lines.join('\n')}`;
 
         for await (const message of agentStream) {
           // Messages are already handled by the callbacks
+        }
+        // Stamp final-turn generation stats onto the last assistant reply (#391, #392).
+        if (agenticGenStats) {
+          setMessages(prev => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === 'assistant') {
+                const updated = [...prev.slice(0, i), { ...prev[i], genStats: agenticGenStats }, ...prev.slice(i + 1)] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              }
+            }
+            return prev;
+          });
         }
       } else if (extraModels.length > 0) {
         // Many-models fan-out (#126)
