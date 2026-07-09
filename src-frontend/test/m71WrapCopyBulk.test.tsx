@@ -62,7 +62,7 @@ describe('Code word-wrap toggle (#336)', () => {
       expect(btns.length).toBeGreaterThan(0);
     }, { timeout: 3000 });
     fireEvent.click(screen.getAllByRole('button', { name: /Load session: Code chat/i })[0]);
-    const wrapBtn = await screen.findByLabelText(/word wrap/i, { timeout: 5000 });
+    const wrapBtn = await screen.findByLabelText(/word wrap/i, {}, { timeout: 5000 });
     expect(wrapBtn.getAttribute('aria-label')).toBe('Enable word wrap');
   });
 
@@ -79,7 +79,7 @@ describe('Code word-wrap toggle (#336)', () => {
       expect(btns.length).toBeGreaterThan(0);
     }, { timeout: 3000 });
     fireEvent.click(screen.getAllByRole('button', { name: /Load session: Wrap chat/i })[0]);
-    const wrapBtn = await screen.findByLabelText(/word wrap/i, { timeout: 5000 });
+    const wrapBtn = await screen.findByLabelText(/word wrap/i, {}, { timeout: 5000 });
     fireEvent.click(wrapBtn);
     await waitFor(() => {
       const toggled = screen.getByLabelText(/word wrap/i);

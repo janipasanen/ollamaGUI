@@ -136,7 +136,7 @@ import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
-import { chatToMarkdown, messageToMarkdown, chatToPlainText } from './services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 
@@ -514,6 +514,17 @@ const App: React.FC = () => {
   const [recentModels, setRecentModels] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_recent_models') ?? '[]'); } catch { return []; }
   });
+  // Starred/favourite models (#339) — pinned to the top of the selector.
+  const [starredModels, setStarredModels] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_starred_models') ?? '[]'); } catch { return []; }
+  });
+  const toggleStarModel = useCallback((name: string) => {
+    setStarredModels(prev => {
+      const next = prev.includes(name) ? prev.filter(m => m !== name) : [...prev, name];
+      localStorage.setItem('ollama_gui_starred_models', JSON.stringify(next));
+      return next;
+    });
+  }, []);
   const [playSoundOnComplete, setPlaySoundOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('ollama_gui_sound_complete') === 'true'; } catch { return false; }
   });
@@ -653,6 +664,7 @@ const App: React.FC = () => {
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
   const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
+  const [copiedPtMsgIdx, setCopiedPtMsgIdx] = useState<number | null>(null);
   const [regenMenuIdx, setRegenMenuIdx] = useState<number | null>(null);
   const [rawView, setRawView] = useState<Record<number, boolean>>({});
   const [collapsedMsg, setCollapsedMsg] = useState<Record<number, boolean>>({});
@@ -3251,6 +3263,13 @@ const App: React.FC = () => {
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
+                {starredModels.length > 0 && !activePresetId && (
+                  <optgroup label="— ★ Starred —">
+                    {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                      <option key={`starred:${m}`} value={m}>{m}</option>
+                    ))}
+                  </optgroup>
+                )}
                 {recentModels.length > 0 && !activePresetId && (
                   <optgroup label="— Recent —">
                     {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
@@ -3297,6 +3316,14 @@ const App: React.FC = () => {
                   );
                 })}
               </select>
+              {/* Star/favourite the current model (#339) */}
+              <button
+                onClick={() => toggleStarModel(model)}
+                aria-label={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
+                aria-pressed={starredModels.includes(model)}
+                title={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
+                className={`p-1 rounded-md text-sm transition-colors ${starredModels.includes(model) ? 'text-amber-400' : (dark ? 'text-zinc-500 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
+              >{starredModels.includes(model) ? '★' : '☆'}</button>
               {models.find(m => m.name === model)?.cloud && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
                   ⛅ Cloud
@@ -3570,6 +3597,14 @@ const App: React.FC = () => {
                       {formatMessageTime(msg.ts, nowTick)}
                     </time>
                   )}
+                  {/* Per-message estimated token count (#340) */}
+                  {msg.content && msg.content.trim() && (
+                    <span
+                      className="normal-case font-normal text-[10px] opacity-50"
+                      title="Estimated tokens for this message"
+                      aria-label={`Estimated tokens: ${estimateTokens(msg.content)}`}
+                    >≈{formatTokenCount(estimateTokens(msg.content))}t</span>
+                  )}
                 </div>
                 {/* Generation speed indicator (#297) */}
                 {msg.role === 'assistant' && msg.genStats && (
@@ -3766,6 +3801,17 @@ const App: React.FC = () => {
                       }}
                       className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >{copiedMdMsgIdx === i ? '✓' : '⎘'}</button>
+                    {/* Copy message as plain text (#341) */}
+                    <button
+                      aria-label="Copy message as plain text"
+                      title="Copy message as plain text"
+                      onClick={() => {
+                        navigator.clipboard.writeText(messageToPlainText(msg));
+                        setCopiedPtMsgIdx(i);
+                        setTimeout(() => setCopiedPtMsgIdx(prev => (prev === i ? null : prev)), 1500);
+                      }}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >{copiedPtMsgIdx === i ? '✓' : 'T'}</button>
                     {/* Export individual message as Markdown (#304) */}
                     <button
                       aria-label="Download message as Markdown"

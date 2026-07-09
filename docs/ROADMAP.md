@@ -1266,3 +1266,33 @@ and implemented. No merge to `master` — work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1487 passed (161 files)** (+10).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M72 — Model starring, per-message tokens & copy-as-plain-text (fortieth analysis pass)
+
+Comparative gap analysis vs Codex CLI / Claude Code / ChatGPT / LM Studio / Open
+WebUI. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#339** Model favourite/starring in the model selector. LM Studio and
+  Open WebUI let users star/favourite models so they pin to the top of the
+  picker. The app tracked recently-used models but had no favourites. Added a
+  `starredModels` state persisted to `localStorage`
+  (`ollama_gui_starred_models`), a ★/☆ toggle button next to the model selector
+  for the active model, and a "— ★ Starred —" optgroup at the top of the
+  selector listing starred models that are still available.
+- [x] **#340** Per-message estimated token count badge. Codex CLI, Claude Code
+  and ChatGPT surface token usage so users understand context consumption. The
+  app showed generation stats (tok/s, eval count) on assistant messages and a
+  conversation-level estimate, but no per-message estimate. Added a compact
+  `≈Nt` badge to each non-empty message (using `estimateTokens`) in the message
+  meta row with an "Estimated tokens: N" accessible label.
+- [x] **#341** Per-message copy-as-plain-text button. The app offered
+  per-message "Copy message" (raw), "Copy message as Markdown", and "Download as
+  Markdown", plus conversation-level `/copy txt` — but no per-message
+  copy-as-plain-text that strips markdown. Added a "T" button next to the
+  existing copy buttons that copies `messageToPlainText(msg)` to the clipboard
+  with a ✓ confirmation, paralleling `/copy txt`.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1495 passed (162 files)** (+8).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
