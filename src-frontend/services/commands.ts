@@ -36,6 +36,8 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'tag', description: 'Tag the current conversation (e.g. /tag work)', builtin: true },
   { name: 'duplicate', description: 'Duplicate the current conversation', builtin: true },
   { name: 'title', description: 'Regenerate the conversation title from its content', builtin: true },
+  { name: 'folder', description: 'Move the current conversation into a folder (e.g. /folder Work)', builtin: true },
+  { name: 'system', description: 'Set or view the system prompt (e.g. /system Be concise)', builtin: true },
   { name: 'review', description: 'Ask the model to review text or code', template: 'Please review the following and provide feedback:\n\n$ARGUMENTS' },
   { name: 'explain', description: 'Ask the model to explain something', template: 'Please explain the following in plain terms:\n\n$ARGUMENTS' },
   { name: 'summarize', description: 'Summarize the provided text', template: 'Please provide a concise summary of the following:\n\n$ARGUMENTS' },
@@ -99,7 +101,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -128,6 +130,8 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'tag') return { kind: 'builtin', action: 'tag', arg: args };
     if (cmd.name === 'duplicate') return { kind: 'builtin', action: 'duplicate' };
     if (cmd.name === 'title') return { kind: 'builtin', action: 'title' };
+    if (cmd.name === 'folder') return { kind: 'builtin', action: 'folder', arg: args };
+    if (cmd.name === 'system') return { kind: 'builtin', action: 'system', arg: args };
   }
   if (cmd.template) {
     return { kind: 'prompt', text: expandTemplate(cmd.template, args) };

@@ -771,3 +771,30 @@ TUIs. Three organization/parity gaps found and implemented. No merge to
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1328 passed (141 files)** (+12).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M55 — /folder & /system commands and raw/rendered toggle (twenty-third analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#288** `/folder <name>` slash command. TUI chat tools organize the
+  active thread from the command line; the app only moved chats to folders via
+  the sidebar folder select. Added a `/folder` builtin that creates the folder
+  if it doesn't exist and moves the current session into it (via
+  `moveToFolder`), confirms via the status banner, and shows usage / save-first
+  hints.
+- [x] **#289** `/system [text]` slash command. Claude Code's `/system` sets or
+  inspects the system prompt; the app only edited it via settings. Added a
+  `/system` builtin: with text it sets and persists the system prompt; with no
+  argument it shows the current prompt in the status banner.
+- [x] **#290** Raw/rendered toggle per assistant message. Claude Code can view a
+  message's raw text vs rendered Markdown; the app only rendered. Added a
+  per-assistant-message toggle button (Raw / MD) that swaps the default
+  Markdown render for a `whitespace-pre-wrap` raw view of the content.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1339 passed (144 files)** (+11).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

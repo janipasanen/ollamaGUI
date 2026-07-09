@@ -316,3 +316,37 @@ describe('/title command (#287)', () => {
     if (r.kind === 'builtin') expect(r.action).toBe('title');
   });
 });
+
+// ── /folder & /system builtins (#288/#289) ────────────────────────────────────
+
+describe('/folder command (#288)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('folder')?.builtin).toBe(true);
+  });
+  it('with an argument returns action: folder + arg', () => {
+    const r = runCommand('/folder Work');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('folder'); expect(r.arg).toBe('Work'); }
+  });
+  it('with no argument returns action: folder + empty arg', () => {
+    const r = runCommand('/folder');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});
+
+describe('/system command (#289)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('system')?.builtin).toBe(true);
+  });
+  it('with text returns action: system + arg', () => {
+    const r = runCommand('/system Be concise');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('system'); expect(r.arg).toBe('Be concise'); }
+  });
+  it('with no argument returns action: system + empty arg', () => {
+    const r = runCommand('/system');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});

@@ -588,6 +588,7 @@ const App: React.FC = () => {
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
   const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
   const [regenMenuIdx, setRegenMenuIdx] = useState<number | null>(null);
+  const [rawView, setRawView] = useState<Record<number, boolean>>({});
   const [copiedChat, setCopiedChat] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -1737,6 +1738,31 @@ const App: React.FC = () => {
           storage.updateSession(currentSessionId, { title });
           setSessions(storage.getSessions());
           showStatusBanner(`Retitled conversation to "${title}"`);
+          return;
+        }
+        if (result.action === 'folder') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /folder <name>'); return; }
+          if (!currentSessionId) { showStatusBanner('Save the chat first to folder it'); return; }
+          let folder = folders.find(f => f.name.toLowerCase() === arg.toLowerCase());
+          if (!folder) {
+            folder = { id: `f_${Date.now()}`, name: arg, order: folders.length };
+            storage.saveFolder(folder);
+            setFolders(storage.getFolders());
+          }
+          moveToFolder(currentSessionId, folder.id);
+          showStatusBanner(`Moved conversation to folder "${arg}"`);
+          return;
+        }
+        if (result.action === 'system') {
+          const arg = result.arg ?? '';
+          if (!arg.trim()) {
+            showStatusBanner(`System prompt: ${systemPrompt}`);
+          } else {
+            setSystemPrompt(arg);
+            localStorage.setItem('ollama_gui_system_prompt', arg);
+            showStatusBanner('System prompt updated');
+          }
           return;
         }
         return;
@@ -2996,7 +3022,9 @@ const App: React.FC = () => {
                       )
                       : msg.role === 'tool'
                         ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
-                        : <MarkdownMessage content={msg.content} dark={dark} />
+                        : rawView[i] && msg.role === 'assistant'
+                          ? <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+                          : <MarkdownMessage content={msg.content} dark={dark} />
                 )}
                 {/* Inline citation Sources list (#120) */}
                 {msg.role === 'assistant' && msg.sources && (
@@ -3147,6 +3175,13 @@ const App: React.FC = () => {
                       title="Quote into composer"
                       className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >❝</button>
+                    {/* Toggle raw/rendered view (#290) */}
+                    <button
+                      onClick={() => setRawView(prev => ({ ...prev, [i]: !prev[i] }))}
+                      aria-label={rawView[i] ? 'Show rendered' : 'Show raw'}
+                      title={rawView[i] ? 'Show rendered' : 'Show raw'}
+                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >{rawView[i] ? 'MD' : 'Raw'}</button>
                   </div>
                 )}
                 {/* Edit button on user messages (#98) */}
