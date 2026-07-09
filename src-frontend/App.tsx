@@ -589,6 +589,7 @@ const App: React.FC = () => {
   const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
   const [regenMenuIdx, setRegenMenuIdx] = useState<number | null>(null);
   const [rawView, setRawView] = useState<Record<number, boolean>>({});
+  const [collapsedMsg, setCollapsedMsg] = useState<Record<number, boolean>>({});
   const [copiedChat, setCopiedChat] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -1763,6 +1764,24 @@ const App: React.FC = () => {
             localStorage.setItem('ollama_gui_system_prompt', arg);
             showStatusBanner('System prompt updated');
           }
+          return;
+        }
+        if (result.action === 'temp') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Temperature: ${genOptions.temperature ?? 'default'}`); return; }
+          const v = Number(arg);
+          if (!Number.isFinite(v) || v < 0 || v > 2) { showStatusBanner('Temperature must be a number between 0 and 2'); return; }
+          updateGenOptions({ temperature: v });
+          showStatusBanner(`Temperature set to ${v}`);
+          return;
+        }
+        if (result.action === 'ctx') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Context window: ${genOptions.num_ctx ?? 4096}`); return; }
+          const v = Math.round(Number(arg));
+          if (!Number.isFinite(v) || v < 512) { showStatusBanner('Context window must be a number >= 512'); return; }
+          updateGenOptions({ num_ctx: v });
+          showStatusBanner(`Context window set to ${v}`);
           return;
         }
         return;
@@ -3022,9 +3041,23 @@ const App: React.FC = () => {
                       )
                       : msg.role === 'tool'
                         ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
-                        : rawView[i] && msg.role === 'assistant'
-                          ? <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
-                          : <MarkdownMessage content={msg.content} dark={dark} />
+                        : (() => {
+                            const body = rawView[i] && msg.role === 'assistant'
+                              ? <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+                              : <MarkdownMessage content={msg.content} dark={dark} />;
+                            if (msg.content.length <= 1000) return body;
+                            const collapsed = collapsedMsg[i] !== false;
+                            return (
+                              <div>
+                                <div className={collapsed ? 'max-h-60 overflow-hidden relative' : ''}>{body}</div>
+                                <button
+                                  onClick={() => setCollapsedMsg(prev => ({ ...prev, [i]: !collapsed }))}
+                                  className={`mt-1 text-xs ${dark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-500'}`}
+                                  aria-label={collapsed ? 'Show more' : 'Show less'}
+                                >{collapsed ? 'Show more' : 'Show less'}</button>
+                              </div>
+                            );
+                          })()
                 )}
                 {/* Inline citation Sources list (#120) */}
                 {msg.role === 'assistant' && msg.sources && (

@@ -350,3 +350,27 @@ describe('/system command (#289)', () => {
     if (r.kind === 'builtin') expect(r.arg).toBe('');
   });
 });
+
+// ── /temp & /ctx builtins (#291/#292) ─────────────────────────────────────────
+
+describe('/temp command (#291)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('temp')?.builtin).toBe(true);
+  });
+  it('with a value returns action: temp + arg', () => {
+    const r = runCommand('/temp 0.7');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('temp'); expect(r.arg).toBe('0.7'); }
+  });
+});
+
+describe('/ctx command (#292)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('ctx')?.builtin).toBe(true);
+  });
+  it('with a value returns action: ctx + arg', () => {
+    const r = runCommand('/ctx 8192');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('ctx'); expect(r.arg).toBe('8192'); }
+  });
+});

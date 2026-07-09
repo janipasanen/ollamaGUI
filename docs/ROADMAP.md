@@ -798,3 +798,30 @@ TUIs. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1339 passed (144 files)** (+11).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M56 — /temp & /ctx commands and collapse long messages (twenty-fourth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#291** `/temp <value>` slash command. ChatGPT / Claude sliders set the
+  sampling temperature; the app only exposed it in settings. Added a `/temp`
+  builtin: with a value in 0..2 it sets and persists `genOptions.temperature`;
+  with no argument it shows the current value ("Temperature: default" when at
+  the default); out-of-range shows a usage hint.
+- [x] **#292** `/ctx <value>` slash command. Codex / Claude let you size the
+  context window; the app only set `num_ctx` in settings. Added a `/ctx` builtin:
+  with a value >= 512 it sets and persists `genOptions.num_ctx`; with no argument
+  it shows the current value (default 4096); too-small shows a hint.
+- [x] **#293** Collapse long messages with Show more / Show less. ChatGPT and
+  Claude collapse very long replies behind a "Show more" affordance; the app
+  always rendered full height. Added a per-message clamp (`max-h-60
+  overflow-hidden`) with a "Show more" / "Show less" toggle button for messages
+  whose body exceeds 1000 characters; short messages render unchanged.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1351 passed (146 files)** (+12).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
