@@ -1784,6 +1784,34 @@ const App: React.FC = () => {
           showStatusBanner(`Context window set to ${v}`);
           return;
         }
+        if (result.action === 'topp') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Top-p: ${genOptions.top_p ?? 'default'}`); return; }
+          const v = Number(arg);
+          if (!Number.isFinite(v) || v < 0 || v > 1) { showStatusBanner('Top-p must be a number between 0 and 1'); return; }
+          updateGenOptions({ top_p: v });
+          showStatusBanner(`Top-p set to ${v}`);
+          return;
+        }
+        if (result.action === 'predict') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict}`); return; }
+          const v = Math.round(Number(arg));
+          if (!Number.isFinite(v) || (v !== -1 && v < 1)) { showStatusBanner('Max tokens must be a positive integer (or -1 for unlimited)'); return; }
+          updateGenOptions({ num_predict: v });
+          showStatusBanner(v === -1 ? 'Max tokens set to unlimited' : `Max tokens set to ${v}`);
+          return;
+        }
+        if (result.action === 'stop') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner(`Stop sequences: ${genOptions.stop && genOptions.stop.length ? genOptions.stop.join(', ') : 'none'}`); return; }
+          if (arg.toLowerCase() === 'clear') { updateGenOptions({ stop: [] }); showStatusBanner('Stop sequences cleared'); return; }
+          const seqs = arg.split(',').map(s => s.trim()).filter(Boolean);
+          if (seqs.length === 0) { showStatusBanner('Stop sequences: provide comma-separated values'); return; }
+          updateGenOptions({ stop: seqs });
+          showStatusBanner(`Stop sequences set to ${seqs.length}`);
+          return;
+        }
         return;
       }
       if (result.kind === 'prompt') {

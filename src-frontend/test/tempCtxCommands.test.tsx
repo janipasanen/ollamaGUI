@@ -70,3 +70,87 @@ describe('/ctx slash command (#292)', () => {
     expect(await screen.findByText('Context window must be a number >= 512')).toBeInTheDocument();
   });
 });
+
+
+describe('/topp slash command (#294)', () => {
+  it('sets top-p and persists it', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topp 0.9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-p set to 0.9')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').top_p).toBe(0.9);
+  });
+
+  it('reports the current top-p with no argument', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-p: default')).toBeInTheDocument();
+  });
+
+  it('rejects out-of-range values', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/topp 2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Top-p must be a number between 0 and 1')).toBeInTheDocument();
+  });
+});
+
+describe('/predict slash command (#295)', () => {
+  it('sets max tokens and persists it', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/predict 512' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Max tokens set to 512')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').num_predict).toBe(512);
+  });
+
+  it('reports unlimited with no argument', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/predict' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Max tokens: unlimited')).toBeInTheDocument();
+  });
+
+  it('rejects invalid values', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/predict 0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Max tokens must be a positive integer (or -1 for unlimited)')).toBeInTheDocument();
+  });
+});
+
+describe('/stop slash command (#296)', () => {
+  it('sets stop sequences and persists them', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/stop <|end|>,STOP' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Stop sequences set to 2')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').stop).toEqual(['<|end|>', 'STOP']);
+  });
+
+  it('reports none with no argument', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/stop' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Stop sequences: none')).toBeInTheDocument();
+  });
+
+  it('clears stop sequences with /stop clear', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
+    render(<App />);
+    localStorage.setItem('ollama_gui_gen_options', JSON.stringify({ stop: ['END'] }));
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/stop clear' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Stop sequences cleared')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('ollama_gui_gen_options') ?? '{}').stop).toEqual([]);
+  });
+});

@@ -374,3 +374,39 @@ describe('/ctx command (#292)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('ctx'); expect(r.arg).toBe('8192'); }
   });
 });
+
+
+// ── /topp, /predict & /stop builtins (#294/#295/#296) ─────────────────────────
+
+describe('/topp command (#294)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('topp')?.builtin).toBe(true);
+  });
+  it('with a value returns action: topp + arg', () => {
+    const r = runCommand('/topp 0.9');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('topp'); expect(r.arg).toBe('0.9'); }
+  });
+});
+
+describe('/predict command (#295)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('predict')?.builtin).toBe(true);
+  });
+  it('with a value returns action: predict + arg', () => {
+    const r = runCommand('/predict 512');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('predict'); expect(r.arg).toBe('512'); }
+  });
+});
+
+describe('/stop command (#296)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('stop')?.builtin).toBe(true);
+  });
+  it('with a value returns action: stop + arg', () => {
+    const r = runCommand('/stop <|end|>,\\n\\nUser');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('stop'); expect(r.arg).toBe('<|end|>,\\n\\nUser'); }
+  });
+});

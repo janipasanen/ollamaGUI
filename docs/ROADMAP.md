@@ -825,3 +825,31 @@ TUIs. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1351 passed (146 files)** (+12).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M57 — /topp, /predict & /stop slash commands (twenty-fifth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three gaps found and implemented — completing command-line control of every
+`GenerationOptions` field. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#294** `/topp <value>` slash command. ChatGPT / Codex expose nucleus
+  sampling (top_p) in their UI; the app only set it in the settings panel. Added
+  a `/topp` builtin: with a value in 0..1 it sets and persists
+  `genOptions.top_p`; with no argument it shows the current value ("Top-p:
+  default" when unset); out-of-range shows a usage hint.
+- [x] **#295** `/predict <value>` slash command. ChatGPT / Codex / Claude let you
+  cap the max reply length; the app only set `num_predict` in settings. Added a
+  `/predict` builtin: with a positive integer (or -1 for unlimited) it sets and
+  persists `genOptions.num_predict`; with no argument it shows the current value
+  ("Max tokens: unlimited" when unset); invalid input shows a hint.
+- [x] **#296** `/stop <seq>` slash command. Ollama supports stop sequences in
+  `GenerationOptions`; Codex / Claude TUIs let you set them from the command
+  line. Added a `/stop` builtin: with comma-separated values it sets and
+  persists `genOptions.stop` as an array; with no argument it shows the current
+  sequences ("none" when unset); with `clear` it removes all stop sequences.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1366 passed (146 files)** (+15).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
