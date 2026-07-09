@@ -1561,6 +1561,19 @@ const App: React.FC = () => {
     URL.revokeObjectURL(href);
   };
 
+  // Export a single message as a Markdown file (#304).
+  const handleExportMessage = (msg: Message, index: number) => {
+    const md = messageToMarkdown(msg);
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    const role = msg.role || 'message';
+    a.download = `${role}_${index + 1}.md`;
+    a.click();
+    URL.revokeObjectURL(href);
+  };
+
   // Copy the current conversation as Markdown to the clipboard (#261)
   const handleCopyMarkdown = async () => {
     if (messages.length === 0) return;
@@ -1851,6 +1864,39 @@ const App: React.FC = () => {
           const cost = formatCost(conversationTokens);
           const budgetPct = genOptions.num_ctx ? Math.round((conversationTokens / genOptions.num_ctx) * 100) : 0;
           showStatusBanner(`Tokens: ${formatTokenCount(conversationTokens)} · ${cost || 'no pricing set'} · Context: ${budgetPct}% of ${genOptions.num_ctx ?? 4096}`);
+          return;
+        }
+        if (result.action === 'compact') {
+          if (messages.length < 2) { showStatusBanner('Not enough messages to compact'); return; }
+          if (isLoading) { showStatusBanner('Cannot compact while generating'); return; }
+          void (async () => {
+            showStatusBanner('Compacting conversation…');
+            const summaryPrompt = 'Summarize the following conversation concisely. Preserve all key facts, decisions, code snippets, and context needed to continue the discussion. Format as a clear summary:\n\n';
+            const convText = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
+            const summaryMessages: Message[] = [
+              { role: 'user', content: summaryPrompt + convText },
+            ];
+            let summary = '';
+            try {
+              const isCloudModel = models.some(m => m.name === model && m.cloud);
+              const compactEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+              await fetchOllamaChatStream(model, summaryMessages, (chunk) => {
+                if (chunk.message?.content) summary += chunk.message.content;
+              }, compactEndpoint, false, genOptions, undefined);
+              if (!summary.trim()) { showStatusBanner('Compaction failed — empty summary'); return; }
+              const compacted: Message[] = [
+                { role: 'user', content: 'Previous conversation summary (via /compact):\n\n' + summary.trim() },
+                { role: 'assistant', content: 'Understood. I have the conversation summary. How can I help you continue?', ts: Date.now() },
+              ];
+              setMessages(compacted);
+              trunkMessagesRef.current = compacted;
+              setBranchState(emptyBranchState());
+              saveCurrentSession(compacted);
+              showStatusBanner(`Compacted ${messages.length} messages into a summary`);
+            } catch (err) {
+              showStatusBanner(`Compaction failed: ${formatErrorLine(err, 'ollama')}`);
+            }
+          })();
           return;
         }
         return;
@@ -2291,11 +2337,11 @@ const App: React.FC = () => {
           }
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
-            // User cancelled — keep partial content, append note
+            // User cancelled — keep partial content, append note (#303)
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*' }] as Message[];
+                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*', wasCancelled: true }] as Message[];
               }
               return prev;
             });
@@ -2431,6 +2477,78 @@ const App: React.FC = () => {
     setMessages(trimmed);
     saveCurrentSession(trimmed);
     void sendMessage(userContent);
+  };
+
+  // Continue a cancelled assistant reply (#303). Strips the cancellation note,
+  // re-sends the conversation (including the partial assistant content) to the
+  // model, and appends the streamed response to the existing message — parity
+  // with Codex / Claude continue-generation after an interrupt.
+  const continueGeneration = async (assistantIndex: number) => {
+    if (isLoading) return;
+    const partial = messages[assistantIndex];
+    if (!partial || partial.role !== 'assistant') return;
+    // Strip the cancellation marker
+    const cleanContent = partial.content.replace(/\n\n\*\(generation cancelled\)\*$/, '');
+    // Build history: everything up to and including the cleaned partial reply
+    const history = [...messages.slice(0, assistantIndex), { ...partial, content: cleanContent, wasCancelled: false }] as Message[];
+    trunkMessagesRef.current = history.slice(0, -1);
+    setMessages(history);
+    saveCurrentSession(history);
+    setIsLoading(true);
+    abortControllerRef.current = new AbortController();
+    const isCloudModel = models.some(m => m.name === model && m.cloud);
+    const selectedConnectedModel = connectedModels.find(m => m.id === model);
+    const selectedConnection = selectedConnectedModel
+      ? connections.find(c => c.id === selectedConnectedModel.connectionId)
+      : undefined;
+    const contEndpoint = isCloudModel
+      ? 'https://cloud.ollama.ai/api/chat'
+      : selectedConnection?.kind === 'ollama'
+        ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+        : url('/api/chat');
+    const ollamaModelName = selectedConnectedModel?.name ?? model;
+    let continuedContent = '';
+    try {
+      await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
+        if (chunk.message?.content) {
+          continuedContent += chunk.message.content;
+          setMessages(prev => {
+            const last = prev[prev.length - 1];
+            const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent }] as Message[];
+            saveCurrentSession(updated);
+            return updated;
+          });
+        }
+      }, contEndpoint, false, genOptions, abortControllerRef.current?.signal);
+      // Final save
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false }] as Message[];
+        saveCurrentSession(updated);
+        return updated;
+      });
+    } catch (streamError) {
+      if (abortControllerRef.current?.signal.aborted) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant') {
+            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n*(generation cancelled)*', wasCancelled: true }] as Message[];
+          }
+          return prev;
+        });
+      } else {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant') {
+            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n' + formatErrorLine(streamError, 'ollama'), isError: true, wasCancelled: false }] as Message[];
+          }
+          return prev;
+        });
+      }
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
+    }
   };
 
   // Navigate to the previous or next sibling branch at a fork point.
@@ -3195,6 +3313,16 @@ const App: React.FC = () => {
                     className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-red-900/50 text-red-300 hover:bg-red-800/60' : 'bg-red-100 text-red-700 hover:bg-red-200'} disabled:opacity-40`}
                   >↻ Retry</button>
                 )}
+                {/* Continue generation button on cancelled replies (#303) */}
+                {msg.role === 'assistant' && msg.wasCancelled && (
+                  <button
+                    onClick={() => void continueGeneration(i)}
+                    aria-label="Continue generation"
+                    title="Continue — resume generation from where it stopped"
+                    disabled={isLoading}
+                    className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-blue-900/50 text-blue-300 hover:bg-blue-800/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'} disabled:opacity-40`}
+                  >▶ Continue</button>
+                )}
                 {/* Thumbs feedback on completed assistant replies (#137) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
                   <div className="flex items-center gap-1 mt-1 flex-wrap">
@@ -3230,6 +3358,13 @@ const App: React.FC = () => {
                       }}
                       className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >{copiedMdMsgIdx === i ? '✓' : '⎘'}</button>
+                    {/* Export individual message as Markdown (#304) */}
+                    <button
+                      aria-label="Download message as Markdown"
+                      title="Download message as Markdown"
+                      onClick={() => handleExportMessage(msg, i)}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                    >⬇</button>
                     {/* Speak button — per-message TTS (#101) */}
                     {isTtsAvailable() && (
                       <button

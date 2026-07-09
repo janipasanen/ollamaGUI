@@ -25,6 +25,8 @@ export interface Message {
   genStats?: { tokensPerSec?: number; evalCount?: number; totalDurationMs?: number };
   /** True when this assistant message is an error placeholder (#299). */
   isError?: boolean;
+  /** True when the user cancelled generation mid-stream (#303). */
+  wasCancelled?: boolean;
 }
 
 export interface OllamaResponse {

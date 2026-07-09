@@ -916,3 +916,34 @@ on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1383 passed (148 files)** (+6).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M60 — Continue generation, per-message export & /compact command (twenty-eighth analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#303** Continue generation button on stopped/cancelled replies. Codex
+  and Claude show a Continue button after an interrupted reply, letting the
+  model resume from where it stopped. The app appended "*(generation cancelled)*"
+  but offered no way to continue. Added a `wasCancelled` flag to cancelled
+  assistant messages and a "▶ Continue" button that strips the cancellation
+  marker, re-sends the conversation (including the partial assistant content) to
+  the model, and appends the streamed response to the existing message.
+- [x] **#304** Export individual message as a Markdown file. The app exports the
+  whole conversation as Markdown but could not export a single message. Added a
+  per-message "⬇" download button that saves the message (with role header) as a
+  `.md` file via `messageToMarkdown`.
+- [x] **#305** `/compact` slash command. Claude Code has a `/compact` command
+  that summarizes the conversation to save context window space. The app had no
+  such feature — long conversations eventually exceed `num_ctx`. Added a
+  `/compact` builtin that sends a summarization prompt to the model, captures the
+  summary, and replaces the conversation history with a single user message
+  containing the summary (preserving model and system prompt). Rejects when there
+  are fewer than 2 messages or a generation is in progress.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1389 passed (149 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

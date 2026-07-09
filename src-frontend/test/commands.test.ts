@@ -438,3 +438,17 @@ describe('/cost command (#302)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('cost'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /compact builtin (#305) ───────────────────────────────────────────────────
+
+describe('/compact command (#305)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('compact')?.builtin).toBe(true);
+  });
+  it('returns action: compact with no arg', () => {
+    const r = runCommand('/compact');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('compact'); expect(r.arg).toBeUndefined(); }
+  });
+});
