@@ -566,3 +566,22 @@ describe('/copy command (#337)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('copy'); expect(r.arg).toBe('txt'); }
   });
 });
+
+
+// ── /merge builtin (#344) ────────────────────────────────────────────────────
+
+describe('/merge command (#344)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('merge')?.builtin).toBe(true);
+  });
+  it('with a session id returns action: merge + arg', () => {
+    const r = runCommand('/merge 12345');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('merge'); expect(r.arg).toBe('12345'); }
+  });
+  it('with no arg returns action: merge + empty arg', () => {
+    const r = runCommand('/merge');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('merge'); expect(r.arg).toBe(''); }
+  });
+});

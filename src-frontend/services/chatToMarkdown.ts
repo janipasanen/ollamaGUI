@@ -131,3 +131,97 @@ export function chatToPlainText(
   }
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
+
+// ─── HTML export (#343) ──────────────────────────────────────────────────────
+
+/** Escape HTML special characters in a string. */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Render a single message to an HTML fragment for `.html` export (#343).
+ * Escapes content; preserves code blocks and paragraphs.
+ */
+export function messageToHtml(m: Message): string {
+  const role = m.role.charAt(0).toUpperCase() + m.role.slice(1);
+  const parts: string[] = [`<div class="msg msg-${escapeHtml(m.role)}">`];
+  parts.push(`<div class="msg-role">${escapeHtml(role)}</div>`);
+  if (m.reasoning && m.reasoning.trim()) {
+    parts.push(`<div class="msg-thinking"><em>Thinking</em><pre>${escapeHtml(m.reasoning)}</pre></div>`);
+  }
+  if (m.content && m.content.trim()) {
+    // Split fenced code blocks out so they render as <pre><code>.
+    const segments = m.content.split(/```/);
+    let inCode = false;
+    const body: string[] = [];
+    for (let idx = 0; idx < segments.length; idx++) {
+      const seg = segments[idx];
+      if (inCode) {
+        // First line may be a language tag.
+        const nl = seg.indexOf('\n');
+        const code = nl >= 0 ? seg.slice(nl + 1) : seg;
+        body.push(`<pre><code>${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`);
+      } else {
+        const text = seg.trim();
+        if (text) body.push(`<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`);
+      }
+      inCode = !inCode;
+    }
+    parts.push(`<div class="msg-content">${body.join('')}</div>`);
+  }
+  if (m.tool_calls && m.tool_calls.length > 0) {
+    const names = m.tool_calls.map(tc => escapeHtml((tc as any)?.function?.name ?? (tc as any)?.name ?? 'tool'));
+    parts.push(`<div class="msg-tools">Tool calls: ${names.join(', ')}</div>`);
+  }
+  if (m.images && m.images.length > 0) {
+    parts.push(`<div class="msg-images">${m.images.length} image attachment${m.images.length > 1 ? 's' : ''}</div>`);
+  }
+  parts.push('</div>');
+  return parts.join('\n');
+}
+
+/**
+ * Render a conversation to a self-contained HTML document string (#343).
+ */
+export function chatToHtml(
+  messages: Message[],
+  opts: { title?: string } = {},
+): string {
+  const title = opts.title ?? 'Conversation';
+  const body = messages.map(messageToHtml).join('\n');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; background: #fafafa; }
+  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+  .msg { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; }
+  .msg-user { background: #dbeafe; }
+  .msg-assistant { background: #f1f1f1; }
+  .msg-tool { background: #fef3c7; border-left: 3px solid #f59e0b; }
+  .msg-system { background: #e0e7ff; }
+  .msg-role { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; opacity: 0.6; margin-bottom: 0.5rem; }
+  .msg-content p { margin: 0.5rem 0; line-height: 1.6; }
+  .msg-content pre { background: #1e1e1e; color: #e0e0e0; padding: 0.75rem 1rem; border-radius: 0.5rem; overflow-x: auto; }
+  .msg-content code { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+  .msg-thinking { opacity: 0.75; border-left: 2px solid #888; padding-left: 0.75rem; margin: 0.5rem 0; }
+  .msg-thinking pre { white-space: pre-wrap; font-size: 0.85em; }
+  .msg-tools, .msg-images { font-size: 0.8rem; opacity: 0.7; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(title)}</h1>
+${body}
+</body>
+</html>
+`;
+}

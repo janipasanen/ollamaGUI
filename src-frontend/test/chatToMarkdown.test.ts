@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText } from '../services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml, messageToHtml } from '../services/chatToMarkdown';
 import type { Message } from '../services/ollama';
 
 const now = new Date(2026, 2, 5, 10, 0, 0).getTime();
@@ -123,5 +123,42 @@ describe('chatToPlainText (#333)', () => {
     const txt = messageToPlainText(msg);
     expect(txt).toContain('1 image attachment');
     expect(txt).toContain('Tool calls: search');
+  });
+});
+
+
+// ── HTML export (#343) ───────────────────────────────────────────────────────
+
+describe('chatToHtml (#343)', () => {
+  it('produces a self-contained HTML document with doctype and title', () => {
+    const html = chatToHtml([{ role: 'user', content: 'Hi', ts: now }], { title: 'My Chat' });
+    expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(html).toContain('<title>My Chat</title>');
+    expect(html).toContain('<html');
+    expect(html).toContain('</html>');
+  });
+
+  it('escapes HTML special characters in content', () => {
+    const msg: Message = { role: 'user', content: '<script>alert(1)</script>', ts: now };
+    const html = messageToHtml(msg);
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('renders fenced code blocks as pre/code', () => {
+    const fence = String.fromCharCode(96, 96, 96);
+    const msg: Message = { role: 'assistant', content: 'Code:\n' + fence + 'js\nconst x = 1;\n' + fence, ts: now };
+    const html = messageToHtml(msg);
+    expect(html).toContain('<pre><code>');
+    expect(html).toContain('const x = 1;');
+  });
+
+  it('includes role class hooks for styling', () => {
+    const html = chatToHtml([
+      { role: 'user', content: 'Hi', ts: now },
+      { role: 'assistant', content: 'Hello', ts: now },
+    ]);
+    expect(html).toContain('msg-user');
+    expect(html).toContain('msg-assistant');
   });
 });

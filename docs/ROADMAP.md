@@ -1296,3 +1296,31 @@ WebUI. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1495 passed (162 files)** (+8).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M73 — Font zoom, /export html & conversation merge (forty-first analysis pass)
+
+Comparative gap analysis vs ChatGPT / VS Code / Codex CLI / Claude Code. Three
+gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#342** Font-size / zoom control. ChatGPT, VS Code, Codex CLI and Claude
+  Code all offer font-size / zoom controls; the app had none. Added a `fontScale`
+  state (default 1, clamped 0.8–1.5) persisted to `localStorage`
+  (`ollama_gui_font_scale`), applied to the document root font-size so Tailwind
+  rem-based sizing scales uniformly. Added Ctrl+= / Ctrl+- / Ctrl+0 shortcuts to
+  increase / decrease / reset zoom with a status banner, and listed them in the
+  help overlay.
+- [x] **#343** `/export html` self-contained HTML export. The app exported as
+  Markdown, JSON, and plain text but not HTML. Added a `chatToHtml` /
+  `messageToHtml` helper to `services/chatToMarkdown.ts` that renders a
+  self-contained styled HTML document (escaped content, fenced code blocks as
+  `<pre><code>`, role class hooks). Extended `/export` to accept an `html`
+  argument that downloads a `.html` file.
+- [x] **#344** `/merge <id>` conversation merge. The app had `/duplicate` but no
+  way to combine two conversations. Added the `/merge` builtin that appends
+  another session's messages into the current conversation, saves, and confirms.
+  Refuses on unknown id, self-merge, empty target, or no active session. Pairs
+  naturally with `/id` to retrieve a session id.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1513 passed (163 files)** (+18).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

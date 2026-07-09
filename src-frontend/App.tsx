@@ -136,7 +136,7 @@ import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
-import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText } from './services/chatToMarkdown';
+import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 
@@ -480,6 +480,18 @@ const App: React.FC = () => {
     setCodeWordWrap(prev => {
       const next = !prev;
       localStorage.setItem('ollama_gui_code_wordwrap', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+  // Font-size / zoom control (#342) — scales the document root font-size.
+  const [fontScale, setFontScale] = useState<number>(() => {
+    const v = parseFloat(localStorage.getItem('ollama_gui_font_scale') ?? '1');
+    return Number.isFinite(v) ? Math.min(1.5, Math.max(0.8, v)) : 1;
+  });
+  const adjustFontScale = useCallback((delta: number) => {
+    setFontScale(prev => {
+      const next = Math.min(1.5, Math.max(0.8, Math.round((prev + delta) * 10) / 10));
+      localStorage.setItem('ollama_gui_font_scale', String(next));
       return next;
     });
   }, []);
@@ -1017,6 +1029,11 @@ const App: React.FC = () => {
     return () => clearInterval(id);
   }, []);
 
+  // Apply font-scale zoom to the document root so rem-based Tailwind scales uniformly (#342)
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${Math.round(16 * fontScale)}px`;
+  }, [fontScale]);
+
   // Reset the composer height when the input is cleared after sending (#259)
   useEffect(() => {
     if (input === '') {
@@ -1351,6 +1368,19 @@ const App: React.FC = () => {
           togglePin(currentSessionId);
           showStatusBanner(wasPinned ? 'Unpinned conversation' : 'Pinned conversation');
         }
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        adjustFontScale(0.1);
+        showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === '-') {
+        e.preventDefault();
+        adjustFontScale(-0.1);
+        showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === '0') {
+        e.preventDefault();
+        setFontScale(1);
+        localStorage.setItem('ollama_gui_font_scale', '1');
+        showStatusBanner('Zoom reset to 100%');
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1922,6 +1952,19 @@ const App: React.FC = () => {
             a.click();
             URL.revokeObjectURL(href);
             showStatusBanner('Exported conversation as plain text');
+          } else if (arg === 'html') {
+            // Export the current conversation as a self-contained HTML file (#343)
+            const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
+            const html = chatToHtml(messages, { title });
+            const blob = new Blob([html], { type: 'text/html' });
+            const href = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = href;
+            const safe = title.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'chat';
+            a.download = `${safe}.html`;
+            a.click();
+            URL.revokeObjectURL(href);
+            showStatusBanner('Exported conversation as HTML');
           } else {
             handleExportMarkdown();
             showStatusBanner('Exported conversation as Markdown');
@@ -2162,6 +2205,21 @@ const App: React.FC = () => {
           } else {
             showStatusBanner('No active session — start a chat first');
           }
+          return;
+        }
+        if (result.action === 'merge') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /merge <session-id>'); return; }
+          if (!currentSessionId) { showStatusBanner('No active session to merge into'); return; }
+          if (arg === currentSessionId) { showStatusBanner('Cannot merge a conversation into itself'); return; }
+          const target = sessions.find(s => s.id === arg);
+          if (!target) { showStatusBanner(`Session "${arg}" not found`); return; }
+          if (target.messages.length === 0) { showStatusBanner(`Session "${arg}" has no messages to merge`); return; }
+          const merged = [...messages, ...target.messages];
+          trunkMessagesRef.current = merged;
+          setMessages(merged);
+          saveCurrentSession(merged);
+          showStatusBanner(`Merged ${target.messages.length} message${target.messages.length === 1 ? '' : 's'} from "${target.title}"`);
           return;
         }
         return;
@@ -6857,6 +6915,9 @@ const App: React.FC = () => {
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],
+                  ['Zoom In', 'Ctrl+='],
+                  ['Zoom Out', 'Ctrl+-'],
+                  ['Reset Zoom', 'Ctrl+0'],
                   ['Show Help', '?'],
                 ].map(([label, key]) => (
                   <div key={key} className={`flex justify-between items-center py-3 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
