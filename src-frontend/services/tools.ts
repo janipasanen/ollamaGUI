@@ -169,6 +169,30 @@ export function registerCliTool(
   });
 }
 
+// ── One-shot CLI execution for the /run slash command (#353) ──────────────────
+/** Test seam — set to a stub to avoid real Tauri calls in tests. */
+export const _cliMocks = {
+  invoke: null as ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null,
+};
+
+export interface RunCliResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out: boolean;
+}
+
+/** Run a shell command once via the Rust `run_cli` Tauri command. */
+export async function runCliOnce(
+  command: string,
+  cwd?: string,
+  timeoutMs = 30_000,
+): Promise<RunCliResult> {
+  if (_cliMocks.invoke) return _cliMocks.invoke('run_cli', { command, cwd, timeoutMs }) as Promise<RunCliResult>;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RunCliResult>('run_cli', { command, cwd, timeoutMs });
+}
+
 // Built-in tools
 export function registerBuiltInTools() {
   // System information tool

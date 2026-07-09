@@ -1324,3 +1324,436 @@ gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1513 passed (163 files)** (+18).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M74 — /clear in-place, /undo & /diff (forty-second analysis pass)
+
+Comparative gap analysis vs ChatGPT / Claude Code / Aider / Codex CLI. Three
+gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#345** `/clear` clears messages in-place (keep session). `/clear` and
+  `/new` were semantically identical (both called `startNewChat()`, dropping the
+  session). ChatGPT, Claude, and TUIs distinguish clearing the current
+  conversation's messages (preserving the session entry) from starting a fresh
+  session. `/clear` now resets messages/branch state/attachments and persists an
+  empty message list to the existing session; `/new` keeps its new-session
+  behaviour.
+- [x] **#346** `/undo` slash command — drop the last user+assistant exchange.
+  The app had file-state checkpoints/rewind but no message-level undo (Aider
+  `/undo`, ChatGPT message undo). Added the `/undo` builtin that removes the
+  trailing assistant reply plus the preceding user message, persists the trimmed
+  conversation, and refuses when empty or while generating.
+- [x] **#347** `/diff` slash command — feed the current git diff into chat
+  context. The workspace had a Git panel and a `git_diff` agent tool, but no
+  quick way for the user to inject the uncommitted diff for the model to review
+  (Aider/Claude routinely feed diffs to the model). Added the `/diff` builtin
+  that calls `gitDiff(workspaceRoot)` and sends the diff as a user message;
+  `/diff staged` uses the staged diff. Refuses with no workspace or while
+  generating.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1524 passed (164 files)** (+11).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M75 — /reset, /tokens & pinned-file context (forty-third analysis pass)
+
+Comparative gap analysis vs Codex CLI, Claude Code, ChatGPT, and Aider (TUI).
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#348** `/reset` generation parameters to defaults. The app exposed
+  `/temp`, `/ctx`, `/topp`, `/topk`, `/predict`, `/stop` and `/params` (view)
+  but had no one-step reset. ChatGPT, Claude, and LM Studio all offer
+  reset-to-defaults. Added the `/reset` builtin that restores `genOptions` to
+  `{ num_ctx: 4096 }` (clearing temperature/top_p/top_k/num_predict/stop) and
+  confirms via banner.
+- [x] **#349** `/tokens` per-source context token breakdown. `/cost` and
+  `/stats` showed conversation totals but not *where* context tokens are spent.
+  Codex CLI surfaces a per-source context breakdown. Added the `/tokens`
+  builtin that composes the same context sources used at send time and prints
+  an estimated-token breakdown (project rules, instructions, memory, system
+  prompt, pinned files, conversation, pending input) with a total vs `num_ctx`.
+- [x] **#350** Aider-style `/add` & `/drop` pinned-file context. The app had
+  one-shot `@`-mention but no persistent pinned files across turns. Added a
+  `pinnedFiles` state (persisted to `localStorage`) with `/add <path>`,
+  `/drop <path>`, and `/files`; pinned contents are prepended as `<file>` context
+  blocks on every send, shown as removable chips above the composer, and cleared
+  on `/new` and `/clear`. New `services/pinnedFiles.ts`.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1556 passed (166 files)** (+32).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M76 — Image lightbox, interactive task lists & /run (forty-fourth analysis pass)
+
+Comparative gap analysis vs ChatGPT, Claude, Obsidian/Typora, and Aider (TUI).
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#351** Image lightbox / full-size preview. Attached images rendered only
+  as thumbnails; ChatGPT/Claude open images in a full-size overlay. Added a
+  `lightboxImage` state + full-screen overlay (closeable via ✕, backdrop click,
+  or Escape — including a global Escape handler). Pending and in-message images
+  are now click-to-zoom.
+- [x] **#352** Interactive GFM task-list checkboxes. remark-gfm rendered task
+  lists with disabled, non-clickable checkboxes; Obsidian/ChatGPT/Typora make
+  them interactive. Added `services/taskList.ts` (`toggleTaskInMarkdown`,
+  `reactChildrenToText`, `hasTaskList`, `extractTaskText`) and a custom `li`
+  renderer in `MarkdownMessage` that swaps the disabled input for a clickable
+  checkbox; clicking toggles `- [ ]`↔`[x]` in the stored message and persists.
+- [x] **#353** `/run <command>` — Aider-style shell-command-to-chat. The app had
+  a terminal panel and an agent CLI tool (with approval) but no quick way to run
+  a command and feed its output to the model. Added a one-shot `runCliOnce`
+  wrapper (with a `_cliMocks` test seam) in `services/tools.ts` and a `/run`
+  builtin that runs the command (user-initiated, no approval — like the terminal
+  panel) and sends the output into chat as a user message.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1577 passed (168 files)** (+21).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M77 — External links, autonomy quick-selector & resume-last-session (forty-fifth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude Code, and ChatGPT. Three gaps
+found and implemented (one a bug). No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#354** Markdown links open in the system browser (bug). `MarkdownMessage`
+  had no custom `a` renderer, so links navigated the Tauri webview / no-op'd
+  instead of opening in the OS browser like citations and ChatGPT/Claude/Codex
+  do. Added `services/openExternal.ts` (`openExternalUrl`, `isExternalUrl`, with
+  a `_mocks` test seam) and an `a` renderer that hands http(s) links to the
+  opener plugin (window.open fallback), preventing default navigation.
+- [x] **#355** Autonomy / approval-mode quick selector in the chat header. The
+  Plan/Ask/Auto selector lived only in Settings; the Codex GUI surfaces a
+  prominent approval-mode selector in the main view. Added a compact segmented
+  selector to the chat header (bound to `autonomySettings.level`, persisted via
+  `saveAutonomySettings`) plus three Command Palette entries.
+- [x] **#356** Opt-in resume-last-session on startup. The app always opened a
+  blank chat; Claude Code resumes the most recent conversation. Added a
+  `resumeLastSession` setting (localStorage, default off) that, on mount, loads
+  the most recent non-archived session. Settings toggle added.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1586 passed (170 files)** (+9).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M78 — /commit, /tests & welcome-screen prompt library (forty-sixth analysis pass)
+
+Comparative gap analysis vs Aider (TUI) and ChatGPT/Claude. Three gaps found
+and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#357** `/commit [message]` — Aider-style. The app had a Git panel and an
+  agent `git_commit` tool but no quick commit command. Added a `/commit` builtin
+  that gathers unstaged + untracked files via `gitStatus`, generates a
+  conventional commit message from `gitDiff` via the active model when none is
+  supplied (streamed via `fetchOllamaChatStream`), then stages and commits.
+  Refuses with no workspace, while generating, or on a clean tree.
+- [x] **#358** WelcomeScreen surfaces the user's prompt library. The empty state
+  showed four hardcoded starters and ignored saved prompts. Extended
+  `WelcomeScreen` with a `prompts` prop; saved prompts are shown (clicking sends
+  the body), falling back to the starters when the library is empty. App passes
+  the user's `prompts`.
+- [x] **#359** `/tests <command>` — Aider-style. Runs a test command via
+  `runCliOnce`; on exit 0 reports "Tests passed" without sending to the model;
+  on non-zero exit sends the output framed as failing tests to fix and banners
+  the failure. Distinct from `/run` (which always sends output).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1600 passed (171 files)** (+14).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M79 — Keyboard parity: Tab-indent, approval & diff-review shortcuts (forty-seventh analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI and TUI agentic tools
+(Aider, Claude Code). Three keyboard-interaction gaps found and implemented.
+No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#360** Tab-to-indent in the chat composer. Codex, Claude and most TUIs
+  let Tab insert spaces inside multi-line text. The composer's Tab was consumed
+  only by autocomplete navigation, so Tab did nothing when suggestions were
+  closed. Added a Tab/Shift+Tab handler that inserts/removes two spaces at the
+  caret when no `@`/`#`/slash suggestions are open; caret position is restored
+  via `setTimeout`.
+- [x] **#361** Keyboard shortcuts for the CLI command approval modal. Codex and
+  Claude GUIs let you approve/deny with the keyboard. The approval modal
+  required mouse clicks. Added a `keydown` listener (active while
+  `pendingApproval` is set): Enter = Allow Once, Escape = Deny, A = Always
+  Allow (adds to `cliAllowlist` and persists). Enter is guarded when a
+  `HTMLButtonElement` is focused.
+- [x] **#362** Keyboard shortcuts for the diff-review modal. Codex and Claude
+  GUIs let you accept/reject file edits with Enter/Escape. The diff-review
+  modal required button clicks. Added a `keydown` listener: Enter = Accept
+  (resolves with `mergedNewString`), Escape = Reject (resolves `false`). Enter
+  is guarded when a button is focused.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1608 passed (172 files)** (+8).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M80 — File-tree wiring, sidebar DnD & /init command (forty-eighth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, ChatGPT and TUI agentic tools
+(Aider). Three gaps found and implemented — one bug fix and two feature additions.
+No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#363** File-tree click was unwired (bug). \`FileTreePanel\` dispatched a
+  \`ollama-gui:select-file\` CustomEvent on file click but nothing in \`App.tsx\`
+  listened for it — clicking a file did nothing. Added a \`useEffect\` that
+  listens for the event, reads the file via \`readFile\`, and pins it into the
+  chat context (same mechanism as \`/add\`). Directory entries are ignored.
+  Relative paths are computed from the workspace root for the pin label.
+- [x] **#364** Sidebar drag-and-drop to move conversations into folders. Codex,
+  Claude and ChatGPT all support dragging sidebar conversations onto folders.
+  The app only had the \`/folder\` slash command. Added \`draggable\` session
+  rows that set \`text/session-id\` on drag start, and folder-chip drop targets
+  (\`onDragOver\`/\`onDrop\`) that call \`moveToFolder\`. The "All" chip is also
+  a drop target to unfile a conversation. A ring highlight indicates the active
+  drop target.
+- [x] **#365** \`/init\` slash command — Aider-style. The app reads
+  \`AGENTS.md\`/\`CLAUDE.md\` for system-prompt injection but had no way to
+  create one. \`/init\` lists the workspace root via \`listDir\`, streams a
+  prompt to the active model asking it to produce a concise \`AGENTS.md\`
+  (project summary, coding conventions, build/test commands, structure notes),
+  writes the result via \`writeFile\`, and reloads project rules. Refuses with
+  no workspace or while generating.
+
+### Result
+- \`tsc --noEmit\` clean; \`vitest run\` = **1614 passed (173 files)** (+6).
+- No Rust changes this pass (\`cargo test --lib\` 87 passed / 1 ignored).
+
+## M81 — Search highlighting, command palette completeness & token estimate (forty-ninth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, ChatGPT, and VS Code. Three
+gaps found and implemented. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#366** Chat search term highlighting. `findMessageMatches` found matching
+  messages and scrolled to them, but the search term was not highlighted within
+  the message text. Added a `highlightChildren` utility that wraps matching
+  substrings in `<mark>` elements, and a `highlightQuery` prop to
+  `MarkdownMessage` that applies it via custom ReactMarkdown component
+  overrides (`p`, `li`, `td`, `strong`, `em`, `h1`–`h4`). The raw view also
+  highlights. Highlights clear when search is closed.
+- [x] **#367** Command palette completeness. The palette had 11 actions; 12 more
+  actions with keyboard shortcuts were missing (Toggle Theme, Toggle Zen Mode,
+  Toggle Artifacts, Regenerate, Copy Last Reply, Scroll to Latest, Pin/Unpin,
+  Next/Previous Conversation, Zoom In/Out/Reset). Added all to the
+  `paletteCommands` array for discoverability.
+- [x] **#368** Token estimate in the composer footer. The footer showed word and
+  character counts but not an estimated token count. Imported `estimateTokens`
+  (already available in `tokenEstimate.ts`) and appended `~N tokens` to the
+  counter so users can gauge context-window usage before sending.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1621 passed (174 files)** (+7).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M82 — Clear-all pinned files, copy-diff button & /web command (fiftieth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, VS Code, Aider and Claude
+Code. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#369** Clear-all pinned files button. Each pinned file chip had an
+  individual drop button but there was no way to clear all pinned context
+  files at once. Added a "Clear all" button (visible when 2+ files are pinned)
+  that calls `setPinnedFiles([])` and `savePinnedFiles([])`, with a status
+  banner confirmation. Uses `onMouseDown` to preserve composer focus, matching
+  the individual drop-button pattern.
+- [x] **#370** Copy-diff button in DiffReviewModal. The diff-review modal
+  showed file changes but had no clipboard interaction. Added a "Copy diff"
+  button in the modal header that generates a unified-diff string
+  (`--- a/path` / `+++ b/path` / `+` / `-` / ` ` prefixes) from the `diffLines`
+  result and copies it via `navigator.clipboard.writeText`. Shows "✓ Copied"
+  feedback for 1.5 s. For `write_file` edits, generates a diff against
+  `/dev/null`.
+- [x] **#371** `/web` slash command. Web search infrastructure (`webSearch` +
+  `formatResultsAsContext`) existed for auto-search and as an agent tool, but
+  there was no manual user-triggered search. Added `/web <query>` to
+  `BUILTIN_COMMANDS` and handled it in the slash-dispatch: calls `webSearch`
+  with `enabled: true`, formats results, sends them as a user message via
+  `sendMessage`, and shows a status banner. Refuses with no query or while
+  generating; reports when no results are found.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1628 passed (175 files)** (+7).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M83 — Artifacts shortcut, apply-code-to-file & Ctrl+Enter send (fifty-first analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, VS Code, ChatGPT, and Slack.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#372** Keyboard shortcut for the artifacts panel + help overlay gaps.
+  The artifacts panel had a toolbar button and command-palette entry but no
+  dedicated keyboard shortcut. Added Ctrl+Shift+A in the main `handleKeyDown`
+  handler. Also added `Toggle Artifacts` and `Tab Indent / Outdent` entries to
+  the `?` help overlay shortcuts list (Tab-to-indent was added in M79 but was
+  never listed). Added the `Ctrl+Shift+A` hint to the palette entry.
+- [x] **#373** Apply code block to file. Code blocks in chat had Copy and
+  word-wrap buttons but no way to write code directly to a file. Added an
+  `onApplyCode` prop to `CodeBlock` and `MarkdownMessage`; the message
+  rendering passes a callback that extracts a file path from the language tag
+  (e.g. `ts:src/helper.ts`), prompts the user if no path is embedded, and
+  writes via `writeFile`. The Apply button only renders when a workspace is
+  open (the callback is `undefined` otherwise). Shows a status banner on
+  success/failure.
+- [x] **#374** Send on Ctrl+Enter option. The composer always sent on Enter
+  with no way to swap. Added a `sendOnCtrlEnter` boolean persisted in
+  localStorage (`ollama_gui_send_on_ctrl_enter`). When enabled, Enter inserts
+  a newline and Ctrl/Cmd+Enter sends. A toggle is in the Settings overlay under
+  Context Compaction. Default is `false` (Enter sends) — backward compatible.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1636 passed (176 files)** (+8).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M88 — Folder rename, drag-file-to-composer & /redo (fifty-sixth analysis pass)
+
+Comparative gap analysis vs VS Code, Codex GUI, ChatGPT, Claude GUI and Aider.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#387** Rename folder. Folders could be created and deleted but not
+  renamed. Added `renameFolder(id)` (prompts for a new name, upserts via
+  `storage.saveFolder`) and a ✏️ button on each folder chip. Matches
+  VS Code/ChatGPT/Codex folder rename.
+- [x] **#388** Drag file from the file tree into the composer. The composer drop
+  handler only accepted OS-dropped images and file-tree nodes were not draggable.
+  Made file `TreeNode`s `draggable` (storing `text/file-path`/`text/file-name`)
+  and extended `handleDrop` to dispatch `ollama-gui:select-file` so the existing
+  App listener pins the file. Matches VS Code/Codex drag-into-prompt.
+- [x] **#389** `/redo` slash command. `/undo` dropped the last exchange without
+  storing it. Added a `redoStackRef`; `/undo` now pushes the removed exchange
+  (messages + branch state), and `/redo` pops and restores it. Matches
+  Aider/editor undo/redo pairing.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1663 passed (181 files)** (+4).
+- No Rust changes this pass.
+
+## M87 — File-tree context menu, /status & /save · /load snapshots (fifty-fifth analysis pass)
+
+Comparative gap analysis vs VS Code, Codex GUI, Claude GUI, Claude Code and
+Aider. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#384** Right-click context menu on file-tree nodes. `FileTreePanel`
+  exposed click-to-pin and a hover copy-path button but had no `onContextMenu`.
+  Added `onContextMenu` to each `TreeNode` row and a `ContextMenu` instance at
+  the panel level with Pin to chat (dispatches `ollama-gui:select-file`),
+  Copy path (absolute) and Copy relative path (relative to the workspace root).
+  Matches VS Code/Codex/Claude file-tree right-click.
+- [x] **#385** `/status` slash command. Added `/status` to `BUILTIN_COMMANDS`
+  and the `RunResult` union; handled in the slash-dispatch by composing one
+  banner from `model`, `getActiveRoot()`, `ollamaConnected` and
+  `messages.length`. Matches Claude Code `/status`.
+- [x] **#386** `/save` & `/load` conversation snapshots. Added both commands;
+  `/save [name]` writes the current conversation JSON to
+  `<workspace>/.ollama-gui/sessions/<name>.json` via `writeFile`; `/load <name>`
+  reads it back via `readFile`, parses with `parseSessionImport`, saves it as a
+  new session and loads it. Both require an open workspace. Matches Aider
+  `/save` `/load`.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1659 passed (180 files)** (+5).
+- No Rust changes this pass.
+
+## M86 — Sidebar context menu, /map & /memory commands + CI fixes (fifty-fourth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, ChatGPT, VS Code, Aider and
+Claude Code. Three feature gaps found and implemented, plus three failing CI/CD
+stages fixed. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **#381** Right-click context menu on sidebar session items. The sidebar
+  exposed per-session actions (rename, pin, tag, archive, duplicate, delete) as
+  hover icon buttons but had no `onContextMenu`. Added `onContextMenu` to each
+  session row and a second `ContextMenu` instance wired to `startRename`,
+  `togglePin`, `addTagToSession`, `toggleArchive`, `duplicateSession`,
+  `deleteSession`. Matches Codex/Claude/ChatGPT/VS Code sidebar right-click.
+- [x] **#382** `/map` repo-map slash command. Added `/map` to
+  `BUILTIN_COMMANDS` and the `RunResult` union; handled in the slash-dispatch by
+  reading `getActiveRoot()`, listing the root (and one nesting level) via
+  `listDir`, and appending an assistant message with the tree, plus a status
+  banner with the entry count. "No workspace open" when none is active. Matches
+  Aider `/map`.
+- [x] **#383** `/memory` slash command. Added `/memory`; handled by composing
+  the memory block via `composeMemoryBlock(activeProjectId)` and showing it in a
+  status banner with the entry count, or "No memory entries". Matches Claude
+  Code `/memory`.
+
+### CI/CD fixes
+- `Build & Test` → `Run tests`: `modelPull.test.tsx` streaming tests timed out
+  at the 5s default under CI load; raised to 15s.
+- `security-audit` → `npm dependency audit`: switched to
+  `npm audit --omit=dev --audit-level=high` (vite/vitest advisories are dev-only
+  tooling that never ships); production surface reports 0 vulnerabilities.
+- `e2e` → `Run Playwright E2E`: fixed strict-mode violations in
+  `e2e/smoke.spec.ts` (scoped Settings button to `name: 'Open settings'`; scoped
+  message text to `getByTestId('messages-container')`).
+- Bumped workflow `node-version` 20 → 22 (Node 20 deprecated on runners).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1654 passed (179 files)** (+7).
+- No Rust changes this pass.
+
+## M85 — Right-click context menu, /cwd command & workspace sync (fifty-third analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, VS Code, Aider and Claude
+Code. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#378** Right-click context menu on chat messages. The app exposed all
+  per-message actions (copy, copy-as-markdown, copy-as-plain-text, regenerate,
+  edit, delete, quote, toggle raw/rendered, speak) as individual hover-visible
+  icon buttons, but had no `onContextMenu` anywhere. Added a reusable
+  `ContextMenu` component (fixed-position, role="menu"/"menuitem") rendered
+  on `onContextMenu` of each message bubble. It reuses the existing handlers,
+  closes on outside mousedown / Escape / window scroll, and is keyboard
+  accessible. Matches Codex/Claude/VS Code right-click menus.
+- [x] **#379** `/cwd` slash command. No way to show or copy the active
+  workspace root path. Added `/cwd` to `BUILTIN_COMMANDS` and the
+  `RunResult` action union; handled it in the slash-dispatch by reading
+  `getActiveRoot()` and showing the path in a status banner (copied to
+  clipboard), or "No workspace open" when none is active. Matches Aider
+  `/cwd` and Claude Code.
+- [x] **#380** FileTreePanel workspace sync (bug fix). Activating a project
+  called `setWorkspaceRoot` (fileTools only), which left the
+  `ollama_gui_workspace` localStorage entry that `FileTreePanel` reads
+  unchanged — so the tree kept showing the old workspace. App's project
+  activation effect and the project folder-picker now call `openWorkspace`
+  (which updates both fileTools root and localStorage).
+  `openWorkspace`/`closeWorkspace` broadcast a `ollama-gui:workspace-changed`
+  custom event; `FileTreePanel` listens for it and re-reads state.
+  `closeWorkspace` also clears the in-process root via the new
+  `clearWorkspaceRoot` for full consistency.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1647 passed (178 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` unchanged).
+
+## M84 — /settings, /prompt preview & copy-path from file tree (fifty-second analysis pass)
+
+Comparative gap analysis vs Codex GUI, Claude GUI, VS Code, Aider and Claude
+Code. Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#375** `/settings` slash command. Settings were only accessible via
+  Ctrl+, or the command palette. Added `/settings` to `BUILTIN_COMMANDS` and
+  handled it in the slash-dispatch: `setIsSettingsOpen(true)`. Matches Aider
+  `/settings` and Claude Code `/config`.
+- [x] **#376** `/prompt` composed system prompt preview. The `/system` command
+  showed only the raw user-set prompt, not the full composed prompt (with
+  AGENTS.md rules, project instructions, cross-session memory). Added `/prompt`
+  to `BUILTIN_COMMANDS` and handled it: composes the prompt via
+  `composeSystemPrompt` (same as `sendMessage`) and displays it in a
+  dismissable overlay with a Copy button. Escape closes the overlay.
+- [x] **#377** Copy-path from file tree. Clicking a file in the tree pins it
+  into context (M80), but there was no way to just copy the path. Added a
+  copy-path button (⧉, visible on hover) to each `TreeNode` in
+  `FileTreePanel.tsx` that copies `entry.path` to the clipboard via
+  `navigator.clipboard.writeText` without pinning.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1641 passed (177 files)** (+5).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

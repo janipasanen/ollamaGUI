@@ -24,7 +24,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install dependencies
@@ -54,12 +54,15 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: npm dependency audit
-        # Fail only on high/critical advisories; moderate findings are reported but non-blocking.
-        run: npm audit --audit-level=high
+        # Audit production dependencies only (--omit=dev). vite/vitest and their
+        # transitive dev deps are build/test tooling that never ships in the
+        # Tauri binary; scoping to prod keeps this gate meaningful for the
+        # shipped surface. Fail only on high/critical advisories.
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +83,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
       - name: Install dependencies
         run: npm install

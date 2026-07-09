@@ -7,7 +7,7 @@
  * commands are scoped to the chosen directory.
  */
 
-import { setWorkspaceRoot as fsSetRoot, getWorkspaceRoot, listDir } from './fileTools';
+import { setWorkspaceRoot as fsSetRoot, clearWorkspaceRoot, getWorkspaceRoot, listDir } from './fileTools';
 import type { DirEntry } from './fileTools';
 
 export interface WorkspaceState {
@@ -40,18 +40,28 @@ export async function openWorkspace(path: string): Promise<void> {
   const state = loadWorkspaceState();
   const recent = [path, ...state.recentRoots.filter(r => r !== path)].slice(0, MAX_RECENT);
   saveWorkspaceState({ root: path, recentRoots: recent });
+  notifyWorkspaceChanged();
 }
 
 /** Clear the active workspace (does not purge recent list). */
 export function closeWorkspace(): void {
   const state = loadWorkspaceState();
   saveWorkspaceState({ ...state, root: null });
+  clearWorkspaceRoot();
+  notifyWorkspaceChanged();
 }
 
 /** Remove a path from the recent list. */
 export function removeRecentWorkspace(path: string): void {
   const state = loadWorkspaceState();
   saveWorkspaceState({ ...state, recentRoots: state.recentRoots.filter(r => r !== path) });
+}
+
+/** Broadcast a custom event so UI panels can refresh when the workspace changes (#380). */
+function notifyWorkspaceChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ollama-gui:workspace-changed'));
+  }
 }
 
 /** Current active root (in-process + backend). `null` if none opened this session. */

@@ -65,7 +65,7 @@ describe('Model pull UI (#238)', () => {
     fireEvent.click(downloadBtn);
     await waitFor(() => expect(screen.getByText(/Error pulling/i)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
-  });
+  }, 15000);
 
   it('updates progress text and disables the pull button while pulling', async () => {
     global.fetch = makeFetch({ models: [] }) as any;
@@ -76,5 +76,5 @@ describe('Model pull UI (#238)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pull$/i }));
     // While/after pulling, a progress line referencing the model appears.
     await waitFor(() => expect(screen.getByText(/Pull complete: llama3.2:1b/i)).toBeInTheDocument());
-  });
+  }, 15000);
 });

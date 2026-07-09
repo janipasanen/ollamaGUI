@@ -22,3 +22,50 @@ describe('WelcomeScreen', () => {
     expect(screen.getByLabelText(/Use starter prompt: Help me debug a TypeScript error/i)).toBeInTheDocument();
   });
 });
+
+
+describe('WelcomeScreen prompt library (#358)', () => {
+  it('shows saved prompts instead of starters when provided', () => {
+    render(
+      <WelcomeScreen
+        dark={false}
+        onPrompt={vi.fn()}
+        prompts={[{ name: 'Refactor module', body: 'Refactor the auth module' }, { name: 'Add tests', body: 'Add unit tests for utils' }]}
+      />,
+    );
+    expect(screen.getByText('Refactor module')).toBeInTheDocument();
+    expect(screen.getByText('Add tests')).toBeInTheDocument();
+    // Starters are not shown when custom prompts exist.
+    expect(screen.queryByText(/Explain quantum computing/i)).not.toBeInTheDocument();
+  });
+
+  it('sends the prompt body (not the name) on click', () => {
+    const onPrompt = vi.fn();
+    render(
+      <WelcomeScreen
+        dark={true}
+        onPrompt={onPrompt}
+        prompts={[{ name: 'Greet', body: 'Say hello politely' }]}
+      />,
+    );
+    fireEvent.click(screen.getByText('Greet'));
+    expect(onPrompt).toHaveBeenCalledWith('Say hello politely');
+  });
+
+  it('falls back to starter prompts when the saved list is empty', () => {
+    render(<WelcomeScreen dark={false} onPrompt={vi.fn()} prompts={[]} />);
+    expect(screen.getByText(/Explain quantum computing in simple terms/i)).toBeInTheDocument();
+  });
+
+  it('ignores saved prompts with empty bodies', () => {
+    render(
+      <WelcomeScreen
+        dark={false}
+        onPrompt={vi.fn()}
+        prompts={[{ name: 'Empty', body: '   ' }]}
+      />,
+    );
+    expect(screen.queryByText('Empty')).not.toBeInTheDocument();
+    expect(screen.getByText(/Explain quantum computing/i)).toBeInTheDocument();
+  });
+});

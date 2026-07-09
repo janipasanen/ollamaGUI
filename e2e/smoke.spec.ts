@@ -13,7 +13,7 @@ test.describe('App smoke', () => {
 
   test('opens and closes the settings overlay', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /Settings/i }).click();
+    await page.getByRole('button', { name: 'Open settings' }).click();
     await expect(page.getByRole('heading', { name: /^Settings$/i })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: /^Settings$/i })).toBeHidden();
@@ -44,7 +44,8 @@ test.describe('App smoke', () => {
     await page.getByRole('button', { name: 'Send' }).click();
 
     // The user message and the mocked assistant reply should appear.
-    await expect(page.getByText('Hi there')).toBeVisible();
-    await expect(page.getByText('Hello').first()).toBeVisible({ timeout: 10_000 });
+    const messages = page.getByTestId('messages-container');
+    await expect(messages.getByText('Hi there')).toBeVisible();
+    await expect(messages.getByText('Hello').first()).toBeVisible({ timeout: 10_000 });
   });
 });

@@ -13,6 +13,7 @@ import React, { useEffect, useState } from 'react';
 import { panelRegistry } from './PanelShell';
 import { listWorkspaceDir, getActiveRoot, openWorkspace, removeRecentWorkspace, loadWorkspaceState, type WorkspaceState } from '../services/workspace';
 import { pickDirectory } from '../services/platform';
+import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import type { DirEntry } from '../services/fileTools';
 
 export interface FileTreePanelProps {
@@ -38,6 +39,7 @@ function TreeNode({
   onSelect,
   expanded,
   toggle,
+  onContext,
 }: {
   entry: DirEntry;
   depth: number;
@@ -46,6 +48,7 @@ function TreeNode({
   onSelect: (entry: DirEntry) => void;
   expanded: Set<string>;
   toggle: (path: string) => void;
+  onContext: (entry: DirEntry, x: number, y: number) => void;
 }): React.ReactElement {
   const isExpanded = expanded.has(entry.path);
   const [children, setChildren] = useState<DirEntry[]>([]);
@@ -60,18 +63,35 @@ function TreeNode({
 
   return (
     <div data-testid={`file-tree-node-${entry.path.replace(/[^a-zA-Z0-9]/g, '-')}`}>
-      <button
-        onClick={() => {
-          if (entry.is_dir) toggle(entry.path);
-          else onSelect(entry);
-        }}
-        className={`w-full flex items-center gap-1.5 px-2 py-1 text-xs text-left transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-300' : 'hover:bg-zinc-100 text-zinc-700'}`}
+      <div
+        className={`group/node w-full flex items-center gap-1.5 px-2 py-1 text-xs text-left transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-300' : 'hover:bg-zinc-100 text-zinc-700'}`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        onContextMenu={(e) => { e.preventDefault(); onContext(entry, e.clientX, e.clientY); }}
+        draggable={!entry.is_dir}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/file-path', entry.path);
+          e.dataTransfer.setData('text/file-name', entry.name);
+          e.dataTransfer.effectAllowed = 'copy';
+        }}
       >
+        <button
+          onClick={() => {
+            if (entry.is_dir) toggle(entry.path);
+            else onSelect(entry);
+          }}
+          className="flex-1 flex items-center gap-1.5 text-left"
+        >
         <span className="select-none w-4 text-center">{entry.is_dir ? (isExpanded ? '▾' : '▸') : ''}</span>
         <span className="select-none">{fileIcon(entry)}</span>
         <span className="truncate">{entry.name}</span>
-      </button>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(entry.path); }}
+          aria-label={`Copy path: ${entry.name}`}
+          title="Copy path"
+          className={`shrink-0 opacity-0 group-hover/node:opacity-100 transition-opacity px-1 rounded ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
+        >⧉</button>
+      </div>
       {entry.is_dir && isExpanded && (
         <div data-testid={`file-tree-children-${entry.path.replace(/[^a-zA-Z0-9]/g, '-')}`}>
           {children.map((child) => (
@@ -84,6 +104,7 @@ function TreeNode({
               onSelect={onSelect}
               expanded={expanded}
               toggle={toggle}
+              onContext={onContext}
             />
           ))}
         </div>
@@ -106,6 +127,8 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // Right-click context menu on file-tree nodes (#384).
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry } | null>(null);
 
   const root = state.root;
 
@@ -124,6 +147,14 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Re-read workspace state when notified that the workspace changed (#380),
+  // e.g. after a project is activated in App (which calls openWorkspace).
+  useEffect(() => {
+    const handler = () => setState(loadWorkspaceState());
+    window.addEventListener("ollama-gui:workspace-changed", handler);
+    return () => window.removeEventListener("ollama-gui:workspace-changed", handler);
+  }, []);
 
   const openFolder = async () => {
     const dir = await pickDirectory();
@@ -200,10 +231,23 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
               onSelect={onSelect}
               expanded={expanded}
               toggle={toggle}
+              onContext={(ent, x, y) => setCtxMenu({ x, y, entry: ent })}
             />
           ))}
         </div>
       )}
+
+      {ctxMenu && (() => {
+        const ent = ctxMenu.entry;
+        const rel = root && ent.path.startsWith(root) ? ent.path.slice(root.length).replace(/^\/+/, '') : ent.path;
+        const items: ContextMenuItem[] = [];
+        if (!ent.is_dir) {
+          items.push({ label: 'Pin to chat', onSelect: () => onSelect(ent) });
+        }
+        items.push({ label: 'Copy path', onSelect: () => navigator.clipboard.writeText(ent.path) });
+        items.push({ label: 'Copy relative path', onSelect: () => navigator.clipboard.writeText(rel) });
+        return <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={items} onClose={() => setCtxMenu(null)} dark={dark} />;
+      })()}
     </div>
   );
 }

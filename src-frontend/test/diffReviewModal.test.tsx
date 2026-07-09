@@ -88,3 +88,24 @@ describe('DiffReviewModal — per-hunk accept/reject (#254)', () => {
     expect(screen.getByLabelText('Accept hunk 1')).toHaveAttribute('aria-pressed', 'false');
   });
 });
+
+
+describe('DiffReviewModal keyboard shortcuts (#362)', () => {
+  it('Enter accepts the edit', () => {
+    const onResolve = vi.fn();
+    render(<DiffReviewModal edit={edit} dark={false} onResolve={onResolve} />);
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].accepted).toBe(true);
+    expect(onResolve.mock.calls[0][0].mergedNewString).toBe('a\nB\nc\nD\ne');
+  });
+
+  it('Escape rejects the edit', () => {
+    const onResolve = vi.fn();
+    render(<DiffReviewModal edit={edit} dark={true} onResolve={onResolve} />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].accepted).toBe(false);
+  });
+
+});

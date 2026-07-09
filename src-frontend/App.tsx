@@ -5,12 +5,12 @@ import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, s
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
-  loadMemory, addMemoryEntry, removeMemoryEntry, composeMemoryBlock,
+  loadMemory, addMemoryEntry, removeMemoryEntry, composeMemoryBlock, getRelevantEntries,
 } from './services/memory';
 import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
-import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName } from './services/tools';
+import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
@@ -114,8 +114,10 @@ import {
   Artifact,
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
 } from './services/artifacts';
-import { registerFileTools, setWorkspaceRoot } from './services/fileTools';
-import { registerGitTools } from './services/git';
+import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
+import { openWorkspace, getActiveRoot } from './services/workspace';
+
+import { registerGitTools, gitDiff, gitStatus, gitStage, gitCommit } from './services/git';
 import {
   AgentAutonomySettings, AutonomyLevel,
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
@@ -128,9 +130,13 @@ import { registerTerminalTool } from './services/terminal';
 import { registerImageDiffTool } from './services/imageDiff';
 import { secretSet, secretDelete, secretListRefs, type SecretRef } from './services/secrets';
 import { isAtTrigger, atQuery, getAtOptions, resolveAtMention, type AtOption } from './services/atCommand';
+import { loadPinnedFiles, savePinnedFiles, addPinnedFile, dropPinnedFile, findPinnedFile, pinnedContextBlock, pinnedFilesSummary, type PinnedFile } from './services/pinnedFiles';
+import { toggleTaskInMarkdown, reactChildrenToText } from './services/taskList';
+import { openExternalUrl, isExternalUrl } from './services/openExternal';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 import { setDiffReviewCallback, clearDiffReviewCallback, type PendingEdit, type EditDecision } from './services/diffReview';
 import { DiffReviewModal } from './components/DiffReviewModal';
+import { ContextMenu, type ContextMenuItem } from './components/ContextMenu';
 import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
@@ -257,7 +263,7 @@ const CodeWordWrapContext = React.createContext<{ wordWrap: boolean; toggle: () 
 
 // Issue 22: standalone component so useState works per code block instance
 const CODE_COLLAPSE_THRESHOLD = 20; // lines before collapse kicks in (#312)
-const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any }> = React.memo(({ lang, code, dark, props }) => {
+const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: any; onApplyCode?: (code: string, lang: string) => void }> = React.memo(({ lang, code, dark, props, onApplyCode }) => {
   const { wordWrap, toggle } = React.useContext(CodeWordWrapContext);
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
@@ -267,6 +273,10 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
     navigator.clipboard.writeText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+  const [applied, setApplied] = React.useState(false);
+  const handleApply = () => {
+    if (onApplyCode) { onApplyCode(code, lang); setApplied(true); setTimeout(() => setApplied(false), 2000); }
   };
   return (
     <div className="relative group my-2">
@@ -285,6 +295,20 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
           >
             {copied ? 'Copied!' : 'Copy'}
           </button>
+          {onApplyCode && (
+            <button
+              onClick={handleApply}
+              aria-label="Apply code to file"
+              title="Apply code to file"
+              className={`transition-all px-2 py-0.5 rounded ${
+                applied
+                  ? 'text-green-400'
+                  : (dark ? 'text-zinc-400 hover:text-zinc-200 opacity-0 group-hover:opacity-100' : 'text-zinc-500 hover:text-zinc-800 opacity-0 group-hover:opacity-100')
+              }`}
+            >
+              {applied ? 'Applied!' : 'Apply'}
+            </button>
+          )}
           <button
             onClick={toggle}
             aria-label={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}
@@ -329,25 +353,80 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
   );
 });
 
+// Highlight search-query matches within React children by wrapping them in <mark> (#366).
+function highlightChildren(children: React.ReactNode, query: string): React.ReactNode {
+  if (!query || !query.trim()) return children;
+  const q = query.trim();
+  const re = new RegExp(`(${q.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  const process = (node: React.ReactNode): React.ReactNode => {
+    if (typeof node === 'string') {
+      const parts = node.split(re);
+      if (parts.length <= 1) return node;
+      return parts.map((part, idx) =>
+        idx % 2 === 1
+          ? <mark key={idx} className="rounded bg-yellow-300/80 dark:bg-yellow-500/50 text-inherit">{part}</mark>
+          : part
+      );
+    }
+    if (Array.isArray(node)) return node.map(process);
+    if (React.isValidElement(node)) {
+      return React.cloneElement(node as any, {}, React.Children.map((node as any).props.children, process));
+    }
+    return node;
+  };
+  return process(children);
+}
+
 // Renders an assistant/user message as markdown with GFM, LaTeX math (KaTeX),
 // syntax-highlighted code, and Mermaid diagrams. Exported for isolated testing.
-export const MarkdownMessage: React.FC<{ content: string; dark: boolean }> = ({ content, dark }) => (
+export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggleTask?: (itemText: string, checked: boolean) => void; highlightQuery?: string; onApplyCode?: (code: string, lang: string) => void }> = ({ content, dark, onToggleTask, highlightQuery, onApplyCode }) => (
   <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
+        p({ children, ...rest }: any) { return <p {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</p>; },
+        td({ children, ...rest }: any) { return <td {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</td>; },
+        strong({ children, ...rest }: any) { return <strong {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</strong>; },
+        em({ children, ...rest }: any) { return <em {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</em>; },
+        h1({ children, ...rest }: any) { return <h1 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h1>; },
+        h2({ children, ...rest }: any) { return <h2 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h2>; },
+        h3({ children, ...rest }: any) { return <h3 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h3>; },
+        h4({ children, ...rest }: any) { return <h4 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h4>; },
         code({ node, inline, className, children, ...props }: any) {
           const lang = (className || '').replace('language-', '') || 'text';
           const code = String(children).replace(/\n$/, '');
           if (!inline) {
             if (lang === 'mermaid') return <Mermaid code={code} dark={dark} />;
-            return <CodeBlock lang={lang} code={code} dark={dark} props={props} />;
+            return <CodeBlock lang={lang} code={code} dark={dark} props={props} onApplyCode={onApplyCode} />;
           }
           return (
             <code className={`px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
               {children}
             </code>
+          );
+        },
+        li({ className, children, ...rest }: any) {
+          // Interactive GFM task-list checkboxes (#352).
+          if (className !== 'task-list-item' || !onToggleTask) return <li className={className} {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</li>;
+          const arr = React.Children.toArray(children);
+          const inputIdx = arr.findIndex((c: any) => c?.type === 'input');
+          const inputChild = inputIdx >= 0 ? (arr[inputIdx] as any) : null;
+          const currentChecked = !!inputChild?.props?.checked;
+          const labelKids = inputIdx >= 0 ? arr.filter((_, i) => i !== inputIdx) : arr;
+          const itemText = reactChildrenToText(labelKids).trim();
+          return (
+            <li className={className} {...rest} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', listStyle: 'none' }}>
+              <input type="checkbox" checked={currentChecked} onChange={() => onToggleTask(itemText, currentChecked)} aria-label={`Task: ${itemText}`} style={{ marginTop: '0.3em' }} />
+              <span>{labelKids}</span>
+            </li>
+          );
+        },
+        a({ href, children, ...rest }: any) {
+          // Open external http(s) links in the system browser (#354).
+          if (!isExternalUrl(href)) return <a href={href} {...rest}>{children}</a>;
+          return (
+            <a href={href} {...rest} onClick={(e) => { e.preventDefault(); void openExternalUrl(href); }}>{children}</a>
           );
         },
       }}
@@ -472,9 +551,17 @@ const App: React.FC = () => {
   const [autoCompact, setAutoCompact] = useState(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_auto_compact') ?? 'false'); } catch { return false; }
   });
+  // Opt-in: resume the most recent conversation on startup (#356).
+  const [resumeLastSession, setResumeLastSession] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_resume_last_session') ?? 'false'); } catch { return false; }
+  });
   // Code word-wrap toggle (#336) — global setting shared with every CodeBlock.
   const [codeWordWrap, setCodeWordWrap] = useState<boolean>(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_code_wordwrap') ?? 'false'); } catch { return false; }
+  });
+  // Send on Ctrl+Enter instead of Enter (#374) — ChatGPT/Claude/Slack parity.
+  const [sendOnCtrlEnter, setSendOnCtrlEnter] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('ollama_gui_send_on_ctrl_enter') ?? 'false'); } catch { return false; }
   });
   const toggleCodeWordWrap = useCallback(() => {
     setCodeWordWrap(prev => {
@@ -510,6 +597,8 @@ const App: React.FC = () => {
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // Composed system-prompt preview overlay (#376).
+  const [promptPreview, setPromptPreview] = useState<string | null>(null);
   // In-conversation search (#247)
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
@@ -635,6 +724,8 @@ const App: React.FC = () => {
   const [branchState, setBranchState] = useState<BranchState>(emptyBranchState());
   // Trunk messages always hold the full canonical history; branchState tracks alternatives
   const trunkMessagesRef = useRef<Message[]>([]);
+  // /redo stack: stores exchanges dropped by /undo so they can be restored (#389).
+  const redoStackRef = useRef<{ messages: Message[]; branch: BranchState }[]>([]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
 
@@ -642,6 +733,7 @@ const App: React.FC = () => {
   // The panel itself is owned by PanelShell; App only tracks whether an
   // artifact is available so the toolbar toggle can appear/disappear.
   const [latestArtifact, setLatestArtifact] = useState<AnyArtifact | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null); // full-size image preview (#351)
   const [showLoOnboarding, setShowLoOnboarding] = useState(false); // LibreOffice onboarding (#145)
 
   // Slash commands (#96)
@@ -656,6 +748,8 @@ const App: React.FC = () => {
   const [hashSuggestions, setHashSuggestions] = useState<AutocompleteOption[]>([]);
   const [hashSelected, setHashSelected] = useState(0);
   const [pendingContextBlocks, setPendingContextBlocks] = useState<string[]>([]);
+  // Aider-style pinned file context (#350)
+  const [pinnedFiles, setPinnedFiles] = useState<PinnedFile[]>(() => loadPinnedFiles());
 
   // Project rules file content (#93/#190)
   const [projectRulesContent, setProjectRulesContent] = useState<string | null>(null);
@@ -678,6 +772,10 @@ const App: React.FC = () => {
   const [copiedMdMsgIdx, setCopiedMdMsgIdx] = useState<number | null>(null);
   const [copiedPtMsgIdx, setCopiedPtMsgIdx] = useState<number | null>(null);
   const [regenMenuIdx, setRegenMenuIdx] = useState<number | null>(null);
+  // Right-click context menu on chat messages (#378).
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; index: number } | null>(null);
+  // Right-click context menu on sidebar session items (#381).
+  const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [rawView, setRawView] = useState<Record<number, boolean>>({});
   const [collapsedMsg, setCollapsedMsg] = useState<Record<number, boolean>>({});
   const [copiedChat, setCopiedChat] = useState(false);
@@ -737,7 +835,9 @@ const App: React.FC = () => {
   // Bulk selection / bulk archive-delete (#338)
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+ const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // Drag-and-drop folder assignment (#364)
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
 
   // Derived: filtered sessions for search (Issue 18)
   // Search across title/tags/folder/content, then apply archive + folder filters,
@@ -1155,7 +1255,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const project = projects.find(p => p.id === activeProjectId);
     if (project?.workspaceRoot) {
-      void setWorkspaceRoot(project.workspaceRoot);
+      void openWorkspace(project.workspaceRoot);
       registerGitTools(project.workspaceRoot);
       // Load AGENTS.md / CLAUDE.md for system-prompt injection (#93/#190)
       void loadProjectRules(project.workspaceRoot).then(setProjectRulesContent);
@@ -1171,7 +1271,36 @@ const App: React.FC = () => {
         ...(project.workerModel ? { workerModel: project.workerModel } : {}),
       }));
     }
-  }, [activeProjectId, projects]);
+ }, [activeProjectId, projects]);
+
+  // Wire file-tree clicks into the composer — pin the selected file into
+  // context (#363). FileTreePanel dispatches this event but nothing consumed
+  // it before, so clicking a file did nothing.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { entry: { path: string; name: string; is_dir: boolean } } | undefined;
+      if (!detail?.entry || detail.entry.is_dir) return;
+      const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+      const fullPath = detail.entry.path;
+      const relPath = wsRoot && fullPath.startsWith(wsRoot)
+        ? fullPath.slice(wsRoot.replace(/\/$/, '').length + 1)
+        : detail.entry.name;
+      void (async () => {
+        try {
+          const content = await readFile(fullPath);
+          if (!content) { showStatusBanner(`File "${relPath}" is empty`); return; }
+          const next = addPinnedFile(pinnedFiles, { path: relPath, label: detail.entry.name, content });
+          setPinnedFiles(next);
+          savePinnedFiles(next);
+          showStatusBanner(`Pinned "${relPath}" (${content.length} chars) — ${next.length} file${next.length > 1 ? 's' : ''} in context`);
+        } catch (err) {
+          showStatusBanner(`Could not read "${relPath}": ${formatErrorLine(err)}`);
+        }
+      })();
+    };
+    window.addEventListener('ollama-gui:select-file', handler);
+    return () => window.removeEventListener('ollama-gui:select-file', handler);
+  }, [activeProjectId, projects, pinnedFiles]);
 
   const startNewChat = useCallback((projectId?: string | null) => {
     setMessages([]);
@@ -1183,6 +1312,8 @@ const App: React.FC = () => {
     setIsTemporary(false);
     setMessageQueue([]);
     setLatestArtifact(null);
+    setPinnedFiles([]);
+    savePinnedFiles([]);
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
@@ -1272,6 +1403,12 @@ const App: React.FC = () => {
         setChatSearchOpen(false);
         return;
       }
+      // Escape closes the image lightbox (#351)
+      if (e.key === 'Escape' && lightboxImage) {
+        e.preventDefault();
+        setLightboxImage(null);
+        return;
+      }
       // Escape closes the command palette even while focused in its input (#251)
       if (e.key === 'Escape' && paletteOpen) {
         e.preventDefault();
@@ -1286,10 +1423,11 @@ const App: React.FC = () => {
         return;
       }
       // Escape closes the settings/help overlays even while focused in an input (#257)
-      if (e.key === 'Escape' && (isSettingsOpen || showHelp)) {
+      if (e.key === 'Escape' && (isSettingsOpen || showHelp || promptPreview)) {
         e.preventDefault();
         if (isSettingsOpen) setIsSettingsOpen(false);
-        else setShowHelp(false);
+        else if (showHelp) setShowHelp(false);
+        else setPromptPreview(null);
         return;
       }
       // Command palette works even while focused in the chat input (#251)
@@ -1361,6 +1499,9 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         toggleZenMode(); // Zen/Focus mode (#309)
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        togglePanel('artifacts'); // Toggle artifacts panel (#372)
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         if (currentSessionId) {
@@ -1388,7 +1529,35 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions, promptPreview]);
+
+  // Keyboard shortcuts for the CLI approval modal (#361) — Enter = Allow Once,
+  // Escape = Deny, A = Always Allow.
+  useEffect(() => {
+    if (!pendingApproval) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!pendingApproval) return;
+      const active = document.activeElement;
+      const isButton = active instanceof HTMLButtonElement;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        pendingApproval.resolve(false);
+        setPendingApproval(null);
+      } else if (e.key === 'Enter' && !isButton) {
+        e.preventDefault();
+        pendingApproval.resolve(true);
+        setPendingApproval(null);
+      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        cliAllowlist.add(pendingApproval.command);
+        persistCliAllowlist();
+        pendingApproval.resolve(true);
+        setPendingApproval(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingApproval]);
 
   // When mode is 'system', track OS light/dark changes live.
   useEffect(() => {
@@ -1542,6 +1711,19 @@ const App: React.FC = () => {
     scrollToEndOnLoadRef.current = true;
   };
 
+  // Opt-in: resume the most recent conversation on startup (#356).
+  useEffect(() => {
+    if (!resumeLastSession) return;
+    const all = storage.getSessions();
+    if (all.length === 0) return;
+    const recent = all
+      .filter(s => !s.archived)
+      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
+    if (recent) loadSession(recent);
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist the in-progress composer text to the active session's draft (#273).
   useEffect(() => {
     if (currentSessionId) draftsRef.current[currentSessionId] = input;
@@ -1638,6 +1820,14 @@ const App: React.FC = () => {
     setFolders(storage.getFolders());
     setSessions(storage.getSessions());
     if (folderFilter === id) setFolderFilter(null);
+  };
+  const renameFolder = (id: string) => {
+    const folder = folders.find(f => f.id === id);
+    if (!folder) return;
+    const name = window.prompt('Rename folder', folder.name)?.trim();
+    if (!name || name === folder.name) return;
+    storage.saveFolder({ ...folder, name });
+    setFolders(storage.getFolders());
   };
 
   const deleteSession = (id: string, title?: string) => {
@@ -1853,6 +2043,12 @@ const App: React.FC = () => {
     const files = Array.from(e.dataTransfer?.files ?? []);
     const images = files.filter(f => f.type.startsWith('image/'));
     if (images.length > 0) attachImageFiles(images);
+    // Drag a file from the file tree into the composer to pin it (#388).
+    const droppedPath = e.dataTransfer?.getData('text/file-path');
+    if (droppedPath) {
+      const droppedName = e.dataTransfer?.getData('text/file-name') || droppedPath.split(/[\\/]/).pop() || droppedPath;
+      window.dispatchEvent(new CustomEvent('ollama-gui:select-file', { detail: { entry: { path: droppedPath, name: droppedName, is_dir: false } } }));
+    }
   };
 
   // Paste image from clipboard into the composer (#250)
@@ -1894,7 +2090,29 @@ const App: React.FC = () => {
       if (result.kind === 'builtin') {
         setInput('');
         setCommandSuggestions([]);
-        if (result.action === 'clear') { startNewChat(); return; }
+        if (result.action === 'clear') {
+          // /clear clears the messages of the current conversation in place
+          // (keeping the session entry), distinct from /new which starts a
+          // fresh session (#345).
+          if (messages.length === 0 && currentSessionId === null) { showStatusBanner('Nothing to clear'); return; }
+          const cleared: Message[] = [];
+          setMessages(cleared);
+          trunkMessagesRef.current = cleared;
+          setBranchState(emptyBranchState());
+          setAttachedImages([]);
+          setInput('');
+          setMessageQueue([]);
+          setLatestArtifact(null);
+          setPinnedFiles([]);
+          savePinnedFiles([]);
+          if (currentSessionId && !isTemporary) {
+            saveCurrentSession(cleared, emptyBranchState());
+            showStatusBanner('Cleared messages in this conversation');
+          } else {
+            showStatusBanner('Cleared messages');
+          }
+          return;
+        }
         if (result.action === 'help') { setShowHelp(true); return; }
         if (result.action === 'model') {
           const arg = (result.arg ?? '').trim();
@@ -1973,6 +2191,282 @@ const App: React.FC = () => {
         }
         if (result.action === 'new') {
           startNewChat();
+          return;
+        }
+        if (result.action === 'undo') {
+          // /undo drops the last user+assistant exchange (#346) and pushes it
+          // onto the redo stack so /redo can restore it (#389).
+          if (messages.length === 0) { showStatusBanner('Nothing to undo'); return; }
+          if (isLoading) { showStatusBanner('Cannot undo while generating'); return; }
+          let cut = messages.length;
+          if (messages[cut - 1]?.role === 'assistant') cut -= 1;
+          if (cut - 1 >= 0 && messages[cut - 1]?.role === 'user') cut -= 1;
+          if (cut === messages.length) { showStatusBanner('Nothing to undo'); return; }
+          const removed = messages.length - cut;
+          const remaining = messages.slice(0, cut);
+          redoStackRef.current.push({ messages: messages.slice(cut), branch: branchState });
+          setMessages(remaining);
+          trunkMessagesRef.current = remaining;
+          setBranchState(emptyBranchState());
+          setLatestArtifact(null);
+          saveCurrentSession(remaining, emptyBranchState());
+          showStatusBanner(`Undid last exchange (${removed} message${removed > 1 ? 's' : ''})`);
+          return;
+        }
+        if (result.action === 'redo') {
+          // /redo restores the most recently undone exchange (#389).
+          if (isLoading) { showStatusBanner('Cannot redo while generating'); return; }
+          const popped = redoStackRef.current.pop();
+          if (!popped || popped.messages.length === 0) { showStatusBanner('Nothing to redo'); return; }
+          const restored = [...messages, ...popped.messages];
+          setMessages(restored);
+          trunkMessagesRef.current = restored;
+          setBranchState(popped.branch);
+          saveCurrentSession(restored, popped.branch);
+          showStatusBanner(`Redid last exchange (${popped.messages.length} message${popped.messages.length > 1 ? 's' : ''})`);
+          return;
+        }
+        if (result.action === 'diff') {
+          // /diff feeds the current git diff into the chat as context (#347).
+          const arg = (result.arg ?? '').trim().toLowerCase();
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          if (isLoading) { showStatusBanner('Cannot run /diff while generating'); return; }
+          const staged = arg === 'staged';
+          void (async () => {
+            try {
+              const res = await gitDiff(wsRoot, undefined, staged);
+              const diff = res?.diff?.trim() ?? '';
+              if (!diff) { showStatusBanner(staged ? 'No staged changes' : 'No uncommitted changes'); return; }
+              const content = `${staged ? 'Staged' : 'Unstaged'} uncommitted changes for review:\n\n\`\`\`diff\n${diff}\n\`\`\``;
+              void sendMessage(content);
+              showStatusBanner(`Injected ${staged ? 'staged' : 'working-tree'} diff (${diff.length} chars)`);
+            } catch (err) {
+              showStatusBanner(`git diff failed: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'reset') {
+          // /reset restores generation parameters to defaults (#348).
+          const defaults = { num_ctx: 4096 };
+          setGenOptions(defaults);
+          localStorage.setItem('ollama_gui_gen_options', JSON.stringify(defaults));
+          showStatusBanner('Reset generation parameters to defaults');
+          return;
+        }
+        if (result.action === 'tokens') {
+          // /tokens per-source context breakdown (#349).
+          const activeProject = projects.find(p => p.id === activeProjectId);
+          const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
+          const pinnedBlock = pinnedContextBlock(pinnedFiles);
+          const rulesTokens = estimateTokens(projectRulesContent ?? '');
+          const instrTokens = estimateTokens(activeProject?.instructions ?? '');
+          const memTokens = estimateTokens(memBlock ?? '');
+          const sysTokens = estimateTokens(systemPrompt);
+          const pinnedTokens = estimateTokens(pinnedBlock);
+          const convTokens = estimateConversationTokens(messages);
+          const inputTokens = estimateTokens(input);
+          const total = rulesTokens + instrTokens + memTokens + sysTokens + pinnedTokens + convTokens + inputTokens;
+          const ctx = genOptions.num_ctx ?? 4096;
+          const pct = Math.round((total / ctx) * 100);
+          showStatusBanner(
+            `Context tokens (est.): rules ${formatTokenCount(rulesTokens)} · instructions ${formatTokenCount(instrTokens)} · memory ${formatTokenCount(memTokens)} · system ${formatTokenCount(sysTokens)} · pinned ${formatTokenCount(pinnedTokens)} · conversation ${formatTokenCount(convTokens)} · input ${formatTokenCount(inputTokens)} · total ${formatTokenCount(total)} (${pct}% of ${ctx})`,
+          );
+          return;
+        }
+        if (result.action === 'add') {
+          // /add pins a file into the chat context across turns (#350).
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /add <file-path>'); return; }
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          const isAbs = arg.startsWith('/') || /^[A-Za-z]:[\\/]/.test(arg);
+          const fullPath = isAbs ? arg : wsRoot.replace(/\/$/, '') + '/' + arg;
+          const label = arg.split(/[\\/]/).pop() ?? arg;
+          void (async () => {
+            try {
+              const content = await readFile(fullPath);
+              if (!content) { showStatusBanner(`File "${arg}" is empty`); return; }
+              const next = addPinnedFile(pinnedFiles, { path: arg, label, content });
+              setPinnedFiles(next);
+              savePinnedFiles(next);
+              showStatusBanner(`Pinned "${arg}" (${content.length} chars) — ${next.length} file${next.length > 1 ? 's' : ''} in context`);
+            } catch (err) {
+              showStatusBanner(`Could not read "${arg}": ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'drop') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /drop <file-path>'); return; }
+          if (!findPinnedFile(pinnedFiles, arg)) { showStatusBanner(`"${arg}" is not pinned`); return; }
+          const next = dropPinnedFile(pinnedFiles, arg);
+          setPinnedFiles(next);
+          savePinnedFiles(next);
+          showStatusBanner(`Dropped "${arg}" — ${next.length} file${next.length === 1 ? '' : 's'} remaining`);
+          return;
+        }
+        if (result.action === 'files') {
+          showStatusBanner(pinnedFilesSummary(pinnedFiles));
+          return;
+        }
+        if (result.action === 'run') {
+          // /run executes a shell command and feeds its output into chat (#353).
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /run <command>'); return; }
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          void (async () => {
+            try {
+              showStatusBanner(`Running: ${arg}…`);
+              const res = await runCliOnce(arg, wsRoot);
+              const output = res.timed_out
+                ? `[TIMED OUT]\n${res.stderr || ''}`
+                : `${res.stdout || ''}${res.stderr ? `\n[stderr]\n${res.stderr}` : ''}`.trim() || '(no output)';
+              const content = `Output of \`${arg}\` (exit ${res.exit_code}${res.timed_out ? ', timed out' : ''}):\n\n\`\`\`\n${output}\n\`\`\``;
+              void sendMessage(content);
+              showStatusBanner(`Ran "${arg}" — exit ${res.exit_code}`);
+            } catch (err) {
+              showStatusBanner(`Run failed: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'commit') {
+          // /commit stages all changes and commits, generating a message if
+          // none is supplied (#357).
+          const arg = (result.arg ?? '').trim();
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          if (isLoading) { showStatusBanner('Cannot commit while generating'); return; }
+          void (async () => {
+            try {
+              const status = await gitStatus(wsRoot);
+              const files = [...(status.unstaged ?? []), ...(status.untracked ?? [])];
+              if (files.length === 0) { showStatusBanner('Nothing to commit — working tree clean'); return; }
+              let message = arg;
+              if (!message) {
+                showStatusBanner('Generating commit message…');
+                const diff = (await gitDiff(wsRoot)).diff || files.join(', ');
+                const genMessages: Message[] = [
+                  { role: 'user', content: `Write a concise conventional commit message (<=72 char subject, no body) for the following changes. Reply with ONLY the commit message, nothing else:\n\n${diff.slice(0, 8000)}` },
+                ];
+                const isCloudModel = models.some(m => m.name === model && m.cloud);
+                const commitEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+                await fetchOllamaChatStream(model, genMessages, (chunk) => {
+                  if (chunk.message?.content) message += chunk.message.content;
+                }, commitEndpoint, false, genOptions, undefined);
+                message = message.trim().split('\n')[0].slice(0, 72);
+                if (!message) { showStatusBanner('Could not generate a commit message — provide one with /commit <message>'); return; }
+              }
+              await gitStage(wsRoot, files);
+              const result2 = await gitCommit(wsRoot, message);
+              showStatusBanner(`Committed ${result2.hash}: ${message}`);
+            } catch (err) {
+              showStatusBanner(`Commit failed: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'tests') {
+          // /tests runs a test command and feeds failures to the model (#359).
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /tests <command>'); return; }
+          if (isLoading) { showStatusBanner('Cannot run /tests while generating'); return; }
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          void (async () => {
+            try {
+              showStatusBanner(`Running tests: ${arg}…`);
+              const res = await runCliOnce(arg, wsRoot);
+              const output = `${res.stdout || ''}${res.stderr ? `\n[stderr]\n${res.stderr}` : ''}`.trim() || '(no output)';
+              if (res.exit_code === 0) {
+                showStatusBanner('Tests passed');
+                return;
+              }
+              const content = `The following tests are failing (exit ${res.exit_code}${res.timed_out ? ', timed out' : ''}). Please investigate and fix them:\n\n\`\`\`\n${output}\n\`\`\``;
+              void sendMessage(content);
+              showStatusBanner(`Tests failed (exit ${res.exit_code}) — fed to model`);
+            } catch (err) {
+              showStatusBanner(`Tests failed to run: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'init') {
+          // /init generates an AGENTS.md project-rules file from the workspace (#365).
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          if (isLoading) { showStatusBanner('Cannot run /init while generating'); return; }
+          void (async () => {
+            try {
+              showStatusBanner('Generating AGENTS.md…');
+              const entries = await listDir(wsRoot);
+              const fileList = entries
+                .map(e => e.is_dir ? `${e.name}/` : e.name)
+                .slice(0, 60)
+                .join('\n');
+              let generated = '';
+              const initMessages: Message[] = [
+                { role: 'user', content: `You are analysing a codebase to produce an AGENTS.md file. Below is the top-level directory listing of the project root. Write a concise AGENTS.md with: (1) a one-paragraph project summary, (2) coding conventions (language, style, naming), (3) build/test/run commands (infer from common files like package.json, Cargo.toml, Makefile, etc.), (4) project structure notes. Reply with ONLY the AGENTS.md content in Markdown, no commentary.
+
+Directory listing:
+${fileList}` },
+              ];
+              const isCloudModel = models.some(m => m.name === model && m.cloud);
+              const initEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+              await fetchOllamaChatStream(model, initMessages, (chunk) => {
+                if (chunk.message?.content) generated += chunk.message.content;
+              }, initEndpoint, false, genOptions, undefined);
+              generated = generated.trim();
+              if (!generated) { showStatusBanner('Could not generate AGENTS.md — try again or write one manually'); return; }
+              await writeFile(`${wsRoot.replace(/\/$/, '')}/AGENTS.md`, generated);
+              void loadProjectRules(wsRoot).then(setProjectRulesContent);
+              showStatusBanner('AGENTS.md created — project rules loaded');
+            } catch (err) {
+              showStatusBanner(`Failed to create AGENTS.md: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'web') {
+          // /web searches the web and feeds results into the chat (#371).
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /web <query>'); return; }
+          if (isLoading) { showStatusBanner('Cannot search while generating'); return; }
+          void (async () => {
+            try {
+              showStatusBanner(`Searching the web: ${arg}…`);
+              const results = await webSearch(arg, { ...webSearchConfig, enabled: true });
+              if (results.length === 0) { showStatusBanner('No web search results — check your web search settings'); return; }
+              const block = formatResultsAsContext(results);
+              const content = `Web search results for "${arg}":
+
+${block}`;
+              void sendMessage(content);
+              showStatusBanner(`Found ${results.length} result${results.length > 1 ? 's' : ''} — fed to model`);
+            } catch (err) {
+              showStatusBanner(`Web search failed: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'settings') {
+          // /settings opens the settings overlay (#375).
+          setIsSettingsOpen(true);
+          return;
+        }
+        if (result.action === 'prompt') {
+          // /prompt previews the full composed system prompt (#376).
+          const activeProject = projects.find(p => p.id === activeProjectId);
+          const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
+          const composed = composeSystemPrompt({
+            systemPrompt,
+            rulesFileContent: projectRulesContent ?? undefined,
+            projectInstructions: activeProject?.instructions,
+            memoryBlock: memBlock || undefined,
+          });
+          setPromptPreview(composed);
           return;
         }
         if (result.action === 'search') {
@@ -2198,6 +2692,113 @@ const App: React.FC = () => {
           );
           return;
         }
+        if (result.action === 'cwd') {
+          // /cwd shows and copies the active workspace root path (#379).
+          const wsRoot = getActiveRoot();
+          if (wsRoot) {
+            showStatusBanner(`Workspace: ${wsRoot} (copied to clipboard)`);
+            navigator.clipboard?.writeText(wsRoot).catch(() => { /* clipboard may be unavailable */ });
+          } else {
+            showStatusBanner('No workspace open — open a project folder first');
+          }
+          return;
+        }
+        if (result.action === 'memory') {
+          // /memory views the composed cross-session memory block (#383).
+          const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
+          if (memBlock) {
+            const count = getRelevantEntries(activeProjectId ?? undefined).length;
+            showStatusBanner(`Memory (${count} entr${count === 1 ? 'y' : 'ies'}): ${memBlock.replace(/\n/g, ' ').trim()}`);
+          } else {
+            showStatusBanner('No memory entries.');
+          }
+          return;
+        }
+        if (result.action === 'map') {
+          // /map emits a workspace repo-map overview into the chat (#382).
+          const mapRoot = getActiveRoot();
+          if (!mapRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          void (async () => {
+            try {
+              const top = await listDir(mapRoot);
+              const lines: string[] = [];
+              for (const e of top) {
+                const name = e.is_dir ? e.name + '/' : e.name;
+                lines.push(name);
+                if (e.is_dir) {
+                  try {
+                    const children = await listDir(e.path);
+                    for (const c of children.slice(0, 20)) {
+                      lines.push('  ' + (c.is_dir ? c.name + '/' : c.name));
+                    }
+                    if (children.length > 20) lines.push('  … (' + (children.length - 20) + ' more)');
+                  } catch { /* unreadable subdir — skip */ }
+                }
+              }
+              const mapText = `Repo map: ${mapRoot}
+${lines.join('\n')}`;
+              if (currentSessionId) {
+                const mapMsg: Message = { role: 'assistant', content: '```\n' + mapText + '\n```', ts: Date.now() };
+                const next = [...messages, mapMsg];
+                trunkMessagesRef.current = next;
+                setMessages(next);
+                saveCurrentSession(next);
+              }
+              showStatusBanner(`Repo map: ${top.length} top-level entries`);
+            } catch (err) {
+              showStatusBanner(`Could not read workspace: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'status') {
+          // /status quick overview (#385).
+          const wsRoot = getActiveRoot();
+          const conn = ollamaConnected === null ? 'unknown' : ollamaConnected ? 'connected' : 'disconnected';
+          showStatusBanner(`Model: ${model} · Workspace: ${wsRoot ?? 'none'} · Ollama: ${conn} · Messages: ${messages.length}`);
+          return;
+        }
+        if (result.action === 'save') {
+          // /save writes the current conversation snapshot into the workspace (#386).
+          const saveRoot = getActiveRoot();
+          if (!saveRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          if (messages.length === 0) { showStatusBanner('Nothing to save — the conversation is empty'); return; }
+          const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'chat';
+          const arg = (result.arg ?? '').trim();
+          const safe = (arg || title).replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'chat';
+          const relDir = '.ollama-gui/sessions';
+          const fullPath = saveRoot.replace(/\/$/, '') + '/' + relDir + '/' + safe + '.json';
+          const session = currentSessionId ? sessions.find(s => s.id === currentSessionId) : null;
+          const exportData = session ?? { id: currentSessionId ?? 'temp', title, messages, model, createdAt: Date.now() };
+          void writeFile(fullPath, JSON.stringify(exportData, null, 2))
+            .then(() => showStatusBanner(`Saved conversation to ${relDir}/${safe}.json`))
+            .catch((err) => showStatusBanner(`Failed to save: ${formatErrorLine(err)}`));
+          return;
+        }
+        if (result.action === 'load') {
+          // /load restores a conversation snapshot from the workspace (#386).
+          const loadRoot = getActiveRoot();
+          if (!loadRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /load <name>'); return; }
+          const safe = arg.replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40);
+          const relDir = '.ollama-gui/sessions';
+          const fullPath = loadRoot.replace(/\/$/, '') + '/' + relDir + '/' + safe + '.json';
+          void (async () => {
+            try {
+              const raw = await readFile(fullPath);
+              const parsed = parseSessionImport(raw);
+              if (parsed.length === 0) { showStatusBanner(`No conversations found in "${arg}"`); return; }
+              parsed.forEach(s => storage.saveSession(s));
+              setSessions(storage.getSessions());
+              loadSession(parsed[0]);
+              showStatusBanner(`Loaded conversation "${arg}"`);
+            } catch (err) {
+              showStatusBanner(`Could not load "${arg}": ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
         if (result.action === 'id') {
           if (currentSessionId) {
             showStatusBanner(`Session ID: ${currentSessionId} (copied to clipboard)`);
@@ -2280,6 +2881,11 @@ const App: React.FC = () => {
       format = parsed.schema ?? 'json';
     }
 
+    // Prepend pinned-file context so it stays present across turns (#350).
+    // Done after the slash-command dispatch so /-commands still work with
+    // pinned files active. Pinned files persist until /drop or /clear.
+    const pinnedBlock = pinnedContextBlock(pinnedFiles);
+    if (pinnedBlock) text = pinnedBlock + '\n\n' + text;
     const userMessage: Message = {
       role: 'user',
       content: text,
@@ -2758,6 +3364,19 @@ const App: React.FC = () => {
     saveCurrentSession(updated);
   };
 
+  // Toggle a GFM task-list checkbox inside a message in place (#352).
+  const toggleTaskInMessage = (index: number, itemText: string, checked: boolean) => {
+    if (isLoading) return;
+    const msg = messages[index];
+    if (!msg) return;
+    const nextContent = toggleTaskInMarkdown(msg.content, itemText, checked);
+    if (nextContent === msg.content) return;
+    const updated = messages.map((m, j) => (j === index ? { ...m, content: nextContent } : m));
+    trunkMessagesRef.current = updated;
+    setMessages(updated);
+    saveCurrentSession(updated);
+  };
+
   // Edit an assistant reply in place (#281) — replace content, no re-stream.
   const editAssistantMessage = (index: number, newContent: string) => {
     if (isLoading) return;
@@ -2914,6 +3533,34 @@ const App: React.FC = () => {
     { id: 'toggle-terminal', label: 'Toggle Terminal', hint: 'Ctrl+T', run: () => togglePanel('terminal') },
     { id: 'open-settings', label: 'Open Settings', hint: 'Ctrl+,', run: () => setIsSettingsOpen(true) },
     { id: 'show-help', label: 'Show Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
+    { id: 'autonomy-plan', label: 'Set Autonomy: Plan', run: () => { const s = { ...autonomySettings, level: 'plan' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
+    { id: 'autonomy-ask', label: 'Set Autonomy: Ask', run: () => { const s = { ...autonomySettings, level: 'ask' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
+    { id: 'autonomy-auto', label: 'Set Autonomy: Auto', run: () => { const s = { ...autonomySettings, level: 'auto' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
+    { id: 'toggle-theme', label: 'Toggle Theme', hint: 'Ctrl+Shift+D', run: () => toggleTheme() },
+    { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
+    { id: 'toggle-artifacts', label: 'Toggle Artifacts Panel', hint: 'Ctrl+Shift+A', run: () => togglePanel('artifacts') },
+    { id: 'regenerate', label: 'Regenerate Last Reply', hint: 'Ctrl+R', run: () => regenerateLastResponse() },
+    { id: 'copy-last-reply', label: 'Copy Last Reply', hint: 'Ctrl+Shift+C', run: () => {
+      for (let j = messages.length - 1; j >= 0; j--) {
+        if (messages[j].role === 'assistant' && messages[j].content) {
+          navigator.clipboard.writeText(messages[j].content);
+          showStatusBanner('Copied last reply');
+          break;
+        }
+      }
+    } },
+    { id: 'scroll-latest', label: 'Scroll to Latest', hint: 'Ctrl+End', run: () => scrollToBottom() },
+    { id: 'pin-convo', label: 'Pin/Unpin Conversation', hint: 'Ctrl+Shift+P', run: () => {
+      if (!currentSessionId) { showStatusBanner('Save the chat first to pin it'); return; }
+      const wasPinned = !!sessions.find(x => x.id === currentSessionId)?.pinned;
+      togglePin(currentSessionId);
+      showStatusBanner(wasPinned ? 'Unpinned conversation' : 'Pinned conversation');
+    } },
+    { id: 'next-convo', label: 'Next Conversation', hint: 'Ctrl+]', run: () => switchConversationRef.current(1) },
+    { id: 'prev-convo', label: 'Previous Conversation', hint: 'Ctrl+[', run: () => switchConversationRef.current(-1) },
+    { id: 'zoom-in', label: 'Zoom In', hint: 'Ctrl+=', run: () => { adjustFontScale(0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
+    { id: 'zoom-out', label: 'Zoom Out', hint: 'Ctrl+-', run: () => { adjustFontScale(-0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
+    { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); localStorage.setItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
   ];
 
   return (
@@ -3069,16 +3716,44 @@ const App: React.FC = () => {
         <div className="flex items-center flex-wrap gap-1 mb-2">
           <button
             onClick={() => { setFolderFilter(null); setShowArchived(false); }}
-            className={`text-[10px] px-2 py-0.5 rounded-full border ${folderFilter === null && !showArchived ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId('__all__'); }}
+            onDragLeave={() => setDragOverFolderId(prev => prev === '__all__' ? null : prev)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOverFolderId(null);
+              const sessionId = e.dataTransfer.getData('text/session-id');
+              if (sessionId) { moveToFolder(sessionId, ''); showStatusBanner('Moved to All (unfiled)'); }
+            }}
+            title="All conversations — drag a chat here to unfile it"
+            className={`text-[10px] px-2 py-0.5 rounded-full border ${
+              dragOverFolderId === '__all__'
+                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
+                : folderFilter === null && !showArchived ? 'bg-blue-600 text-white border-blue-600'
+                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
+            }`}
           >All</button>
-          {folders.map(f => (
-            <button
-              key={f.id}
-              onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
-              title={`Folder: ${f.name} (long-press the ✕ to delete)`}
-              className={`group/folder text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${folderFilter === f.id ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
-            >
+         {folders.map(f => (
+           <button
+             key={f.id}
+             onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
+            title={`Folder: ${f.name} (long-press the ✕ to delete — or drag a chat here)`}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId(f.id); }}
+            onDragLeave={() => setDragOverFolderId(prev => prev === f.id ? null : prev)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOverFolderId(null);
+              const sessionId = e.dataTransfer.getData('text/session-id');
+              if (sessionId) { moveToFolder(sessionId, f.id); showStatusBanner(`Moved to "${f.name}"`); }
+            }}
+            className={`group/folder text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
+              dragOverFolderId === f.id
+                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
+                : folderFilter === f.id ? 'bg-blue-600 text-white border-blue-600'
+                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
+            }`}
+          >
               🗂 {f.name}
+              <span onClick={(e) => { e.stopPropagation(); renameFolder(f.id); }} title="Rename folder" aria-label={`Rename folder: ${f.name}`} className="opacity-0 group-hover/folder:opacity-100 hover:text-blue-300">✏️</span>
               <span onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }} className="opacity-0 group-hover/folder:opacity-100 hover:text-red-300">✕</span>
             </button>
           ))}
@@ -3120,11 +3795,16 @@ const App: React.FC = () => {
                      {showBucketLabel && (
                        <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{bucket}</p>
                      )}
-                   <div
-                     onClick={() => bulkSelectMode ? toggleBulkSelected(s.id) : loadSession(s)}
-                     role="button"
-                     tabIndex={0}
-                     onKeyDown={(e) => {
+                  <div
+                    onClick={() => bulkSelectMode ? toggleBulkSelected(s.id) : loadSession(s)}
+                    role="button"
+                    tabIndex={0}
+                    draggable={!bulkSelectMode && !renamingSessionId}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/session-id', s.id);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onKeyDown={(e) => {
                        if (e.key === 'Enter') { loadSession(s); return; }
                        // Arrow-key navigation between session rows (#329)
                        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -3138,6 +3818,7 @@ const App: React.FC = () => {
                          rows[nextIdx]?.focus();
                        }
                      }}
+                     onContextMenu={(e) => { e.preventDefault(); setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id }); }}
                      aria-label={`Load session: ${s.title}`}
                      className={`group p-2 rounded-md cursor-pointer transition-colors ${
                        currentSessionId === s.id
@@ -3423,6 +4104,19 @@ const App: React.FC = () => {
               </span>
              </div>
            <div className="flex items-center gap-3">
+             {/* Autonomy / approval-mode quick selector (#355) */}
+             <div className={`flex items-center rounded-md overflow-hidden border shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-300'}`} role="group" aria-label="Autonomy level">
+               {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(lv => (
+                 <button
+                   key={lv}
+                   aria-pressed={autonomySettings.level === lv}
+                   aria-label={`Set autonomy: ${lv}`}
+                   title={`Autonomy: ${lv}`}
+                   onClick={() => { const s = { ...autonomySettings, level: lv }; setAutonomySettings(s); saveAutonomySettings(s); }}
+                   className={`px-2 py-1 text-xs capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
+                 >{lv}</button>
+               ))}
+             </div>
              {/* On mobile, show only essential buttons; others go in mobile menu */}
              {!isMobile ? (
                <>
@@ -3613,6 +4307,7 @@ const App: React.FC = () => {
           {messages.length === 0 && (
             <WelcomeScreen
               dark={dark}
+              prompts={prompts.map(p => ({ name: p.name, body: p.body }))}
               onPrompt={(prompt) => {
                 setInput(prompt);
                 document.getElementById('chat-input')?.focus();
@@ -3635,13 +4330,16 @@ const App: React.FC = () => {
                 data-msg-index={i}
                 className={`flex flex-col gap-0.5 rounded-lg transition-shadow ${i === chatSearchCurrent ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
               >
-               <div className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
+               <div
+                 className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
                  msg.role === 'user'
                    ? 'bg-blue-600 text-white rounded-tr-none'
                    : msg.role === 'tool'
                      ? (dark ? 'bg-zinc-700 text-zinc-100 rounded-tl-none border-l-2 border-blue-500' : 'bg-zinc-100 text-zinc-900 rounded-tl-none border-l-2 border-blue-500')
                      : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
-               }`}>
+               }`}
+                 onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
+               >
                 <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
                   {msg.role}
                   {msg.role === 'tool' && <span className="text-blue-400">🔧</span>}
@@ -3687,7 +4385,9 @@ const App: React.FC = () => {
                         key={idx}
                         src={toDisplayUrl(img)}
                         alt="attachment"
-                        className="max-h-48 rounded-lg object-contain border border-white/20"
+                        onClick={() => setLightboxImage(toDisplayUrl(img))}
+                        title="Click to view full size"
+                        className="max-h-48 rounded-lg object-contain border border-white/20 cursor-zoom-in"
                       />
                     ))}
                   </div>
@@ -3763,8 +4463,17 @@ const App: React.FC = () => {
                         ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
                         : (() => {
                             const body = rawView[i] && msg.role === 'assistant'
-                              ? <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
-                              : <MarkdownMessage content={msg.content} dark={dark} />;
+                              ? <div className="whitespace-pre-wrap text-sm">{chatSearchOpen && chatSearchQuery ? highlightChildren(msg.content, chatSearchQuery) : msg.content}</div>
+                              : <MarkdownMessage content={msg.content} dark={dark} onToggleTask={(t, c) => toggleTaskInMessage(i, t, c)} highlightQuery={chatSearchOpen ? chatSearchQuery : undefined} onApplyCode={projects.find(p => p.id === activeProjectId)?.workspaceRoot ? (codeVal: string, langVal: string) => {
+                                    const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+                                    if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+                                    const colonIdx = langVal.indexOf(':');
+                                    let relPath = colonIdx >= 0 ? langVal.slice(colonIdx + 1) : '';
+                                    if (!relPath) relPath = window.prompt('File path (relative to workspace root):', 'new-file.ts') ?? '';
+                                    if (!relPath.trim()) return;
+                                    const fullPath = relPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(relPath) ? relPath : wsRoot.replace(/\/$/, '') + '/' + relPath;
+                                    void writeFile(fullPath, codeVal).then(() => showStatusBanner(`Applied to "${relPath}"`)).catch((err) => showStatusBanner(`Failed to write "${relPath}": ${formatErrorLine(err)}`));
+                                  } : undefined} />;
                             if (msg.content.length <= 1000) return body;
                             const collapsed = collapsedMsg[i] !== false;
                             return (
@@ -4134,7 +4843,9 @@ const App: React.FC = () => {
                   <img
                     src={img}
                     alt="pending attachment"
-                    className="h-16 w-16 object-cover rounded-lg border border-zinc-600"
+                    onClick={() => setLightboxImage(img)}
+                    title="Click to view full size"
+                    className="h-16 w-16 object-cover rounded-lg border border-zinc-600 cursor-zoom-in"
                   />
                   <button
                     onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
@@ -4237,6 +4948,21 @@ const App: React.FC = () => {
                  ))}
                </div>
              )}
+
+             {/* Pinned file context chips (#350) */}
+            {pinnedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-1" aria-label="Pinned files">
+                {pinnedFiles.map((f, i) => (
+                  <span key={f.path} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
+                    <span>📎 {f.path}</span>
+                    <button type="button" aria-label={`Drop pinned file ${f.path}`} title="Drop pinned file" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); const next = dropPinnedFile(pinnedFiles, f.path); setPinnedFiles(next); savePinnedFiles(next); }}>×</button>
+                  </span>
+                ))}
+                {pinnedFiles.length > 1 && (
+                  <button type="button" aria-label="Clear all pinned files" title="Clear all pinned files" className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-500 hover:bg-zinc-300'}`} onMouseDown={e => { e.preventDefault(); setPinnedFiles([]); savePinnedFiles([]); showStatusBanner('Cleared all pinned files'); }}>Clear all</button>
+                )}
+              </div>
+            )}
 
              {/* Pending context chips from # commands (#184) */}
              {pendingContextBlocks.length > 0 && (
@@ -4356,6 +5082,30 @@ const App: React.FC = () => {
                    }
                    if (e.key === 'Escape') { setCommandSuggestions([]); return; }
                  }
+                 // Tab-to-indent / Shift+Tab to outdent (#360) — TUI/Codex/Claude
+                 // parity. Only when no autocomplete suggestions are open.
+                 if (e.key === 'Tab' && atSuggestions.length === 0 && hashSuggestions.length === 0 && commandSuggestions.length === 0) {
+                   e.preventDefault();
+                   const ta = e.currentTarget as HTMLTextAreaElement;
+                   const start = ta.selectionStart ?? input.length;
+                   const end = ta.selectionEnd ?? input.length;
+                   if (e.shiftKey) {
+                     const lineStart = input.lastIndexOf('\n', start - 1) + 1;
+                     const linePrefix = input.slice(lineStart, start);
+                     const stripped = linePrefix.replace(/^ {1,2}/, '');
+                     const removed = linePrefix.length - stripped.length;
+                     if (removed > 0) {
+                       const next = input.slice(0, lineStart) + stripped + input.slice(start);
+                       setInput(next);
+                       setTimeout(() => { ta.selectionStart = ta.selectionEnd = Math.max(lineStart, start - removed); }, 0);
+                     }
+                   } else {
+                     const next = input.slice(0, start) + '  ' + input.slice(end);
+                     setInput(next);
+                     setTimeout(() => { ta.selectionStart = ta.selectionEnd = start + 2; }, 0);
+                   }
+                   return;
+                 }
                  // Up-arrow in an empty composer edits the last user message (#267)
                  // — parity with ChatGPT / Cursor quick-edit. Ignored while
                  // suggestions are open or a generation is in progress.
@@ -4390,7 +5140,11 @@ const App: React.FC = () => {
                    setInput(hist[idx]);
                    return;
                  }
-                 if (e.key === 'Enter' && !e.shiftKey) {
+                 if (e.key === 'Enter' && !e.shiftKey && !sendOnCtrlEnter) {
+                   e.preventDefault();
+                   setCommandSuggestions([]);
+                   sendMessage();
+                 } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && sendOnCtrlEnter) {
                    e.preventDefault();
                    setCommandSuggestions([]);
                    sendMessage();
@@ -4499,10 +5253,10 @@ const App: React.FC = () => {
                </button>
              )}
           </div>
-          {/* Composer word/character counter (#301) */}
+          {/* Composer word/character/token counter (#301, #368) */}
           {input.trim() && (
             <div className={`text-right text-[10px] mt-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-              {input.trim().split(/\s+/).filter(Boolean).length} words · {input.length} chars
+              {input.trim().split(/\s+/).filter(Boolean).length} words · {input.length} chars · ~{estimateTokens(input)} tokens
             </div>
           )}
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
@@ -6366,7 +7120,7 @@ const App: React.FC = () => {
                               storage.saveProject(updated);
                               setProjects(storage.getProjects());
                               if (activeProjectId === p.id) {
-                                void setWorkspaceRoot(dir);
+                                void openWorkspace(dir);
                                 registerGitTools(dir);
                               }
                             }
@@ -6850,6 +7604,11 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-compact</span>
                     <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); localStorage.setItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
+                    <Toggle checked={resumeLastSession} onChange={() => { const v = !resumeLastSession; setResumeLastSession(v); localStorage.setItem('ollama_gui_resume_last_session', JSON.stringify(v)); }} dark={dark} label="Resume last conversation on startup" />
+                  </div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Send on Ctrl+Enter (Enter = newline)</span>
+                    <Toggle checked={sendOnCtrlEnter} onChange={() => { const v = !sendOnCtrlEnter; setSendOnCtrlEnter(v); localStorage.setItem('ollama_gui_send_on_ctrl_enter', JSON.stringify(v)); }} dark={dark} label="Toggle send on Ctrl+Enter" />
                   </div>
                   <div className="flex items-center gap-2">
                     <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Threshold (tokens)</label>
@@ -6883,6 +7642,30 @@ const App: React.FC = () => {
           />
         )}
 
+        {/* Composed system-prompt preview (#376) */}
+        {promptPreview && (
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className={`border w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+              <div className={`flex items-center justify-between px-6 py-4 border-b shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                <h2 className="text-lg font-bold">Composed System Prompt</h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(promptPreview); showStatusBanner('Copied to clipboard'); }}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-medium ${dark ? 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-700 hover:bg-zinc-300'}`}
+                  >Copy</button>
+                  <button onClick={() => setPromptPreview(null)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+                </div>
+              </div>
+              <div className={`overflow-auto flex-1 p-6 text-sm font-mono whitespace-pre-wrap ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                {promptPreview || '(empty — no system prompt set)'}
+              </div>
+              <div className="px-6 py-3 border-t shrink-0 flex justify-end">
+                <button onClick={() => setPromptPreview(null)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">Close</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -6902,6 +7685,7 @@ const App: React.FC = () => {
                   ['Toggle Browser', 'Ctrl+B'],
                   ['Toggle Files', 'Ctrl+Shift+F'],
                   ['Toggle Terminal', 'Ctrl+T'],
+                  ['Toggle Artifacts', 'Ctrl+Shift+A'],
                   ['Open Settings', 'Ctrl+,'],
                   ['Regenerate Last Reply', 'Ctrl+R'],
                   ['Focus Composer', 'Ctrl+L'],
@@ -6912,6 +7696,7 @@ const App: React.FC = () => {
                   ['Scroll to Latest', 'Ctrl+End'],
                   ['Next Conversation', 'Ctrl+]'],
                   ['Previous Conversation', 'Ctrl+['],
+                  ['Tab Indent / Outdent', 'Tab / Shift+Tab'],
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],
@@ -6947,6 +7732,25 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+        {/* Full-size image lightbox (#351) */}
+        {lightboxImage && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Image preview"
+            onClick={() => setLightboxImage(null)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setLightboxImage(null); }}
+            tabIndex={-1}
+          >
+            <img src={lightboxImage} alt="attachment full size" className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
+            <button
+              onClick={() => setLightboxImage(null)}
+              aria-label="Close image preview"
+              className="absolute top-4 right-4 text-white text-2xl bg-black/40 hover:bg-black/60 rounded-full w-10 h-10 flex items-center justify-center"
+            >✕</button>
           </div>
         )}
         {/* Transient toast notification (#58) */}
@@ -7153,6 +7957,50 @@ const App: React.FC = () => {
             }}
           />
         )}
+
+        {/* Right-click context menu on chat messages (#378) */}
+        {contextMenu && (() => {
+          const mi = contextMenu.index;
+          const msg = messages[mi];
+          if (!msg) { setContextMenu(null); return null; }
+          const items: ContextMenuItem[] = [];
+          items.push({ label: 'Copy message', onSelect: () => { navigator.clipboard.writeText(msg.content); setCopiedMsgIdx(mi); setTimeout(() => setCopiedMsgIdx(prev => (prev === mi ? null : prev)), 1500); } });
+          if (msg.role === 'assistant') {
+            items.push({ label: 'Copy as Markdown', onSelect: () => { navigator.clipboard.writeText(messageToMarkdown(msg)); setCopiedMdMsgIdx(mi); setTimeout(() => setCopiedMdMsgIdx(prev => (prev === mi ? null : prev)), 1500); } });
+            items.push({ label: 'Copy as plain text', onSelect: () => { navigator.clipboard.writeText(messageToPlainText(msg)); setCopiedPtMsgIdx(mi); setTimeout(() => setCopiedPtMsgIdx(prev => (prev === mi ? null : prev)), 1500); } });
+            items.push({ label: rawView[mi] ? 'Show rendered' : 'Show raw', onSelect: () => setRawView(prev => ({ ...prev, [mi]: !prev[mi] })) });
+            items.push({ label: 'Regenerate', disabled: isLoading, onSelect: () => regenerateMessage(mi) });
+          }
+          if (msg.role !== 'tool') {
+            items.push({ label: msg.role === 'assistant' ? 'Edit response' : 'Edit message', disabled: isLoading, onSelect: () => { setEditingIndex(mi); setEditContent(msg.content); } });
+          }
+          items.push({ label: 'Delete', onSelect: () => deleteMessage(mi) });
+          if (msg.role !== 'tool') {
+            items.push({ label: 'Quote into composer', onSelect: () => quoteMessage(mi) });
+          }
+          if (msg.role === 'assistant' && isTtsAvailable()) {
+            items.push({ label: speakingMsgId === `msg-${mi}` ? 'Stop speaking' : 'Speak message', onSelect: () => {
+              if (speakingMsgId === `msg-${mi}`) { stopSpeaking(); setSpeakingMsgId(null); }
+              else { setSpeakingMsgId(`msg-${mi}`); speak(msg.content, voiceSettings).then(() => setSpeakingMsgId(null)).catch(() => setSpeakingMsgId(null)); }
+            } });
+          }
+          return <ContextMenu x={contextMenu.x} y={contextMenu.y} items={items} onClose={() => setContextMenu(null)} dark={dark} />;
+        })()}
+
+        {/* Right-click context menu on sidebar session items (#381) */}
+        {sessionContextMenu && (() => {
+          const sess = sessions.find(x => x.id === sessionContextMenu.sessionId);
+          if (!sess) { setSessionContextMenu(null); return null; }
+          const items: ContextMenuItem[] = [
+            { label: 'Rename', onSelect: () => startRename(sess.id, sess.title) },
+            { label: sess.pinned ? 'Unpin' : 'Pin', onSelect: () => togglePin(sess.id) },
+            { label: 'Add tag', onSelect: () => addTagToSession(sess.id) },
+            { label: sess.archived ? 'Unarchive' : 'Archive', onSelect: () => toggleArchive(sess.id) },
+            { label: 'Duplicate', onSelect: () => duplicateSession(sess.id) },
+            { label: 'Delete', onSelect: () => deleteSession(sess.id, sess.title) },
+          ];
+          return <ContextMenu x={sessionContextMenu.x} y={sessionContextMenu.y} items={items} onClose={() => setSessionContextMenu(null)} dark={dark} />;
+        })()}
 
         </PanelShell>
     </div>

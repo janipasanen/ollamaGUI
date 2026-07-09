@@ -43,6 +43,11 @@ export async function setWorkspaceRoot(path: string): Promise<void> {
   _workspaceRoot = path;
 }
 
+/** Clear the in-process workspace root (used by closeWorkspace for consistency, #380). */
+export function clearWorkspaceRoot(): void {
+  _workspaceRoot = null;
+}
+
 export async function readFile(path: string): Promise<string> {
   return tauriInvoke<string>('read_file', { path });
 }

@@ -585,3 +585,144 @@ describe('/merge command (#344)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('merge'); expect(r.arg).toBe(''); }
   });
 });
+
+
+// ── /undo builtin (#346) ─────────────────────────────────────────────────────
+
+describe('/undo command (#346)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('undo')?.builtin).toBe(true);
+  });
+  it('returns builtin action: undo', () => {
+    const r = runCommand('/undo');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('undo');
+  });
+  it('ignores extra arguments', () => {
+    const r = runCommand('/undo something');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('undo');
+  });
+});
+
+
+// ── /diff builtin (#347) ─────────────────────────────────────────────────────
+
+describe('/diff command (#347)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('diff')?.builtin).toBe(true);
+  });
+  it('with no arg returns builtin action: diff + empty arg', () => {
+    const r = runCommand('/diff');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('diff'); expect(r.arg).toBe(''); }
+  });
+  it('with staged arg returns builtin action: diff + arg staged', () => {
+    const r = runCommand('/diff staged');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('diff'); expect(r.arg).toBe('staged'); }
+  });
+});
+
+
+// ── /reset builtin (#348) ─────────────────────────────────────────────────────
+
+describe('/reset command (#348)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('reset')?.builtin).toBe(true);
+  });
+  it('returns builtin action: reset', () => {
+    const r = runCommand('/reset');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('reset');
+  });
+});
+
+
+// ── /tokens builtin (#349) ───────────────────────────────────────────────────
+
+describe('/tokens command (#349)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('tokens')?.builtin).toBe(true);
+  });
+  it('returns builtin action: tokens', () => {
+    const r = runCommand('/tokens');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('tokens');
+  });
+});
+
+
+// ── /add, /drop, /files builtins (#350) ──────────────────────────────────────
+
+describe('/add /drop /files commands (#350)', () => {
+  it('/add is registered as a builtin and passes the path arg', () => {
+    expect(findCommand('add')?.builtin).toBe(true);
+    const r = runCommand('/add src/main.ts');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('add'); expect(r.arg).toBe('src/main.ts'); }
+  });
+  it('/drop is registered as a builtin and passes the path arg', () => {
+    expect(findCommand('drop')?.builtin).toBe(true);
+    const r = runCommand('/drop src/main.ts');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('drop'); expect(r.arg).toBe('src/main.ts'); }
+  });
+  it('/files is registered as a builtin', () => {
+    expect(findCommand('files')?.builtin).toBe(true);
+    const r = runCommand('/files');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('files');
+  });
+});
+
+
+// ── /run builtin (#353) ───────────────────────────────────────────────────────
+
+describe('/run command (#353)', () => {
+  it('is registered as a builtin and passes the joined command arg', () => {
+    expect(findCommand('run')?.builtin).toBe(true);
+    const r = runCommand('/run echo hello');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('run'); expect(r.arg).toBe('echo hello'); }
+  });
+  it('with no arg returns an empty arg', () => {
+    const r = runCommand('/run');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});
+
+
+// ── /commit builtin (#357) ────────────────────────────────────────────────────
+
+describe('/commit command (#357)', () => {
+  it('is registered as a builtin and passes the message arg', () => {
+    expect(findCommand('commit')?.builtin).toBe(true);
+    const r = runCommand('/commit fix parser bug');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('commit'); expect(r.arg).toBe('fix parser bug'); }
+  });
+  it('with no arg returns an empty arg (auto-generate)', () => {
+    const r = runCommand('/commit');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});
+
+
+// ── /tests builtin (#359) ─────────────────────────────────────────────────────
+
+describe('/tests command (#359)', () => {
+  it('is registered as a builtin and passes the command arg', () => {
+    expect(findCommand('tests')?.builtin).toBe(true);
+    const r = runCommand('/tests npm test');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('tests'); expect(r.arg).toBe('npm test'); }
+  });
+  it('with no arg returns an empty arg', () => {
+    const r = runCommand('/tests');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});

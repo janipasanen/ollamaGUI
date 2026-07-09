@@ -13,6 +13,7 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
   const lines = React.useMemo(() => diffLines(before, after), [before, after]);
   const hunks = React.useMemo(() => groupHunks(lines), [lines]);
   const [accepted, setAccepted] = React.useState<boolean[]>(() => hunks.map(() => true));
+  const [copiedDiff, setCopiedDiff] = React.useState(false);
 
   // Keep the accepted array in sync if the edit changes (new proposal).
   React.useEffect(() => { setAccepted(hunks.map(() => true)); }, [hunks.length]);
@@ -38,6 +39,29 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
 
   const allAccepted = accepted.length > 0 && accepted.every(Boolean);
 
+  // Copy a unified-diff string to the clipboard (#370).
+  const copyDiff = () => {
+    const diffText = edit.kind === 'write_file'
+      ? `--- /dev/null\n+++ b/${edit.path}\n${after.split('\n').map(l => `+${l}`).join('\n')}`
+      : `--- a/${edit.path}\n+++ b/${edit.path}\n${lines.map(l => `${l.kind === 'added' ? '+' : l.kind === 'removed' ? '-' : ' '}${l.text}`).join('\n')}`;
+    navigator.clipboard.writeText(diffText);
+    setCopiedDiff(true);
+    setTimeout(() => setCopiedDiff(false), 1500);
+  };
+
+  // Keyboard shortcuts: Enter = Accept, Escape = Reject (#362).
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const active = document.activeElement;
+      const isButton = active instanceof HTMLButtonElement;
+      if (e.key === 'Escape') { e.preventDefault(); resolve(false); }
+      else if (e.key === 'Enter' && !isButton) { e.preventDefault(); resolve(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accepted, edit, lines, hunks]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="dialog" aria-modal="true" aria-label="Review file edit">
       <div className={`w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden ${dark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'}`}>
@@ -46,7 +70,10 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
             <span className={`text-sm font-semibold ${dark ? 'text-zinc-100' : 'text-zinc-800'}`}>Review file edit</span>
             <span className={`ml-2 text-xs font-mono ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{edit.path}</span>
           </div>
-          <button onClick={() => resolve(false)} aria-label="Reject edit" className={`text-xs px-2 py-1 rounded ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}>✕</button>
+          <div className="flex items-center gap-2">
+            <button onClick={copyDiff} aria-label="Copy diff to clipboard" title="Copy diff to clipboard" className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:text-blue-400' : 'text-zinc-500 hover:text-blue-600'}`}>{copiedDiff ? '✓ Copied' : '⧉ Copy diff'}</button>
+            <button onClick={() => resolve(false)} aria-label="Reject edit" className={`text-xs px-2 py-1 rounded ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}>✕</button>
+          </div>
         </div>
         <div className="overflow-auto flex-1 font-mono text-xs p-2">
           {edit.kind === 'write_file' ? (
