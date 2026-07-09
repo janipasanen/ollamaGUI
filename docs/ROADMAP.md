@@ -886,3 +886,33 @@ work stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1377 passed (147 files)** (+11).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M59 — Next/prev conversation, composer counter & /cost command (twenty-seventh analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / ChatGPT / Discord /
+Slack / TUIs. Three gaps found and implemented. No merge to `master` — work stays
+on `macOS-10.15`.
+
+- [x] **#300** Next/Previous conversation keyboard shortcut (Ctrl+] / Ctrl+[).
+  ChatGPT, Discord, Slack, and many chat GUIs let users cycle through
+  conversations with keyboard shortcuts; the app required clicking a sidebar
+  session. Added `switchConversation(direction)` that loads the next/previous
+  session from the filtered session list, wired to Ctrl+] (next) and Ctrl+[
+  (previous). Uses a ref so the keyboard handler (declared earlier) can call it
+  without use-before-declaration. Shortcuts added to the help overlay.
+- [x] **#301** Live word/character counter in the composer. Many TUIs and chat
+  GUIs show a word/char count for the current draft; the app only showed an
+  estimated token count for the whole conversation. Added a compact counter below
+  the composer textarea ("N words · M chars") that appears only when the user
+  has typed something.
+- [x] **#302** `/cost` slash command. Claude Code has a `/cost` command that
+  shows token usage and cost for the current session; the app computed
+  `conversationTokens` and `formatCost` for the footer but had no on-demand
+  command. Added a `/cost` builtin that shows the token count, estimated cost,
+  and context budget percentage in the status banner.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1383 passed (148 files)** (+6).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).

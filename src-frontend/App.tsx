@@ -1102,6 +1102,9 @@ const App: React.FC = () => {
   };
 
   const toggleTheme = () => updateTheme({ mode: isDarkMode ? 'light' : 'dark' });
+  // Ref for conversation-switch fn (defined after loadSession, called from the
+  // keyboard handler that runs earlier) — avoids use-before-declaration (#300).
+  const switchConversationRef = useRef<(direction: 1 | -1) => void>(() => {});
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1194,6 +1197,12 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'l') {
         e.preventDefault();
         document.getElementById('chat-input')?.focus(); // Ctrl/Cmd+L focuses the composer (#265)
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ']') {
+        e.preventDefault();
+        switchConversationRef.current(1); // Next conversation (#300)
+      } else if ((e.metaKey || e.ctrlKey) && e.key === '[') {
+        e.preventDefault();
+        switchConversationRef.current(-1); // Previous conversation (#300)
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
         setShowHelp(prev => !prev);
@@ -1359,6 +1368,23 @@ const App: React.FC = () => {
   useEffect(() => {
     if (currentSessionId) draftsRef.current[currentSessionId] = input;
   }, [input, currentSessionId]);
+
+  // Cycle to the next/previous conversation in the filtered session list (#300).
+  // Parity with ChatGPT / Discord / Slack keyboard navigation (Ctrl+] / Ctrl+[).
+  // Stored in a ref so the keyboard handler (declared earlier) can call it.
+  useEffect(() => {
+    switchConversationRef.current = (direction: 1 | -1) => {
+      if (filteredSessions.length === 0) return;
+      const currentIdx = filteredSessions.findIndex(s => s.id === currentSessionId);
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        nextIdx = direction === 1 ? 0 : filteredSessions.length - 1;
+      } else {
+        nextIdx = (currentIdx + direction + filteredSessions.length) % filteredSessions.length;
+      }
+      loadSession(filteredSessions[nextIdx]);
+    };
+  }, [filteredSessions, currentSessionId]);
 
   // ─── Organization actions (#133) ─────────────────────────────────────────
   const togglePin = (id: string) => {
@@ -1819,6 +1845,12 @@ const App: React.FC = () => {
           if (!Number.isFinite(v) || v < 0) { showStatusBanner('Top-k must be a non-negative integer'); return; }
           updateGenOptions({ top_k: v });
           showStatusBanner(v === 0 ? 'Top-k set to 0 (disabled)' : `Top-k set to ${v}`);
+          return;
+        }
+        if (result.action === 'cost') {
+          const cost = formatCost(conversationTokens);
+          const budgetPct = genOptions.num_ctx ? Math.round((conversationTokens / genOptions.num_ctx) * 100) : 0;
+          showStatusBanner(`Tokens: ${formatTokenCount(conversationTokens)} · ${cost || 'no pricing set'} · Context: ${budgetPct}% of ${genOptions.num_ctx ?? 4096}`);
           return;
         }
         return;
@@ -3790,6 +3822,12 @@ const App: React.FC = () => {
                </button>
              )}
           </div>
+          {/* Composer word/character counter (#301) */}
+          {input.trim() && (
+            <div className={`text-right text-[10px] mt-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
+              {input.trim().split(/\s+/).filter(Boolean).length} words · {input.length} chars
+            </div>
+          )}
           <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
             {(() => {
               const cost = formatCost(conversationTokens);
@@ -6135,6 +6173,8 @@ const App: React.FC = () => {
                   ['Copy Last Reply', 'Ctrl+Shift+C'],
                   ['Toggle Theme', 'Ctrl+Shift+D'],
                   ['Scroll to Latest', 'Ctrl+End'],
+                  ['Next Conversation', 'Ctrl+]'],
+                  ['Previous Conversation', 'Ctrl+['],
                   ['Send Message', 'Enter'],
                   ['New Line in Composer', 'Shift+Enter'],
                   ['Stop Generation / Close', 'Escape'],

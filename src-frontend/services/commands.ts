@@ -44,6 +44,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'predict', description: 'Set max tokens to generate (e.g. /predict 512; -1 unlimited)', builtin: true },
   { name: 'stop', description: 'Set stop sequences (e.g. /stop <|end|>,\\n\\nUser; clear to reset)', builtin: true },
   { name: 'topk', description: 'Set top_k sampling (e.g. /topk 40)', builtin: true },
+  { name: 'cost', description: 'Show token usage and estimated cost for this conversation', builtin: true },
   { name: 'review', description: 'Ask the model to review text or code', template: 'Please review the following and provide feedback:\n\n$ARGUMENTS' },
   { name: 'explain', description: 'Ask the model to explain something', template: 'Please explain the following in plain terms:\n\n$ARGUMENTS' },
   { name: 'summarize', description: 'Summarize the provided text', template: 'Please provide a concise summary of the following:\n\n$ARGUMENTS' },
@@ -107,7 +108,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -144,6 +145,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'predict') return { kind: 'builtin', action: 'predict', arg: args };
     if (cmd.name === 'stop') return { kind: 'builtin', action: 'stop', arg: args };
     if (cmd.name === 'topk') return { kind: 'builtin', action: 'topk', arg: args };
+    if (cmd.name === 'cost') return { kind: 'builtin', action: 'cost' };
   }
   if (cmd.template) {
     return { kind: 'prompt', text: expandTemplate(cmd.template, args) };

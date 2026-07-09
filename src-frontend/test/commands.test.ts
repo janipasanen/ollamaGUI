@@ -424,3 +424,17 @@ describe('/topk command (#298)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('topk'); expect(r.arg).toBe('40'); }
   });
 });
+
+
+// ── /cost builtin (#302) ──────────────────────────────────────────────────────
+
+describe('/cost command (#302)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('cost')?.builtin).toBe(true);
+  });
+  it('returns action: cost with no arg', () => {
+    const r = runCommand('/cost');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('cost'); expect(r.arg).toBeUndefined(); }
+  });
+});
