@@ -2044,9 +2044,10 @@ const App: React.FC = () => {
     const images = files.filter(f => f.type.startsWith('image/'));
     if (images.length > 0) attachImageFiles(images);
     // Drag a file from the file tree into the composer to pin it (#388).
-    const droppedPath = e.dataTransfer?.getData('text/file-path');
+    const dt = e.dataTransfer;
+    const droppedPath = typeof dt?.getData === 'function' ? dt.getData('text/file-path') : '';
     if (droppedPath) {
-      const droppedName = e.dataTransfer?.getData('text/file-name') || droppedPath.split(/[\\/]/).pop() || droppedPath;
+      const droppedName = (typeof dt?.getData === 'function' ? dt.getData('text/file-name') : '') || droppedPath.split(/[\\/]/).pop() || droppedPath;
       window.dispatchEvent(new CustomEvent('ollama-gui:select-file', { detail: { entry: { path: droppedPath, name: droppedName, is_dir: false } } }));
     }
   };
