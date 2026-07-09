@@ -52,6 +52,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'remove', description: 'Delete a local model (e.g. /remove llama3)', builtin: true },
   { name: 'params', description: 'Show all generation parameters', builtin: true },
   { name: 'stats', description: 'Show conversation statistics (messages, words, tokens)', builtin: true },
+  { name: 'id', description: 'Show and copy the current session ID', builtin: true },
   { name: 'review', description: 'Ask the model to review text or code', template: 'Please review the following and provide feedback:\n\n$ARGUMENTS' },
   { name: 'explain', description: 'Ask the model to explain something', template: 'Please explain the following in plain terms:\n\n$ARGUMENTS' },
   { name: 'summarize', description: 'Summarize the provided text', template: 'Please provide a concise summary of the following:\n\n$ARGUMENTS' },
@@ -115,7 +116,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -160,6 +161,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'remove') return { kind: 'builtin', action: 'remove', arg: args };
     if (cmd.name === 'params') return { kind: 'builtin', action: 'params' };
     if (cmd.name === 'stats') return { kind: 'builtin', action: 'stats' };
+    if (cmd.name === 'id') return { kind: 'builtin', action: 'id' };
   }
   if (cmd.template) {
     return { kind: 'prompt', text: expandTemplate(cmd.template, args) };

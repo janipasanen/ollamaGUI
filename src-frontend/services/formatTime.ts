@@ -62,3 +62,24 @@ export function isSameDay(a: number | undefined, b: number | undefined): boolean
     && da.getMonth() === db.getMonth()
     && da.getDate() === db.getDate();
 }
+
+// ─── Conversation-list date buckets (#330) ───────────────────────────────────
+
+export type DateBucket = 'Today' | 'Yesterday' | 'Previous 7 Days' | 'Older';
+
+/**
+ * Assign a conversation to a date bucket for sidebar grouping (#330).
+ * Mirrors ChatGPT's grouping: Today, Yesterday, Previous 7 Days, Older.
+ */
+export function conversationDateBucket(createdAt: number | undefined, now: number = Date.now()): DateBucket {
+  if (!createdAt || !Number.isFinite(createdAt)) return 'Older';
+  const cur = new Date(now);
+  cur.setHours(0, 0, 0, 0);
+  const startOfToday = cur.getTime();
+  const startOfYesterday = startOfToday - 86_400_000;
+  const startOf7Days = startOfToday - 7 * 86_400_000;
+  if (createdAt >= startOfToday) return 'Today';
+  if (createdAt >= startOfYesterday) return 'Yesterday';
+  if (createdAt >= startOf7Days) return 'Previous 7 Days';
+  return 'Older';
+}

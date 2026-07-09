@@ -135,7 +135,7 @@ import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _rese
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
-import { formatMessageTime, formatDayLabel, isSameDay } from './services/formatTime';
+import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
@@ -676,6 +676,9 @@ const App: React.FC = () => {
   const scrollToEndOnLoadRef = useRef(false);
   // Per-session composer drafts (#273): sessionId -> unsent input text.
   const draftsRef = useRef<Record<string, string>>({});
+  // Prompt history for Alt+Up/Alt+Down recall (#332)
+  const promptHistoryRef = useRef<string[]>([]);
+  const historyNavIndexRef = useRef<number>(-1);
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; id: string; title: string }>({ open: false, id: '', title: '' });
 
   // Derived: filtered sessions for search (Issue 18)
@@ -1769,6 +1772,11 @@ const App: React.FC = () => {
   // Send message
   const sendMessage = async (textOverride?: string, modelOverride?: string) => {
     let text = textOverride ?? input;
+    // Record non-slash-command prompts for Alt+Up/Alt+Down recall (#332)
+    if (!text.trimStart().startsWith('/') && text.trim()) {
+      promptHistoryRef.current = [...promptHistoryRef.current.filter(t => t !== text), text].slice(-50);
+      historyNavIndexRef.current = promptHistoryRef.current.length;
+    }
     // Prepend resolved # context blocks (#119/#184). Always clear them after
     // any send so stale chips don't persist across slash-command / action paths.
     if (pendingContextBlocks.length > 0) {
@@ -2054,6 +2062,15 @@ const App: React.FC = () => {
           showStatusBanner(
             `Messages: ${st.totalMessages} · User/Assistant: ${st.userMessages}/${st.assistantMessages} · Words: ${st.words.toLocaleString()} · Characters: ${st.characters.toLocaleString()} · Est. tokens: ${formatTokenCount(st.tokens)}`
           );
+          return;
+        }
+        if (result.action === 'id') {
+          if (currentSessionId) {
+            showStatusBanner(`Session ID: ${currentSessionId} (copied to clipboard)`);
+            navigator.clipboard?.writeText(currentSessionId).catch(() => { /* clipboard may be unavailable */ });
+          } else {
+            showStatusBanner('No active session — start a chat first');
+          }
           return;
         }
         return;
@@ -2906,9 +2923,22 @@ const App: React.FC = () => {
               {searchQuery ? 'No matches.' : showArchived ? 'No archived chats.' : 'No past conversations.'}
             </div>
           )}
-          {filteredSessions.map((s) => (
+          {filteredSessions.map((s, idx) => {
+                   const prevS = filteredSessions[idx - 1];
+                   const showPinnedLabel = !!s.pinned && !(prevS?.pinned);
+                   const useDateGroups = sortMode === 'recent';
+                   const bucket = (!s.pinned && useDateGroups) ? conversationDateBucket(s.createdAt) : null;
+                   const prevBucket = (prevS && !prevS.pinned && useDateGroups) ? conversationDateBucket(prevS.createdAt) : null;
+                   const showBucketLabel = !!bucket && bucket !== prevBucket;
+                   return (
+                   <React.Fragment key={s.id}>
+                     {showPinnedLabel && (
+                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Pinned</p>
+                     )}
+                     {showBucketLabel && (
+                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{bucket}</p>
+                     )}
                    <div
-                     key={s.id}
                      onClick={() => loadSession(s)}
                      role="button"
                      tabIndex={0}
@@ -2988,7 +3018,9 @@ const App: React.FC = () => {
                 </div>
               )}
             </div>
-          ))}
+                   </React.Fragment>
+          );
+          })}
         </div>
 
         {/* Bottom actions */}
@@ -4092,7 +4124,7 @@ const App: React.FC = () => {
                  // Up-arrow in an empty composer edits the last user message (#267)
                  // — parity with ChatGPT / Cursor quick-edit. Ignored while
                  // suggestions are open or a generation is in progress.
-                 if (e.key === 'ArrowUp' && input.trim() === '' && !isLoading) {
+                 if (e.key === 'ArrowUp' && !e.altKey && input.trim() === '' && !isLoading) {
                    for (let j = messages.length - 1; j >= 0; j--) {
                      if (messages[j].role === 'user') {
                        e.preventDefault();
@@ -4101,6 +4133,27 @@ const App: React.FC = () => {
                        return;
                      }
                    }
+                 }
+                 // Prompt history navigation: Alt+Up/Alt+Down (#332)
+                 if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                   e.preventDefault();
+                   const hist = promptHistoryRef.current;
+                   if (hist.length === 0) return;
+                   let idx = historyNavIndexRef.current;
+                   if (e.key === 'ArrowUp') {
+                     idx = Math.min(idx - 1, hist.length - 1);
+                   } else {
+                     idx = idx + 1;
+                   }
+                   if (idx < 0) idx = 0;
+                   if (idx >= hist.length) {
+                     historyNavIndexRef.current = hist.length;
+                     setInput('');
+                     return;
+                   }
+                   historyNavIndexRef.current = idx;
+                   setInput(hist[idx]);
+                   return;
                  }
                  if (e.key === 'Enter' && !e.shiftKey) {
                    e.preventDefault();

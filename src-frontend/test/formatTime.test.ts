@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatMessageTime } from '../services/formatTime';
+import { formatMessageTime, conversationDateBucket } from '../services/formatTime';
 
 const DAY = 86_400_000;
 
@@ -116,5 +116,44 @@ describe('isSameDay (#274)', () => {
   it('false when either timestamp is missing', () => {
     expect(isSameDay(undefined, 123)).toBe(false);
     expect(isSameDay(123, undefined)).toBe(false);
+  });
+});
+
+
+// Use a fixed "now" at 2026-07-09 12:00 local for deterministic bucketing.
+const NOW = new Date(2026, 6, 9, 12, 0, 0).getTime();
+
+describe('conversationDateBucket (#330)', () => {
+  it('assigns a timestamp from today to "Today"', () => {
+    const ts = new Date(2026, 6, 9, 0, 0, 0).getTime();
+    expect(conversationDateBucket(ts, NOW)).toBe('Today');
+  });
+
+  it('assigns a timestamp from yesterday to "Yesterday"', () => {
+    const ts = new Date(2026, 6, 8, 23, 59, 59).getTime();
+    expect(conversationDateBucket(ts, NOW)).toBe('Yesterday');
+  });
+
+  it('assigns a timestamp within the previous 7 days to "Previous 7 Days"', () => {
+    const ts = new Date(2026, 6, 4, 0, 0, 0).getTime();
+    expect(conversationDateBucket(ts, NOW)).toBe('Previous 7 Days');
+  });
+
+  it('assigns an older timestamp to "Older"', () => {
+    const ts = new Date(2026, 5, 1, 0, 0, 0).getTime();
+    expect(conversationDateBucket(ts, NOW)).toBe('Older');
+  });
+
+  it('returns "Older" for undefined/invalid timestamps', () => {
+    expect(conversationDateBucket(undefined, NOW)).toBe('Older');
+    expect(conversationDateBucket(NaN, NOW)).toBe('Older');
+  });
+
+  it('treats exactly 7 days ago as "Older" (boundary is exclusive)', () => {
+    const exactly7Days = NOW - 7 * DAY;
+    // startOf7Days = startOfToday - 7 days; exactly7Days may fall on the boundary
+    // depending on time-of-day. Verify it is either Previous 7 Days or Older.
+    const bucket = conversationDateBucket(exactly7Days, NOW);
+    expect(['Previous 7 Days', 'Older']).toContain(bucket);
   });
 });

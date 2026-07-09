@@ -536,3 +536,17 @@ describe('/stats command (#328)', () => {
     if (r.kind === 'builtin') { expect(r.action).toBe('stats'); expect(r.arg).toBeUndefined(); }
   });
 });
+
+
+// ── /id builtin (#331) ───────────────────────────────────────────────────────
+
+describe('/id command (#331)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('id')?.builtin).toBe(true);
+  });
+  it('returns action: id with no arg', () => {
+    const r = runCommand('/id');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('id'); expect(r.arg).toBeUndefined(); }
+  });
+});

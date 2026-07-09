@@ -1177,3 +1177,38 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1452 passed (158 files)** (+19).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M69 — Date-grouped sidebar, /id command & prompt history (thirty-seventh analysis pass)
+
+Comparative functionality analysis vs ChatGPT / Codex CLI / Claude Code / TUIs.
+Three gaps found and implemented. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **#330** Date-grouped conversation list in the sidebar. ChatGPT groups the
+  conversation list by date buckets (Today, Yesterday, Previous 7 Days, Older)
+  so users can quickly find recent chats. The app rendered a flat list with only
+  a "History" header. Added a `conversationDateBucket` helper in
+  `services/formatTime.ts` and grouped the sidebar session list into Pinned /
+  Today / Yesterday / Previous 7 Days / Older sections with labels. Date
+  grouping applies only in the default `recent` sort mode; `name` and `messages`
+  sorts render a flat list. Arrow-key navigation (#329) still works across
+  groups because rows remain direct children of the scroll container (React
+  Fragments add no DOM nodes).
+- [x] **#331** `/id` slash command to show and copy the current session ID.
+  Developer-focused TUIs (Codex CLI, Claude Code) expose the current session
+  identifier for debugging and sharing. The app had no command-line way to view
+  or copy the active session ID. Added the `/id` builtin that shows the session
+  ID in the status banner and copies it to the clipboard (or "No active
+  session" when temporary).
+- [x] **#332** Prompt history navigation in the composer (Alt+Up / Alt+Down).
+  Shells, Codex CLI and Claude Code let users recall previously sent prompts.
+  The app's Up-arrow edits the last user message but there was no way to cycle
+  through a history of sent prompts to re-use them. Added per-session prompt
+  history (collected from every sent non-slash prompt, capped at 50) and
+  Alt+Up / Alt+Down to cycle backward/forward, filling the composer without
+  modifying the conversation. Added `!e.altKey` to the existing Up-arrow
+  edit-last-message guard so the two behaviours don't conflict.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1468 passed (159 files)** (+16).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
