@@ -1388,6 +1388,23 @@ const App: React.FC = () => {
     storage.updateSession(id, { archived: !s?.archived });
     setSessions(storage.getSessions());
   };
+
+  // Duplicate a conversation into a new session (#286).
+  const duplicateSession = (id: string) => {
+    const s = sessions.find(x => x.id === id);
+    if (!s) return;
+    const copy: ChatSession = {
+      ...s,
+      id: Date.now().toString(),
+      title: `Copy of ${s.title}`,
+      createdAt: Date.now(),
+      pinned: false,
+      archived: false,
+    };
+    const result = storage.saveSession(copy);
+    if (result.ok === false && result.error === 'quota') setStorageWarning(true);
+    setSessions(storage.getSessions());
+  };
   const addTagToSession = (id: string) => {
     const tag = window.prompt('Add a tag')?.trim();
     if (!tag) return;
@@ -1695,6 +1712,31 @@ const App: React.FC = () => {
           const wasArchived = !!sessions.find(x => x.id === currentSessionId)?.archived;
           toggleArchive(currentSessionId);
           showStatusBanner(wasArchived ? 'Unarchived conversation' : 'Archived conversation');
+          return;
+        }
+        if (result.action === 'tag') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /tag <name>'); return; }
+          if (!currentSessionId) { showStatusBanner('Save the chat first to tag it'); return; }
+          const s = sessions.find(x => x.id === currentSessionId);
+          const tags = Array.from(new Set([...(s?.tags ?? []), arg]));
+          storage.updateSession(currentSessionId, { tags });
+          setSessions(storage.getSessions());
+          showStatusBanner(`Tagged conversation with "${arg}"`);
+          return;
+        }
+        if (result.action === 'duplicate') {
+          if (!currentSessionId) { showStatusBanner('Save the chat first to duplicate it'); return; }
+          duplicateSession(currentSessionId);
+          showStatusBanner('Duplicated conversation');
+          return;
+        }
+        if (result.action === 'title') {
+          if (!currentSessionId) { showStatusBanner('Save the chat first to retitle it'); return; }
+          const title = generateTitle(messages);
+          storage.updateSession(currentSessionId, { title });
+          setSessions(storage.getSessions());
+          showStatusBanner(`Retitled conversation to "${title}"`);
           return;
         }
         return;
@@ -2460,6 +2502,7 @@ const App: React.FC = () => {
                   <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} aria-label={`${s.pinned ? 'Unpin' : 'Pin'} session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📌</button>
                   <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" aria-label={`Add tag to session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">🏷</button>
                   <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} aria-label={`${s.archived ? 'Unarchive' : 'Archive'} session: ${s.title}`} className="p-1 text-xs hover:text-amber-400">🗄</button>
+                  <button onClick={(e) => { e.stopPropagation(); duplicateSession(s.id); }} title="Duplicate" aria-label={`Duplicate session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📑</button>
                   <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
                 </div>
               </div>

@@ -276,3 +276,43 @@ describe('/archive command (#283)', () => {
     if (r.kind === 'builtin') expect(r.action).toBe('archive');
   });
 });
+
+// ── /tag, /duplicate, /title builtins (#285/#286/#287) ────────────────────────
+
+describe('/tag command (#285)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('tag')?.builtin).toBe(true);
+  });
+  it('with an argument returns action: tag + arg', () => {
+    const r = runCommand('/tag work');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('tag'); expect(r.arg).toBe('work'); }
+  });
+  it('with no argument returns action: tag + empty arg', () => {
+    const r = runCommand('/tag');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});
+
+describe('/duplicate command (#286)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('duplicate')?.builtin).toBe(true);
+  });
+  it('returns builtin action: duplicate', () => {
+    const r = runCommand('/duplicate');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('duplicate');
+  });
+});
+
+describe('/title command (#287)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('title')?.builtin).toBe(true);
+  });
+  it('returns builtin action: title', () => {
+    const r = runCommand('/title');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('title');
+  });
+});

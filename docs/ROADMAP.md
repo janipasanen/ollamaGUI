@@ -743,3 +743,31 @@ stays on `macOS-10.15`.
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1316 passed (138 files)** (+8).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+---
+
+## M54 — /tag command, duplicate conversation & /title command (twenty-second analysis pass)
+
+Comparative functionality analysis vs Codex GUI / Claude Code / Cursor / ChatGPT /
+TUIs. Three organization/parity gaps found and implemented. No merge to
+`master` — work stays on `macOS-10.15`.
+
+- [x] **#285** `/tag <name>` slash command. TUI chat tools tag the active thread
+  from the command line; the app only tagged via the sidebar 🏷 prompt. Added a
+  `/tag` builtin that adds the tag to the current session (reusing the storage
+  tag logic), confirms via the status banner, and shows usage / save-first
+  hints. The tag chip renders in the sidebar.
+- [x] **#286** Duplicate conversation. Cursor / ChatGPT let you duplicate a
+  chat; the app had no duplicate action. Added a `duplicateSession` helper that
+  creates a new session with a copy of the conversation (`Copy of <title>`,
+  new id, unpinned/unarchived), a sidebar 📑 button on each session, and a
+  `/duplicate` slash command for the current conversation.
+- [x] **#287** `/title` slash command. ChatGPT can regenerate a chat title from
+  its content; the app auto-titled on first save and renamed manually via
+  `/rename` but couldn't re-derive the title. Added a `/title` builtin that
+  recomputes `generateTitle(messages)` for the current session, persists it,
+  refreshes the sidebar, and confirms via the status banner.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1328 passed (141 files)** (+12).
+- No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
