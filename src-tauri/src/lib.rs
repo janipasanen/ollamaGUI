@@ -1508,7 +1508,7 @@ fn extract_xml_text(
                 }
             }
             Ok(Event::Text(ref e)) if depth > 0 => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     output.push_str(&t);
                 }
             }

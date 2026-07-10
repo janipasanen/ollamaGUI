@@ -57,6 +57,9 @@ jobs:
           node-version: 22
           cache: 'npm'
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: npm dependency audit
         # Audit production dependencies only (--omit=dev). vite/vitest and their
         # transitive dev deps are build/test tooling that never ships in the
@@ -72,6 +75,10 @@ jobs:
 
       - name: cargo dependency audit
         working-directory: src-tauri
+        # .cargo/audit.toml (in src-tauri/) suppresses unmaintained advisories
+        # for transitive crates we cannot easily upgrade, and documents the
+        # tracked exception for the umya-spreadsheet quick-xml 0.37.5 copy
+        # (#395). cargo-audit reads `.cargo/audit.toml`, not a bare audit.toml.
         run: cargo audit
 
   # Playwright browser E2E (#16b, #214). Runs on Ubuntu where Chromium is

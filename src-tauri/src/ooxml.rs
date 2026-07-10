@@ -195,7 +195,7 @@ pub fn surgical_replace_runs(
                     Event::Text(t) if pending_run_start.is_some() => {
                         let start_idx = pending_run_start.take().unwrap();
                         let decoded = t
-                            .unescape()
+                            .xml10_content()
                             .map_err(|e| format!("surgical edit: xml decode: {e}"))?
                             .into_owned();
                         let char_start = logical.chars().count();
@@ -498,7 +498,7 @@ fn extract_run_text(xml_bytes: &[u8]) -> String {
             Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"t" => in_t = true,
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"t" => in_t = false,
             Ok(Event::Text(ref e)) if in_t => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     out.push_str(&t);
                 }
             }

@@ -195,6 +195,23 @@ import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
+// Robustly focus an element by id once it exists in the DOM. The sidebar
+// search input is conditionally mounted after the `/search` slash command flips
+// `isSidebarOpen`/`searchQuery`; a fixed `setTimeout` can race the React commit
+// and leave focus on the composer (#395). We poll on each animation frame with
+// a small attempt cap so focus lands even under slow re-renders (macOS CI).
+function focusElementWhenReady(id: string, attempts = 20): void {
+  const el = document.getElementById(id);
+  if (el) {
+    (el as HTMLInputElement).focus({ preventScroll: true });
+    // If focus was stolen back by a re-render, keep retrying until it sticks.
+    if (document.activeElement === el || attempts <= 0) return;
+    requestAnimationFrame(() => focusElementWhenReady(id, attempts - 1));
+  } else if (attempts > 0) {
+    setTimeout(() => focusElementWhenReady(id, attempts - 1), 16);
+  }
+}
+
 // Cloud model detection
 const isCloudModel = (modelName: string): boolean => {
   const CLOUD_SUFFIXES = ['-cloud', ':cloud'];
@@ -1260,11 +1277,16 @@ const App: React.FC = () => {
       setUnreadCount(c => c + added);
     }
     prevMsgCountRef.current = messages.length;
-    // Focus input on initial load for better accessibility
+    // Focus the composer on initial load for accessibility (#259). Only grab
+    // focus when nothing else has it — a slash command such as `/search` may
+    // have moved focus to the sidebar search; don't steal it back (#395).
     if (messages.length === 0) {
       const input = document.getElementById('chat-input');
       if (input) {
-        setTimeout(() => input.focus(), 100);
+        setTimeout(() => {
+          const ae = document.activeElement;
+          if (ae === null || ae === document.body) input.focus();
+        }, 100);
       }
     }
   }, [messages, isNearBottom]);
@@ -2605,8 +2627,10 @@ ${block}`;
           const arg = (result.arg ?? '').trim();
           setIsSidebarOpen(true);
           if (arg) setSearchQuery(arg);
-          // Focus the sidebar search once it is rendered.
-          setTimeout(() => document.getElementById('sidebar-search')?.focus(), 50);
+          // Focus the sidebar search once it is rendered. A retry loop is used
+          // instead of a fixed timeout so focus sticks across React commits
+          // (the sidebar input mounts asynchronously after the state updates).
+          focusElementWhenReady('sidebar-search');
           return;
         }
         if (result.action === 'copy') {

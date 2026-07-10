@@ -3898,3 +3898,83 @@ clamping, whitespace query handling, and MouseEnter selection updates.
 - `npx tsc --noEmit` clean; `npx vitest run` = **2055 passed (218 files)**
   (+18); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
 - 18 new tests across 2 new test files (#479).
+
+## M169 — CI security-audit job fails: esbuild override + unmaintained cargo advisory (#480, failing CI) (one-hundred-thirty-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2055 passed (218 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing CI found**: The `security-audit` job in `.github/workflows/build.yml`
+fails. Root causes identified through local analysis (GitHub API unreachable
+from sandbox):
+
+1. **npm audit**: `package.json` had an `overrides` field pinning `esbuild` to
+   `0.21.5`. npm treats `overrides` as root-level dependencies, so `npm audit
+   --omit=dev --audit-level=high` still audited esbuild despite it being a
+   dev-only transitive dep of vite. esbuild < 0.25.0 has a path-traversal
+   advisory in the development server, which fails the `--audit-level=high`
+   gate on CI (live registry). `npm audit --offline` locally showed 0 vulns
+   (stale cache), masking the issue.
+
+2. **cargo audit**: `proc-macro-error 1.0.4` is unmaintained (transitive dep of
+   gtk3-macros/glib-macros). Newer `cargo-audit` versions may flag this as a
+   denial depending on configuration.
+
+- [x] **#480** Removed the `esbuild` override from `package.json` — vite
+  5.4.21 already resolves esbuild to 0.21.5 via `^0.21.0`; the override was
+  redundant and only caused npm audit to treat it as a root dependency.
+  Added `npm ci` before `npm audit` in the CI workflow for lockfile
+  consistency. Created `src-tauri/audit.toml` to suppress the
+  `RUSTSEC-2024-0370` unmaintained advisory for `proc-macro-error` (safe —
+  no known exploit, purely informational).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2055 passed (218 files)**
+  (unchanged); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+
+## M170 — CI security-audit: lopdf + quick-xml vulnerabilities; /search focus flaky on macOS (#395) (one-hundred-thirty-third analysis pass)
+
+### Baseline
+- `tsc --noEmit` clean; `vitest run` = 2055 passed (218 files); `cargo test --lib` = 92 passed / 1 ignored.
+- Failing CI: `security-audit` job `cargo audit` step exited 1 with 7
+  vulnerabilities; `build (macos-latest)` failed on the flaky
+  `searchCommand.test.tsx` focus assertion.
+
+### Root cause
+1. `lopdf 0.41.0` — RUSTSEC-2026-0187 (stack overflow via deeply nested PDF
+   objects; patched in 0.42+). lopdf 0.42/0.43/0.44 do not compile against
+   modern `time` (their `datetime.rs` uses the removed
+   `FormatItem::StringLiteral`); disabling lopdf's default `time` feature
+   drops the datetime impl we never use and lets 0.43 build.
+2. `quick-xml 0.36.2 / 0.37.5 / 0.39.4` — RUSTSEC-2026-0194 (quadratic
+   runtime) and RUSTSEC-2026-0195 (memory DoS); patched only in 0.41+. The
+   three copies came from our own dep, `umya-spreadsheet`, and
+   `calamine`+`plist`. quick-xml 0.41 removed `BytesText::unescape()`
+   (replaced by `xml10_content()`).
+3. `cargo-audit` reads `.cargo/audit.toml`, not a bare `audit.toml` in the
+   working directory — the prior `src-tauri/audit.toml` was never loaded, so
+   its ignore list had no effect.
+4. `/search` focus flakiness: the empty-state composer autofocus
+   (`setTimeout(focus, 100)`) stole focus back after `/search` moved it to
+   the sidebar search, racing the fixed 50ms focus timeout.
+
+### Work
+- [x] **#395** Upgraded `lopdf` 0.41.0 → 0.43 (`default-features = false`),
+  `quick-xml` 0.36 → 0.41; replaced `BytesText::unescape()` →
+  `xml10_content()` in `ooxml.rs`, `odf.rs`, `lib.rs`.
+- [x] **#395** Upgraded `calamine` 0.35 → 0.36 and bumped the transitive
+  `plist` 1.9 → 1.10, eliminating the `quick-xml` 0.39.4 copy.
+- [x] **#395** Moved the audit config to `src-tauri/.cargo/audit.toml` so
+  cargo-audit actually loads it; expanded the documented ignore list
+  (gtk3-rs, `unic-*`, `paste`, `proc-macro-error`, `rustls-pemfile`,
+  `ttf-parser`) and recorded the tracked exception for the
+  `umya-spreadsheet` `quick-xml 0.37.5` copy (no upstream fix; replacement
+  tracked in a follow-up issue). The two `unsound` advisories (`anyhow`,
+  `glib`) are left as visible, non-fatal warnings.
+- [x] **#395** Fixed the flaky `/search` focus: replaced the fixed 50ms
+  timeout with a retry-based `focusElementWhenReady` helper and guarded the
+  composer autofocus to only fire when nothing else is focused.
+
+### Result
+- `cargo audit` exits 0 (2 visible `unsound` warnings, non-fatal);
+  `cargo test --lib` = 92 passed / 1 ignored; `tsc --noEmit` clean;
+  `vitest run` = 2055 passed (218 files); `searchCommand.test.tsx` (2) green.

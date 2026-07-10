@@ -36,10 +36,13 @@ aes-gcm = "0.10"
 sysinfo = "0.33"
 # Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
 zip = "2"
-quick-xml = "0.36"
-lopdf = "0.41.0"
-calamine = "0.35.0"
+quick-xml = "0.41"
+lopdf = { version = "0.43", default-features = false }
+calamine = "0.36"
 umya-spreadsheet = "3.0.0"
+# Bump transitive `plist` (via tauri) from 1.9 → 1.10 so its quick-xml dep
+# resolves to the patched 0.41 line instead of the vulnerable 0.39.4 (#395).
+plist = "1.10"
 futures = "0.3.32"
 # CDP automation engine for the AI browser (#73). tokio-runtime to match our
 # tokio; default features (incl. the bundled Chromium fetcher) are off.

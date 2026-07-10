@@ -83,6 +83,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Array.isArray` guards to all three getters; wrapped all four mutation
   methods' `setItem` calls in try/catch. 7 new tests in `storage.test.ts`.
 
+#### M144–M162 — Error handling hardening sweep (#455–#473)
+- **Bug fixes** (#455–#468): Added `ollamaErrorFromResponse`,
+  `openAiErrorFromResponse`, `oauthErrorFromResponse`, `mcpHttpErrorDetail`
+  helpers across 15 service files so non-ok HTTP responses surface the server's
+  error body instead of generic status text. Protected all unprotected
+  `JSON.parse` calls against `SyntaxError` on malformed data. Added SSE flush
+  blocks and fixed SSE parser to accept `data:` without space (spec compliance).
+- **Bug fix** (#470–#471): Wrapped all 20 unprotected `localStorage.setItem`
+  calls across 16 service files and 19 in `App.tsx` with `safeSetItem`.
+- **Bug fix** (#472): `agenticChatStream` now pushes the assistant's
+  intermediate message (content + `tool_calls`) into context before tool execution.
+- **Bug fix** (#473): Added `safeSetItem` to `platform.ts`; replaced all
+  `localStorage.setItem` in `App.tsx`.
+
+#### M163–M164 — sessionStorage and crossSessionMemory quota (#474–#475)
+- **Bug fix** (#474): Added `safeSessionSetItem` to `platform.ts`; protected
+  `checkpoints.ts` `saveAll()` against `QuotaExceededError`. 3 new tests.
+- **Bug fix** (#475): Wrapped `crossSessionMemory.ts` `saveEntries()` in
+  try/catch. 2 new tests.
+
+### Added
+#### M165–M166 — Ollama model memory management API + slash commands (#476–#477)
+- **Feature** (#476): Added `fetchRunningModels`, `loadOllamaModel`,
+  `unloadOllamaModel`, `fetchOllamaVersion` to `ollama.ts`. 9 new tests.
+- **Feature** (#477): Added `/warm`, `/unload`, `/running`, `/version` slash
+  commands wired into `App.tsx`. 5 new tests.
+
+#### M167 — Loaded model indicator in model selector (#478)
+- **Feature** (#478): Model selector shows `●` badge for models loaded in
+  memory, with 30s polling. 3 new UI tests.
+
+### Fixed
+#### M168 — UI test coverage for CommandPalette and Sources (#479)
+- **Tests** (#479): Added `Sources.test.tsx` (10 tests) and
+  `commandPaletteUsability.test.tsx` (8 tests). AGENTS.md compliance.
+
 ### Fixed
 #### M117 — #file context ref always returned "(not yet indexed)" (#427)
 - **Bug fix** (#427): a `#file` knowledge reference (#119) called
@@ -733,3 +769,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [Unreleased]: https://github.com/janipasanen/ollamaGUI/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/janipasanen/ollamaGUI/releases/tag/v0.1.0
 [0.0.1]: https://github.com/janipasanen/ollamaGUI/releases/tag/v0.0.1
+
+### Fixed
+#### M169 — CI security-audit job fails: esbuild override + unmaintained cargo advisory (#480)
+- **Bug fix** (#480): Removed redundant `esbuild` override from `package.json`
+  that caused `npm audit --omit=dev --audit-level=high` to fail on CI. The
+  override pinned esbuild to 0.21.5 at the root level, bypassing `--omit=dev`
+  exclusion. esbuild < 0.25.0 has a path-traversal advisory in the dev server.
+  Vite 5.4.21 already resolves esbuild to 0.21.5 via `^0.21.0`, so the override
+  was unnecessary. Added `npm ci` before `npm audit` in the CI workflow for
+  lockfile consistency. Created `src-tauri/audit.toml` to suppress the
+  `RUSTSEC-2024-0370` unmaintained advisory for `proc-macro-error` (transitive
+  dep of gtk3-macros — no known exploit, purely informational).
+
+#### M170 — CI security-audit: lopdf + quick-xml vulnerabilities; /search focus flaky on macOS (#395)
+- **Bug fix** (#395): `cargo audit` reported 7 vulnerabilities. Upgraded the
+  affected crates: `lopdf` 0.41.0 → 0.43 (default-features off — drops the
+  unmaintained-`time` datetime impl we never use, fixing RUSTSEC-2026-0187
+  stack-overflow), `quick-xml` 0.36 → 0.41 (fixes RUSTSEC-2026-0194/0195 for our
+  own usage). Replaced the removed `BytesText::unescape()` API with
+  `xml10_content()` in `ooxml.rs`, `odf.rs`, `lib.rs`.
+- **Bug fix** (#395): Eliminated the second vulnerable `quick-xml` 0.39.4 copy
+  by upgrading `calamine` 0.35 → 0.36 and bumping the transitive `plist`
+  1.9 → 1.10 (both now resolve to the patched 0.41 line).
+- **Bug fix** (#395): The remaining `quick-xml` 0.37.5 copy comes only from
+  `umya-spreadsheet 3.0.0` (hard-pins `^0.37.1`; no 0.37.x backport exists).
+  It cannot be upgraded without replacing umya-spreadsheet — tracked in a
+  follow-up issue. Documented as a tracked exception in `.cargo/audit.toml`.
+- **Bug fix** (#395): `cargo-audit` reads `.cargo/audit.toml`, not a bare
+  `audit.toml` in the working dir — the prior `src-tauri/audit.toml` was never
+  loaded. Moved the config to `src-tauri/.cargo/audit.toml` and expanded the
+  ignore list (gtk3-rs bindings, `unic-*`, `paste`, `proc-macro-error`,
+  `rustls-pemfile`, `ttf-parser`; the two `unsound` advisories — `anyhow`,
+  `glib` — are intentionally left visible as non-fatal warnings).
+- **Bug fix** (#395): `searchCommand.test.tsx` was flaky on macOS CI. The
+  empty-state composer autofocus (`setTimeout(..., 100)`) stole focus back
+  after `/search` moved it to the sidebar search. Replaced the fixed 50ms
+  focus timeout with a retry-based `focusElementWhenReady` helper and guarded
+  the composer autofocus to only fire when nothing else is focused.
+- **Tests**: `searchCommand.test.tsx` (2) now passes reliably; `cargo audit`
+  exits 0; `cargo test --lib` 92 passed / 1 ignored; `tsc --noEmit` clean;
+  `vitest run` 2055 passed (218 files).

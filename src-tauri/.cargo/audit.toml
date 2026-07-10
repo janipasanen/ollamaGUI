@@ -1,0 +1,75 @@
+# cargo-audit configuration (#395 / #480)
+#
+# `cargo audit` exits non-zero only on *vulnerabilities*. The advisories below
+# are *informational* ("unmaintained") advisories on crates that are transitive
+# dependencies we cannot upgrade without forking upstream or swapping a system
+# integration layer (e.g. the GTK3 webview backend on Linux, the `unic-*`
+# Unicode helpers pulled in by `umya-spreadsheet`). They have no known
+# exploitable vulnerability — the advisory is purely "unmaintained".
+#
+# Each entry is documented with the crate, the advisory ID, why it appears, and
+# why suppressing the *informational* warning is safe. Real vulnerabilities
+# (lopdf, quick-xml) were fixed by upgrading the crates directly, NOT by
+# ignoring them here.
+#
+# The two "unsound" advisories (RUSTSEC-2024-0429 glib, RUSTSEC-2026-0190
+# anyhow) are intentionally NOT ignored — they remain visible warnings so the
+# gate still surfaces them, but they do not fail the build (no exploit path in
+# our usage: glib's unsound `VariantStrIter` comes via the GTK3 bindings we
+# never call directly; anyhow's `Error::downcast_mut` is never used).
+
+[advisories]
+ignore = [
+    # gtk-rs GTK3 bindings — no longer maintained (RUSTSEC-2024-0411..0420).
+    # These reach us via Tauri's `wry` webview backend on Linux (gtk3). They
+    # cannot be removed without changing the platform webview backend; the
+    # advisories are "unmaintained", not security vulnerabilities.
+    "RUSTSEC-2024-0411", # gdkx11
+    "RUSTSEC-2024-0412", # atk-sys
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gtk
+    "RUSTSEC-2024-0415", # gtk-sys
+    "RUSTSEC-2024-0416", # gdk-sys
+    "RUSTSEC-2024-0417", # gdkx11-sys
+    "RUSTSEC-2024-0418", # gdkwayland-sys
+    "RUSTSEC-2024-0419", # gtk3-macros
+    "RUSTSEC-2024-0420", # gdk
+
+    # `paste` 1.0.15 — unmaintained (RUSTSEC-2024-0436). Transitive via
+    # `umya-spreadsheet`. Informational only; no vulnerability.
+    "RUSTSEC-2024-0436",
+
+    # `proc-macro-error` 1.0.4 — unmaintained (RUSTSEC-2024-0370). Transitive via
+    # gtk3-macros / glib-macros. No vulnerability — purely "unmaintained".
+    "RUSTSEC-2024-0370",
+
+    # `unic-*` Unicode helper crates — unmaintained (RUSTSEC-2025-0075..0100).
+    # Transitive via `umya-spreadsheet`. Informational only.
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+
+    # `rustls-pemfile` 1.0.4 — unmaintained (RUSTSEC-2025-0134). Transitive via
+    # `reqwest 0.11`. Informational only; the PEM parser is not a vulnerability.
+    "RUSTSEC-2025-0134",
+
+    # `ttf-parser` — unmaintained (RUSTSEC-2026-0192). Transitive via `lopdf`
+    # font helpers. Informational only.
+    "RUSTSEC-2026-0192",
+
+    # quick-xml 0.37.5 — RUSTSEC-2026-0194 / RUSTSEC-2026-0195 (memory & quadratic
+    # DoS). This copy is pulled in *only* by `umya-spreadsheet 3.0.0`, the only
+    # available version, which hard-pins `quick-xml ^0.37.1`. No 0.37.x security
+    # backport exists (the fixes landed only in the 0.41 line, via a namespace
+    # rewrite that cannot be cleanly backported), so this copy cannot be
+    # upgraded without replacing umya-spreadsheet — tracked in a follow-up
+    # issue. Blast radius: only fires on *malformed* XML inside a user-supplied
+    # `.xlsx` passed to the `document_xlsx_set_cell` edit path (a deliberate,
+    # local, non-RCE denial of service on the user's own file). Every other
+    # quick-xml copy (our own usage, calamine, plist) was upgraded to the patched
+    # 0.41 line. This is a documented, tracked exception — NOT a silent ignore.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
