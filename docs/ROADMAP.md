@@ -4000,3 +4000,23 @@ build script.
 ### Result
 - macOS `cargo build` unchanged; `cargo audit` exit 0. ubuntu/windows
   `Build Tauri App` no longer receives the macOS linker flag.
+
+## M172 — Build Tauri App fails on ubuntu: missing Linux system libraries (#398)
+
+### Context
+After #397 the ubuntu build reached the Rust compile and failed on missing
+`gio-2.0`/`glib-2.0`/`gobject-2.0` (`pkg-config` lookups by `gio-sys`/`glib-sys`).
+
+### Root cause
+The `build` job never installed the Tauri v2 Linux system dependencies
+(WebKit2GTK + GLib/GIO headers), which are not preinstalled on `ubuntu-latest`.
+
+### Work
+- [x] **#398** Added a Linux-only step (`if: matrix.os == 'ubuntu-latest'`)
+  installing `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libglib2.0-dev`,
+  `libgirepository1.0-dev`, `librsvg2-dev`, `libssl-dev`, `pkg-config` before
+  `Build Tauri App`. macOS/Windows ship their webview SDKs.
+
+### Result
+- ubuntu `Build Tauri App` should now compile; `fail-fast` no longer cancels
+  the macos/windows jobs. `security-audit` and `e2e` remain green.

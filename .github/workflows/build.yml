@@ -39,6 +39,15 @@ jobs:
       - name: Build Frontend
         run: npm run build
 
+      # Tauri v2's wry/tao webview backend on Linux needs WebKit2GTK + GLib/GIO
+      # development headers (not preinstalled on ubuntu-latest). macOS/Windows
+      # ship their webview SDKs, so this step is Linux-only (#398).
+      - name: Install Linux system dependencies (Tauri v2)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev libgirepository1.0-dev librsvg2-dev libssl-dev pkg-config
+
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:

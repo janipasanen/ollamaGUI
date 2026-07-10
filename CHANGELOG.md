@@ -823,3 +823,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 - **Tests**: macOS `cargo build` unaffected (per-target flags intact);
   `cargo audit` exit 0.
+
+#### M172 — Build Tauri App fails on ubuntu: missing Linux system libraries (#398)
+- **Bug fix** (#398): The `build` job never installed the Tauri v2 Linux system
+  dependencies, so `gio-sys`/`glib-sys`/`gobject-sys` failed `pkg-config`
+  lookups (`gio-2.0`/`glib-2.0`/`gobject-2.0` not found) and `Build Tauri App`
+  failed on `ubuntu-latest`. Added a Linux-only step installing
+  `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libglib2.0-dev`,
+  `libgirepository1.0-dev`, `librsvg2-dev`, `libssl-dev`, `pkg-config`. macOS/
+  Windows already ship their webview SDKs. Previously masked by earlier
+  failures (#395/#397) and `fail-fast` matrix cancellation.
