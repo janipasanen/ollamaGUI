@@ -810,3 +810,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tests**: `searchCommand.test.tsx` (2) now passes reliably; `cargo audit`
   exits 0; `cargo test --lib` 92 passed / 1 ignored; `tsc --noEmit` clean;
   `vitest run` 2055 passed (218 files).
+
+#### M171 — Build Tauri App fails on ubuntu/windows: global `[build]` rustflags leaks macOS flag (#397)
+- **Bug fix** (#397): `src-tauri/.cargo/config.toml` had a global `[build]`
+  `rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]` that applied the
+  macOS linker flag to every target, so `gcc`/`cc` rejected
+  `-mmacosx-version-min=10.15` and `Build Tauri App` failed on Linux/Windows.
+  Removed the redundant global section — the per-target `[target.*-apple-darwin]`
+  entries already cover macOS. The bug was previously masked by the `fail-fast`
+  matrix cancelling ubuntu/windows once `build (macos-latest)` failed (the #395
+  flaky test); fixing #395 let ubuntu/windows reach `Build Tauri App` and expose
+  it.
+- **Tests**: macOS `cargo build` unaffected (per-target flags intact);
+  `cargo audit` exit 0.

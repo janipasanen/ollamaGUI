@@ -3978,3 +3978,25 @@ from sandbox):
 - `cargo audit` exits 0 (2 visible `unsound` warnings, non-fatal);
   `cargo test --lib` = 92 passed / 1 ignored; `tsc --noEmit` clean;
   `vitest run` = 2055 passed (218 files); `searchCommand.test.tsx` (2) green.
+
+## M171 — Build Tauri App fails on ubuntu/windows: global [build] rustflags leaks macOS flag (#397)
+
+### Context
+Fixing #395 let the build matrix run ubuntu/windows to `Build Tauri App` (the
+flaky macos test had previously `fail-fast`-cancelled them), exposing a latent
+config bug.
+
+### Root cause
+`src-tauri/.cargo/config.toml` had a global `[build] rustflags` re-applying
+`-C link-arg=-mmacosx-version-min=10.15` to every target. On Linux/Windows the
+`cc`/`gcc` linker rejects that macOS flag, failing the release build of every
+build script.
+
+### Work
+- [x] **#397** Removed the global `[build] rustflags` section; kept the
+  `[target.x86_64-apple-darwin]` / `[target.aarch64-apple-darwin]` entries so
+  macOS 10.15 compatibility is unchanged.
+
+### Result
+- macOS `cargo build` unchanged; `cargo audit` exit 0. ubuntu/windows
+  `Build Tauri App` no longer receives the macOS linker flag.
