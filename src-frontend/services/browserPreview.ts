@@ -38,6 +38,12 @@ async function tauriInvoke<T>(cmd: string, args: Record<string, unknown>): Promi
 // ---------------------------------------------------------------------------
 
 let _open = false;
+/** Resolves when the current openPreview IPC completes; null when idle. #450 */
+let _openingPromise: Promise<void> | null = null;
+/** Incremented by _resetPreviewState so stale openPreview calls can detect
+ *  that they belong to a previous test/session and skip the _open=false
+ *  reset in their catch block. #450 */
+let _generation = 0;
 
 export function isPreviewOpen(): boolean {
   return _open;
@@ -58,7 +64,20 @@ export function isPreviewOpen(): boolean {
  */
 export async function openPreview(url: string, rect: PreviewRect, allow?: string[]): Promise<void> {
   _open = true;
-  await tauriInvoke<void>('preview_webview_open', { url, rect, allow: allow ?? [] });
+  const gen = _generation;
+  const p = tauriInvoke<void>('preview_webview_open', { url, rect, allow: allow ?? [] });
+  _openingPromise = p.then(() => { _openingPromise = null; }, () => { _openingPromise = null; });
+  try {
+    await p;
+  } catch (err) {
+    // The IPC rejected — the preview did not actually open. Reset the flag so
+    // navigate/setBounds/reload no-op instead of sending commands to a
+    // non-existent webview (#437).
+    // Only reset if this call isn't stale (from a previous test/session that
+    // was reset via _resetPreviewState). #450
+    if (gen === _generation) _open = false;
+    throw err;
+  }
 }
 
 /**
@@ -67,6 +86,9 @@ export async function openPreview(url: string, rect: PreviewRect, allow?: string
  */
 export async function navigatePreview(url: string, allow?: string[]): Promise<void> {
   if (!_open) return;
+  // Wait for any in-flight openPreview to complete before navigating (#450).
+  if (_openingPromise) await _openingPromise;
+  if (!_open) return; // open may have failed while we waited
   await tauriInvoke<void>('preview_webview_navigate', { url, allow: allow ?? [] });
 }
 
@@ -76,11 +98,15 @@ export async function navigatePreview(url: string, allow?: string[]): Promise<vo
  */
 export async function setBoundsPreview(rect: PreviewRect): Promise<void> {
   if (!_open) return;
+  if (_openingPromise) await _openingPromise;
+  if (!_open) return;
   await tauriInvoke<void>('preview_webview_set_bounds', { rect });
 }
 
 /** Reload the current preview page. */
 export async function reloadPreview(): Promise<void> {
+  if (!_open) return;
+  if (_openingPromise) await _openingPromise;
   if (!_open) return;
   await tauriInvoke<void>('preview_webview_reload', {});
 }
@@ -99,4 +125,6 @@ export async function closePreview(): Promise<void> {
 /** Test-only: reset the internal open flag between tests. */
 export function _resetPreviewState(): void {
   _open = false;
+  _openingPromise = null;
+  _generation++;
 }

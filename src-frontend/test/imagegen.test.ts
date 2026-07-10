@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadImageGenConfig, saveImageGenConfig,
-  generateA1111, generateOpenAI, generateImage,
+  generateA1111, generateOpenAI, generateImage, generateComfyUI,
   type ImageGenConfig,
 } from '../services/imagegen';
 
@@ -179,5 +179,122 @@ describe('generateImage (#130)', () => {
   it('throws for unknown backend', async () => {
     const cfg = { backend: 'unknown' as any, baseUrl: '', enabled: true };
     await expect(generateImage({ prompt: 'x' }, cfg)).rejects.toThrow('Unknown image generation backend');
+  });
+});
+
+describe('generateComfyUI — binary image fetch (#130, #431)', () => {
+  const cfg: ImageGenConfig = { backend: 'comfyui', baseUrl: 'http://localhost:8188', steps: 20, size: '512x512', enabled: true };
+
+  // PNG signature bytes — btoa(textBody) would throw on these (0x89 etc. are
+  // fine Latin1, but a real PNG has bytes that decode to >U+00FF under UTF-8).
+  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const expectedB64 = 'iVBORw0KGgo=';
+
+  it('fetches the /view image as binary base64 (not btoa(text)) and returns it', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (urlIn: any) => {
+      const url = String(urlIn);
+      if (url.endsWith('/prompt')) {
+        return { status: 200, text: async () => JSON.stringify({ prompt_id: 'abc' }) } as any;
+      }
+      if (url.includes('/history/abc')) {
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            abc: { outputs: { '9': { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] } } },
+          }),
+        } as any;
+      }
+      if (url.includes('/view')) {
+        return { status: 200, blob: async () => new Blob([new Uint8Array(pngSignature)], { type: 'image/png' }) } as any;
+      }
+      return { status: 404, text: async () => '' } as any;
+    });
+
+    const results = await generateComfyUI(cfg, { prompt: 'a cat' });
+    expect(results).toHaveLength(1);
+    expect(results[0].image).toBe(expectedB64);
+    expect(results[0].mimeType).toBe('image/png');
+    expect(results[0].prompt).toBe('a cat');
+    // The /view endpoint must have been hit.
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/view'))).toBe(true);
+  }, 15000);
+
+  it('queues the workflow and polls history until an image appears', async () => {
+    let historyCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (urlIn: any) => {
+      const url = String(urlIn);
+      if (url.endsWith('/prompt')) {
+        return { status: 200, text: async () => JSON.stringify({ prompt_id: 'p1' }) } as any;
+      }
+      if (url.includes('/history/p1')) {
+        historyCalls++;
+        if (historyCalls < 2) {
+          return { status: 200, text: async () => JSON.stringify({ p1: { outputs: {} } }) } as any;
+        }
+        return {
+          status: 200,
+          text: async () => JSON.stringify({
+            p1: { outputs: { '9': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } },
+          }),
+        } as any;
+      }
+      if (url.includes('/view')) {
+        return { status: 200, blob: async () => new Blob([new Uint8Array(pngSignature)], { type: 'image/png' }) } as any;
+      }
+      return { status: 404, text: async () => '' } as any;
+    });
+
+    const results = await generateComfyUI(cfg, { prompt: 'a dog' });
+    expect(results).toHaveLength(1);
+    expect(historyCalls).toBeGreaterThanOrEqual(2);
+  }, 20000);
+
+  it('throws on a non-2xx queue response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (urlIn: any) => {
+      const url = String(urlIn);
+      if (url.endsWith('/prompt')) return { status: 500, text: async () => 'boom' } as any;
+      return { status: 404, text: async () => '' } as any;
+    });
+    await expect(generateComfyUI(cfg, { prompt: 'x' })).rejects.toThrow(/queue error 500/);
+  });
+});
+
+// ── #463: non-JSON response bodies must not crash with raw SyntaxError ───────
+
+describe('imagegen malformed-JSON handling (#463)', () => {
+  it('generateA1111 throws meaningful error on non-JSON 200 response (#463)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      status: 200, text: async () => '<html>Service Unavailable</html>',
+    } as any);
+    const cfg: ImageGenConfig = { backend: 'a1111', baseUrl: 'http://127.0.0.1:7860', steps: 20, size: '512x512', enabled: true };
+    await expect(generateA1111(cfg, { prompt: 'x' })).rejects.toThrow(/non-JSON response/);
+  });
+
+  it('generateOpenAI throws meaningful error on non-JSON 200 response (#463)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      status: 200, text: async () => 'Gateway timeout',
+    } as any);
+    const cfg: ImageGenConfig = { backend: 'openai', baseUrl: '', apiKey: 'sk-test', enabled: true, size: '1024x1024' };
+    await expect(generateOpenAI(cfg, { prompt: 'x' })).rejects.toThrow(/non-JSON response/);
+  });
+
+  it('generateComfyUI throws meaningful error on non-JSON queue response (#463)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (urlIn: any) => {
+      const url = String(urlIn);
+      if (url.endsWith('/prompt')) return { status: 200, text: async () => 'not json at all' } as any;
+      return { status: 404, text: async () => '' } as any;
+    });
+    const cfg: ImageGenConfig = { backend: 'comfyui', baseUrl: 'http://localhost:8188', steps: 20, size: '512x512', enabled: true };
+    await expect(generateComfyUI(cfg, { prompt: 'x' })).rejects.toThrow(/non-JSON queue response/);
+  });
+
+  it('generateComfyUI queue error includes body snippet (#463)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (urlIn: any) => {
+      const url = String(urlIn);
+      if (url.endsWith('/prompt')) return { status: 400, text: async () => 'invalid workflow: missing CLIPTextEncode' } as any;
+      return { status: 404, text: async () => '' } as any;
+    });
+    const cfg: ImageGenConfig = { backend: 'comfyui', baseUrl: 'http://localhost:8188', steps: 20, size: '512x512', enabled: true };
+    await expect(generateComfyUI(cfg, { prompt: 'x' })).rejects.toThrow(/missing CLIPTextEncode/);
   });
 });

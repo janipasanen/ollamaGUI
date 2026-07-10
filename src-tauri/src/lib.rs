@@ -238,6 +238,7 @@ struct McpStdioCommand {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CliCommandRequest {
     command: String,
     args: Vec<String>,
@@ -247,6 +248,7 @@ struct CliCommandRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CliCommandResponse {
     success: bool,
     exit_code: Option<i32>,
@@ -257,7 +259,12 @@ struct CliCommandResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct McpHttpRequest {
+    // Unused by the command body but historically part of the IPC payload. Kept
+    // optional-with-default so callers that omit it (OpenAPI/image-gen HTTP
+    // routing) still deserialize, while MCP HTTP sends `sessionId` (#435).
+    #[serde(default)]
     session_id: String,
     url: String,
     method: String,
@@ -284,6 +291,7 @@ struct McpHttpSession {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct McpStdioResponse {
     success: bool,
     message: String,
@@ -500,6 +508,44 @@ async fn mcp_http_request(
         status: status.as_u16(),
         headers: response_headers,
         body,
+        error: None,
+    })
+}
+
+/// Fetch a URL and return its body as base64 (for binary responses like the
+/// ComfyUI `/view` image endpoint, where `mcp_http_request`'s `.text()` body
+/// would corrupt bytes and `btoa` would throw on out-of-Latin1 code points).
+#[derive(Debug, Serialize)]
+struct HttpBinaryResponse {
+    success: bool,
+    status: u16,
+    body_base64: String,
+    error: Option<String>,
+}
+
+/// Base64-encode raw bytes using standard base64 (no newlines/padding stripped).
+/// Extracted so the encoding path used by `http_get_binary` is unit-testable.
+fn bytes_to_base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[tauri::command]
+async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
+    let client = {
+        let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
+        if client_guard.is_none() {
+            *client_guard = Some(Client::new());
+        }
+        client_guard.as_ref().unwrap().clone()
+    };
+    let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    Ok(HttpBinaryResponse {
+        success: status.is_success(),
+        status: status.as_u16(),
+        body_base64: bytes_to_base64(&bytes),
         error: None,
     })
 }
@@ -1024,8 +1070,21 @@ async fn terminal_run(
     let id = TERMINAL_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let event_name = format!("terminal_output_{}", id);
 
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg("-c").arg(&command);
+    // Platform-appropriate shell: sh -c on Unix, cmd /C on Windows (#439).
+    // Mirrors the run_cli command's cfg(unix/windows) split — without this,
+    // the terminal panel fails on Windows where sh is not in PATH.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(&command);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(&command);
+        c
+    };
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -1231,6 +1290,22 @@ async fn apply_edit(path: String, old_string: String, new_string: String) -> Res
     .map_err(|e| e.to_string())?
 }
 
+// Delete a file within the workspace (#397 — multi-file apply_patch delete op).
+// Refuses to delete directories; the path must resolve inside the workspace root.
+#[tauri::command]
+async fn delete_file(path: String) -> Result<(), String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&abs).map_err(|e| e.to_string())?;
+        if meta.is_dir() {
+            return Err("delete_file refuses to delete directories.".to_string());
+        }
+        std::fs::remove_file(&abs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─── Git integration commands (#103) ─────────────────────────────────────────
 //
 // Thin wrappers around `git` subprocess calls. All operations are scoped to
@@ -1364,6 +1439,22 @@ async fn git_log(cwd: String, n: Option<usize>) -> Result<Vec<GitLogEntry>, Stri
             })
             .collect();
         Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// git_reset (#402) — revert the last agent auto-commit (Aider /undo parity).
+#[tauri::command]
+async fn git_reset(cwd: String, n: Option<usize>) -> Result<(), String> {
+    let count = n.unwrap_or(1);
+    if count == 0 {
+        return Ok(());
+    }
+    let n_str = format!("HEAD~{}", count);
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git(&["reset", "--hard", &n_str], &cwd)?;
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1820,6 +1911,7 @@ pub fn run() {
             mcp_stdio_close,
             mcp_stdio_check,
             mcp_http_request,
+            http_get_binary,
             run_cli_command,
             check_mlx_available,
             mlx_start_server,
@@ -1830,6 +1922,7 @@ pub fn run() {
             write_file,
             list_dir,
             apply_edit,
+            delete_file,
             terminal_run,
             terminal_kill,
             git_status,
@@ -1838,6 +1931,7 @@ pub fn run() {
             git_unstage,
             git_commit,
             git_log,
+            git_reset,
             document_read,
             document_convert,
             document_create,
@@ -1891,5 +1985,92 @@ mod tests {
         // Any real machine has a non-zero total, and available <= total.
         assert!(sys.total_memory() > 0, "total memory should be non-zero");
         assert!(sys.available_memory() <= sys.total_memory());
+    }
+
+
+    #[test]
+    fn mcp_http_request_deserializes_camel_case_and_optional_session_id() {
+        // The JS side (mcp-http.ts) sends camelCase keys; OpenAPI/image-gen
+        // omit sessionId entirely. Both must deserialize after #435.
+        let camel = serde_json::json!({
+            "sessionId": "s1", "method": "POST", "url": "http://x",
+            "headers": {}, "body": Some("b".to_string()), "authToken": "t",
+        });
+        let parsed = serde_json::from_value::<super::McpHttpRequest>(camel).unwrap();
+        assert_eq!(parsed.session_id, "s1");
+        assert_eq!(parsed.auth_token.as_deref(), Some("t"));
+        assert_eq!(parsed.method, "POST");
+
+        // Missing session_id defaults to empty (callers that route HTTP without one).
+        let no_session = serde_json::json!({
+            "method": "GET", "url": "http://x", "headers": {}, "body": Option::<String>::None,
+        });
+        let parsed2 = serde_json::from_value::<super::McpHttpRequest>(no_session).unwrap();
+        assert_eq!(parsed2.session_id, "");
+    }
+
+    #[test]
+    fn cli_command_request_response_camel_case_round_trip() {
+        // run_cli_command is registered but not yet called from JS. If it ever
+        // is, JS will send camelCase (timeoutMs) and read camelCase (exitCode,
+        // timedOut) — both structs must round-trip correctly (#437).
+        let req = serde_json::json!({
+            "command": "npm", "args": ["test"], "cwd": "/tmp",
+            "timeoutMs": 5000, "env": {"FOO": "bar"}
+        });
+        let parsed = serde_json::from_value::<super::CliCommandRequest>(req).unwrap();
+        assert_eq!(parsed.command, "npm");
+        assert_eq!(parsed.timeout_ms, Some(5000));
+        assert_eq!(parsed.cwd.as_deref(), Some("/tmp"));
+
+        // Missing optional fields default correctly.
+        let minimal = serde_json::json!({ "command": "ls", "args": [] });
+        let parsed2 = serde_json::from_value::<super::CliCommandRequest>(minimal).unwrap();
+        assert_eq!(parsed2.timeout_ms, None);
+
+        // Response serializes to camelCase keys.
+        let resp = super::CliCommandResponse {
+            success: false, exit_code: Some(1), stdout: String::new(),
+            stderr: "err".to_string(), error: Some("boom".to_string()),
+            timed_out: true,
+        };
+        let j = serde_json::to_value(&resp).unwrap();
+        assert!(j.get("exitCode").is_some(), "exitCode should be camelCase");
+        assert!(j.get("timedOut").is_some(), "timedOut should be camelCase");
+        assert!(j.get("exit_code").is_none(), "snake_case key should not exist");
+    }
+
+    #[test]
+    fn mcp_stdio_response_serializes_camel_case() {
+        // McpStdioResponse is returned to JS; session_id must serialize as
+        // sessionId after #442 (rename_all = camelCase).
+        let resp = super::McpStdioResponse {
+            success: true,
+            message: "ok".to_string(),
+            session_id: Some("s1".to_string()),
+        };
+        let j = serde_json::to_value(&resp).unwrap();
+        assert!(j.get("sessionId").is_some(), "sessionId should be camelCase");
+        assert!(j.get("session_id").is_none(), "snake_case key should not exist");
+        assert_eq!(j.get("success"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn bytes_to_base64_encodes_png_signature() {
+        // The ComfyUI /view endpoint returns binary PNG data; mcp_http_request's
+        // .text() would corrupt these bytes. http_get_binary must round-trip them
+        // as base64 (#431).
+        let png_sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(super::bytes_to_base64(&png_sig), "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn bytes_to_base64_empty_and_roundtrip() {
+        assert_eq!(super::bytes_to_base64(&[]), "");
+        let data = [0xFF, 0x00, 0xAB, 0x01];
+        let enc = super::bytes_to_base64(&data);
+        use base64::Engine;
+        let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
+        assert_eq!(dec, data);
     }
 }

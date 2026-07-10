@@ -23,7 +23,7 @@ export interface MemoryEntry {
 // Storage key
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'ollama_gui_memory';
+const STORAGE_KEY = 'ollama_gui_cross_session_memory';
 
 // ---------------------------------------------------------------------------
 // Test seam
@@ -51,7 +51,7 @@ function loadEntries(): Record<string, MemoryEntry> {
 }
 
 function saveEntries(entries: Record<string, MemoryEntry>): void {
-  store().setItem(STORAGE_KEY, JSON.stringify(entries));
+  try { store().setItem(STORAGE_KEY, JSON.stringify(entries)); } catch { /* quota — non-fatal */ }
 }
 
 // ---------------------------------------------------------------------------

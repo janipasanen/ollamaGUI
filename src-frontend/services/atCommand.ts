@@ -15,14 +15,16 @@ export interface AtOption {
   label: string;
 }
 
-/** Returns true when the input ends with a standalone @ or @<query>. */
+/** Returns true when the input ends with a standalone @ or @<query> that starts
+ *  at a token boundary (input start or after whitespace) — so emails and
+ *  mid-word `@` (e.g. `user@example.com`) do NOT open the file picker (#428). */
 export function isAtTrigger(input: string): boolean {
-  return /@\S*$/.test(input);
+  return /(?:^|\s)@\S*$/.test(input);
 }
 
-/** Extract the query fragment following the last @. */
+/** Extract the query fragment following the last token-boundary @. */
 export function atQuery(input: string): string {
-  const m = input.match(/@(\S*)$/);
+  const m = input.match(/(?:^|\s)@(\S*)$/);
   return m ? m[1] : '';
 }
 
@@ -35,12 +37,22 @@ export async function getAtOptions(query: string): Promise<AtOption[]> {
   if (!root) return [];
 
   try {
-    const entries = await listDir(root);
-    const flat: AtOption[] = entries.map(e => ({
-      kind: e.is_dir ? 'dir' : 'file',
-      path: e.path,
-      label: e.name,
-    }));
+    const rootEntries = await listDir(root);
+    const flat: AtOption[] = [];
+    for (const e of rootEntries) {
+      flat.push({ kind: e.is_dir ? 'dir' : 'file', path: e.path, label: e.name });
+      // Expand one level into subdirectories so nested files (e.g. `src/App.tsx`)
+      // are @-mentionable — Codex/Claude/Cursor parity (#428). The doc comment
+      // always promised this; the previous implementation listed only the root.
+      if (e.is_dir) {
+        try {
+          const subEntries = await listDir(e.path);
+          for (const sub of subEntries) {
+            flat.push({ kind: sub.is_dir ? 'dir' : 'file', path: sub.path, label: `${e.name}/${sub.name}` });
+          }
+        } catch { /* unreadable subdir — skip */ }
+      }
+    }
 
     const q = query.toLowerCase();
     const filtered = q ? flat.filter(o => o.label.toLowerCase().includes(q)) : flat;
@@ -69,6 +81,9 @@ export async function buildAtContextBlock(path: string, label: string): Promise<
  */
 export async function resolveAtMention(input: string, selectedPath: string, selectedLabel: string): Promise<string> {
   const block = await buildAtContextBlock(selectedPath, selectedLabel);
-  // Replace trailing @<query> with the context block
-  return input.replace(/@\S*$/, block);
+  // Replace the trailing token-boundary @<query> with the context block,
+  // preserving any leading whitespace. A function replacement is used so that
+  // file content containing `$` (e.g. `$&`, `$1`) is inserted literally instead
+  // of being interpreted as String.replace substitution patterns (#428).
+  return input.replace(/(^|\s)@\S*$/, (_match, sep: string) => sep + block);
 }

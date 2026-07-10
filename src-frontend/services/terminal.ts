@@ -103,7 +103,7 @@ export async function killTerminal(id: number): Promise<void> {
   session.status = 'killed';
   _unlisteners.get(id)?.();
   _unlisteners.delete(id);
-  await tauriInvoke<void>('terminal_kill', { session_id: id });
+  await tauriInvoke<void>('terminal_kill', { sessionId: id });
   window.dispatchEvent(new CustomEvent('ollama-gui:terminal-update'));
 }
 

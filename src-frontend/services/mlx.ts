@@ -12,6 +12,7 @@
 // `availability.available` (or `isMlxActive(settings, availability)`) first.
 
 import { Message } from './ollama';
+import { openAiErrorFromResponse } from './connections';
 
 export interface MlxAvailability {
   available: boolean;
@@ -176,7 +177,7 @@ export async function fetchMlxChatStream(
     }),
   });
 
-  if (!response.ok) throw new Error(`MLX server error: ${response.status} ${response.statusText}`);
+  if (!response.ok) throw await openAiErrorFromResponse(response, `MLX server error ${response.status}`);
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
@@ -207,6 +208,24 @@ export async function fetchMlxChatStream(
       }
     }
   }
+  // Flush any remaining buffered content after the stream ends (#466).
+  if (buffer.trim()) {
+    const line = buffer.trim();
+    if (line.startsWith('data:')) {
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') return;
+      try {
+        const parsed = JSON.parse(data);
+        const d = parsed.choices?.[0]?.delta;
+        const delta = d?.content;
+        const reasoning = d?.reasoning_content ?? d?.thinking;
+        if (delta) onChunk(delta);
+        if (reasoning) onChunk('', reasoning);
+      } catch {
+        /* skip malformed trailing SSE frame */
+      }
+    }
+  }
 }
 
 /** Request embeddings from the MLX server (OpenAI-compatible). Returns vectors. */
@@ -220,7 +239,7 @@ export async function fetchMlxEmbeddings(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input }),
   });
-  if (!response.ok) throw new Error(`MLX embeddings error: ${response.status}`);
+  if (!response.ok) throw await openAiErrorFromResponse(response, `MLX embeddings error ${response.status}`);
   const data = await response.json();
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }

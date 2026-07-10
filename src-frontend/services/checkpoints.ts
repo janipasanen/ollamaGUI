@@ -9,8 +9,10 @@
  * reloads). This mirrors the CLI pattern where checkpoints are session-local.
  */
 
-import { readFile, writeFile } from './fileTools';
+import { readFile } from './fileTools';
+import { proposeEdits } from './diffReview';
 import { toolRegistry } from './tools';
+import { safeSessionSetItem } from './platform';
 
 export interface Checkpoint {
   id: string;
@@ -31,7 +33,7 @@ function loadAll(): Checkpoint[] {
 }
 
 function saveAll(checkpoints: Checkpoint[]): void {
-  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(checkpoints));
+  safeSessionSetItem(STORAGE_KEY, JSON.stringify(checkpoints));
 }
 
 function makeId(): string {
@@ -145,12 +147,24 @@ export async function rewindToCheckpoint(id: string): Promise<string[]> {
   const checkpoint = getCheckpoint(id);
   if (!checkpoint) throw new Error(`Checkpoint '${id}' not found.`);
 
-  const restored: string[] = [];
-  await Promise.all(
-    Object.entries(checkpoint.files).map(async ([path, content]) => {
-      await writeFile(path, content);
-      restored.push(path);
-    }),
+  const entries = Object.entries(checkpoint.files);
+  if (entries.length === 0) return [];
+
+  // Route the restore through the batch diff-review gate (#432) so an
+  // autonomous `rewind_checkpoint` tool call overwrites files only after the
+  // same review that `apply_patch` / `write_file` enforce — closing a bypass
+  // where rewind wrote directly via `writeFile` with no user review. In
+  // headless/autonomous mode (no batch callback) every edit is applied, so the
+  // behaviour is unchanged for tests and non-UI callers.
+  const applied = await proposeEdits(
+    entries.map(([path, content]) => ({
+      path,
+      kind: 'write_file' as const,
+      newString: content,
+      label: `rewind ${path}`,
+    })),
   );
+  const restored: string[] = [];
+  entries.forEach(([path], i) => { if (applied[i]) restored.push(path); });
   return restored;
 }

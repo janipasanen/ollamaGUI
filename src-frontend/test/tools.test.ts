@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { toolRegistry, registerCliTool, cliAllowlist } from '../services/tools';
+import { toolRegistry, registerCliTool, cliAllowlist, toolCallName, toolCallArgs } from '../services/tools';
 
 // Mock the Tauri invoke API
 vi.mock('@tauri-apps/api/core', () => ({
@@ -93,5 +93,103 @@ describe('CLI Tool', () => {
 
     expect(result.output).toContain('out');
     expect(result.output).toContain('err');
+  });
+});
+
+describe('toolCallName / toolCallArgs helpers (#445)', () => {
+  it('toolCallName uses function.name by default', () => {
+    expect(toolCallName({ function: { name: 'read_file', arguments: '{}' } })).toBe('read_file');
+  });
+
+  it('toolCallName falls back to top-level name when function.name is absent', () => {
+    expect(toolCallName({ name: 'fallback_name', function: { name: '', arguments: '{}' } })).toBe('fallback_name');
+  });
+
+  it('toolCallName uses top-level name when function is missing entirely', () => {
+    // Some Ollama models send { name, arguments } without a nested function object.
+    // toolCallName must not crash — it should use the top-level name.
+    expect(toolCallName({ name: 'safe_name', arguments: '{}' } as any)).toBe('safe_name');
+  });
+
+  it('toolCallArgs parses string arguments', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: '{"a":1}' } })).toEqual({ a: 1 });
+  });
+
+  it('toolCallArgs returns object arguments as-is', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: { b: 2 } } })).toEqual({ b: 2 });
+  });
+
+  it('toolCallArgs returns empty object for undefined arguments', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: undefined as any } })).toEqual({});
+  });
+
+  // ── #449: missing function entirely ──────────────────────────────────────
+
+  it('toolCallName returns unknown when both name and function are missing (#449)', () => {
+    expect(toolCallName({} as any)).toBe('unknown');
+  });
+
+  it('toolCallArgs uses top-level arguments when function is missing (#449)', () => {
+    expect(toolCallArgs({ name: 'x', arguments: '{"a":1}' } as any)).toEqual({ a: 1 });
+  });
+
+  it('toolCallArgs uses top-level object arguments when function is missing (#449)', () => {
+    expect(toolCallArgs({ name: 'x', arguments: { b: 2 } } as any)).toEqual({ b: 2 });
+  });
+
+  it('toolCallArgs returns empty object when both function and arguments are missing (#449)', () => {
+    expect(toolCallArgs({ name: 'x' } as any)).toEqual({});
+  });
+
+  it('executeToolCall does not crash when function is missing (#449)', async () => {
+    // Register a test tool
+    toolRegistry.registerTool({
+      name: 'test_no_function',
+      description: 'test',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ ok: true }),
+    });
+    // Tool call with only top-level name, no function
+    const result = await toolRegistry.executeToolCall({ name: 'test_no_function', arguments: '{}' } as any);
+    expect(result.name).toBe('test_no_function');
+    expect(JSON.parse(result.content)).toEqual({ ok: true });
+    toolRegistry.unregisterTool('test_no_function');
+  });
+
+  it('executeToolCall throws Tool not found for unknown name with missing function (#449)', async () => {
+    await expect(toolRegistry.executeToolCall({ name: 'nonexistent_tool', arguments: '{}' } as any))
+      .rejects.toThrow(/nonexistent_tool not found/);
+  });
+
+  // ── #464: malformed JSON arguments must not crash the agent loop ──────────
+
+  it('toolCallArgs returns {} for malformed JSON string arguments (#464)', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: "{'a': 1}" } })).toEqual({});
+  });
+
+  it('toolCallArgs returns {} for truncated JSON string arguments (#464)', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: '{"a":' } })).toEqual({});
+  });
+
+  it('toolCallArgs returns {} for non-JSON string arguments (#464)', () => {
+    expect(toolCallArgs({ function: { name: 'x', arguments: 'not json' } })).toEqual({});
+  });
+
+  it('toolCallArgs returns {} for malformed top-level arguments (#464)', () => {
+    expect(toolCallArgs({ name: 'x', arguments: '{bad}' } as any)).toEqual({});
+  });
+
+  it('executeToolCall does not crash on malformed JSON arguments (#464)', async () => {
+    toolRegistry.registerTool({
+      name: 'test_malformed_args',
+      description: 'test',
+      parameters: { type: 'object', properties: {} },
+      execute: async (params) => ({ received: params }),
+    });
+    const result = await toolRegistry.executeToolCall({
+      function: { name: 'test_malformed_args', arguments: "{'bad': true,}" },
+    } as any);
+    expect(JSON.parse(result.content)).toEqual({ received: {} });
+    toolRegistry.unregisterTool('test_malformed_args');
   });
 });

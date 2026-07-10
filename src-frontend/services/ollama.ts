@@ -124,6 +124,28 @@ export function cleanGenerationOptions(options?: GenerationOptions): GenerationO
   return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
+/**
+ * Build a descriptive Error from a non-ok Ollama response (#456).
+ * Ollama returns the detailed failure reason as JSON `{ "error": "..." }` in the
+ * response body (e.g. "model 'xyz' not found, try pulling it first"). Without
+ * reading the body, callers only see a generic HTTP statusText ("Not Found",
+ * "Internal Server Error") which prevents `formatError` from mapping to helpful
+ * user-facing guidance. Falls back to `statusText` when the body is absent,
+ * non-JSON, or has no `error` field.
+ */
+export async function ollamaErrorFromResponse(response: Response, prefix: string): Promise<Error> {
+  let detail = response.statusText;
+  try {
+    const body = await response.json();
+    if (body && typeof body.error === 'string' && body.error.trim()) {
+      detail = body.error.trim();
+    }
+  } catch {
+    // Body is not JSON or cannot be consumed — keep statusText.
+  }
+  return new Error(`${prefix}: ${detail}`);
+}
+
 export async function fetchOllamaChatStream(
   model: string,
   messages: Message[],
@@ -167,7 +189,7 @@ export async function fetchOllamaChatStream(
 
   if (!response.ok) {
     if (timer) clearTimeout(timer);
-    throw new Error(`Ollama API error: ${response.statusText}`);
+    throw await ollamaErrorFromResponse(response, 'Ollama API error');
   }
 
   const reader = response.body?.getReader();
@@ -178,18 +200,27 @@ export async function fetchOllamaChatStream(
   }
 
   try {
+    let streamBuf = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+      streamBuf += decoder.decode(value, { stream: true });
+      const lines = streamBuf.split('\n');
+      // Keep the last (possibly incomplete) line in the buffer for the next chunk.
+      streamBuf = lines.pop() ?? '';
+      for (const line of lines) {
         if (!line.trim()) continue;
         try {
           onChunk(JSON.parse(line));
         } catch (e) {
-        console.error('Error parsing stream chunk', e);
+          console.error('Error parsing stream chunk', e);
+        }
       }
     }
-  }
+    // Flush any remaining buffered content after the stream ends.
+    if (streamBuf.trim()) {
+      try { onChunk(JSON.parse(streamBuf)); } catch { /* ignore trailing partial */ }
+    }
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -206,10 +237,9 @@ export interface ModelInfo {
 
 export async function fetchOllamaModels(
   endpoint: string = 'http://localhost:11434/api/tags',
-  includeCloudModels: boolean = false
 ): Promise<ModelInfo[]> {
   const response = await fetch(endpoint, { method: 'GET' });
-  if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama API error');
   const data = await response.json();
 
   const localModels: ModelInfo[] = data.models?.map((m: any) => ({
@@ -367,24 +397,42 @@ export async function createOllamaModel(
     body: JSON.stringify({ name, modelfile }),
   });
 
-  if (!response.ok) throw new Error(`Ollama create error: ${response.statusText}`);
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama create error');
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
   if (!reader) throw new Error('Response body is null');
 
+  let createBuf = '';
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+    createBuf += decoder.decode(value, { stream: true });
+    const lines = createBuf.split('\n');
+    createBuf = lines.pop() ?? '';
+    for (const line of lines) {
       if (!line.trim()) continue;
       try {
         const chunk = JSON.parse(line);
         onProgress(chunk);
         if (chunk.error) throw new Error(chunk.error);
       } catch (e) {
-        if (e instanceof Error && e.message !== line) throw e;
+        // Re-throw chunk.error but silently skip malformed JSON lines (#455),
+        // matching pullOllamaModel's behavior.
+        if (e instanceof SyntaxError) continue;
+        throw e;
       }
+    }
+  }
+  if (createBuf.trim()) {
+    try {
+      const chunk = JSON.parse(createBuf);
+      onProgress(chunk);
+      if (chunk.error) throw new Error(chunk.error);
+    } catch (e) {
+      // Re-throw chunk.error but silently skip malformed JSON (#455).
+      if (e instanceof SyntaxError) return;
+      throw e;
     }
   }
 }
@@ -400,16 +448,20 @@ export async function pullOllamaModel(
     body: JSON.stringify({ model: modelName }),
   });
 
-  if (!response.ok) throw new Error(`Ollama pull error: ${response.statusText}`);
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama pull error');
 
   const reader = response.body?.getReader();
   const decoder = new TextDecoder();
   if (!reader) throw new Error('Response body is null');
 
+  let pullBuf = '';
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+    pullBuf += decoder.decode(value, { stream: true });
+    const lines = pullBuf.split('\n');
+    pullBuf = lines.pop() ?? '';
+    for (const line of lines) {
       if (!line.trim()) continue;
       try {
         onProgress(JSON.parse(line));
@@ -417,6 +469,9 @@ export async function pullOllamaModel(
         console.error('Error parsing pull chunk', e);
       }
     }
+  }
+  if (pullBuf.trim()) {
+    try { onProgress(JSON.parse(pullBuf)); } catch { /* trailing partial */ }
   }
 }
 
@@ -429,5 +484,96 @@ export async function deleteOllamaModel(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: modelName }),
   });
-  if (!response.ok) throw new Error(`Ollama delete error: ${response.statusText}`);
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama delete error');
+}
+
+// ── Model memory management (#476) ───────────────────────────────────────────
+// Ollama keeps loaded models in memory for `keep_alive` (default 5m). Codex GUI
+// and other agentic tools surface which models are hot, let the user
+// pre-load a model before a long run, and explicitly unload to free RAM.
+
+/** A model currently loaded in Ollama's memory (from /api/ps). */
+export interface RunningModel {
+  name: string;
+  model: string;
+  /** Size in bytes occupied in memory. */
+  size: number;
+  /** VRAM portion of the size, if reported. */
+  sizeVram?: number;
+  /** Seconds since last access. */
+  expiresAt?: string;
+  /** How long the model stays in memory (human-readable, e.g. "4m59s"). */
+  expiresRelativeToNow?: string;
+}
+
+/**
+ * List models currently loaded in Ollama memory (GET /api/ps).
+ * Returns an empty array on any error (server may be offline).
+ */
+export async function fetchRunningModels(
+  endpoint: string = 'http://localhost:11434/api/ps',
+): Promise<RunningModel[]> {
+  const response = await fetch(endpoint, { method: 'GET' });
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama API error');
+  const data = await response.json();
+  return (data.models ?? []).map((m: any) => ({
+    name: m.name,
+    model: m.model,
+    size: typeof m.size === 'number' ? m.size : 0,
+    sizeVram: typeof m.size_vram === 'number' ? m.size_vram : undefined,
+    expiresAt: m.expires_at,
+    expiresRelativeToNow: m.expires_relative_to_now,
+  }));
+}
+
+/**
+ * Load a model into Ollama memory so the first request doesn't pay the
+ * cold-start latency (POST /api/generate with an empty prompt).
+ * `keepAliveSeconds` controls how long the model stays resident (default 5m).
+ */
+export async function loadOllamaModel(
+  modelName: string,
+  keepAliveSeconds: number = 300,
+  endpoint: string = 'http://localhost:11434/api/generate',
+): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName, keep_alive: `${keepAliveSeconds}s`, stream: false }),
+  });
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama load error');
+}
+
+/**
+ * Unload a model from Ollama memory to free RAM/VRAM.
+ * Sends `keep_alive: 0` which tells Ollama to immediately evict the model.
+ */
+export async function unloadOllamaModel(
+  modelName: string,
+  endpoint: string = 'http://localhost:11434/api/generate',
+): Promise<void> {
+  const response = await fetch(endpoint, {
+ method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName, keep_alive: 0, stream: false }),
+  });
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama unload error');
+}
+
+/** Ollama server version info (GET /api/version). */
+export interface OllamaVersionInfo {
+  version: string;
+}
+
+/**
+ * Fetch the Ollama server version (GET /api/version).
+ * Useful for feature-gating and displaying in the UI settings panel.
+ */
+export async function fetchOllamaVersion(
+  endpoint: string = 'http://localhost:11434/api/version',
+): Promise<OllamaVersionInfo> {
+  const response = await fetch(endpoint, { method: 'GET' });
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama API error');
+  const data = await response.json();
+  return { version: data.version ?? 'unknown' };
 }

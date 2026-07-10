@@ -388,6 +388,136 @@ describe('Agentic Features', () => {
       // Should stop after max iterations
       expect(results.length).toBeLessThanOrEqual(3);
     });
+
+    // ── #443: multiple tool calls without id must not be silently dropped ────
+
+    it('keeps all tool calls when id is missing (#443)', async () => {
+      // Register two distinct tools so both can be executed.
+      toolRegistry.registerTool({
+        name: 'tool_a',
+        description: 'Tool A',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ result: 'A' }),
+      });
+      toolRegistry.registerTool({
+        name: 'tool_b',
+        description: 'Tool B',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ result: 'B' }),
+      });
+
+      const toolResults: string[] = [];
+      const mockFetch = vi.fn();
+      global.fetch = mockFetch;
+
+      let readCount = 0;
+      const mockResponse = {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: vi.fn().mockImplementation(() => {
+              readCount++;
+              if (readCount === 1) {
+                // Send TWO tool calls WITHOUT id in one chunk.
+                return Promise.resolve({
+                  done: false,
+                  value: Buffer.from(
+                    '{"message":{"tool_calls":[' +
+                    '{"type":"function","function":{"name":"tool_a","arguments":"{}"}},' +
+                    '{"type":"function","function":{"name":"tool_b","arguments":"{}"}}' +
+                    ']}}\n'
+                  ),
+                });
+              }
+              return Promise.resolve({ done: true, value: undefined });
+            }),
+          }),
+        },
+      };
+      mockFetch.mockResolvedValue(mockResponse);
+
+      const generator = agenticChatStream({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'Run both tools' }],
+        maxIterations: 2,
+        endpoint: 'http://localhost:11434/api/chat',
+        onToolResult: (r) => { toolResults.push(r.name); },
+      });
+
+      for await (const _msg of generator) {
+        // drain
+      }
+
+      // Both tools must have been executed — the old dedup (tc.id === toolCall.id
+      // where both ids are undefined) would have dropped tool_b.
+      expect(toolResults).toContain('tool_a');
+      expect(toolResults).toContain('tool_b');
+    });
+
+    it('still deduplicates tool calls with the same id (#443)', async () => {
+      toolRegistry.registerTool({
+        name: 'dup_tool',
+        description: 'Dedup test',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ result: 'ok' }),
+      });
+
+      let execCount = 0;
+      const origExec = toolRegistry.getTool('dup_tool')!.execute;
+      toolRegistry.getTool('dup_tool')!.execute = async (p) => {
+        execCount++;
+        return origExec(p);
+      };
+
+      const mockFetch = vi.fn();
+      global.fetch = mockFetch;
+
+      let readCount = 0;
+      const mockResponse = {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: vi.fn().mockImplementation(() => {
+              readCount++;
+              if (readCount === 1) {
+                // Same tool call with same id sent in TWO chunks (stream replay).
+                return Promise.resolve({
+                  done: false,
+                  value: Buffer.from(
+                    '{"message":{"tool_calls":[{"id":"same-id","type":"function","function":{"name":"dup_tool","arguments":"{}"}}]}}\n'
+                  ),
+                });
+              }
+              if (readCount === 2) {
+                // Duplicate chunk — same id.
+                return Promise.resolve({
+                  done: false,
+                  value: Buffer.from(
+                    '{"message":{"tool_calls":[{"id":"same-id","type":"function","function":{"name":"dup_tool","arguments":"{}"}}]}}\n'
+                  ),
+                });
+              }
+              return Promise.resolve({ done: true, value: undefined });
+            }),
+          }),
+        },
+      };
+      mockFetch.mockResolvedValue(mockResponse);
+
+      const generator = agenticChatStream({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'Run dedup tool' }],
+        maxIterations: 2,
+        endpoint: 'http://localhost:11434/api/chat',
+      });
+
+      for await (const _msg of generator) {
+        // drain
+      }
+
+      // The duplicate (same id) should have been deduplicated — only one execution.
+      expect(execCount).toBe(1);
+    });
   });
 
   describe('Integration Tests', () => {

@@ -7,6 +7,32 @@
 import { secretStore } from './secretStore';
 import { checkRateLimit, recordFailure, recordSuccess } from './rateLimiter';
 
+/**
+ * Build a descriptive Error from a non-ok OAuth response (#460).
+ * OAuth 2.0 endpoints (RFC 6749 §5.2, RFC 7591 §3.2) return the failure
+ * reason as JSON in the body:
+ *   `{"error": "invalid_grant", "error_description": "The refresh token is invalid."}`
+ * Without reading the body the caller only sees a generic HTTP statusText
+ * ("Bad Request") which hides the actionable detail. Falls back to
+ * `statusText` when the body is absent, non-JSON, or has no error field.
+ */
+export async function oauthErrorFromResponse(res: Response, prefix: string): Promise<Error> {
+  let detail = res.statusText;
+  try {
+    const body = await res.json();
+    if (body?.error_description && typeof body.error_description === 'string') {
+      detail = body.error_description.trim();
+    } else if (body?.error && typeof body.error === 'string') {
+      detail = body.error.trim();
+    } else if (body?.message && typeof body.message === 'string') {
+      detail = body.message.trim();
+    }
+  } catch {
+    // Body is not JSON or cannot be consumed — keep statusText.
+  }
+  return new Error(`${prefix}: ${detail}`);
+}
+
 export interface AuthServerMetadata {
   issuer: string;
   authorization_endpoint: string;
@@ -93,7 +119,9 @@ export interface ClientCredentials {
 // Client credentials may include a client_secret, so they live in the secret store.
 async function loadClients(): Promise<Record<string, ClientCredentials>> {
   const raw = await secretStore.get('clients');
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  try { return JSON.parse(raw) as Record<string, ClientCredentials>; }
+  catch { return {}; } // corrupted keychain data — re-register on next auth (#465)
 }
 
 async function saveClient(serverId: string, creds: ClientCredentials): Promise<void> {
@@ -129,7 +157,7 @@ export async function getOrRegisterClient(
     }),
   });
 
-  if (!res.ok) throw new Error(`Dynamic client registration failed: ${res.statusText}`);
+  if (!res.ok) throw await oauthErrorFromResponse(res, 'Dynamic client registration failed');
   const creds = (await res.json()) as ClientCredentials;
   saveClient(serverId, creds);
   return creds;
@@ -137,7 +165,7 @@ export async function getOrRegisterClient(
 
 // ─── Token exchange ───────────────────────────────────────────────────────────
 
-async function exchangeCode(opts: {
+export async function exchangeCode(opts: {
   tokenEndpoint: string;
   code: string;
   redirectUri: string;
@@ -165,7 +193,7 @@ async function exchangeCode(opts: {
 
   if (!res.ok) {
     recordFailure(`oauth:${opts.tokenEndpoint}`);
-    throw new Error(`Token exchange failed: ${res.statusText}`);
+    throw await oauthErrorFromResponse(res, 'Token exchange failed');
   }
   recordSuccess(`oauth:${opts.tokenEndpoint}`);
   const tokens = (await res.json()) as OAuthTokens;
@@ -175,7 +203,7 @@ async function exchangeCode(opts: {
   return tokens;
 }
 
-async function refreshAccessToken(
+export async function refreshAccessToken(
   tokenEndpoint: string,
   refreshToken: string,
   clientId: string
@@ -199,7 +227,7 @@ async function refreshAccessToken(
 
   if (!res.ok) {
     recordFailure(`oauth:${tokenEndpoint}`);
-    throw new Error(`Token refresh failed: ${res.statusText}`);
+    throw await oauthErrorFromResponse(res, 'Token refresh failed');
   }
   recordSuccess(`oauth:${tokenEndpoint}`);
   const tokens = (await res.json()) as OAuthTokens;
@@ -219,7 +247,9 @@ export const tokenStore = {
   },
   async load(serverId: string): Promise<OAuthTokens | null> {
     const raw = await secretStore.get(`tokens:${serverId}`);
-    return raw ? (JSON.parse(raw) as OAuthTokens) : null;
+    if (!raw) return null;
+    try { return JSON.parse(raw) as OAuthTokens; }
+    catch { return null; } // corrupted token — trigger re-auth (#465)
   },
   async clear(serverId: string): Promise<void> {
     await secretStore.delete(`tokens:${serverId}`);
@@ -258,13 +288,18 @@ const AUTH_META_KEY = 'mcp_auth_meta';
 
 export const authMetaStore = {
   save(serverId: string, meta: { tokenEndpoint: string }): void {
-    const all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}');
+    let all: Record<string, { tokenEndpoint: string }> = {};
+    try { all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}'); } catch { all = {}; }
     all[serverId] = meta;
-    localStorage.setItem(AUTH_META_KEY, JSON.stringify(all));
+    try { localStorage.setItem(AUTH_META_KEY, JSON.stringify(all)); } catch { /* quota */ }
   },
   load(serverId: string): { tokenEndpoint: string } | null {
-    const all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}');
-    return all[serverId] ?? null;
+    try {
+      const all = JSON.parse(localStorage.getItem(AUTH_META_KEY) ?? '{}');
+      return all[serverId] ?? null;
+    } catch {
+      return null;
+    }
   },
 };
 

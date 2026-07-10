@@ -115,3 +115,84 @@ export function makeReadOnlyHook(): PreToolUseHook {
     return { action: 'allow' };
   };
 }
+
+// ── PostToolUse hook system (#395, Claude Code parity) ───────────────────────
+//
+// PostToolUse hooks run AFTER a tool has executed, receiving the tool name,
+// the effective args, and the produced ToolResult content. Each hook returns:
+//   allow     — pass the result through (optionally transformed).
+//   block     — replace the result content with `reason` (e.g. redact secrets,
+//              audit-log a denial). The tool already ran; "block" here means
+//              "do not feed this output to the model".
+//   transform — allow but replace the result content with `result.content`.
+
+export interface PostToolUseHookResult {
+  action: HookAction;
+  /** For 'transform': the new result content fed to the model. */
+  content?: string;
+  /** Human-readable reason (shown in UI / replaces content on block). */
+  reason?: string;
+}
+
+export type PostToolUseHook = (
+  toolName: string,
+  args: Record<string, unknown>,
+  resultContent: string,
+) => PostToolUseHookResult | Promise<PostToolUseHookResult>;
+
+const _postHooks: Map<string, PostToolUseHook> = new Map();
+
+export function registerPostToolUseHook(id: string, hook: PostToolUseHook): void {
+  _postHooks.set(id, hook);
+}
+
+export function removePostToolUseHook(id: string): void {
+  _postHooks.delete(id);
+}
+
+export function clearPostToolUseHooks(): void {
+  _postHooks.clear();
+}
+
+export function listPostToolUseHookIds(): string[] {
+  return Array.from(_postHooks.keys());
+}
+
+/**
+ * Run all registered PostToolUse hooks for a completed tool call.
+ *
+ * Returns the final effective result content (possibly replaced). Hooks run in
+ * insertion order; the first `block` short-circuits and returns its reason.
+ * A `transform` replaces the content for subsequent hooks.
+ */
+export async function runPostToolUseHooks(
+  toolName: string,
+  args: Record<string, unknown>,
+  resultContent: string,
+): Promise<{ content: string; blocked: boolean; reason?: string }> {
+  let content = resultContent;
+  for (const hook of _postHooks.values()) {
+    const res = await hook(toolName, args, content);
+    if (res.action === 'block') {
+      const reason = res.reason ?? `Tool '${toolName}' result blocked by post-hook.`;
+      return { content: reason, blocked: true, reason };
+    }
+    if (res.action === 'transform' && typeof res.content === 'string') {
+      content = res.content;
+    }
+  }
+  return { content, blocked: false };
+}
+
+// ── Built-in PostToolUse hook factories ──────────────────────────────────────
+
+/**
+ * Redact occurrences of `secret` from tool output before it reaches the model.
+ * Useful to avoid leaking tokens/keys into the prompt context.
+ */
+export function makeRedactHook(secret: string): PostToolUseHook {
+  return (_toolName, _args, content) => {
+    if (!secret || !content.includes(secret)) return { action: 'allow' };
+    return { action: 'transform', content: content.split(secret).join('[REDACTED]') };
+  };
+}

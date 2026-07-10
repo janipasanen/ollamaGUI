@@ -257,7 +257,47 @@ describe('Action functions (#127)', () => {
     expect(out).toBe('Echo: hello world');
   });
 
-  it('runAction returns null for disabled action', async () => {
+  it('runAction returns null when sandbox throws (#447)', async () => {
+    // Override sandbox to throw
+    _setSandboxRun(async () => { throw new Error('boom'); });
+    const fn = addFunctionDef({
+      kind: 'action', name: 'crash_action',
+      code: `function action(message) { return 'x'; }`,
+      enabled: true,
+    });
+    // Should not throw — should return null gracefully
+    const result = await runAction(fn.id, { role: 'assistant', content: 'hi' });
+    expect(result).toBeNull();
+    // Restore default mock for subsequent tests
+    _setSandboxRun(mockSandbox);
+  });
+
+  it('runAction returns null when action code has syntax error (#447)', async () => {
+    // Override sandbox to simulate a syntax error rejection
+    _setSandboxRun(async (code: string) => { throw new Error('SyntaxError: unexpected token'); });
+    const fn = addFunctionDef({
+      kind: 'action', name: 'bad_syntax',
+      code: `function action(`,
+      enabled: true,
+    });
+    const result = await runAction(fn.id, { role: 'assistant', content: 'hi' });
+    expect(result).toBeNull();
+    _setSandboxRun(mockSandbox);
+  });
+
+  it('runAction returns null when sandbox times out (#447)', async () => {
+    _setSandboxRun(async () => { throw new Error('Tool execution timed out'); });
+    const fn = addFunctionDef({
+      kind: 'action', name: 'slow_action',
+      code: `function action(message) { return 'x'; }`,
+      enabled: true,
+    });
+    const result = await runAction(fn.id, { role: 'assistant', content: 'hi' });
+    expect(result).toBeNull();
+    _setSandboxRun(mockSandbox);
+  });
+
+    it('runAction returns null for disabled action', async () => {
     const fn = addFunctionDef({
       kind: 'action', name: 'off_action',
       code: `function action(message) { return 'x'; }`,

@@ -27,7 +27,7 @@ export function loadWorkspaceState(): WorkspaceState {
 }
 
 function saveWorkspaceState(state: WorkspaceState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
 }
 
 /**

@@ -106,3 +106,24 @@ describe('applyPreset — sets model / systemPrompt / params (#124)', () => {
     expect(opts).toEqual({});
   });
 });
+
+// ── #471: QuotaExceededError must not crash preset operations ─────────────────
+
+describe('presets QuotaExceededError handling (#471)', () => {
+  let origSetItem: typeof Storage.prototype.setItem;
+  beforeEach(() => {
+    localStorage.clear();
+    origSetItem = Storage.prototype.setItem;
+  });
+  afterEach(() => { Storage.prototype.setItem = origSetItem; });
+
+  it('savePresets does not throw on QuotaExceededError (#471)', () => {
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    expect(() => savePresets([{ id: 'x', name: 'X', baseModel: 'm', systemPrompt: '', params: {}, toolNames: [], mcpServerIds: [], knowledgeCollectionIds: [] }])).not.toThrow();
+  });
+
+  it('setActivePreset does not throw on QuotaExceededError (#471)', () => {
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    expect(() => setActivePreset('abc')).not.toThrow();
+  });
+});

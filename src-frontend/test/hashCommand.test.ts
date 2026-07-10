@@ -127,3 +127,59 @@ describe('grounded request payload assembly (#119)', () => {
     expect(block).toContain('[2]');
   });
 });
+
+describe('resolveContextRef — file (#119, #427)', () => {
+  it('returns the file\'s extracted text for an indexed file', async () => {
+    const db = createMemoryKnowledgeDB();
+    setKnowledgeDB(db);
+    const col = { id: 'fc1', name: 'Col', createdAt: 1, updatedAt: 1 };
+    await db.saveCollection(col);
+    await addFile(col.id, 'notes.txt', 'text/plain', 40, 'the quick brown fox');
+    const file = (await db.getFilesByCollection(col.id))[0];
+
+    const sources = await resolveContextRef({ kind: 'file', id: file.id, label: 'notes.txt' }, 'irrelevant query');
+    expect(sources).toHaveLength(1);
+    expect(sources[0].kind).toBe('file');
+    expect(sources[0].fileId).toBe(file.id);
+    // The actual file text is injected — not the "(file not yet indexed)" placeholder.
+    expect(sources[0].text).toBe('the quick brown fox');
+    expect(sources[0].text).not.toContain('not yet indexed');
+  });
+
+  it('falls back to concatenated chunks when no extracted text is stored', async () => {
+    const db = createMemoryKnowledgeDB();
+    setKnowledgeDB(db);
+    const col = { id: 'fc2', name: 'Col', createdAt: 1, updatedAt: 1 };
+    await db.saveCollection(col);
+    await addFile(col.id, 'chunked.txt', 'text/plain', 40, '');
+    const file = (await db.getFilesByCollection(col.id))[0];
+    await db.putFile({ ...file, text: undefined, chunks: [
+      { index: 0, text: 'chunk zero', tf: {}, embedding: [1, 0, 0, 0] },
+      { index: 1, text: 'chunk one', tf: {}, embedding: [1, 0, 0, 0] },
+    ] });
+
+    const sources = await resolveContextRef({ kind: 'file', id: file.id, label: 'chunked.txt' }, 'q');
+    expect(sources).toHaveLength(1);
+    expect(sources[0].text).toContain('chunk zero');
+    expect(sources[0].text).toContain('chunk one');
+  });
+
+  it('returns the placeholder when the file record is missing', async () => {
+    setKnowledgeDB(createMemoryKnowledgeDB());
+    const sources = await resolveContextRef({ kind: 'file', id: 'does-not-exist', label: 'ghost.txt' }, 'q');
+    expect(sources).toHaveLength(1);
+    expect(sources[0].text).toContain('not yet indexed');
+  });
+
+  it('caps very long file text at 20 000 characters', async () => {
+    const db = createMemoryKnowledgeDB();
+    setKnowledgeDB(db);
+    const col = { id: 'fc3', name: 'Col', createdAt: 1, updatedAt: 1 };
+    await db.saveCollection(col);
+    const long = 'x'.repeat(30_000);
+    await addFile(col.id, 'big.txt', 'text/plain', long.length, long);
+    const file = (await db.getFilesByCollection(col.id))[0];
+    const sources = await resolveContextRef({ kind: 'file', id: file.id, label: 'big.txt' }, 'q');
+    expect(sources[0].text.length).toBe(20_000);
+  });
+});

@@ -82,10 +82,15 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     await waitFor(() => expect(toolRegistry.getTool('run_shell_command')).toBeDefined(), { timeout: 3000 });
     const promise = toolRegistry.getTool('run_shell_command')!.execute({ command: 'echo enter-test' });
     await waitFor(() => expect(screen.getByText('Command Approval Required')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.keyDown(window, { key: 'Enter' });
+    // The approval keydown listener is attached in a useEffect that runs AFTER
+    // the modal paints. Retry the keydown inside waitFor so it lands once the
+    // listener is ready — fixes a race that flaked ~20% of runs (#425).
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'Enter' });
+      expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument();
+    }, { timeout: 3000 });
     const result = await promise;
     expect(result).toMatchObject({ exit_code: 0 });
-    await waitFor(() => expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument());
   });
 
   it('Escape denies the command', async () => {
@@ -93,10 +98,14 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     await waitFor(() => expect(toolRegistry.getTool('run_shell_command')).toBeDefined(), { timeout: 3000 });
     const promise = toolRegistry.getTool('run_shell_command')!.execute({ command: 'echo esc-test' });
     await waitFor(() => expect(screen.getByText('Command Approval Required')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.keyDown(window, { key: 'Escape' });
+    // Retry the keydown until the listener (attached in a post-paint effect) is
+    // ready and the modal closes (#425 race fix).
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument();
+    }, { timeout: 3000 });
     const result = await promise;
     expect(result).toMatchObject({ error: 'Command denied by user.' });
-    await waitFor(() => expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument());
   });
 
   it('A always-approves and adds the command to the allowlist', async () => {
@@ -104,10 +113,15 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     await waitFor(() => expect(toolRegistry.getTool('run_shell_command')).toBeDefined(), { timeout: 3000 });
     const promise = toolRegistry.getTool('run_shell_command')!.execute({ command: 'echo always-test' });
     await waitFor(() => expect(screen.getByText('Command Approval Required')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.keyDown(window, { key: 'a' });
+    // Retry the keydown until the post-paint effect listener is ready and the
+    // modal closes (#425 race fix). Re-firing is safe: resolve() and
+    // cliAllowlist.add() are idempotent.
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'a' });
+      expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument();
+    }, { timeout: 3000 });
     const result = await promise;
     expect(result).toMatchObject({ exit_code: 0 });
     expect(cliAllowlist.has('echo always-test')).toBe(true);
-    await waitFor(() => expect(screen.queryByText('Command Approval Required')).not.toBeInTheDocument());
   });
 });

@@ -25,11 +25,17 @@ const TEXT_EXTENSIONS = new Set([
 
 const WORKSPACE_COLLECTION_PREFIX = '__workspace__';
 
-/** Determine whether a filename is a text file we should index. */
-function isTextFile(name: string): boolean {
-  const dot = name.lastIndexOf('.');
-  if (dot === -1) return false;
-  return TEXT_EXTENSIONS.has(name.slice(dot).toLowerCase());
+/** Determine whether a filename is a text file we should index.
+ *  Checks the last extension (e.g. `foo.test.ts` → `.ts`) AND, for dotfiles /
+ *  multi-dot names, the whole lowercased name (e.g. `.env.example`, `.gitignore`)
+ *  — the previous `slice(lastIndexOf('.'))` logic reduced `.env.example` to
+ *  `.example`, so the `.env.example` entry in TEXT_EXTENSIONS was dead and those
+ *  files were never indexed (#433). */
+export function isTextFile(name: string): boolean {
+  const lower = name.toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  if (dot !== -1 && TEXT_EXTENSIONS.has(lower.slice(dot))) return true;
+  return TEXT_EXTENSIONS.has(lower);
 }
 
 /** Recursively collect all text files under `dir` (max depth 8). */

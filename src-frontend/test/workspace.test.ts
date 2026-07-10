@@ -105,3 +105,23 @@ describe('listWorkspaceDir (#85)', () => {
     expect(Array.isArray(entries)).toBe(true);
   });
 });
+
+// ── #471: QuotaExceededError must not crash workspace state save ──────────────
+
+describe('workspace QuotaExceededError handling (#471)', () => {
+  let origSetItem: typeof Storage.prototype.setItem;
+  beforeEach(() => {
+    localStorage.clear();
+    origSetItem = Storage.prototype.setItem;
+    fileMocks.invoke = async (cmd: string) => {
+      if (cmd === 'set_workspace_root') return undefined;
+      return undefined;
+    };
+  });
+  afterEach(() => { Storage.prototype.setItem = origSetItem; });
+
+  it('openWorkspace does not throw on QuotaExceededError (#471)', async () => {
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    await expect(openWorkspace('/tmp/test-ws')).resolves.toBeUndefined();
+  });
+});

@@ -163,3 +163,60 @@ describe('registerMemoryTools (#95)', () => {
     expect(memoryGet('tool_key')).toBe('tool_val');
   });
 });
+
+
+// ── #451: storage key must differ from memory.ts ──────────────────────────────
+
+describe('crossSessionMemory storage key isolation (#451)', () => {
+  it('does not collide with memory.ts storage key', () => {
+    const storage = makeStorage();
+    _mocks.storage = storage;
+
+    // Simulate memory.ts writing an array to 'ollama_gui_memory'
+    storage.setItem('ollama_gui_memory', JSON.stringify([
+      { id: 'x', text: 'test', scope: 'global', createdAt: 1 },
+    ]));
+
+    // crossSessionMemory should NOT read from that key
+    memorySet('mykey', 'myval');
+    const val = memoryGet('mykey');
+    expect(val).toBe('myval');
+
+    // The cross-session memory data should be under its own key, not 'ollama_gui_memory'
+    const crossData = storage.getItem('ollama_gui_cross_session_memory');
+    expect(crossData).toBeTruthy();
+    const parsed = JSON.parse(crossData!);
+    expect(parsed.mykey).toBeDefined();
+    expect(parsed.mykey.value).toBe('myval');
+
+    // memory.ts's data should be untouched
+    const memData = storage.getItem('ollama_gui_memory');
+    expect(memData).toBeTruthy();
+    const memParsed = JSON.parse(memData!);
+    expect(Array.isArray(memParsed)).toBe(true);
+    expect(memParsed).toHaveLength(1);
+  });
+});
+
+// ── #475: saveEntries must not throw on QuotaExceededError ────────────────────
+
+describe('saveEntries QuotaExceededError (#475)', () => {
+  it('memorySet does not throw when storage is full', () => {
+    const storage = makeStorage();
+    storage.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    _mocks.storage = storage;
+    expect(() => memorySet('key', 'value')).not.toThrow();
+  });
+
+  it('memoryDelete does not throw when storage is full', () => {
+    const storage = makeStorage();
+    // First allow the set so the key exists
+    storage.setItem('ollama_gui_cross_session_memory', JSON.stringify({
+      key: { key: 'key', value: 'val', updatedAt: 1 },
+    }));
+    // Now break setItem
+    storage.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    _mocks.storage = storage;
+    expect(() => memoryDelete('key')).not.toThrow();
+  });
+});

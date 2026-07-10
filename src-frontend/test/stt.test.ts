@@ -108,6 +108,37 @@ describe('transcribeBlob (#131)', () => {
     } as any);
     await expect(transcribeBlob(blob, cfg)).rejects.toThrow('Whisper error: unsupported format');
   });
+
+  // ── #468: surface body error on non-ok and handle non-JSON ────────────────
+
+  it('surfaces body error on non-ok response (#468)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 415,
+      statusText: 'Unsupported Media Type',
+      json: async () => ({ error: 'audio codec not supported' }),
+    } as any);
+    await expect(transcribeBlob(blob, cfg)).rejects.toThrow('audio codec not supported');
+  });
+
+  it('falls back to statusText when body has no error on non-ok (#468)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      statusText: 'Server Error',
+      json: async () => ({ unrelated: true }),
+    } as any);
+    await expect(transcribeBlob(blob, cfg)).rejects.toThrow('Whisper inference error 500: Server Error');
+  });
+
+  it('throws meaningful error on non-JSON 200 response (#468)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('nope'); },
+    } as any);
+    await expect(transcribeBlob(blob, cfg)).rejects.toThrow(/non-JSON/);
+  });
 });
 
 // ── startDictation — injectable seam ─────────────────────────────────────────

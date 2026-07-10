@@ -5,6 +5,28 @@ import { TauriMcpStdioTransport } from './mcp-tauri';
 import { McpHttpTransport } from './mcp-http';
 import { checkRateLimit } from './rateLimiter';
 
+/**
+ * Extract a human-readable error detail from a non-ok MCP HTTP response (#461).
+ * MCP servers speak JSON-RPC, so errors may arrive as `{"error":{"message":"…"}}`
+ * even on non-ok HTTP status codes. Falls back to `statusText` when the body
+ * is absent, non-JSON, or has no error field.
+ */
+async function mcpHttpErrorDetail(response: Response): Promise<string> {
+  let detail = response.statusText;
+  try {
+    const body = await response.json();
+    if (body?.error) {
+      if (typeof body.error === 'string') detail = body.error;
+      else if (typeof body.error.message === 'string') detail = body.error.message;
+    } else if (typeof body?.message === 'string') {
+      detail = body.message;
+    }
+  } catch {
+    // Body is not JSON or cannot be consumed — keep statusText.
+  }
+  return detail;
+}
+
 // MCP protocol handshake constants (spec 2025-06-18).
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const MCP_CLIENT_INFO = { name: 'Ollama GUI', version: '0.1.0' };
@@ -13,6 +35,9 @@ const MCP_INITIALIZE_PARAMS = {
   capabilities: {},
   clientInfo: MCP_CLIENT_INFO,
 };
+
+/** Default per-request timeout for stdio MCP servers (#446). */
+const MCP_DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Normalize a `tools/list` result (or a raw array) into McpTool[], mapping inputSchema -> parameters. */
 export function normalizeToolsList(result: any): McpTool[] {
@@ -41,6 +66,8 @@ export interface McpServerConfig {
   toolsEnabled?: boolean;
   tools?: McpTool[];
   lastConnected?: number;
+  /** Per-request timeout in ms for stdio servers (default 30 000). #446 */
+  timeoutMs?: number;
 }
 
 export interface McpTool {
@@ -95,7 +122,7 @@ export class McpStdioClient {
   private stdout: any = null;
   private stderr: any = null;
   private requestIdCounter: number = 1;
-  private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void }> = new Map();
+  private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void; timer?: ReturnType<typeof setTimeout> }> = new Map();
   private eventListeners: Map<string, ((data: any) => void)[]> = new Map();
   private isClosed: boolean = false;
 
@@ -174,6 +201,7 @@ export class McpStdioClient {
             } else {
               pendingRequest.resolve(message.result);
             }
+            if (pendingRequest.timer) clearTimeout(pendingRequest.timer);
             this.pendingRequests.delete(message.id);
           }
         }
@@ -195,7 +223,8 @@ export class McpStdioClient {
     console.log(`[MCP] Process exited with code ${code}`);
     
     // Reject all pending requests
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [, pending] of this.pendingRequests) {
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(new Error(`MCP process exited with code ${code}`));
     }
     this.pendingRequests.clear();
@@ -286,10 +315,22 @@ export class McpStdioClient {
       throw new Error('MCP Tauri client not initialized');
     }
 
+    const timeoutMs = this.config.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
+
     return new Promise((resolve, reject) => {
       const requestId = request.id != null ? request.id : this.getNextRequestId();
-      this.pendingRequests.set(requestId, { resolve, reject });
-      
+
+      // Per-request timeout (#446): if the server doesn't respond within
+      // timeoutMs, reject so the agentic loop isn't blocked forever.
+      const timer = setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error(`MCP request timed out after ${timeoutMs}ms (method: ${request.method})`));
+        }
+      }, timeoutMs);
+
+      this.pendingRequests.set(requestId, { resolve, reject, timer });
+
       // Set the ID on the request
       request.id = requestId;
       
@@ -301,6 +342,8 @@ export class McpStdioClient {
           // Request sent successfully, wait for response in polling
         })
         .catch(error => {
+          clearTimeout(timer);
+          this.pendingRequests.delete(requestId);
           reject(new Error(`Failed to send request: ${error}`));
         });
     });
@@ -322,7 +365,8 @@ export class McpStdioClient {
     }
     
     // Reject all pending requests
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [, pending] of this.pendingRequests) {
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(new Error('MCP connection closed'));
     }
     this.pendingRequests.clear();
@@ -366,7 +410,7 @@ export class McpHttpClient {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP MCP connection failed: ${response.statusText}`);
+        throw new Error(`HTTP MCP connection failed: ${await mcpHttpErrorDetail(response)}`);
       }
 
       const result = await response.json();

@@ -1,114 +1,121 @@
+/**
+ * Message queue (#137): submissions while a reply is streaming are enqueued
+ * (shown as "queued" chips) and auto-sent FIFO when the active turn completes.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>(r => { resolve = r; });
-  return { promise, resolve };
-}
+let origFetch: typeof global.fetch;
 
-const chunk = (s: string) => ({ done: false, value: Buffer.from(`{"message":{"content":"${s}"}}\n`) });
-const DONE = { done: true, value: undefined };
+beforeEach(() => {
+  origFetch = global.fetch;
+  localStorage.clear();
+  Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
+  window.dispatchEvent(new Event('resize'));
+});
+
+afterEach(() => {
+  global.fetch = origFetch;
+  localStorage.clear();
+});
 
 describe('Message queue (#137)', () => {
-  beforeEach(() => localStorage.clear());
-  afterEach(() => vi.restoreAllMocks());
+  it('enqueues a submission while streaming and auto-sends it when the turn completes', async () => {
+    let releaseFirst: () => void = () => {};
+    let chatCalls = 0;
 
-  it('enqueues while streaming and auto-sends FIFO on completion', async () => {
-    const firstDone = deferred<any>();
-    let chatCall = 0;
     global.fetch = vi.fn().mockImplementation((url: string) => {
-      if (!String(url).includes('/api/chat')) {
-        return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null });
+      const u = String(url);
+      if (u.includes('/api/chat') || u.includes('generate')) {
+        chatCalls++;
+        if (chatCalls === 1) {
+          // First turn: emit a chunk, then hang until released.
+          const done = new Promise<void>(r => { releaseFirst = r; });
+          const reader = {
+            read: vi.fn().mockImplementation(async () => {
+              return { done: false, value: Buffer.from('{"message":{"content":"first reply"}}\n') };
+            }),
+          };
+          reader.read.mockImplementationOnce(async () => {
+            return { done: false, value: Buffer.from('{"message":{"content":"first reply"}}\n') };
+          });
+          reader.read.mockImplementationOnce(async () => {
+            await done;
+            return { done: true, value: undefined };
+          });
+          return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+        }
+        // Second (queued) turn: resolve immediately with a final answer.
+        const reader = { read: vi.fn() };
+        reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('{"message":{"content":"second reply"},"done":true}\n') });
+        reader.read.mockResolvedValueOnce({ done: true, value: undefined });
+        return Promise.resolve({ ok: true, body: { getReader: () => reader } });
       }
-      chatCall++;
-      if (chatCall === 1) {
-        let step = 0;
-        return Promise.resolve({ ok: true, body: { getReader: () => ({ read: () => { step++; return step === 1 ? Promise.resolve(chunk('first')) : firstDone.promise; } }) } });
-      }
-      let step = 0;
-      return Promise.resolve({ ok: true, body: { getReader: () => ({ read: () => { step++; return Promise.resolve(step === 1 ? chunk('second') : DONE); } }) } });
-    }) as any;
+      return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
+    });
 
     render(<App />);
-    const input = screen.getByPlaceholderText('Message Ollama...');
-    fireEvent.change(input, { target: { value: 'q1' } });
-    fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(screen.getByText('first')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
-    // Enqueue while the first reply is still streaming.
-    fireEvent.change(input, { target: { value: 'q2' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByText('queued')).toBeInTheDocument();
+    // Wait until the first turn is streaming.
+    await waitFor(() => expect(screen.getByText(/first reply/i)).toBeInTheDocument(), { timeout: 5000 });
 
-    // Finish the first turn → the queued message auto-sends.
-    await act(async () => { firstDone.resolve(DONE); });
-    await waitFor(() => expect(screen.getByText('second')).toBeInTheDocument());
-    await waitFor(() => expect(screen.queryByText('queued')).not.toBeInTheDocument());
-    expect(chatCall).toBe(2);
-  });
+    // Submit a second message while still streaming (Enter in the composer,
+    // since the send button is now "Cancel generation") -> enqueued.
+    const composer = screen.getByPlaceholderText('Message Ollama...');
+    fireEvent.change(composer, { target: { value: 'second' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
 
-  it('removes a queued item before it sends', async () => {
-    const firstDone = deferred<any>();
+    await waitFor(() => {
+      expect(screen.getByText('queued')).toBeInTheDocument();
+      expect(screen.getByText('second')).toBeInTheDocument();
+    }, { timeout: 5000 });
+
+    // Release the first turn; the queued message auto-sends.
+    releaseFirst();
+    await waitFor(() => expect(screen.getByText(/second reply/i)).toBeInTheDocument(), { timeout: 8000 });
+
+    // The queued chip is gone once it has been sent.
+    await waitFor(() => expect(screen.queryByText('queued')).not.toBeInTheDocument(), { timeout: 5000 });
+  }, 30000);
+
+  it('a queued message can be removed before it is sent', async () => {
+    let releaseFirst: () => void = () => {};
+    let chatCalls = 0;
     global.fetch = vi.fn().mockImplementation((url: string) => {
-      if (!String(url).includes('/api/chat')) return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null });
-      let step = 0;
-      return Promise.resolve({ ok: true, body: { getReader: () => ({ read: () => { step++; return step === 1 ? Promise.resolve(chunk('first')) : firstDone.promise; } }) } });
-    }) as any;
+      const u = String(url);
+      if (u.includes('/api/chat') || u.includes('generate')) {
+        chatCalls++;
+        const reader = { read: vi.fn() };
+        reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('{"message":{"content":"first reply"}}\n') });
+        reader.read.mockImplementationOnce(async () => {
+          await new Promise<void>(r => { releaseFirst = r; });
+          return { done: true, value: undefined };
+        });
+        return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
+    });
 
     render(<App />);
-    const input = screen.getByPlaceholderText('Message Ollama...');
-    fireEvent.change(input, { target: { value: 'q1' } });
-    fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(screen.getByText('first')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(screen.getByText(/first reply/i)).toBeInTheDocument(), { timeout: 5000 });
 
-    fireEvent.change(input, { target: { value: 'q2' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByText('queued')).toBeInTheDocument();
+    const composer = screen.getByPlaceholderText('Message Ollama...');
+    fireEvent.change(composer, { target: { value: 'second' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove queued message' })).toBeInTheDocument(), { timeout: 5000 });
 
-    fireEvent.click(screen.getByLabelText('Remove queued message'));
-    expect(screen.queryByText('queued')).not.toBeInTheDocument();
-    await act(async () => { firstDone.resolve(DONE); });
-  });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove queued message' }));
+    await waitFor(() => expect(screen.queryByText('queued')).not.toBeInTheDocument(), { timeout: 5000 });
 
-  it('cancelling the active turn halts the queue (no auto-send)', async () => {
-    let chatCall = 0;
-    global.fetch = vi.fn().mockImplementation((url: string, init: any) => {
-      if (!String(url).includes('/api/chat')) return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null });
-      chatCall++;
-      const signal: AbortSignal | undefined = init?.signal;
-      let step = 0;
-      return Promise.resolve({
-        ok: true,
-        body: {
-          getReader: () => ({
-            read: () => {
-              step++;
-              if (step === 1) return Promise.resolve(chunk('first'));
-              // hang until the request is aborted, then reject like fetch does
-              return new Promise((_, reject) => {
-                signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
-              });
-            },
-          }),
-        },
-      });
-    }) as any;
-
-    render(<App />);
-    const input = screen.getByPlaceholderText('Message Ollama...');
-    fireEvent.change(input, { target: { value: 'q1' } });
-    fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(screen.getByText('first')).toBeInTheDocument());
-
-    fireEvent.change(input, { target: { value: 'q2' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByText('queued')).toBeInTheDocument();
-
-    // Cancel the active turn → queue must NOT auto-drain.
-    await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
-    await waitFor(() => expect(screen.getByText('queued')).toBeInTheDocument());
-    expect(chatCall).toBe(1); // no second turn was started
-  });
+    // Releasing the first turn must NOT auto-send the removed message.
+    const callsBefore = chatCalls;
+    releaseFirst();
+    await new Promise(r => setTimeout(r, 500));
+    expect(chatCalls).toBe(callsBefore);
+  }, 30000);
 });

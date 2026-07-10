@@ -19,7 +19,7 @@ export function loadPrompts(): SavedPrompt[] {
 }
 
 export function savePrompts(prompts: SavedPrompt[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(prompts));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prompts)); } catch { /* quota */ }
 }
 
 export function addPrompt(p: Omit<SavedPrompt, 'id' | 'createdAt'>): SavedPrompt {

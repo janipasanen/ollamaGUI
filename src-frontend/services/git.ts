@@ -59,7 +59,12 @@ export async function gitCommit(cwd: string, message: string): Promise<GitCommit
 }
 
 export async function gitLog(cwd: string, n?: number): Promise<GitLogEntry[]> {
-  return tauriInvoke<GitLogEntry[]>('git_log', { cwd, n: n ?? 20 });
+ return tauriInvoke<GitLogEntry[]>('git_log', { cwd, n: n ?? 20 });
+}
+
+/** Hard-reset HEAD by `n` commits (#402, /gitundo). */
+export async function gitReset(cwd: string, n: number = 1): Promise<void> {
+  return tauriInvoke<void>('git_reset', { cwd, n });
 }
 
 // ── Agent tool registration ────────────────────────────────────────────────────

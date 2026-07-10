@@ -49,7 +49,7 @@ export function loadImageGenConfig(): ImageGenConfig {
 }
 
 export function saveImageGenConfig(cfg: ImageGenConfig): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); } catch { /* quota */ }
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
@@ -74,6 +74,34 @@ async function httpRequest(
   }
 }
 
+/** Fetch a URL and return its body as base64. Binary responses (e.g. the
+ *  ComfyUI `/view` image endpoint) cannot go through `httpRequest` because
+ *  `mcp_http_request` reads the body as UTF-8 text and `btoa()` throws on the
+ *  resulting out-of-Latin1 code points (#431). Routes through the Rust
+ *  `http_get_binary` command (returns base64, avoids CORS); falls back to a
+ *  browser fetch + FileReader in non-Tauri environments. */
+async function httpGetBase64(url: string): Promise<{ status: number; base64: string }> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const res = await invoke('http_get_binary', { url }) as { success: boolean; status: number; body_base64: string };
+    return { status: res.status, base64: res.body_base64 };
+  } catch {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string;
+        const comma = dataUrl.indexOf(',');
+        resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+      };
+      reader.onerror = () => reject(new Error('Failed to read image blob'));
+      reader.readAsDataURL(blob);
+    });
+    return { status: resp.status, base64 };
+  }
+}
+
 // ── A1111 backend ─────────────────────────────────────────────────────────────
 
 export async function generateA1111(cfg: ImageGenConfig, req: ImageGenRequest): Promise<ImageGenResult[]> {
@@ -95,7 +123,9 @@ export async function generateA1111(cfg: ImageGenConfig, req: ImageGenRequest): 
   const resp = await httpRequest('POST', `${cfg.baseUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`, JSON.stringify(payload), hdrs);
   if (resp.status < 200 || resp.status >= 300) throw new Error(`A1111 error ${resp.status}: ${resp.body.slice(0, 200)}`);
 
-  const data = JSON.parse(resp.body) as { images?: string[] };
+  let data: { images?: string[] };
+  try { data = JSON.parse(resp.body) as { images?: string[] }; }
+  catch { throw new Error(`A1111 returned non-JSON response: ${resp.body.slice(0, 200)}`); }
   return (data.images ?? []).map(b64 => ({ image: b64, mimeType: 'image/png', prompt: req.prompt }));
 }
 
@@ -121,8 +151,10 @@ export async function generateComfyUI(cfg: ImageGenConfig, req: ImageGenRequest)
 
   // Queue the prompt
   const queueResp = await httpRequest('POST', `${base}/prompt`, JSON.stringify({ prompt: workflow }));
-  if (queueResp.status < 200 || queueResp.status >= 300) throw new Error(`ComfyUI queue error ${queueResp.status}`);
-  const { prompt_id } = JSON.parse(queueResp.body) as { prompt_id: string };
+  if (queueResp.status < 200 || queueResp.status >= 300) throw new Error(`ComfyUI queue error ${queueResp.status}: ${queueResp.body.slice(0, 200)}`);
+  let prompt_id: string;
+  try { ({ prompt_id } = JSON.parse(queueResp.body) as { prompt_id: string }); }
+  catch { throw new Error(`ComfyUI returned non-JSON queue response: ${queueResp.body.slice(0, 200)}`); }
 
   // Poll history until complete (max 60s)
   const start = Date.now();
@@ -130,16 +162,18 @@ export async function generateComfyUI(cfg: ImageGenConfig, req: ImageGenRequest)
     await new Promise(r => setTimeout(r, 1000));
     const histResp = await httpRequest('GET', `${base}/history/${prompt_id}`);
     if (histResp.status !== 200) continue;
-    const hist = JSON.parse(histResp.body) as Record<string, any>;
+    let hist: Record<string, any>;
+    try { hist = JSON.parse(histResp.body) as Record<string, any>; }
+    catch { continue; }
     const entry = hist[prompt_id];
     if (!entry?.outputs) continue;
 
     const images: ImageGenResult[] = [];
     for (const node of Object.values(entry.outputs as Record<string, any>)) {
       for (const img of (node as any).images ?? []) {
-        const imgResp = await httpRequest('GET', `${base}/view?filename=${img.filename}&subfolder=${img.subfolder ?? ''}&type=${img.type ?? 'output'}`);
-        if (imgResp.status === 200) {
-          images.push({ image: btoa(imgResp.body), mimeType: 'image/png', prompt: req.prompt });
+        const imgGet = await httpGetBase64(`${base}/view?filename=${img.filename}&subfolder=${img.subfolder ?? ''}&type=${img.type ?? 'output'}`);
+        if (imgGet.status === 200) {
+          images.push({ image: imgGet.base64, mimeType: 'image/png', prompt: req.prompt });
         }
       }
     }
@@ -164,7 +198,9 @@ export async function generateOpenAI(cfg: ImageGenConfig, req: ImageGenRequest):
     Authorization: `Bearer ${cfg.apiKey}`,
   });
   if (resp.status < 200 || resp.status >= 300) throw new Error(`DALL-E error ${resp.status}: ${resp.body.slice(0, 200)}`);
-  const data = JSON.parse(resp.body) as { data?: { b64_json: string }[] };
+  let data: { data?: { b64_json: string }[] };
+  try { data = JSON.parse(resp.body) as { data?: { b64_json: string }[] }; }
+  catch { throw new Error(`DALL-E returned non-JSON response: ${resp.body.slice(0, 200)}`); }
   return (data.data ?? []).map(d => ({ image: d.b64_json, mimeType: 'image/png', prompt: req.prompt }));
 }
 

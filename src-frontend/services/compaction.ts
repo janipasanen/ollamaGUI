@@ -9,7 +9,7 @@
  * so the UI can render a visual separator.
  */
 
-import type { Message } from './ollama';
+import { ollamaErrorFromResponse, type Message } from './ollama';
 
 export interface CompactionOptions {
   /** Characters-per-token estimate for the heuristic (default 4). */
@@ -100,7 +100,7 @@ export function makeSummarizeFn(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error(`Summarize failed: ${resp.statusText}`);
+    if (!resp.ok) throw await ollamaErrorFromResponse(resp, 'Summarize failed');
     const data = await resp.json();
     return data.message?.content ?? data.response ?? '';
   };

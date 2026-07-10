@@ -111,4 +111,127 @@ describe('browserPreview (#172)', () => {
     _resetPreviewState();
     expect(isPreviewOpen()).toBe(false);
   });
+
+  // ── #437: openPreview must reset _open on rejection ───────────────────────
+
+  it('openPreview resets _open=false when the IPC rejects (#437)', async () => {
+    _mocks.invoke = async () => { throw new Error('webview unavailable'); };
+    await expect(openPreview('https://example.com', RECT)).rejects.toThrow('webview unavailable');
+    expect(isPreviewOpen()).toBe(false);
+  });
+
+  it('after a rejected openPreview, navigatePreview no-ops (#437)', async () => {
+    const cmds: string[] = [];
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') throw new Error('no runtime');
+      cmds.push(cmd);
+    };
+    await expect(openPreview('https://example.com', RECT)).rejects.toThrow();
+    await navigatePreview('https://example.com/x');
+    expect(cmds).not.toContain('preview_webview_navigate');
+  });
+
+  it('after a rejected openPreview, setBoundsPreview no-ops (#437)', async () => {
+    let called = false;
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') throw new Error('no runtime');
+      called = true;
+    };
+    await expect(openPreview('https://example.com', RECT)).rejects.toThrow();
+    await setBoundsPreview(RECT);
+    expect(called).toBe(false);
+  });
+
+  // ── #450: follow-up calls must wait for openPreview to complete ───────────
+
+  it('navigatePreview waits for openPreview IPC to resolve before sending (#450)', async () => {
+    const order: string[] = [];
+    let resolveOpen: () => void;
+    const openPromise = new Promise<void>(r => { resolveOpen = r; });
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') {
+        order.push('open_start');
+        await openPromise;
+        order.push('open_done');
+        return;
+      }
+      order.push(cmd);
+    };
+    // Fire openPreview (doesn't resolve yet) and navigatePreview concurrently
+    const openP = openPreview('https://example.com', RECT);
+    const navP = navigatePreview('https://example.com/x');
+    // Give the event loop a tick to let navigatePreview reach the await
+    await new Promise(r => setTimeout(r, 10));
+    // navigate should NOT have fired yet — open is still pending
+    expect(order).not.toContain('preview_webview_navigate');
+    // Now resolve the open
+    resolveOpen!();
+    await openP;
+    await navP;
+    // navigate should fire AFTER open completes
+    const navIdx = order.indexOf('preview_webview_navigate');
+    const openDoneIdx = order.indexOf('open_done');
+    expect(navIdx).toBeGreaterThan(openDoneIdx);
+  });
+
+  it('setBoundsPreview waits for openPreview IPC to resolve before sending (#450)', async () => {
+    const order: string[] = [];
+    let resolveOpen: () => void;
+    const openPromise = new Promise<void>(r => { resolveOpen = r; });
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') {
+        await openPromise;
+        return;
+      }
+      order.push(cmd);
+    };
+    const openP = openPreview('https://example.com', RECT);
+    const boundsP = setBoundsPreview(RECT);
+    await new Promise(r => setTimeout(r, 10));
+    expect(order).not.toContain('preview_webview_set_bounds');
+    resolveOpen!();
+    await openP;
+    await boundsP;
+    expect(order).toContain('preview_webview_set_bounds');
+  });
+
+  it('reloadPreview waits for openPreview IPC to resolve before sending (#450)', async () => {
+    const order: string[] = [];
+    let resolveOpen: () => void;
+    const openPromise = new Promise<void>(r => { resolveOpen = r; });
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') {
+        await openPromise;
+        return;
+      }
+      order.push(cmd);
+    };
+    const openP = openPreview('https://example.com', RECT);
+    const reloadP = reloadPreview();
+    await new Promise(r => setTimeout(r, 10));
+    expect(order).not.toContain('preview_webview_reload');
+    resolveOpen!();
+    await openP;
+    await reloadP;
+    expect(order).toContain('preview_webview_reload');
+  });
+
+  it('follow-up calls no-op when openPreview rejects while waiting (#450)', async () => {
+    let rejectOpen: (e: Error) => void;
+    const openPromise = new Promise<void>((_, r) => { rejectOpen = r; });
+    const cmds: string[] = [];
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'preview_webview_open') { await openPromise; return; }
+      cmds.push(cmd);
+    };
+    const openP = openPreview('https://example.com', RECT);
+    const navP = navigatePreview('https://example.com/x');
+    await new Promise(r => setTimeout(r, 10));
+    // Reject the open — navigate should no-op, not send
+    rejectOpen!(new Error('failed'));
+    await expect(openP).rejects.toThrow('failed');
+    await navP;
+    expect(cmds).not.toContain('preview_webview_navigate');
+    expect(isPreviewOpen()).toBe(false);
+  });
 });

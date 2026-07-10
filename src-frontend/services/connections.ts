@@ -40,7 +40,7 @@ export function loadConnections(): ModelConnection[] {
 }
 
 export function saveConnections(conns: ModelConnection[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(conns));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conns)); } catch { /* quota */ }
 }
 
 export function addConnection(conn: Omit<ModelConnection, 'id'>): ModelConnection {
@@ -120,6 +120,42 @@ export async function fetchAllConnectionModels(connections: ModelConnection[]): 
 // ── Stream chat through the right connection ───────────────────────────────────
 
 /**
+ * Build a descriptive Error from a non-ok OpenAI-compatible response (#458).
+ * OpenAI-compatible endpoints (OpenAI, LM Studio, vLLM, etc.) return the
+ * failure reason as JSON in the body:
+ *   `{"error": {"message": "Invalid API key provided", ...}}`
+ * Some simpler proxies use the Ollama-style `{"error": "message string"}`.
+ * Without reading the body the caller only sees a generic HTTP statusText
+ * ("Unauthorized", "Not Found") which hides the actionable detail. Falls back
+ * to `statusText` when the body is absent, non-JSON, or has no error field.
+ */
+export async function openAiErrorFromResponse(res: Response, prefix: string): Promise<Error> {
+  let detail = res.statusText;
+  try {
+    const body = await res.json();
+    if (body?.error) {
+      // OpenAI format: { error: { message: "..." } }
+      if (typeof body.error === 'string' && body.error.trim()) {
+        detail = body.error.trim();
+      } else if (typeof body.error.message === 'string' && body.error.message.trim()) {
+        detail = body.error.message.trim();
+      }
+    }
+    // Some endpoints use { message: "..." } or { detail: "..." } at top level
+    if (detail === res.statusText) {
+      if (typeof body?.message === 'string' && body.message.trim()) {
+        detail = body.message.trim();
+      } else if (typeof body?.detail === 'string' && body.detail.trim()) {
+        detail = body.detail.trim();
+      }
+    }
+  } catch {
+    // Body is not JSON or cannot be consumed — keep statusText.
+  }
+  return new Error(`${prefix}: ${detail}`);
+}
+
+/**
  * Build chat-stream request options for an OpenAI-compatible endpoint.
  * Returns { url, headers, body } ready for fetch().
  */
@@ -153,7 +189,7 @@ export async function streamOpenAiChat(
 ): Promise<void> {
   const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options);
   const res = await fetch(url, { method: 'POST', headers, body, signal });
-  if (!res.ok) throw new Error(`OpenAI stream error: ${res.statusText}`);
+  if (!res.ok) throw await openAiErrorFromResponse(res, 'OpenAI stream error');
 
   const reader = res.body?.getReader();
   const decoder = new TextDecoder();
@@ -167,8 +203,8 @@ export async function streamOpenAiChat(
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
     for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6).trim();
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
       if (data === '[DONE]') return;
       try {
         const chunk = JSON.parse(data);
@@ -179,6 +215,24 @@ export async function streamOpenAiChat(
         if (reasoning) onChunk('', reasoning);
       } catch {
         // malformed SSE line — skip
+      }
+    }
+  }
+  // Flush any remaining buffered content after the stream ends (#466).
+  if (buf.trim()) {
+    const line = buf.trim();
+    if (line.startsWith('data:')) {
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') return;
+      try {
+        const chunk = JSON.parse(data);
+        const d = chunk?.choices?.[0]?.delta;
+        const delta = d?.content ?? '';
+        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+        if (delta) onChunk(delta);
+        if (reasoning) onChunk('', reasoning);
+      } catch {
+        // malformed trailing SSE line — skip
       }
     }
   }

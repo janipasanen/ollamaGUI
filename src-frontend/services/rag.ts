@@ -7,6 +7,7 @@
  */
 
 import { getKnowledgeDB, type ChunkRecord } from './db';
+import { ollamaErrorFromResponse } from './ollama';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,14 +50,14 @@ export function setEmbedFn(fn: (texts: string[]) => Promise<number[][]>): void {
   _embedFn = fn;
 }
 
-async function embed(texts: string[], ollamaBaseUrl: string, model: string): Promise<number[][]> {
+export async function embed(texts: string[], ollamaBaseUrl: string, model: string): Promise<number[][]> {
   if (_embedFn) return _embedFn(texts);
   const response = await fetch(`${ollamaBaseUrl}/api/embed`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input: texts }),
   });
-  if (!response.ok) throw new Error(`Ollama embed error: ${response.statusText}`);
+  if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama embed error');
   const data = await response.json();
   return data.embeddings as number[][];
 }

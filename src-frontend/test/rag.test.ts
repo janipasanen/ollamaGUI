@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { chunkText, setEmbedFn, indexCollection, retrieve } from '../services/rag';
+import { chunkText, setEmbedFn, indexCollection, retrieve, embed } from '../services/rag';
 import { createMemoryKnowledgeDB, setKnowledgeDB } from '../services/db';
 import { addFile } from '../services/knowledge';
 
@@ -126,5 +126,40 @@ describe('retrieve with empty collection (#118)', () => {
     await db.saveCollection(col);
     const results = await retrieve([col.id], 'anything', 5);
     expect(results).toEqual([]);
+  });
+});
+
+// ── #459: embed surfaces body error on non-ok ────────────────────────────────
+
+describe('embed error handling (#459)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; setEmbedFn(null as any); });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('surfaces body .error on non-ok response (#459)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Internal Server Error',
+      json: async () => ({ error: 'embedding model not found' }),
+    }) as any;
+    await expect(embed(['hello'], 'http://x', 'nomic-embed-text')).rejects.toThrow('embedding model not found');
+  });
+
+  it('falls back to statusText when body has no .error (#459)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Not Found',
+      json: async () => ({ data: 42 }),
+    }) as any;
+    await expect(embed(['hello'], 'http://x', 'nomic-embed-text')).rejects.toThrow('Ollama embed error: Not Found');
+  });
+
+  it('returns embeddings on success', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ embeddings: [[0.1, 0.2, 0.3]] }),
+    }) as any;
+    const result = await embed(['hello'], 'http://x', 'nomic-embed-text');
+    expect(result).toEqual([[0.1, 0.2, 0.3]]);
   });
 });

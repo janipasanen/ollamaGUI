@@ -25,7 +25,7 @@ export function loadVoiceSettings(): VoiceSettings {
 }
 
 export function saveVoiceSettings(s: VoiceSettings): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch { /* quota */ }
 }
 
 // ── STT (SpeechRecognition) seam ───────────────────────────────────────────────

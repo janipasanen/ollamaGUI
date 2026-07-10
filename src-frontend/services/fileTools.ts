@@ -10,7 +10,7 @@
  */
 
 import { toolRegistry } from './tools';
-import { proposeEdit } from './diffReview';
+import { proposeEdit, proposeEdits } from './diffReview';
 
 export interface DirEntry {
   name: string;
@@ -62,6 +62,11 @@ export async function listDir(path: string): Promise<DirEntry[]> {
 
 export async function applyEdit(path: string, oldString: string, newString: string): Promise<void> {
   return tauriInvoke<void>('apply_edit', { path, old_string: oldString, new_string: newString });
+}
+
+/** Delete a file within the workspace (#397 — apply_patch delete op). */
+export async function deleteFile(path: string): Promise<void> {
+  return tauriInvoke<void>('delete_file', { path });
 }
 
 // ── Tool registration ─────────────────────────────────────────────────────────
@@ -144,6 +149,95 @@ export function registerFileTools(): void {
         label: `edit ${params.path}`,
       });
       return { success: applied };
+    },
+  });
+
+  // Multi-file apply_patch tool (#397, Codex CLI parity).
+  // Applies many file operations in one shot. Each update/create routes through
+  // proposeEdit so the user sees the same inline diff review as apply_edit /
+  // write_file; delete routes through the Rust delete_file command.
+  type PatchOp =
+    | { op: 'update'; path: string; old_string: string; new_string: string }
+    | { op: 'create'; path: string; content: string }
+    | { op: 'delete'; path: string };
+
+  toolRegistry.registerTool({
+    name: 'apply_patch',
+    description:
+      'Apply multiple file edits in one call (Codex CLI apply_patch parity). ' +
+      'operations: [{op:"update",path,old_string,new_string}, ' +
+      '{op:"create",path,content}, {op:"delete",path}]. ' +
+      'Each op goes through diff review; returns a per-op success summary.',
+    parameters: {
+      type: 'object',
+      properties: {
+        operations: {
+          type: 'array',
+          description: 'Ordered list of file operations to apply.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['update', 'create', 'delete'], description: 'The operation kind.' },
+              path: { type: 'string', description: 'File path within the workspace.' },
+              old_string: { type: 'string', description: 'For update: exact string to replace (must appear exactly once).' },
+              new_string: { type: 'string', description: 'For update: replacement string.' },
+              content: { type: 'string', description: 'For create: full file content.' },
+            },
+            required: ['op', 'path'],
+          },
+        },
+      },
+      required: ['operations'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+     const ops = (params.operations as PatchOp[]) ?? [];
+      // Route all update/create ops through ONE batch diff review (#400) when
+      // there are several; deletes are applied directly. Per-op results are
+      // returned in the original order.
+      const reviewableIdx: number[] = [];
+      const reviewableEdits: Array<{ path: string; kind: 'apply_edit' | 'write_file'; oldString?: string; newString: string; label: string }> = [];
+      for (let i = 0; i < ops.length; i++) {
+        const o = ops[i];
+        if (o.op === 'update') {
+          reviewableIdx.push(i);
+          reviewableEdits.push({ path: o.path, kind: 'apply_edit', oldString: o.old_string, newString: o.new_string, label: `update ${o.path}` });
+        } else if (o.op === 'create') {
+          reviewableIdx.push(i);
+          reviewableEdits.push({ path: o.path, kind: 'write_file', newString: o.content, label: `create ${o.path}` });
+        }
+      }
+      const reviewResults = reviewableEdits.length > 0 ? await proposeEdits(reviewableEdits) : [];
+      const reviewApplied = new Map<number, boolean>();
+      reviewableIdx.forEach((opIdx, k) => reviewApplied.set(opIdx, reviewResults[k] ?? false));
+
+      const results: Array<{ op: string; path: string; success: boolean; error?: string }> = [];
+      let allOk = true;
+      for (let i = 0; i < ops.length; i++) {
+        const operation = ops[i];
+        try {
+          if (operation.op === 'update' || operation.op === 'create') {
+            const applied = reviewApplied.get(i) ?? false;
+            results.push({ op: operation.op, path: operation.path, success: applied, ...(applied ? {} : { error: 'rejected or failed' }) });
+            if (!applied) allOk = false;
+          } else if (operation.op === 'delete') {
+            await deleteFile(operation.path);
+            results.push({ op: operation.op, path: operation.path, success: true });
+          } else {
+            const unknown = operation as { op: string; path?: string };
+            results.push({ op: unknown.op, path: unknown.path ?? '(unknown)', success: false, error: `Unknown op '${unknown.op}'` });
+            allOk = false;
+          }
+        } catch (err) {
+          results.push({
+            op: operation.op,
+            path: operation.path,
+            success: false,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          });
+          allOk = false;
+        }
+      }
+      return { success: allOk, applied: results.filter(r => r.success).length, total: ops.length, results };
     },
   });
 }

@@ -19,9 +19,12 @@ export interface DiffResult {
 /** Test seam. */
 export const _mocks = {
   diff: null as ((beforeB64: string, afterB64: string, threshold: number) => Promise<DiffResult>) | null,
+  /** Override the image decoder (jsdom has no canvas) to exercise the null / data paths. */
+  loadImageData: null as ((b64: string) => Promise<ImageData | null>) | null,
 };
 
 async function loadImageData(b64: string): Promise<ImageData | null> {
+  if (_mocks.loadImageData) return _mocks.loadImageData(b64);
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
@@ -59,7 +62,10 @@ export async function diffScreenshots(
   ]);
 
   if (!beforeData || !afterData) {
-    return { diffRatio: 0, pass: true, diffDataUrl: '' };
+    // A screenshot that fails to decode is a FAILED diff, not "no difference".
+    // Returning pass=true here (the previous behaviour) let corrupt/unloadable
+    // screenshots silently pass visual regression (#434).
+    return { diffRatio: 1, pass: false, diffDataUrl: '' };
   }
 
   const { width, height } = beforeData;

@@ -99,3 +99,38 @@ describe('/compact slash command (#305)', () => {
     expect(screen.getByText(/Previous conversation summary/)).toBeInTheDocument();
   });
 });
+
+describe('Continue generation — click resumes (#303)', () => {
+  it('clicking Continue appends streamed content and clears the cancelled note', async () => {
+    // Seed a session with a cancelled assistant message.
+    const sessions = [
+      { id: 's1', title: 'Test', messages: [
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Partial reply\n\n*(generation cancelled)*', wasCancelled: true },
+      ], model: 'llama3', createdAt: Date.now() },
+    ];
+    localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
+
+    // The continue call streams an appended chunk then a done frame.
+    global.fetch = vi.fn().mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.includes('/api/chat') || u.includes('generate')) {
+        const reader = { read: vi.fn() };
+        reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('{"message":{"content":" continued"}}\n') });
+        reader.read.mockResolvedValueOnce({ done: true, value: undefined });
+        return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getAllByRole('button', { name: /Load session: Test/i })[0]);
+    const continueBtn = await screen.findByRole('button', { name: 'Continue generation' }, { timeout: 3000 });
+    fireEvent.click(continueBtn);
+
+    // The streamed continuation is appended to the existing reply…
+    await waitFor(() => expect(document.body.textContent).toContain('Partial reply continued'), { timeout: 5000 });
+    // …and the cancellation note is gone.
+    await waitFor(() => expect(document.body.textContent).not.toContain('(generation cancelled)'), { timeout: 5000 });
+  }, 30000);
+});

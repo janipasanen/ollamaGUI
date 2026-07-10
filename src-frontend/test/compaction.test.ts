@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  estimateTokens, shouldCompact, compactConversation,
+  estimateTokens, shouldCompact, compactConversation, makeSummarizeFn,
 } from '../services/compaction';
 import type { Message } from '../services/ollama';
 
@@ -106,5 +106,43 @@ describe('compactConversation', () => {
     const result = await compactConversation(history, { thresholdTokens: 100, keepRecent: 4 });
     // Should still compact (fallback concatenation)
     expect(result.length).toBeLessThan(history.length);
+  });
+});
+
+// ── #459: makeSummarizeFn surfaces body error on non-ok ──────────────────────
+
+describe('makeSummarizeFn error handling (#459)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('surfaces body .error on non-ok response (#459)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Internal Server Error',
+      json: async () => ({ error: 'model "llama3" not found, try pulling it first' }),
+    }) as any;
+    const summarize = makeSummarizeFn('llama3', 'http://x/api/chat');
+    await expect(summarize([msg('user', 'hi')])).rejects.toThrow('model "llama3" not found');
+  });
+
+  it('falls back to statusText when body has no .error (#459)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Service Unavailable',
+      json: async () => ({ unrelated: true }),
+    }) as any;
+    const summarize = makeSummarizeFn('llama3', 'http://x/api/chat');
+    await expect(summarize([msg('user', 'hi')])).rejects.toThrow('Summarize failed: Service Unavailable');
+  });
+
+  it('returns message content on success', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ message: { content: 'Summary here' } }),
+    }) as any;
+    const summarize = makeSummarizeFn('llama3', 'http://x/api/chat');
+    const result = await summarize([msg('user', 'hi')]);
+    expect(result).toBe('Summary here');
   });
 });

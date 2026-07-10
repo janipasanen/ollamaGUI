@@ -40,15 +40,108 @@ export function setDiffReviewCallback(cb: ReviewCallback): void {
 }
 
 export function clearDiffReviewCallback(): void {
-  _reviewCallback = null;
+ _reviewCallback = null;
 }
 
+// ── Edit-applied callback (#401, Aider auto-commit parity) ───────────────────
+// Fired after every edit is successfully written to disk, so the host can
+// auto-commit, refresh the file tree, etc.
+export type EditAppliedCallback = (path: string, label?: string) => void | Promise<void>;
+
+let _editAppliedCallback: EditAppliedCallback | null = null;
+
+export function setEditAppliedCallback(cb: EditAppliedCallback): void {
+  _editAppliedCallback = cb;
+}
+
+export function clearEditAppliedCallback(): void {
+  _editAppliedCallback = null;
+}
+
+async function notifyEditApplied(path: string, label?: string): Promise<void> {
+  if (_editAppliedCallback) {
+    try { await _editAppliedCallback(path, label); } catch { /* best-effort */ }
+  }
+}
 export function getPendingEdits(): PendingEdit[] {
   return Array.from(_pending.values());
 }
 
 export function clearPendingEdits(): void {
   _pending.clear();
+}
+
+// ── Batch (multi-file) diff review (#400, Codex GUI / Cursor parity) ──────────
+//
+// When a single tool call proposes several file edits (e.g. apply_patch with
+// multiple ops), present them in ONE review instead of N sequential popups.
+
+export type BatchReviewCallback = (edits: PendingEdit[]) => Promise<EditDecision[]>;
+
+let _batchReviewCallback: BatchReviewCallback | null = null;
+
+export function setBatchReviewCallback(cb: BatchReviewCallback): void {
+  _batchReviewCallback = cb;
+}
+
+export function clearBatchReviewCallback(): void {
+  _batchReviewCallback = null;
+}
+
+/**
+ * Propose several file edits for one combined user review.
+ *
+ * If a batch review callback is registered the user sees a single multi-file
+ * review and can accept/reject per file (and Accept/Reject All). Without a
+ * callback every edit is applied immediately (autonomous / headless mode).
+ *
+ * Returns one boolean per input edit (in order): true if applied.
+ */
+export async function proposeEdits(
+  edits: Array<Omit<PendingEdit, 'id' | 'createdAt'>>,
+): Promise<boolean[]> {
+  const pending: PendingEdit[] = edits.map(e => ({ ...e, id: makeEditId(), createdAt: Date.now() }));
+  for (const p of pending) _pending.set(p.id, p);
+
+  let decisions: EditDecision[] | undefined;
+ if (_batchReviewCallback) {
+   decisions = await _batchReviewCallback(pending);
+   for (const p of pending) _pending.delete(p.id);
+ } else {
+   // No batch callback: fall back to the single-edit callback per edit (so the
+   // existing single-file modal still works), or apply all if neither is set.
+   if (_reviewCallback) {
+     decisions = [];
+     for (const p of pending) {
+       const d = await _reviewCallback(p);
+       _pending.delete(p.id);
+       decisions.push(d);
+     }
+   } else {
+     decisions = pending.map(p => ({ id: p.id, accepted: true }));
+     for (const p of pending) _pending.delete(p.id);
+   }
+ }
+
+  const results: boolean[] = [];
+  for (const edit of pending) {
+    const dec = decisions?.find(d => d.id === edit.id);
+    const accepted = dec?.accepted ?? false;
+    if (!accepted) { results.push(false); continue; }
+    const newContent = dec?.mergedNewString ?? edit.newString;
+    try {
+      if (edit.kind === 'apply_edit' && edit.oldString !== undefined) {
+        await applyEdit(edit.path, edit.oldString, newContent);
+      } else {
+        await writeFile(edit.path, newContent);
+      }
+      await notifyEditApplied(edit.path, edit.label);
+      results.push(true);
+    } catch {
+      results.push(false);
+    }
+  }
+  return results;
 }
 
 function makeEditId(): string {
@@ -86,6 +179,7 @@ export async function proposeEdit(
   } else {
     await writeFile(pending.path, newContent);
   }
+  await notifyEditApplied(pending.path, pending.label);
   return true;
 }
 
@@ -101,6 +195,7 @@ export async function acceptEdit(id: string): Promise<boolean> {
   } else {
     await writeFile(edit.path, edit.newString);
   }
+  await notifyEditApplied(edit.path, edit.label);
   return true;
 }
 

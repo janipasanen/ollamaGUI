@@ -141,19 +141,24 @@ describe('BrowserPane (#71, #72)', () => {
     expect(typeof rect.height).toBe('number');
   });
 
-  it('a window resize calls preview_webview_set_bounds with a rect (external mode)', () => {
+  it('a window resize calls preview_webview_set_bounds with a rect (external mode)', async () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
     previewClient._mocks.invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
       calls.push({ cmd, args });
       return undefined;
     });
     render(<BrowserPane dark={false} />);
-    navigateTo('https://example.com');
+    await act(async () => { navigateTo('https://example.com'); });
     // The session url drives the external-mode guard inside syncBounds.
     browserSession.navUrl = 'https://example.com';
+    // Allow the fire-and-forget openPreview promise chain to settle so that
+    // setBoundsPreview (which now awaits _openingPromise per #450) can proceed.
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
 
     // Simulate a layout change.
-    window.dispatchEvent(new Event('resize'));
+    await act(async () => { window.dispatchEvent(new Event('resize')); });
+    // Flush the setBoundsPreview promise chain (#450).
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
 
     const bounds = calls.find((c) => c.cmd === 'preview_webview_set_bounds');
     expect(bounds).toBeDefined();
@@ -163,16 +168,20 @@ describe('BrowserPane (#71, #72)', () => {
     expect(typeof rect.height).toBe('number');
   });
 
-  it('reload in external mode calls preview_webview_reload (mocked invoke)', () => {
+  it('reload in external mode calls preview_webview_reload (mocked invoke)', async () => {
     const calls: string[] = [];
     previewClient._mocks.invoke = vi.fn(async (cmd: string) => {
       calls.push(cmd);
       return undefined;
     });
     render(<BrowserPane dark={false} />);
-    navigateTo('https://example.com');
+    await act(async () => { navigateTo('https://example.com'); });
     browserSession.navUrl = 'https://example.com';
-    fireEvent.click(screen.getByLabelText('Reload'));
+    // Allow the fire-and-forget openPreview promise chain to settle (#450).
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    await act(async () => { fireEvent.click(screen.getByLabelText('Reload')); });
+    // Flush the reloadPreview promise chain (#450).
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
     expect(calls).toContain('preview_webview_reload');
   });
 

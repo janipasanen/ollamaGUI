@@ -83,3 +83,63 @@ describe('parseSessionImport (#232)', () => {
     expect(() => parseSessionImport(text)).toThrow();
   });
 });
+
+
+// ── #454: corrupted localStorage must not crash ─────────────────────────────
+
+describe('storage corrupted localStorage (#454)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('getSessions returns [] when localStorage data is corrupted', () => {
+    localStorage.setItem('ollama_gui_sessions', '{not valid json');
+    expect(storage.getSessions()).toEqual([]);
+  });
+
+  it('getSessions returns [] when localStorage data is not an array', () => {
+    localStorage.setItem('ollama_gui_sessions', '"a string"');
+    expect(storage.getSessions()).toEqual([]);
+  });
+
+  it('getFolders returns [] when localStorage data is corrupted', () => {
+    localStorage.setItem('ollama_gui_folders', '{not valid json');
+    expect(storage.getFolders()).toEqual([]);
+  });
+
+  it('getProjects returns [] when localStorage data is corrupted', () => {
+    localStorage.setItem('ollama_gui_projects', '{not valid json');
+    expect(storage.getProjects()).toEqual([]);
+  });
+
+  it('getProjects returns [] when localStorage data is not an array', () => {
+    localStorage.setItem('ollama_gui_projects', '42');
+    expect(storage.getProjects()).toEqual([]);
+  });
+
+  it('updateSession does not throw when localStorage is full', () => {
+    const session = {
+      id: 's1', title: 'Test', messages: [], createdAt: 1, model: 'm',
+    };
+    storage.saveSession(session);
+    // Simulate quota exceeded
+    const origSetItem = localStorage.setItem.bind(localStorage);
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    expect(() => storage.updateSession('s1', { title: 'Updated' })).not.toThrow();
+    spy.mockRestore();
+  });
+
+  it('deleteSession does not throw when localStorage is full', () => {
+    const session = {
+      id: 's1', title: 'Test', messages: [], createdAt: 1, model: 'm',
+    };
+    storage.saveSession(session);
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    expect(() => storage.deleteSession('s1')).not.toThrow();
+    spy.mockRestore();
+  });
+});

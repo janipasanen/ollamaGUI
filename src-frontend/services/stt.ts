@@ -30,7 +30,7 @@ export function loadSttConfig(): SttConfig {
 }
 
 export function saveSttConfig(cfg: SttConfig): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); } catch { /* quota */ }
 }
 
 // ── Recording seam ────────────────────────────────────────────────────────────
@@ -105,9 +105,18 @@ export async function transcribeBlob(blob: Blob, cfg?: SttConfig): Promise<strin
   if (config.language !== 'auto') form.append('language', config.language);
 
   const res = await fetch(`${base}/inference`, { method: 'POST', body: form });
-  if (!res.ok) throw new Error(`Whisper inference error ${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.error && typeof body.error === 'string') detail = body.error;
+    } catch { /* body not JSON — keep statusText */ }
+    throw new Error(`Whisper inference error ${res.status}: ${detail}`);
+  }
 
-  const data = await res.json() as { text?: string; error?: string };
+  let data: { text?: string; error?: string };
+  try { data = await res.json() as { text?: string; error?: string }; }
+  catch { throw new Error(`Whisper inference error ${res.status}: non-JSON response`); }
   if (data.error) throw new Error(`Whisper error: ${data.error}`);
   return (data.text ?? '').trim();
 }

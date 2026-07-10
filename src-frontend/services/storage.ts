@@ -57,8 +57,14 @@ function migrate(s: any): ChatSession {
 
 export const storage = {
   getSessions: (): ChatSession[] => {
-    const data = localStorage.getItem(SESSIONS_KEY);
-    return data ? (JSON.parse(data) as any[]).map(migrate) : [];
+    try {
+      const data = localStorage.getItem(SESSIONS_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed.map(migrate) : [];
+    } catch {
+      return [];
+    }
   },
   saveSession: (session: ChatSession): { ok: true } | { ok: false; error: 'quota' } => {
     const sessions = storage.getSessions();
@@ -84,11 +90,11 @@ export const storage = {
     const index = sessions.findIndex(s => s.id === id);
     if (index === -1) return;
     sessions[index] = { ...sessions[index], ...patch };
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* quota */ }
   },
   deleteSession: (id: string) => {
     const sessions = storage.getSessions().filter(s => s.id !== id);
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* quota */ }
   },
   clearAll: () => {
     localStorage.removeItem(SESSIONS_KEY);
@@ -96,9 +102,13 @@ export const storage = {
 
   // ─── Folders (#133) ──────────────────────────────────────────────────────
   getFolders: (): Folder[] => {
-    const data = localStorage.getItem(FOLDERS_KEY);
-    const list: Folder[] = data ? JSON.parse(data) : [];
-    return list.sort((a, b) => a.order - b.order);
+    try {
+      const data = localStorage.getItem(FOLDERS_KEY);
+      const list: Folder[] = data ? JSON.parse(data) : [];
+      return Array.isArray(list) ? list.sort((a, b) => a.order - b.order) : [];
+    } catch {
+      return [];
+    }
   },
   saveFolder: (folder: Folder): void => {
     const folders = storage.getFolders();
@@ -107,16 +117,24 @@ export const storage = {
     localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
   },
   deleteFolder: (id: string): void => {
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(storage.getFolders().filter(f => f.id !== id)));
-    // Detach sessions from the removed folder.
-    const sessions = storage.getSessions().map(s => s.folderId === id ? { ...s, folderId: undefined } : s);
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    try {
+      localStorage.setItem(FOLDERS_KEY, JSON.stringify(storage.getFolders().filter(f => f.id !== id)));
+      // Detach sessions from the removed folder.
+      const sessions = storage.getSessions().map(s => s.folderId === id ? { ...s, folderId: undefined } : s);
+      localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    } catch { /* quota */ }
   },
 
   // ─── Projects (#92) ────────────────────────────────────────────────────────
   getProjects: (): Project[] => {
-    const data = localStorage.getItem(PROJECTS_KEY);
-    return data ? JSON.parse(data) : [];
+    try {
+      const data = localStorage.getItem(PROJECTS_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   },
   saveProject: (project: Project): void => {
     const projects = storage.getProjects();
@@ -125,10 +143,12 @@ export const storage = {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
   },
   deleteProject: (id: string): void => {
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(storage.getProjects().filter(p => p.id !== id)));
-    // Detach sessions from the deleted project.
-    const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    try {
+      localStorage.setItem(PROJECTS_KEY, JSON.stringify(storage.getProjects().filter(p => p.id !== id)));
+      // Detach sessions from the deleted project.
+      const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
+      localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    } catch { /* quota */ }
   },
 };
 

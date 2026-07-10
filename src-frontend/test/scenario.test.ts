@@ -73,8 +73,12 @@ describe('scenario persistence (#78)', () => {
 });
 
 describe('scenario runner (#78)', () => {
-  it('returns pass=true and records before/after screenshots for all steps', async () => {
-    mockInvoke({ browser_cdp_navigate: { ok: true } });
+  it('returns pass=true; non-visual steps skip screenshots by default (#448)', async () => {
+    let screenshotCalls = 0;
+    _mocks.invoke = async (cmd: string) => {
+      if (cmd === 'browser_cdp_screenshot') { screenshotCalls++; return { screenshot: 'base64png==' }; }
+      return { ok: true };
+    };
     const scenario = makeScenario([
       { action: 'navigate', args: { url: 'https://example.com' } },
     ]);
@@ -82,8 +86,65 @@ describe('scenario runner (#78)', () => {
     expect(result.pass).toBe(true);
     expect(result.stepResults).toHaveLength(1);
     expect(result.stepResults[0].pass).toBe(true);
+    // No screenshots for non-visual_match steps by default
+    expect(result.stepResults[0].beforeScreenshot).toBeUndefined();
+    expect(result.stepResults[0].afterScreenshot).toBeUndefined();
+    expect(screenshotCalls).toBe(0);
+  });
+
+  it('captures screenshots for non-visual steps when captureScreenshots is true (#448)', async () => {
+    let screenshotCalls = 0;
+    _mocks.invoke = async (cmd: string) => {
+      if (cmd === 'browser_cdp_screenshot') { screenshotCalls++; return { screenshot: 'base64png==' }; }
+      return { ok: true };
+    };
+    const scenario = makeScenario([
+      { action: 'navigate', args: { url: 'https://example.com' } },
+    ]);
+    const result = await runScenario(scenario, { captureScreenshots: true });
+    expect(result.pass).toBe(true);
     expect(result.stepResults[0].beforeScreenshot).toBe('base64png==');
     expect(result.stepResults[0].afterScreenshot).toBe('base64png==');
+    // 2 screenshots: before + after
+    expect(screenshotCalls).toBe(2);
+  });
+
+  it('visual_match step still captures screenshots by default (#448)', async () => {
+    let screenshotCalls = 0;
+    _mocks.invoke = async (cmd: string) => {
+      if (cmd === 'browser_cdp_screenshot') { screenshotCalls++; return { screenshot: 'base64png==' }; }
+      return { ok: true };
+    };
+    _mocks.diffScreenshots = async () => ({ pass: true, diffRatio: 0 });
+    const scenario = makeScenario([
+      { action: 'visual_match', args: { threshold: 0.01 } },
+    ]);
+    const result = await runScenario(scenario);
+    expect(result.pass).toBe(true);
+    expect(result.stepResults[0].beforeScreenshot).toBe('base64png==');
+    expect(result.stepResults[0].afterScreenshot).toBe('base64png==');
+    // 2 screenshots: before + after (for the visual_match step)
+    expect(screenshotCalls).toBe(2);
+  });
+
+  it('mixed scenario: only visual_match steps capture screenshots by default (#448)', async () => {
+    let screenshotCalls = 0;
+    _mocks.invoke = async (cmd: string) => {
+      if (cmd === 'browser_cdp_screenshot') { screenshotCalls++; return { screenshot: 'base64png==' }; }
+      return { ok: true };
+    };
+    _mocks.diffScreenshots = async () => ({ pass: true, diffRatio: 0 });
+    const scenario = makeScenario([
+      { action: 'navigate', args: { url: 'https://a.com' } },
+      { action: 'click', args: { refId: 'btn' } },
+      { action: 'visual_match', args: { threshold: 0.01 } },
+    ]);
+    const result = await runScenario(scenario);
+    expect(result.pass).toBe(true);
+    // Only the visual_match step (index 2) captured screenshots → 2 calls
+    expect(screenshotCalls).toBe(2);
+    expect(result.stepResults[0].beforeScreenshot).toBeUndefined();
+    expect(result.stepResults[2].beforeScreenshot).toBe('base64png==');
   });
 
   it('reports overall fail on first failing step and stops', async () => {
@@ -124,6 +185,93 @@ describe('scenario runner (#78)', () => {
     const result = await runScenario(loaded);
     expect(result).toHaveProperty('pass');
     expect(result).toHaveProperty('stepResults');
+  });
+
+  // ── #438: CDP invoke args must use camelCase (Tauri auto-camelCases top-level params) ──
+
+  it('click step sends refId (camelCase) to browser_cdp_click (#438)', async () => {
+    const captured: Array<{ cmd: string; args: any }> = [];
+    _mocks.invoke = async (cmd, args) => {
+      captured.push({ cmd, args });
+      if (cmd === 'browser_cdp_screenshot') return { screenshot: 'base64png==' };
+      return { pass: true };
+    };
+    const scenario = makeScenario([{ action: 'click', args: { refId: 'btn1' } }]);
+    await runScenario(scenario);
+    const clickCall = captured.find(c => c.cmd === 'browser_cdp_click');
+    expect(clickCall).toBeDefined();
+    expect(clickCall!.args).toHaveProperty('refId', 'btn1');
+    expect(clickCall!.args).not.toHaveProperty('ref_id');
+  });
+
+  it('type step sends refId (camelCase) to browser_cdp_type (#438)', async () => {
+    const captured: Array<{ cmd: string; args: any }> = [];
+    _mocks.invoke = async (cmd, args) => {
+      captured.push({ cmd, args });
+      if (cmd === 'browser_cdp_screenshot') return { screenshot: 'base64png==' };
+      return { pass: true };
+    };
+    const scenario = makeScenario([{ action: 'type', args: { refId: 'inp1', text: 'hello' } }]);
+    await runScenario(scenario);
+    const typeCall = captured.find(c => c.cmd === 'browser_cdp_type');
+    expect(typeCall).toBeDefined();
+    expect(typeCall!.args).toHaveProperty('refId', 'inp1');
+    expect(typeCall!.args).not.toHaveProperty('ref_id');
+    expect(typeCall!.args).toHaveProperty('text', 'hello');
+  });
+
+  it('click step falls back to ref_id arg if refId is absent (#438)', async () => {
+    const captured: Array<{ cmd: string; args: any }> = [];
+    _mocks.invoke = async (cmd, args) => {
+      captured.push({ cmd, args });
+      if (cmd === 'browser_cdp_screenshot') return { screenshot: 'base64png==' };
+      return { pass: true };
+    };
+    // Some legacy scenarios may store ref_id in args; the fallback should still
+    // send it as camelCase refId to the Tauri command.
+    const scenario = makeScenario([{ action: 'click', args: { ref_id: 'legacy' } }]);
+    await runScenario(scenario);
+    const clickCall = captured.find(c => c.cmd === 'browser_cdp_click');
+    expect(clickCall!.args).toHaveProperty('refId', 'legacy');
+  });
+
+  // ── #441: visual_match enrichedStep must not overwrite after with undefined ──
+
+  it('visual_match preserves a pre-existing step.args.after (#441)', async () => {
+    _mocks.invoke = async (cmd) => {
+      if (cmd === 'browser_cdp_screenshot') return { screenshot: 'base64png==' };
+      return { pass: true };
+    };
+    let diffCallCount = 0;
+    _mocks.diffScreenshots = async (_before, after) => {
+      diffCallCount++;
+      // executeStep should use the pre-defined after, not overwrite with undefined.
+      expect(after).toBe('predefined_after');
+      return { pass: true, diffRatio: 0.02 };
+    };
+    const scenario = makeScenario([{
+      action: 'visual_match',
+      args: { threshold: 0.1, after: 'predefined_after' },
+    }]);
+    const result = await runScenario(scenario);
+    expect(result.pass).toBe(true);
+    // diffScreenshots should be called exactly once (by executeStep) — not
+    // re-run by the runner when a reference after is provided.
+    expect(diffCallCount).toBe(1);
+    // diffRatio should be populated from executeStep's result.
+    expect(result.stepResults[0].diffRatio).toBe(0.02);
+  });
+
+  it('visual_match fails with error when no reference after and no captured screenshots', async () => {
+    _mocks.invoke = async () => { throw new Error('no browser'); };
+    _mocks.diffScreenshots = async () => ({ pass: true, diffRatio: 0 });
+    const scenario = makeScenario([{
+      action: 'visual_match',
+      args: { threshold: 0.1 },
+    }]);
+    const result = await runScenario(scenario);
+    expect(result.pass).toBe(false);
+    expect(result.stepResults[0].errorMessage).toContain('not available');
   });
 });
 

@@ -97,20 +97,20 @@ Context: a fresh feature + gap analysis run after M31. The repo is mature
 scaffold + an incomplete help overlay. **No merge to `master`** — work stays
 on `macOS-10.15`.
 
-- [ ] **#224** Add Ollama API error-handling, timeout & abort-signal tests.
+- [x] **#224** Add Ollama API error-handling, timeout & abort-signal tests.
   `ollama.ts` already throws on non-`ok` and accepts `AbortSignal`, but
   `ollama.test.ts` has no error/timeout/abort cases. AGENTS.md explicitly
   requires Ollama error-handling + timeout tests.
-- [ ] **#225** Add unit tests for the secrets keychain wrapper
+- [x] **#225** Add unit tests for the secrets keychain wrapper
   (`secret_set/get/delete/listRefs`). Security-sensitive, used by `App.tsx`,
   currently untested (`secretStore.ts` is a different, already-tested module).
-- [ ] **#226** Add unit tests for `orchestrator.ts` `runCloudBrainLocalWorker`
+- [x] **#226** Add unit tests for `orchestrator.ts` `runCloudBrainLocalWorker`
   (brain-plan / worker / brain-final). Imported by `App.tsx` + `mlx.ts`, no
   test file, not imported by any existing test.
-- [ ] **#227** Remove the dead Tauri `greet` template stub
+- [x] **#227** Remove the dead Tauri `greet` template stub
   (`lib.rs:227` + its `generate_handler!` entry). Not invoked anywhere in the
   frontend — leftover `cargo tauri init` scaffold.
-- [ ] **#228** Complete the keyboard-shortcuts help overlay. `Ctrl+B` / `Ctrl+F`
+- [x] **#228** Complete the keyboard-shortcuts help overlay. `Ctrl+B` / `Ctrl+F`
   / `Ctrl+T` are implemented in the `keydown` handler but missing from the `?`
   overlay.
 
@@ -1757,3 +1757,2144 @@ Code. Three gaps found and implemented. No merge to `master` — work stays on
 ### Result
 - `tsc --noEmit` clean; `vitest run` = **1641 passed (177 files)** (+5).
 - No Rust changes this pass (`cargo test --lib` 87 passed / 1 ignored).
+
+## M89 — Agentic loop robustness & multi-file edit parity (fifty-seventh analysis pass)
+
+Comparative gap analysis vs Codex CLI, Claude Code, Cursor and Aider. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1673 passed (182 files)** — no failing
+functionality found. Three missing capabilities identified and implemented.
+The `gh` CLI token is invalid (see `docs/ANALYSIS.md`), so issues are registered
+locally here per the established precedent.
+
+- [x] **#395** PostToolUse hooks (Claude Code parity). Only `PreToolUse` hooks
+  existed (`toolHooks.ts`). Claude Code runs hooks *after* tool execution too
+  (auto-format, notify, audit, redact). Added a parallel `PostToolUseHook`
+  registry + `runPostToolUseHooks`, wired into `agent.ts` after
+  `toolRegistry.executeToolCall`. A blocked post-hook replaces the result
+  content with the reason; a `transform` post-hook rewrites the result content.
+- [x] **#396** Tool-output truncation (Codex / Claude / Cursor parity). Tool
+  results were pushed verbatim into the model context, so a large `cat`,
+  test run, or `read_file` could blow the context window. Added
+  `MAX_TOOL_OUTPUT_CHARS` (20 000) and `truncateToolContent`; the agent loop
+  feeds the truncated copy to the model while the UI keeps the full output.
+- [x] **#397** Multi-file `apply_patch` tool (Codex CLI parity). `apply_edit`
+  only did one `old_string`/`new_string` per call. Codex's `apply_patch` applies
+  many Add/Update/Delete file ops in one shot. Added a new `apply_patch` tool
+  that takes an `operations` array (`update` / `create` / `delete`), routes
+  each through `proposeEdit` for diff review, and a Rust `delete_file` command
+  + frontend `deleteFile` helper for the delete op.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1689 passed (184 files)** (+16 new).
+- `cargo check` clean (new `delete_file` Tauri command registered); no Rust
+  test regressions.
+- 16 new tests: `m89agentHooksTruncation.test.ts` (11 — hook lifecycle,
+  redact, block/transform, truncation unit + agent-loop integration) and
+  `applyPatch.test.ts` (5 — multi-op apply, delete-error, diff-review routing,
+  unknown-op).
+
+## M90 — Agentic step progress & per-tool enable/disable (fifty-eighth analysis pass)
+
+Comparative gap analysis vs Codex CLI, Claude Code, Cursor and Aider. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1689 passed (184 files)** — no failing
+functionality. Two missing capabilities identified and implemented.
+
+- [x] **#398** Agentic step/iteration progress (Codex CLI / Claude Code parity).
+  The agent loop tracked an internal `iteration` counter but never surfaced it;
+  the header status badge only showed "Thinking…" / "Running: <tool>". Codex CLI
+  and Claude Code show live step progress (e.g. "Step 3/20"). Added an
+  `onIteration(iteration, maxIterations)` callback to `AgenticChatOptions`,
+  fired at the top of each loop iteration, and render "Step N/M" in the header
+  agent-status badge during agentic generation.
+- [x] **#399** Per-tool enable/disable with persisted selection (Claude Code
+  parity). Every registered built-in tool was always exposed to the main agent;
+  only MCP tools had per-tool toggles. Claude Code lets you disable individual
+  tools. Added a `toolConfig` service (`loadDisabledTools` / `saveDisabledTools`
+  / `getEnabledToolFilter` / `setToolEnabled`, persisted to localStorage), wired
+  a conditional `toolFilter` into the main agentic call (only when some tool is
+  disabled, so default behaviour is unchanged), a `/tools` slash command that
+  lists registered tools with on/off state, and a Settings "Tools" section with
+  a toggle per built-in tool.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1704 passed (189 files)** (+15 new).
+- 15 new tests: `agentIteration.test.ts` (3 — onIteration firing per turn,
+  across tool calls, capped at maxIterations), `toolConfig.test.ts` (8 —
+  persistence, filter derivation, statuses), `toolsCommand.test.tsx` (2 —
+  /tools parse + banner), `agentStepProgress.test.tsx` (1 — header "Step N/M"),
+  `toolToggleSettings.test.tsx` (1 — settings toggle persists disabled state).
+- Integrated the enable/disable toggle into the existing "Available Tools"
+  settings listing (no duplicate card) to keep `e2e.test.tsx` assertions green.
+
+## M91 — Combined batch diff review for multi-file apply_patch (fifty-ninth analysis pass)
+
+Comparative gap analysis vs Codex GUI, Cursor and Claude Code. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1704 passed (189 files)** — no failing
+functionality. One missing UX capability identified and implemented.
+
+- [x] **#400** Combined batch diff review for multi-file `apply_patch` (Codex
+  GUI / Cursor parity). When `apply_patch` carried several file operations, the
+  diff-review modal popped up once per op (sequential single-file reviews).
+  Codex GUI and Cursor show every file change from one patch in a single review
+  with Accept All / Reject All + per-file accept. Added a batch review path:
+  `proposeEdits(edits[])` + `setBatchReviewCallback` in `diffReview.ts`, the
+  `apply_patch` tool routes all update/create ops through one batch review when
+  there is more than one, and a new `DiffReviewBatchModal` presents the whole
+  patch with per-file Accept/Reject, Accept All / Reject All, and keyboard
+  shortcuts (Enter = accept all, Escape = reject all). Single-op patches keep
+  the existing single-edit flow unchanged.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1717 passed (192 files)** (+13 new).
+- 13 new tests: `diffReviewBatch.test.ts` (4 — no-callback apply all, batch
+  callback per-edit decisions, single-callback fallback), `applyPatchBatch.test.ts`
+  (3 — one batch review for N ops, per-file reject mapping, deletes alongside),
+  `DiffReviewBatchModal.test.tsx` (6 — file list, Apply/Reject, Accept/Reject all,
+  per-file toggle, Escape).
+- Fixed a misplaced top-level `useEffect` (from the batch-callback wiring) that
+  broke module load for every App-importing test; moved it into the App unmount
+  cleanup effect and relocated a hoisted-but-misplaced `toolConfig` import.
+
+## M92 — Auto-commit after agentic edits (Aider parity) (sixtieth analysis pass)
+
+Comparative gap analysis vs Aider, Claude Code and Codex. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1717 passed (192 files)** — no failing
+functionality. One missing capability identified and implemented.
+
+- [x] **#401** Auto-commit after agentic edits (Aider parity). Aider auto-commits
+  each edit with a descriptive message so changes are trivially revertible; the
+  project had manual git tools and checkpoints/rewind but no auto-commit. Added
+  an opt-in `autoCommitEdits` setting (persisted), an `autoCommit` service that
+  stages + commits the edited file to the workspace git repo
+  (`git_stage` + `git_commit`) with a `ollama-gui: <label> — <path>` message, an
+  `EditAppliedCallback` in `diffReview.ts` fired after every successful
+  `proposeEdit` / `proposeEdits` / `acceptEdit` apply, and an "Auto-commit edits"
+  toggle in Settings. Disabled by default; degrades gracefully (no workspace,
+  not a git repo, or git failure → non-fatal, no commit).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1729 passed (195 files)** (+12 new).
+- 12 new tests: `autoCommit.test.ts` (8 — setting round-trip, commit message,
+  disabled no-op, stage+commit, no-workspace error, git-failure error),
+  `diffReviewEditApplied.test.ts` (3 — callback fires on apply, not on reject,
+  per-edit in batch), `autoCommitSettings.test.tsx` (1 — toggle persists).
+- Fixed a misplaced top-level `useEffect`/`setEditAppliedCallback` from the
+  wiring (same class of bug as M91) that would have broken module load; moved
+  the cleanup into the App unmount effect.
+
+## M93 — /gitundo revert last agent auto-commit (Aider /undo parity) (sixty-first analysis pass)
+
+Comparative gap analysis vs Aider, Claude Code and Codex. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1729 passed (195 files)** — no failing
+functionality. One missing capability identified and implemented (companion to
+M92 auto-commit).
+
+- [x] **#402** `/gitundo` reverts the most recent agent auto-commit (Aider `/undo`
+  parity). Aider's `/undo` reverts the last edit/commit; the project had
+  `/undo` (drop last exchange) and checkpoints/rewind but no way to revert an
+  agent auto-commit. Added a Rust `git_reset` command (hard-reset `HEAD~n`,
+  scoped to the workspace cwd), a `gitReset` frontend helper, an
+  `undoLastAutoCommit()` service that hard-resets `HEAD~1` only when the last
+  commit subject starts with the `ollama-gui:` auto-commit prefix (refuses to
+  touch user commits), and a `/gitundo` slash command that shows a result banner.
+  Degrades gracefully (no workspace, no commits, git failure → non-fatal).
+
+### Result
+- `tsc --noEmit` clean; `cargo check` clean (new `git_reset` Tauri command
+  registered); `vitest run` = **1739 passed (197 files)** (+10 new).
+- 10 new tests: `autoCommitUndo.test.ts` (6 — no-workspace, reset on auto-commit,
+  refuse on user commit, empty log, git failure, prefix), `gitUndoCommand.test.tsx`
+  (4 — gitReset invoke args/default n, /gitundo parse, banner appears).
+
+## M94 — Agentic "Continue" past max-iterations (Codex / Claude parity) (sixty-second analysis pass)
+
+Comparative gap analysis vs Codex CLI, Claude Code and Cursor. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1739 passed (197 files)**. Codex and
+Claude both let the user resume an agent run that stopped at the iteration
+cap without re-typing the prompt; the project had the max-iterations stop
+warning but no way to continue.
+
+- [x] **#403** "Continue agent" past max-iterations. When the agentic loop
+  exhausts `maxIterations` without a final answer, the stop warning is now
+  surfaced to the UI (the generator yields it directly, bypassing
+  `onAssistantMessage`, so the `for await` loop appends it to `messages`) and
+  a `▶ Continue agent` button renders under the warning. Clicking it re-runs
+  the agentic turn with the current context (no new user message) via
+  `sendMessage(undefined, undefined, true)`. `onMaxIterations` sets the
+  `agentHitMax` flag, which is intentionally NOT reset by `onComplete` (it is
+  cleared on the next send) so the button persists after the run ends.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1742 passed (199 files)** (+3 new).
+- 3 new tests: `agentMaxIterations.test.ts` (2 — `onMaxIterations` fires once
+  at the cap and not on a normal final answer), `agentContinue.test.tsx` (1 —
+  the Continue agent button appears after a max-iterations stop and clicking
+  it re-invokes the agentic stream).
+
+## M95 — secrets.ts keychain wrapper ref-tracker tests (sixty-third analysis pass)
+
+Reconciled the stale top-of-file checklist (#224/#225/#226/#227/#228 were all
+already implemented in earlier milestones but still marked `[ ]`): all five
+now `[x]`.
+
+- [x] **#404** `secrets.ts` keychain wrapper unit tests. The earlier #225 work
+  covered `secretStore.ts` (the in-memory fallback path) via
+  `secretStoreTauri.test.ts`, but the separate `secrets.ts` wrapper — which
+  maps `secretSet/Get/Delete` to the Tauri `secret_set/get/delete` commands
+  and tracks `(service, key)` refs in localStorage so the Settings UI can list
+  what exists (values are never persisted) — had no direct test. Added
+  `secrets.test.ts` (8 tests): invoke arg mapping, ref tracking + dedupe,
+  null/undefined handling, delete removes the ref, empty list, localStorage
+  corruption resilience, and a full set/get/delete round-trip through a
+  mocked keychain.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1750 passed (200 files)** (+8 new).
+- 8 new tests: `secrets.test.ts` (8).
+
+## M96 — Agentic clean abort / cancel-keep-partial (Codex/Claude parity) (sixty-fourth analysis pass)
+
+Comparative gap analysis vs Codex CLI, Claude Code and the normal streaming
+path. Baseline: `tsc --noEmit` clean; `vitest run` = **1750 passed (200 files)**.
+
+**Failing functionality found**: in agentic mode, aborting a run mid-fetch
+(Esc / Stop) surfaced an `Error: aborted` banner via `onError` instead of a
+clean cancellation. The normal streaming path already handled abort cleanly
+(`#257`/`#303`), but the agentic loop's outer `catch` did not distinguish an
+`AbortError` from a real error — a user-initiated Stop looked like a failure.
+
+- [x] **#405** Agentic cancel-keep-partial. Added an `onCancel` callback to
+  `AgenticChatOptions`; the loop's outer catch now classifies an abort
+  (`signal.aborted`, `error.name === 'AbortError'`, or an `abort`-ish
+  message — without gating on `instanceof Error`, since jsdom `DOMException`
+  is not always an `Error` instance) and breaks silently via `onCancel`
+  instead of `onError`. App wires `onCancel` to append `*(generation
+  cancelled)*` + `wasCancelled: true` to the partial assistant reply, matching
+  the normal streaming cancel-keep-partial affordance. A non-abort fetch error
+  still fires `onError` with the error message.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1754 passed (202 files)** (+4 new).
+- 4 new tests: `agentAbort.test.ts` (3 — mid-fetch abort fires `onCancel` not
+  `onError` with no error message; already-aborted signal breaks pre-fetch with
+  no callbacks; non-abort error still fires `onError`), `agentCancel.test.tsx`
+  (1 — Stop during an agentic run marks the partial reply cancelled and shows
+  no error banner).
+
+## M97 — Tool approval "Allow for session" (Codex/Claude "don't ask again" parity) (sixty-fifth analysis pass)
+
+Comparative gap analysis vs Codex CLI and Claude Code approval affordances.
+Baseline: `tsc --noEmit` clean; `vitest run` = **1754 passed (202 files)**.
+
+**Missing functionality found**: the CLI command approval modal already had an
+"Always Allow" session-allowlist (`cliAllowlist`, #361), but the general agent
+tool approval modal (plan/ask autonomy, `pendingToolApproval`) only exposed
+Deny / Allow. Codex CLI's approval prompt offers "Yes, and don't ask again"
+and Claude Code offers an equivalent session-scoped auto-approve — the GUI
+lacked it for non-CLI tools.
+
+- [x] **#406** "Allow for session" in the tool approval modal. Added a
+  session-only `sessionToolAllowlistRef` (a `Set<string>`, not persisted —
+  resets on reload, matching `cliAllowlist`). `onApprovalNeeded` now
+  auto-resolves `true` without showing the modal when the tool is already in
+  the allowlist, and the modal gains an "Allow for session" button that adds
+  the tool and approves. Read-only/smart-approve behaviour is unchanged.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1755 passed (203 files)** (+1 new).
+- 1 new test: `agentApprovalSession.test.tsx` (1 — in ask mode, approving a
+  mutating tool "for session" auto-approves a subsequent call to the same tool
+  without re-prompting, and the run completes with the final answer).
+
+## M98 — Tool approval keyboard shortcuts + Escape-no-abort fix (Codex/Claude parity) (sixty-sixth analysis pass)
+
+Comparative gap analysis vs Codex CLI and Claude Code approval affordances.
+Baseline: `tsc --noEmit` clean; `vitest run` = **1755 passed (203 files)**.
+
+**Failing functionality found**: the CLI command approval modal already had
+keyboard shortcuts (#361: Escape=Deny, Enter=Allow, A=Always Allow), but the
+general agent tool approval modal had none — only the Deny/Allow/Allow-for-
+session buttons. Worse, pressing Escape while the tool approval modal was open
+hit the global "Escape cancels generation" handler (#257) and aborted the run,
+leaving the pending approval promise unresolved and the modal dangling.
+
+- [x] **#407** Tool approval keyboard shortcuts + Escape guard. Added a
+  dedicated keydown effect for `pendingToolApproval` (Escape=Deny,
+  Enter=Allow, A=Allow for session — mirroring the CLI modal #361), and added
+  `!pendingToolApproval && !pendingApproval` to the global Escape-abort guard
+  so Escape now denies the tool instead of aborting the whole run (also fixes
+  the latent CLI-approval double-action where Escape both denied and aborted).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1757 passed (203 files)** (+2 new).
+- 2 new tests in `agentApprovalSession.test.tsx` (Escape denies and the run
+  continues to a final answer; "A" approves for session and auto-approves the
+  next call to the same tool).
+
+## M99 — Plan-mode gating: approve plan before execution (Codex/Claude parity) (sixty-seventh analysis pass)
+
+Comparative gap analysis vs Codex CLI and Claude Code plan mode. Baseline:
+`tsc --noEmit` clean; `vitest run` = **1757 passed (203 files)**.
+
+**Missing functionality found**: `isPlanMode()` was defined but never called.
+The "plan" autonomy level was documented as "agent proposes a plan first;
+executes only after approval", but in practice it behaved like "ask" mode + the
+plan panel — mutating tools prompted per-call, with no distinct "approve the
+plan, then execution begins" gate. Codex/Claude plan mode lets the agent
+publish a plan (read-only), then blocks mutating tools until the user approves
+the plan, after which the plan executes without per-tool prompts.
+
+- [x] **#408** Plan-mode gating. Added a `planApprovedRef` + `pendingPlanApproval`
+  modal. `onApprovalNeeded` now: in plan mode with the plan un-approved, shows a
+  plan-approval modal (with the published plan steps) instead of the per-tool
+  modal; in plan mode after approval, auto-approves mutating tools for the rest
+  of the run. Read-only tools (incl. `update_plan`) still run freely during
+  planning. `planApprovedRef` resets each run. The modal supports Approve/Deny
+  buttons and keyboard shortcuts (Enter = Approve, Escape = Deny); the global
+  Escape-abort guard no longer fires while the plan modal is open.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1759 passed (204 files)** (+2 new).
+- 2 new tests: `agentPlanMode.test.tsx` (2 — mutating tools blocked until plan
+  approval, then auto-approved for the run; Deny blocks the tool and keeps the
+  plan un-approved).
+
+## M100 — Plan edit-before-approve (Codex plan-edit parity) (sixty-eighth analysis pass)
+
+Comparative gap analysis vs Codex CLI plan mode. Baseline: `tsc --noEmit` clean;
+`vitest run` = **1759 passed (204 files)**.
+
+- [x] **#409** Edit plan before approval. The plan-approval modal (M99/#408)
+  now has an "Edit plan" toggle that turns the published step list into
+  editable textareas; on Approve the edited steps are persisted to the plan
+  store (statuses preserved) and rendered in the `PlanPanel`. Codex CLI lets
+  the user edit a proposed plan before approving it; the GUI now matches.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1760 passed (204 files)** (+1 new).
+- 1 new test in `agentPlanMode.test.tsx` (1 — edit a step before approving and
+  the edited step replaces the original in the plan panel).
+
+## M101 — Cancel unblocks approval-waiting runs (failing functionality) (sixty-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1760 passed (204 files)**.
+
+**Failing functionality found**: `cancelStream` only aborted the `AbortController`.
+When the agent was blocked on an approval prompt (CLI command #361, agent tool
+#88, or the new plan approval #408), the awaited approval promise never
+resolved, so the loop hung — `isLoading` stayed true, the modal stayed open, and
+the Stop button appeared to do nothing.
+
+- [x] **#410** `cancelStream` now denies any pending approval (`pendingApproval`,
+  `pendingToolApproval`, `pendingPlanApproval`), closes the modal, and resets
+  `isLoading`/`agentStatus`/`agentStep`. Denying unblocks the loop, which then
+  hits its top-of-iteration abort guard and completes cleanly via `onComplete`
+  (no extra fetch). Applies to all three approval modal types.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1761 passed (204 files)** (+1 new).
+- 1 new test in `agentPlanMode.test.tsx` (1 — Stop during a plan-approval wait
+  closes the modal and ends generation without hanging, with no extra fetch).
+
+## M102 — systemPrompt + structuredOutput unit tests (AGENTS.md coverage) (seventieth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1761 passed (204 files)**.
+
+**Missing test coverage found**: two core, every-send service modules had no
+direct tests (AGENTS.md requires every feature to have a test):
+- `systemPrompt.ts` — `composeSystemPrompt` stacks rules → instructions →
+  memory → base prompt; untested.
+- `structuredOutput.ts` — `parseSchemaInput`, `tryParseJson`,
+  `validateAgainstSchema` (lightweight JSON-Schema conformance), and
+  `classifyResponse` (UI badge); untested.
+
+- [x] **#411** Added `systemPrompt.test.ts` (5 — ordering, empty-source
+  skipping, trimming, memory-as-is, base-only) and `structuredOutput.test.ts`
+  (15 — schema parsing/empty/rejections, JSON parse, conformance for
+  required/type/integer/array-items/null, and response classification).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1781 passed (206 files)** (+20 new).
+
+## M103 — mcpConfig store unit tests (security-sensitive coverage) (seventy-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1781 passed (206 files)**.
+
+**Missing test coverage found**: `mcpConfig.ts` (`mcpConfigStore`) had no direct
+tests. It is security-sensitive — secret env VALUES must never persist to
+localStorage (only blanked keys), with values stored in the OS keychain and
+rehydrated on connect — and it drives auto-reconnect (#55). AGENTS.md requires
+tests for security-sensitive code and Ollama/API error handling.
+
+- [x] **#412** Added `mcpConfig.test.ts` (12): save() blanks env values in
+  localStorage while storing secrets in the keychain; list() doesn't leak
+  secrets and resets runtime state; loadSecrets() rehydrates from the keychain
+  (and {} for unknown); delete() purges config + env + token secrets; in-place
+  update by id; empty env values not stored; reconnectCandidates() filters
+  http+lastConnected only; markConnected() records timestamp (no-op for
+  unknown); generateId() uniqueness.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1793 passed (207 files)** (+12 new).
+
+## M104 — MCP preset catalog integrity tests (seventy-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1793 passed (207 files)**.
+
+**Missing test coverage found**: `mcpPresets.ts` (the curated one-click-setup
+catalog) had no tests. A malformed/colliding entry would silently break the
+"Add MCP server" form pre-fill.
+
+- [x] **#413** Added `mcpPresets.test.ts` (9): non-empty catalog; unique keys;
+  every preset has name/description/icon/docsUrl; transport type + command or
+  url; deprecated presets/variants carry a securityNote; unique variant labels
+  per preset; getMcpPreset find-by-key + undefined for unknown; secret env
+  fields are flagged and well-formed.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1802 passed (208 files)** (+9 new).
+
+## M105 — KnowledgeDB in-memory store unit tests (seventy-third analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1802 passed (208 files)**.
+
+**Missing test coverage found**: `db.ts` (`createMemoryKnowledgeDB`, the
+test/SSR implementation of the knowledge collection + file store consumed by
+`rag.ts`/`knowledge.ts`) had no direct tests.
+
+- [x] **#414** Added `db.test.ts` (10): empty start; collection save/get/upsert/
+  delete; file put/get (preserving text+chunks)/undefined-for-unknown;
+  getFilesByCollection filtering; deleteFile targeting; deleteFilesByCollection
+  scope; per-instance independence.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1812 passed (209 files)** (+10 new).
+
+## M106 — LibreOffice onboarding persistence tests (seventy-fourth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1812 passed (209 files)**.
+
+**Missing test coverage found**: `libreOfficeOnboarding.ts` (localStorage-backed
+state for the optional LibreOffice conversion-engine onboarding modal, #145)
+had no tests despite exposing a `_store` storage seam intended for testing.
+
+- [x] **#415** Added `libreOfficeOnboarding.test.ts` (9): default state;
+  save/load round-trip; markDismissed preserves path; setLoPath records;
+  empty-path dropped; corrupted-JSON resilience; needsOnboarding gating
+  (available / unavailable+not-dismissed / dismissed).
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1821 passed (210 files)** (+9 new).
+
+## M107 — MCP pure helpers + server-manager registry tests (seventy-fifth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1821 passed (210 files)**.
+
+**Missing test coverage found**: `mcp.ts`'s pure helper `normalizeToolsList`
+and the non-connecting `McpServerManager` registry methods had no direct tests
+(transport-dependent paths are covered in `mcp-transport.test.ts`; the
+manager's add/get/remove/active-id methods are transport-free but untested).
+
+- [x] **#416** Added `mcp.test.ts` (12): `normalizeToolsList` — {tools:[]}/bare
+  array, inputSchema→parameters, description+parameter defaults, parameters
+  fallback, empty/missing results; `McpServerManager` — add/get/getAll/upsert,
+  remove (no active connection), empty active ids, unknown-server connect
+  throws.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **1833 passed (211 files)** (+12 new).
+
+## M108 — Message queue UI tests (#137 coverage) (seventy-sixth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Missing test coverage found**: the message queue (#137 — submissions while a
+reply streams are enqueued as "queued" chips and auto-sent FIFO on completion)
+had no tests.
+
+- [x] **#417** Added `messageQueue.test.tsx` (2): while a turn streams, pressing
+  Enter enqueues the prompt (a "queued" chip appears) and it auto-sends once
+  the active turn completes; a queued message can be removed before it is sent
+  (and releasing the active turn does not then auto-send it).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` green (0 failures; +2 new tests).
+  (The exact passed count fluctuates ±1 run-to-run due to a pre-existing flaky
+  timing test in `e2e.test.tsx`'s MCP-connection case — unrelated to this change.)
+
+## M109 — Continue-generation click + regenerate-with-model UI tests (seventy-seventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Missing test coverage found**: two existing per-message affordances had no
+behavioral tests:
+- Continue generation on a cancelled reply (#303) — only tested that the button
+  *appears*, not that clicking it resumes.
+- Regenerate with a different model (#270) — the ↺▾ model menu was untested.
+
+- [x] **#418** Added a test in `continueExportCompact.test.tsx`: clicking
+  "Continue generation" on a seeded cancelled reply appends the streamed
+  continuation and clears the `*(generation cancelled)*` note.
+- [x] **#419** Added `regenerateWithModel.test.tsx`: the ↺▾ menu lists models in
+  a `role=listbox`; picking one regenerates that reply with the selected model
+  (the regeneration request body carries the chosen model, distinct from the
+  first reply's model).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` green (0 failures; +2 new tests).
+  (Passed-count fluctuates ±a few run-to-run due to a pre-existing flaky timing
+  case in `e2e.test.tsx`'s MCP-connection test — unrelated to these changes.)
+
+## M110 — Prompt history recall UI tests (#332 coverage) (seventy-eighth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Missing test coverage found**: prompt history recall (#332 — Alt+Up/Alt+Down
+in the composer walks back/forward through sent prompts) had no tests.
+
+- [x] **#420** Added `promptHistory.test.tsx` (2): Alt+Up recalls prompts
+  most-recent-first, Alt+Down moves forward and clears past the end; slash
+  commands are not recorded into history (Alt+Up is a no-op after a /help).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1835 passed (212 files)** (+2).
+
+## M111 — Up-arrow quick-edit last user message UI tests (#267 coverage) (seventy-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Missing test coverage found**: the Up-arrow quick-edit affordance (#267 —
+ArrowUp in an empty composer opens inline edit on the last user message,
+ChatGPT/Cursor parity) had no tests.
+
+- [x] **#421** Added `upArrowEdit.test.tsx` (2): ArrowUp opens inline edit
+  pre-filled with the last user prompt and submitting "Send edit" re-sends the
+  edited text; ArrowUp is ignored while a generation is in progress.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` green (0 failures; +2 new tests).
+  (Passed-count fluctuates run-to-run due to a pre-existing flaky timing case
+  in `e2e.test.tsx`'s MCP-connection test — unrelated to these changes.)
+
+## M112 — Scroll-to-bottom button click→scroll UI test (#255/#258 coverage) (eightieth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Missing test coverage found**: the ANALYSIS noted the scroll-to-bottom button's
+appearance/disappearance was tested but its click→scroll behavior was not.
+
+- [x] **#422** Added `scrollButton.test.tsx` (1): simulating a scrolled-up
+  messages container makes the "Scroll to bottom" button appear; clicking it
+  calls `scrollIntoView` on the end sentinel and hides the button.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1836 passed (213 files)** (+1).
+
+## M113 — Disabled-tool execution enforcement (#423, failing functionality) (eighty-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` green.
+
+**Failing functionality found**: per-tool enable/disable (#399) only removed a
+tool from the request payload (`toolFilter`), but the agentic loop executed tool
+calls via `toolRegistry.getTool` against the full registry. If the model
+returned a call to a disabled tool (e.g. a hallucination, or a stale context),
+the disabled tool would still run — the disable was advisory, not enforced.
+
+- [x] **#423** Enforce `toolFilter` at execution time in `agenticChatStream`:
+  when a `toolFilter` is active and the called tool's name is not in it, the
+  loop blocks it with a `Tool blocked: '<name>' is disabled by the user.`
+  result (fed back to the model) instead of executing. Tools in the filter and
+  the no-filter (all-tools) path are unchanged.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1839 passed (214 files)** (+3).
+- 3 new tests: `agentDisabledTool.test.ts` (3 — disabled tool blocked, enabled
+  tool executes, no-filter allows all).
+- Note: a pre-existing flaky timing case in `e2e.test.tsx`'s MCP-connection test
+  fails intermittently (unrelated to this change; left untouched per scope).
+
+## M114 — Many-models fan-out tests (#126 / #424, missing test coverage) (eighty-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1823 passed (213 files)** (stable; the handoff's 1839 was a fluke-high fluctuation from pre-existing flaky timing tests).
+
+**Missing test coverage found**: `src-frontend/services/manyModels.ts` (#126)
+implements the many-models fan-out (send one prompt to 2–3 models, render
+sibling replies). `rg` for `runManyModels`/`ModelGroup`/`extraModels` in
+`test/` returned no matches — the module was entirely untested. The pure
+helpers `hasSameHostConflict` and `groupByHost` and the injected-stream
+`runManyModels` orchestrator are transport-free and directly testable without
+real `fetch`.
+
+- [x] **#424** Add `src-frontend/test/manyModels.test.ts` covering:
+  - `hasSameHostConflict`: two default-host locals → true; two distinct
+    connections → false; mixed → false; single model → false; trailing-slash
+    host normalisation.
+  - `groupByHost`: default-host models grouped together; connected models split
+    by connection `baseUrl`; order preserved within a batch.
+  - `runManyModels`: streaming→done updates per model + chunk aggregation;
+    same-host models run sequentially (call order preserved); different-host
+    batches overlap (parallel); abort signal breaks the sequential batch;
+    stream error surfaced as state `error`; OpenAI-kind connected models routed
+    through `streamOpenAi` (with reasoning passthrough).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1837 passed (214 files)** (+14 over the 1823 baseline). Verified isolated: a no-manyModels run diffs by exactly the one new file.
+- 14 new tests in `manyModels.test.ts` (5 + 3 + 6 across the three suites).
+
+## M115 — Stabilise flaky CLI approval keyboard tests (#425, failing test infra) (eighty-third analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1837 passed (214 files)** (incl. M114).
+
+**Failing functionality found (test infrastructure)**: the three CLI-approval
+keyboard-shortcut UI tests in `m79KeyboardParity.test.tsx` (#361 — Enter, Escape,
+A-always-approve) flaked ~20% of runs. Root cause: the approval keydown listener
+is attached in a `useEffect` that runs AFTER the modal paints, but the test
+fired `fireEvent.keyDown(window, …)` immediately after `getByText('Command
+Approval Required')` resolved — i.e. before the effect ran. The keydown hit no
+listener, the approval promise never resolved, and the test hung until the 5 s
+vitest timeout. Reproduced: 1 failure in 5 isolated runs pre-fix.
+
+- [x] **#425** Wrap each keydown dispatch in a `waitFor` that re-fires the event
+  until the modal closes (listener-ready). Re-firing is safe: `resolve()` is
+  idempotent on an already-settled promise and `cliAllowlist.add()` is idempotent.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1837 passed (214 files)** (no
+  regression; the three tests now pass 8/8 isolated runs vs ~4/5 pre-fix).
+- No production code changed — test-only race fix.
+
+## M116 — Stabilise flaky MCP connection-error e2e test (#426, failing test infra) (eighty-fourth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1837 passed (214 files)** (incl. M115).
+
+**Failing functionality found (test infrastructure)**: the e2e test "should
+handle MCP connection errors" (`e2e.test.tsx`) was flaky and slow (5–8 s,
+intermittent timeout). Root cause: the suite's `beforeEach` mocks
+`global.fetch` to resolve `{ ok: true, json: () => ({ models: [] }) }` for
+*every* URL. `McpHttpClient.connect()` POSTs an `initialize` request to the
+server URL and treats `ok:true` + no `result.error` as a successful connect —
+so with the blanket mock the "unreachable" `http://localhost:1` server
+sometimes *connected* (green dot) instead of erroring. The test only asserted
+"any coloured dot" (red/yellow/green), masking the wrong path, and the real
+connect/listTools timing made it nondeterministic and slow.
+
+- [x] **#426** Override `global.fetch` inside the test so the MCP server URL
+  rejects with a `TypeError` (connection refused) while model-loading endpoints
+  keep the safe default. `McpHttpClient.connect()` now throws deterministically
+  → the Connect handler sets `status:'error'` → red dot. Tightened the assertion
+  to the red (`.bg-red-400`) dot specifically, matching the test's intent.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1837 passed (214 files)**.
+- Isolated runs: 5/5 green at ~1.8 s each (down from 5–8 s, no timeouts).
+- No production code changed — test-only determinism fix.
+
+## M117 — #file context ref always returned "(not yet indexed)" (#427, failing functionality) (eighty-fifth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1837 passed (214 files)**.
+
+**Failing functionality found**: `resolveContextRef` for a `kind === 'file'`
+`#`-command context reference (#119, Codex/Claude @-file parity) called
+`retrieve([], query, k, opts)` — passing an **empty** collection-id list. The
+`rag.retrieve` implementation iterates `for (const collectionId of
+collectionIds)`, so `[]` yields zero chunks and returns `[]`. The subsequent
+`chunks.filter(c => c.fileId === ref.id)` was therefore always empty, and every
+`#file` reference fell through to the useless `"(file not yet indexed)"`
+placeholder — **even for fully-indexed files**. The user's explicitly-referenced
+file content was never injected into the agent's context. (No test covered the
+file branch, so the bug was invisible.)
+
+- [x] **#427** Fix `resolveContextRef` file branch to load the file record
+  directly via `getKnowledgeDB().getFile(ref.id)` and return its extracted
+  `text` (or concatenated `chunks`), capped at 20 000 chars (same cap as the URL
+  branch). This matches @-file semantics ("inject THIS file's content"), not the
+  old query-relevance-ranked subset that was both broken and semantically wrong
+  for a specific file. Missing/empty file records still fall back to the
+  placeholder.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1841 passed (214 files)** (+4).
+- 4 new tests in `hashCommand.test.ts`: indexed file returns its text; fallback
+  to concatenated chunks when `text` is absent; missing record → placeholder;
+  20 000-char cap.
+
+## M118 — @-mention token-boundary, $-content safety, subdir expansion (#428, failing + missing functionality) (eighty-sixth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1841 passed (214 files)** (incl. M117).
+
+Three issues found in `atCommand.ts` (@-mention file context, #86 —
+Codex/Claude/Cursor @-file parity):
+
+**Failing functionality:**
+1. `isAtTrigger` / `atQuery` used `/@\S*$/` with no token-boundary anchor, so an
+   email address or mid-word `@` (e.g. `contact user@example.com`) opened the
+   file picker — a false trigger Codex/Claude don't have.
+2. `resolveAtMention` used `input.replace(/@\S*$/, block)` with a *string*
+   replacement, so file content containing `$&`, `$1`, `$<name>` was interpreted
+   as `String.replace` substitution patterns and mangled (e.g. `$&` re-inserted
+   the matched `@mention` text into the injected file body).
+
+**Missing functionality:**
+3. `getAtOptions`' doc comment promised "Lists the root, then flat-maps one
+   level of subdirectory contents", but the implementation listed **only the
+   root** — nested files (`src/App.tsx`) were never @-mentionable, unlike
+   Codex/Claude/Cursor which surface nested project files.
+
+- [x] **#428** (1) Anchor `isAtTrigger`/`atQuery` to a token boundary
+  (`(?:^|\s)@…`) so only start-of-input / post-whitespace `@` triggers.
+  (2) Switch `resolveAtMention` to a function replacement
+  `(_m, sep) => sep + block` that preserves leading whitespace and inserts file
+  content literally. (3) Implement one-level subdir expansion in `getAtOptions`
+  with dir-prefixed labels (`src/App.tsx`) for disambiguation.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1851 passed (214 files)** (+10).
+- `atCommand.test.ts`: 16 → 26 tests — per-path `list_dir` mock; subdir entries
+  with full paths; email/mid-word non-trigger; start-of-input trigger;
+  `$&`/`$1` content inserted literally; leading-whitespace preservation.
+
+## M119 — expandTemplate $-injection corruption + draft-persistence test flake (#429, #430) (eighty-seventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1851 passed (214 files)** (incl. M118).
+
+**Failing functionality found:**
+1. `commands.ts` `expandTemplate` (#96, slash-command prompt templates —
+   Codex/Claude `/`-command parity) corrupted user arguments containing `$`:
+   - `template.replace('$ARGUMENTS', args.trim())` used a *string* replacement,
+     so `$&` in the args re-inserted the matched `'$ARGUMENTS'` text and `$5`
+     became empty — e.g. `/translate The price is $5 and $&` produced
+     "The price is and and $ARGUMENTS", destroying the user's literal text.
+   - The `$1`…`$N` loop ran *after* `$ARGUMENTS` expansion, so any `$N` token
+     inside the already-expanded argument text was re-substituted with the Nth
+     word (e.g. `$5` in args was clobbered by the 5th word).
+
+**Failing test infrastructure:**
+2. `draftPersistence.test.tsx` (#273) timed out at the 5 s vitest test limit
+   under full-suite parallel load (5.6 s; ~0.7 s in isolation) — a pre-existing
+   timing flake unrelated to any production change.
+
+- [x] **#429** Rewrite `expandTemplate` with function replacements (so `$` in
+  args is inserted literally) and substitute `$1`…`$N` BEFORE `$ARGUMENTS` (so
+  expanded argument text is not re-processed). Empty args no longer fabricate a
+  spurious `$1` word.
+- [x] **#430** Raise the draft-persistence test timeout to 15 s and its
+  `waitFor` polls to 3 s so the full-App render + 3 session switches don't trip
+  the default 5 s limit under load.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1855 passed (214 files)** (+4).
+- 4 new tests in `commands.test.ts` (`$&`/`$N` literal preservation, no
+  re-substitution, literal `$1` in a `$1` slot).
+
+## M120 — ComfyUI image generation broken at /view binary fetch (#431, failing functionality) (eighty-eighth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1855 passed (214 files)**; `cargo test --lib` = 87 passed / 1 ignored.
+
+**Failing functionality found**: `generateComfyUI` (#130, local image generation)
+was broken at the image-retrieval step. After queuing a workflow and polling
+`/history`, it fetched each generated image from `/view` via `httpRequest('GET',
+…)`, which returns the body as a **text** string, then did
+`btoa(imgResp.body)`. The ComfyUI `/view` endpoint returns a binary PNG. On the
+Rust path, `mcp_http_request` reads the body with `response.text()` (lossy
+UTF-8, replacing invalid bytes with U+FFFD); on the fetch fallback, `res.text()`
+also decodes binary as UTF-8. `btoa()` then throws
+`InvalidCharacterError: The string to be encoded contains characters outside of
+the Latin1 range` (code points > 0xFF), so ComfyUI generation always failed when
+an image was ready. The A1111 and DALL-E backends were unaffected (they return
+base64 inline in JSON). The ComfyUI backend had **no test**.
+
+- [x] **#431** (Rust) Add a `http_get_binary` Tauri command that fetches a URL
+  and returns its body as `body_base64` (uses `response.bytes()` + standard
+  base64), avoiding the lossy-text round-trip and CORS. Extracted a pure
+  `bytes_to_base64` helper for unit testing. Registered in the invoke handler.
+- [x] **#431** (TS) Add `httpGetBase64(url)` in `imagegen.ts` that routes through
+  `http_get_binary` and falls back to a browser `fetch` → `Blob` →
+  `FileReader.readAsDataURL` (strip data-URL prefix) in non-Tauri environments.
+  `generateComfyUI` now uses it for the `/view` fetch instead of
+  `httpRequest('GET', …)` + `btoa`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1858 passed (214 files)** (+3);
+  `cargo test --lib` = **89 passed / 0 failed / 1 ignored** (+2).
+- 3 new TS tests in `imagegen.test.ts` (ComfyUI: binary base64 round-trip of the
+  PNG signature; history polling until image appears; non-2xx queue error).
+- 2 new cargo tests (`bytes_to_base64` PNG signature + empty/round-trip).
+
+## M121 — rewind_checkpoint bypassed the diff-review approval gate (#432, failing functionality / safety) (eighty-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1858 passed (214 files)**; `cargo test --lib` = 89 passed / 1 ignored.
+
+**Failing functionality found (safety bypass)**: the `rewind_checkpoint` agent
+tool (#91/#180, Codex/Claude checkpoint-rewind parity) restored files by calling
+`writeFile(path, content)` **directly**. Every other write path
+(`write_file`, `apply_edit`, `apply_patch`) routes through `proposeEdit` /
+`proposeEdits` so the user reviews a diff before files change — but rewind
+skipped that gate entirely. An autonomous agent could therefore overwrite
+multiple files to a prior state with NO user review, contradicting the
+review-every-write model the rest of the editor enforces. (`rewind_checkpoint`
+was the only mutating tool that bypassed review; `git_reset` is user-initiated
+via `/gitundo`, not an agent tool.) No test exercised the review interaction.
+
+- [x] **#432** Route `rewindToCheckpoint` through `proposeEdits` (the same batch
+  diff-review gate `apply_patch` uses). Autonomous / headless mode (no batch
+  callback) still applies every edit immediately, so existing behaviour and the
+  one-click rewind are unchanged; UI mode now surfaces the rewind as a batch
+  review the user accepts/rejects per file.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1861 passed (214 files)** (+3).
+- 3 new tests in `checkpoints.test.ts`: rejection blocks the restore (no
+  bypass), acceptance restores, and no-callback autonomous mode is unchanged.
+
+## M122 — Workspace RAG never indexed .env.example / multi-dot text files (#433, failing functionality) (ninetieth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1861 passed (214 files)**.
+
+**Failing functionality found**: `workspaceRag.ts` `isTextFile` (#94, workspace
+RAG — Codex/Claude repo-context parity) computed the extension as
+`name.slice(name.lastIndexOf('.'))`. For a multi-dot / dotfile name like
+`.env.example`, `lastIndexOf('.')` points at the dot before `example`, so the
+extension became `.example` — which is NOT in `TEXT_EXTENSIONS`. The set
+explicitly lists `.env.example` (and `.gitignore`), but those entries were
+**dead**: `.env.example` template files were never indexed into the workspace
+knowledge collection, so `queryWorkspace` could never surface them. (`gitignore`
+matched only by luck — its single dot sits at index 0.)
+
+- [x] **#433** `isTextFile` now checks the last extension AND, as a fallback, the
+  whole lowercased filename against `TEXT_EXTENSIONS`, so dotfile / multi-dot
+  entries (`.env.example`, `.gitignore`) match while real `.env` (secrets) and
+  binary extensions still don't. Exported `isTextFile` for direct unit testing.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1867 passed (214 files)** (+6).
+- 6 new tests in `workspaceRag.test.ts`: `.env.example` / `.gitignore` match;
+  real `.env` excluded; `foo.test.ts` / `component.spec.jsx` match by last ext;
+  non-text / unknown extensionless names rejected; end-to-end that a
+  `.env.example` file is indexed and returned by `queryWorkspace`.
+
+## M123 — Visual diff silently passed when screenshots failed to decode (#434, failing functionality) (ninety-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1867 passed (214 files)**.
+
+**Failing functionality found**: `imageDiff.ts` `diffScreenshots` (#79, the
+pixel-diff behind the `visual_match` browser-scenario step and the
+`diff_screenshots` agent tool) returned `{ diffRatio: 0, pass: true, diffDataUrl:
+'' }` when either screenshot failed to decode/load (`loadImageData` → null). So a
+corrupt, empty, or unloadable base64 PNG silently **passed** visual regression —
+the scenario step would report success even though no comparison actually
+happened. (All existing tests used the `_mocks.diff` seam, so the real null path
+was never exercised.)
+
+- [x] **#434** Treat a decode/load failure as a FAILED diff
+  (`{ diffRatio: 1, pass: false, diffDataUrl: '' }`), matching the existing
+  size-mismatch semantics. Added a `_mocks.loadImageData` seam so the null path
+  is unit-testable in jsdom (which has no canvas).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1869 passed (214 files)** (+2).
+- 2 new tests: both-screenshots-fail → pass=false; only-before-fails → pass=false.
+
+## M124 — MCP HTTP IPC deserialization broken (camelCase mismatch) (#435, failing functionality) (ninety-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1869 passed (214 files)**; `cargo test --lib` = 89 passed / 1 ignored.
+
+**Failing functionality found**: `src-tauri/src/lib.rs` `McpHttpRequest` had
+snake_case fields (`session_id`, `auth_token`) with **no**
+`#[serde(rename_all = "camelCase")]`. Tauri v2 does NOT auto-camelCase nested
+struct fields (only top-level command parameters), so every `mcp_http_request`
+invoke that sent camelCase keys failed to deserialize:
+
+- `mcp-http.ts:111` sends `sessionId` / `authToken` (camelCase) →
+  `Err("missing field session_id")` → **all HTTP MCP servers broken in
+  production** (the invoke rejects; mcp-http.ts has no fetch fallback, throws
+  `MCP HTTP request failed`).
+- `openapiTools.ts:135` and `imagegen.ts:67` call `mcp_http_request` with
+  `{ method, url, headers, body }` — **no session_id at all** → same
+  deserialize error → they fall back to browser `fetch` (CORS), so the "route
+  through Rust to avoid CORS" claim was false for those.
+
+- [x] **#435** Added `#[serde(rename_all = "camelCase")]` to `McpHttpRequest`
+  and `#[serde(default)]` on `session_id: String` (callers that omit it now
+  deserialize with `""`; the field is unused by the command body so defaulting
+  is safe). `McpHttpResponse` left unchanged (all single-word fields).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1869 passed (214 files)** (0);
+  `cargo test --lib` = **90 passed / 0 failed / 1 ignored** (+1).
+- 1 new cargo test (`mcp_http_request_deserializes_camel_case_and_optional_session_id`)
+  verifying all three call shapes (camelCase with session, camelCase without
+  session, authToken present). No TS test added — the IPC path is only
+  exercisable via real Tauri, not jsdom (tests mock `invoke`).
+
+## M125 — MCP stdio transport silently ignored `success: false` from spawn (#436, failing functionality) (ninety-third analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1869 passed (214 files)**; `cargo test --lib` = 90 passed / 1 ignored.
+
+**Failing functionality found**: `TauriMcpStdioTransport.spawnProcess`
+(`mcp-tauri.ts`, #58 MCP stdio transport) called
+`invoke('mcp_stdio_spawn', …)` and received `McpStdioResponse` but **never
+checked `result.success`**. The Rust `mcp_stdio_spawn` returns
+`Ok(McpStdioResponse { success: false, message: "Session already exists" })`
+for soft failures (duplicate session) rather than an `Err`. Without the check,
+the JS side silently proceeded to register the client and return as if the
+spawn succeeded — subsequent `sendRequest` / `readResponse` calls would then
+fail with confusing errors or `executeWithResponse` would time out, with no
+indication that the spawn itself had failed. (All existing tests mocked
+`spawnProcess` at the `spyOn` level, so the real invoke→response handling was
+never exercised, and `mcp-tauri.ts` had **zero direct unit tests**.)
+
+- [x] **#436** `spawnProcess` now checks `result?.success === false` and throws
+  with the response `message` (falling back to `'unknown error'`). Added 15
+  direct unit tests in `mcpTauri.test.ts` covering: spawn success/failure/env
+  forwarding, sendRequest (not-found + success), readResponse (not-found +
+  string + null), closeProcess (cleanup + error swallowing),
+  checkProcessAlive (true + false), and executeWithResponse (response +
+  timeout).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1884 passed (215 files)** (+15);
+  `cargo test --lib` = 90 passed / 1 ignored (unchanged).
+
+## M126 — openPreview left stale `_open` on IPC rejection + CliCommandRequest/Response camelCase (#437, failing functionality / safety) (ninety-fourth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1884 passed (215 files)**; `cargo test --lib` = 90 passed / 1 ignored.
+
+**Failing functionality found (two issues)**:
+
+1. **`openPreview` stale `_open` flag** (#172, browser preview): `openPreview`
+   set `_open = true` optimistically before awaiting
+   `preview_webview_open`. If the IPC rejected (e.g. no webview runtime, bad
+   URL), `_open` stayed `true` even though the preview never opened.
+   `navigatePreview` / `setBoundsPreview` / `reloadPreview` would then send
+   commands to a non-existent webview (harmless but wasteful and confusing),
+   and `isPreviewOpen()` would falsely report `true`.
+
+2. **`CliCommandRequest` / `CliCommandResponse` snake_case mismatch** (latent):
+   `run_cli_command` is registered in the Tauri handler but not yet called
+   from JS. Its request struct has `timeout_ms` (snake_case) with no
+   `rename_all`, so a future JS caller sending `timeoutMs` (camelCase) would
+   silently get `None` (Option defaults). The response struct serializes
+   `exit_code` / `timed_out` as snake_case, so JS reading `exitCode` /
+   `timedOut` would get `undefined`. Same class of bug as #435 (M124).
+
+- [x] **#437** `openPreview` now wraps the invoke in a try/catch: on rejection,
+  `_open` is reset to `false` and the error is rethrown. The optimistic-set
+  still works for pending (not-yet-resolved) invokes. Added
+  `#[serde(rename_all = "camelCase")]` to both `CliCommandRequest` and
+  `CliCommandResponse` as hardening.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1887 passed (215 files)** (+3);
+  `cargo test --lib` = **91 passed / 0 failed / 1 ignored** (+1).
+- 3 new TS tests (openPreview rejects → `_open=false`; navigate no-ops after
+  rejected open; setBounds no-ops after rejected open). 1 new cargo test
+  (`cli_command_request_response_camel_case_round_trip` verifying camelCase
+  deserialization + serialization of both structs).
+
+## M127 — Browser scenario click/type sent `ref_id` (snake_case) to Tauri (#438, failing functionality) (ninety-fifth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1887 passed (215 files)**; `cargo test --lib` = 91 passed / 1 ignored.
+
+**Failing functionality found**: `scenario.ts` `executeStep` (#78, browser
+scenario runner) called `cdpInvoke('browser_cdp_click', { ref_id: … })` and
+`cdpInvoke('browser_cdp_type', { ref_id: …, text: … })` using the **snake_case**
+key `ref_id`. Tauri v2 auto-camelCases top-level command parameters, so the Rust
+`browser_cdp_click(ref_id: String)` expects the JS key `refId` (camelCase). With
+`ref_id`, Tauri would not find the `refId` parameter and the command would
+**reject in production** — **all click and type steps in browser scenarios were
+broken**. (The sibling `browser-tools.ts` already used `refId` correctly; the
+scenario runner was the only caller with the wrong casing. Existing tests mocked
+`_mocks.invoke` and never asserted on the arg keys, so the bug was invisible.)
+
+- [x] **#438** Changed both `browser_cdp_click` and `browser_cdp_type` invoke
+  calls in `scenario.ts` to send `refId` (camelCase) instead of `ref_id`. The
+  `step.args.refId ?? step.args.ref_id` fallback is preserved for legacy
+  scenarios that store `ref_id` in their step args.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1890 passed (215 files)** (+3);
+  `cargo test --lib` = 91 passed / 1 ignored (unchanged).
+- 3 new tests in `scenario.test.ts`: click sends `refId` (not `ref_id`), type
+  sends `refId` + `text`, and legacy `ref_id` arg is still forwarded as `refId`.
+
+## M128 — terminal_run used `sh -c` on all platforms, broken on Windows (#439, failing functionality) (ninety-sixth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1890 passed (215 files)**; `cargo test --lib` = 91 passed / 1 ignored.
+
+**Failing functionality found**: `terminal_run` (#62, streaming terminal
+panel) hardcoded `std::process::Command::new("sh")` with no `#[cfg(windows)]`
+branch. On Windows, `sh` is not in PATH (unless Git Bash / WSL is installed),
+so every terminal command would fail with "No such file or directory". The
+sibling `run_cli` command already had the correct `#[cfg(unix)]` → `sh -c` /
+`#[cfg(windows)]` → `cmd /C` split; `terminal_run` was the only command-launch
+path that missed it.
+
+- [x] **#439** Added the same `#[cfg(unix)]` / `#[cfg(windows)]` split to
+  `terminal_run` that `run_cli` uses. On Unix: `sh -c <command>`; on Windows:
+  `cmd /C <command>`. The rest of the function (stdout/stderr piping, event
+  emission, PID tracking) is unchanged.
+
+### Result
+- `npx tsc --noEmit` clean; `cargo test --lib` = **91 passed / 0 failed / 1 ignored** (unchanged).
+- No TS test added — `terminal_run` requires a `tauri::AppHandle` not
+  constructable in a unit test. The fix is a compile-time `cfg` split mirroring
+  the proven `run_cli` pattern; verified by `cargo check --lib` (both branches
+  compile).
+
+## M129 — expandTemplate only replaced the first `$ARGUMENTS` occurrence (#440, failing functionality) (ninety-seventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1890 passed (215 files)**; `cargo test --lib` = 91 passed / 1 ignored.
+
+**Failing functionality found**: `commands.ts` `expandTemplate` (#96, slash
+command template expansion) used `String.replace('$ARGUMENTS', …)` which only
+replaces the **first** occurrence. If a user-defined template contained
+`$ARGUMENTS` twice (e.g. `Q: $ARGUMENTS\nA: $ARGUMENTS`), the second occurrence
+would remain as the literal text `$ARGUMENTS` in the expanded prompt. The
+`$1`/`$2`/… replacements already used `replaceAll`, so this was an inconsistency.
+
+- [x] **#440** Changed `$ARGUMENTS` replacement from `replace` to `replaceAll`
+  (with the same function replacement that prevents `$`-injection per #429).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1892 passed (215 files)** (+2);
+  `cargo test --lib` = 91 passed / 1 ignored (unchanged).
+- 2 new tests in `commands.test.ts`: multiple `$ARGUMENTS` with content; multiple
+  `$ARGUMENTS` with empty args.
+
+## M130 — Scenario visual_match overwrote pre-defined `after` with `undefined` + double-ran diff (#441, failing functionality) (ninety-eighth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1892 passed (215 files)**; `cargo test --lib` = 91 passed / 1 ignored.
+
+**Failing functionality found**: `scenario.ts` `runScenario` (#78, browser
+scenario runner) had two issues in the `visual_match` step path:
+
+1. **Overwrote `step.args.after` with `undefined`**: The enriched step was
+   `{ ...step.args, before: beforeScreenshot, after: undefined }`, which
+   discarded any pre-defined reference screenshot the user had stored in
+   `step.args.after`. The `executeStep` call then always failed with "before/
+   after screenshots not available" — even when a reference existed.
+
+2. **Double-ran the diff**: The runner always re-ran `diffScreenshots` at
+   line 160–167 with captured `before/after` screenshots, regardless of
+   whether `executeStep` had already done the comparison. When a pre-defined
+   `after` was present, the `executeStep` result was silently overridden by
+   the re-run (which compared two nearly-identical captured screenshots,
+   always passing).
+
+- [x] **#441** The enriched step no longer overwrites `after` (just injects
+  `before`). `executeStep` now returns `diffRatio` for `visual_match`. The
+  runner only re-runs the diff when `step.args.after` is NOT provided (no
+  reference) — preserving the existing behavior for scenarios that rely on
+  captured screenshots. When a reference IS provided, `executeStep` does the
+  comparison and the runner uses its result (including `diffRatio`).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1894 passed (215 files)** (+2);
+  `cargo test --lib` = 91 passed / 1 ignored (unchanged).
+- 2 new tests in `scenario.test.ts`: pre-existing `step.args.after` is preserved
+  (diff called once, `diffRatio` populated); no-reference + no-screenshot → fails
+  with "not available".
+
+## M131 — terminal_kill sent `session_id` (snake_case) to Tauri + McpStdioResponse camelCase hardening (#442, failing functionality) (ninety-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1894 passed (215 files)**; `cargo test --lib` = 91 passed / 1 ignored.
+
+**Failing functionality found**: `terminal.ts` `killTerminal` (#87, streaming
+terminal) called `tauriInvoke('terminal_kill', { session_id: id })` using the
+**snake_case** key `session_id`. Tauri v2 auto-camelCases top-level command
+parameters, so the Rust `terminal_kill(session_id: u64)` expects the JS key
+`sessionId` (camelCase). With `session_id`, Tauri would not find the `sessionId`
+parameter and the command would **reject in production** — **the Stop/Kill
+button in the terminal panel was broken**. (Same class of bug as #438/M127.
+Existing tests mocked `_mocks.invoke` and read `args.session_id`, matching the
+bug, so the casing error was invisible.)
+
+Additionally, `McpStdioResponse` (#58) had `session_id` (snake_case) with no
+`rename_all` — while no JS code currently reads the field, it was the last
+Tauri response struct with a snake_case multi-word field, inconsistent with the
+camelCase convention used everywhere else.
+
+- [x] **#442** Changed `terminal_kill` invoke call to send `sessionId`
+  (camelCase). Added `#[serde(rename_all = "camelCase")]` to
+  `McpStdioResponse` and updated the `mcp-tauri.ts` stub to return `sessionId`.
+  Updated the `terminal.test.ts` mock to read `args.sessionId`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1895 passed (215 files)** (+1);
+  `cargo test --lib` = **92 passed / 0 failed / 1 ignored** (+1).
+- 1 new TS test (`terminal.test.ts`: verifies `sessionId` camelCase key, not
+  `session_id`). 1 new cargo test (`mcp_stdio_response_serializes_camel_case`).
+
+## M132 — Agent tool call dedup dropped all id-less calls after the first (#443, failing functionality) (one-hundredth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1895 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `agent.ts` `agenticChatStream` (#88, agentic
+tool loop) deduplicated stream-chunk tool calls with
+`!toolCalls.some(tc => tc.id === toolCall.id)`. The `ToolCall.id` field is
+**optional** (`id?: string`). When a model sent multiple tool calls in a single
+response without `id` (common with some Ollama models), `undefined === undefined`
+is `true`, so **only the first tool call was kept — all subsequent tool calls in
+that response were silently dropped**. The model's intent to call multiple tools
+was lost, and only one tool would execute.
+
+- [x] **#443** The dedup now uses a composite key: `toolCall.id` when present,
+  otherwise `__no_id__:<function.name>:<function.arguments>`. This preserves
+  the existing behavior for id-bearing calls (stream replay dedup) while
+  ensuring that different tool calls without `id` (different name or args) are
+  all kept. Two identical id-less calls (same name + same args) are still
+  deduplicated.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1897 passed (215 files)** (+2);
+  `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `agentic.test.ts`: (1) two tool calls without `id` → both
+  executed; (2) two identical tool calls with same `id` → only one execution.
+
+## M133 — Ollama stream parser lost JSON lines split across chunks (#444, failing functionality) (one-hundred-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1897 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Both `fetchOllamaChatStream` (`ollama.ts`)
+and `agenticChatStream` (`agent.ts`) split the raw stream by `\n` and parsed
+each line immediately — **without buffering incomplete trailing lines**. If a
+TCP packet boundary fell in the middle of a JSON line (common with long tool-
+call arguments or under network load), the first chunk would contain an
+incomplete JSON object, `JSON.parse` would throw, and the data would be
+silently lost (caught by the try/catch). The second chunk would contain the
+rest of the line, which would also fail to parse. This could cause **missing
+stream content, dropped tool calls, or corrupted assistant messages**. The MLX
+stream parser (`fetchMlxChatStream`) already had the correct buffer pattern
+(`lines.pop()` to keep the trailing partial line).
+
+- [x] **#444** `fetchOllamaChatStream`, `agenticChatStream`,
+  `pullOllamaModel`, and `createOllamaModel` now all use a buffer accumulator:
+  each chunk is appended to the buffer, lines are split on `\n`, the last
+  (possibly incomplete) line is kept in the buffer for the next chunk, and only
+  complete lines are parsed. After the stream ends, any remaining buffered
+  content is flushed as a final parse attempt. (The MLX parser and the
+  connections SSE parser already had this pattern.)
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1900 passed (215 files)** (+3);
+  `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `ollama.test.ts`: (1) single JSON line split across two
+  chunks → reassembled; (2) multiple JSON lines split across chunks → all
+  parsed; (3) JSON line without trailing newline → flushed after stream ends.
+
+## M134 — Agent catch block crashed on malformed tool call (missing `function`) (#445, failing functionality) (one-hundred-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1900 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `agent.ts` `agenticChatStream` catch block
+(#88, agentic tool loop) accessed `toolCall.function.name` directly when a
+tool execution threw. If the model sent a malformed tool call where `function`
+was missing (some Ollama models send `{ name, arguments }` without a nested
+`function` object), the catch block itself would throw a `TypeError: Cannot
+read properties of undefined (reading 'name')`, crashing the entire agentic
+loop instead of gracefully reporting the original error. The rest of the code
+already used `toolCallName(toolCall)` which has a `toolCall.name` fallback.
+
+- [x] **#445** Replaced both `toolCall.function.name` accesses in the catch
+  block with `toolCallName(toolCall)`, which falls back to `toolCall.name`
+  when `function` is absent. Added 6 unit tests for `toolCallName` /
+  `toolCallArgs` covering: default `function.name`, top-level `name` fallback,
+  missing `function` entirely, string/object/undefined argument parsing.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1906 passed (215 files)** (+6);
+  `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 6 new tests in `tools.test.ts` for `toolCallName` / `toolCallArgs` helpers.
+
+## M135 — MCP stdio `sendRequest` has no per-request timeout (#446, failing functionality) (one-hundred-third analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1906 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `McpStdioClient.sendRequest` (mcp.ts) puts a
+`{resolve, reject}` pair into `pendingRequests` and relies entirely on the
+background polling loop, process exit, or explicit `disconnect()` to settle the
+Promise. If an MCP server accepts the JSON-RPC request but never responds (hung
+process, deadlock, network stall on the server side), the Promise hangs
+**forever** — the agentic tool loop that awaited `callTool()` is blocked
+indefinitely with no timeout, no error, and no way for the user to recover
+short of restarting the app. The HTTP client delegates to a Rust command with
+its own HTTP-level timeout, so only the stdio path is affected.
+
+- [x] **#446** Added a per-request timeout (default 30 s, configurable via
+  `McpServerConfig.timeoutMs`) to `McpStdioClient.sendRequest`. When the timer
+  fires, remove the pending entry and reject with a descriptive timeout error.
+  The timer is cleared when the polling loop resolves/rejects the request
+  normally. Also clear timers in `handleStdoutData`, `handleProcessExit`, and
+  `disconnect()`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1914 passed (215 files)** (+2);
+  `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `mcp-transport.test.ts`: (1) stdio server never responds →
+  timeout error after 100ms; (2) normal response clears timeout correctly.
+
+## M136 — `runAction` doesn't catch sandbox errors → unhandled rejection (#447, failing functionality) (one-hundred-third analysis pass)
+
+**Failing functionality found**: `runAction` (customTools.ts) calls
+`_sandboxRun(wrapCode, { message })` without a try/catch. If the user's action
+code throws (syntax error, runtime error, timeout), the rejection propagates
+unhandled to the `onClick` handler in `App.tsx` (line ~4894), which also has no
+try/catch. The result: the user clicks an action button, nothing visible
+happens, and an unhandled Promise rejection is logged in the console. The
+filter functions (`applyFilterInlet`/`applyFilterOutlet`) already wrap their
+sandbox calls in try/catch with non-fatal fallbacks — `runAction` is
+inconsistent.
+
+- [x] **#447** Wrapped the `_sandboxRun` call in `runAction` with a try/catch that
+  logs the error and returns `null` (same contract as "action produced no
+  injectable text"). Also wrapped the `onClick` handler in `App.tsx` with a
+  try/catch that shows a status banner on failure.
+
+### Result
+- 3 new tests in `customTools.test.ts`: (1) sandbox throws runtime error →
+  returns null; (2) sandbox throws syntax error → returns null; (3) sandbox
+  throws timeout → returns null. No unhandled rejections.
+
+## M137 — `scenario.ts` captures screenshots for every step, wasting IPC (#448, missing functionality) (one-hundred-third analysis pass)
+
+**Missing functionality found**: `runScenario` (scenario.ts) calls
+`captureScreenshot()` before AND after every step regardless of action type.
+For `visual_match` steps the screenshots are needed for diff comparison, but
+for `navigate`/`click`/`type`/`wait_for`/`assert` steps they are stored in
+`StepResult` and never consumed — the UI (`App.tsx` line ~7820) only reads
+`stepResults` for error messages, never for screenshots. Each
+`captureScreenshot` is a Tauri IPC round-trip to the Rust CDP backend, so this
+doubles the IPC traffic per step with zero benefit. Codex CLI and Claude Code
+scenario/eval runners only capture screenshots when a visual assertion is
+needed.
+
+- [x] **#448** Added `captureScreenshots?: boolean` to `RunOptions` (default
+  `false`). When false, only capture before/after screenshots for
+  `visual_match` steps. When true, capture for all steps (debugging mode).
+  This halves IPC calls for non-visual scenarios while preserving the debugging
+  escape hatch.
+
+### Result
+- 4 new/updated tests in `scenario.test.ts`: (1) non-visual step skips
+  screenshots by default (0 screenshot calls); (2) captureScreenshots: true
+  captures before+after (2 calls); (3) visual_match step still captures by
+  default; (4) mixed scenario: only visual_match steps capture screenshots.
+
+## M138 — `executeToolCall` and safe accessors crash on malformed tool calls without `function` (#449, failing functionality) (one-hundred-fourth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1914 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Three places still access
+`toolCall.function.*` directly instead of using the safe accessors:
+1. `tools.ts:79` `executeToolCall` calls `this.getTool(toolCall.function.name)`
+   — crashes with `TypeError` if `function` is missing (some Ollama models
+   send `{ name, arguments }` without nested `function`). The very next line
+   already uses `toolCallName(toolCall)` which has the fallback — the `getTool`
+   call should too.
+2. `tools.ts:31` `toolCallName` falls through to `toolCall.function.name`
+   when `toolCall.name` is undefined — crashes if `function` is also absent.
+3. `App.tsx:4641` renders `toolCall.function.arguments` directly in the tool
+   call display — crashes the entire message render if `function` is missing.
+
+The root cause is that the `ToolCall` interface types `function` as required,
+but reality (Ollama tool call outputs) proves it can be absent. M134 fixed the
+agent catch block; these are the remaining instances of the same bug class.
+
+- [x] **#449** Made `function` optional in `ToolCall` interface. Updated
+  `toolCallName` to `toolCall.name ?? toolCall.function?.name ?? 'unknown'`.
+  Updated `toolCallArgs` to handle missing `function` (return `{}`). Updated
+  `executeToolCall` to use `toolCallName(toolCall)` for `getTool`. Updated
+  `App.tsx` display to use safe accessors.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1924 passed (215 files)** (+7);
+  `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 7 new tests in `tools.test.ts`: toolCallName with both name+function
+  missing, toolCallArgs with top-level arguments (string/object/missing),
+  executeToolCall with missing function, executeToolCall Tool not found.
+
+## M139 — `browserPreview.ts` race: follow-up calls fire before `openPreview` IPC completes (#450, failing functionality) (one-hundred-fourth analysis pass)
+
+**Failing functionality found**: `openPreview` sets `_open = true`
+optimistically before the `preview_webview_open` IPC resolves. If
+`navigatePreview`/`setBoundsPreview`/`reloadPreview` are called immediately
+after (common from `BrowserPane`'s `useEffect`/`ResizeObserver`), they see
+`_open === true` and send their IPC commands to a webview that hasn't been
+created yet — the commands either silently fail or throw on the Rust side.
+If `openPreview` later rejects, `_open` is reset to `false`, but the
+follow-up commands already went out. Codex CLI's preview pane awaits the
+open before issuing navigation/bounds commands.
+
+- [x] **#450** Added an `_openingPromise` field to `browserPreview.ts`. While
+  `openPreview` is in flight, `navigatePreview`/`setBoundsPreview`/
+  `reloadPreview` await it before proceeding. If `openPreview` rejects, the
+  follow-up calls no-op (since `_open` is false). Added a generation counter
+  so stale `openPreview` calls from previous test sessions don't corrupt
+  `_open` state. This eliminates the race without changing the fire-and-forget
+  API for callers that don't care.
+
+### Result
+- 4 new tests in `browserPreview.test.ts`: navigate/setBounds/reload wait
+  for openPreview to resolve; follow-up calls no-op when openPreview rejects
+  while waiting. 2 BrowserPane tests updated to use async act() for promise
+  chain flushing.
+
+## M140 — `memory.ts` and `crossSessionMemory.ts` share localStorage key with incompatible data shapes (#451, failing functionality) (one-hundred-fifth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1924 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `memory.ts` (MEMORY_KEY = `'ollama_gui_memory'`)
+stores a `MemoryEntry[]` array (`{ id, text, scope, createdAt }`). `crossSessionMemory.ts`
+(STORAGE_KEY = `'ollama_gui_memory'`) stores a `Record<string, MemoryEntry>` object
+(`{ key, value, updatedAt }`). Both are imported and used by `App.tsx`
+(`memory.ts` for the sidebar memory panel, `crossSessionMemory.ts` for agent
+`memory_set`/`memory_get` tools). When both modules write to the same key, they
+corrupt each other's data:
+- `memory.ts` writes an array → `crossSessionMemory.ts` reads it as a Record
+  (array indices become keys, `Object.values` returns wrong shape).
+- `crossSessionMemory.ts` writes an object → `memory.ts` reads it as an array,
+  `[...loadMemory(), entry]` spreads object keys into the array, producing
+  garbage that is then saved back.
+
+- [x] **#451** Gave `crossSessionMemory.ts` a distinct storage key
+  (`'ollama_gui_cross_session_memory'`) so the two stores no longer collide.
+
+### Result
+- 1 new test in `crossSessionMemory.test.ts`: verifies the two stores use
+  different keys and don't corrupt each other's data.
+
+## M141 — `mcpConfig.ts` `readPersisted` and `mcpAuth.ts` `authMetaStore` lack try/catch around JSON.parse (#452, failing functionality) (one-hundred-fifth analysis pass)
+
+**Failing functionality found**: `mcpConfig.ts` `readPersisted()` calls
+`JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]')` with no try/catch. If
+the stored data is corrupted (browser extension, partial write, version
+mismatch), the `SyntaxError` propagates up through `mcpConfigStore.list()`,
+which is called during app initialization — crashing the UI on startup.
+Similarly, `mcpAuth.ts` `authMetaStore.save()` and `.load()` parse
+`localStorage.getItem(AUTH_META_KEY)` without try/catch, crashing on
+corrupted auth metadata. Every other localStorage-backed service in the
+codebase (`presets.ts`, `openapiTools.ts`, `secrets.ts`, `memory.ts`, etc.)
+already wraps these calls in try/catch with sensible defaults.
+
+- [x] **#452** Wrapped `readPersisted()` in try/catch (return `[]` on error,
+  plus `Array.isArray` guard). Wrapped `authMetaStore.save()` and `.load()`
+  in try/catch (return `{}` / `null` on error).
+
+### Result
+- 2 new tests in `mcpConfig.test.ts`: corrupted JSON and non-array type.
+- 4 new tests in `mcpAuth.test.ts`: corrupted load, corrupted save, unknown
+  server, normal round-trip.
+
+## M142 — `ollama.ts` `fetchOllamaModels` has unused `includeCloudModels` parameter (#453, dead code) (one-hundred-fifth analysis pass)
+
+**Dead code found**: `fetchOllamaModels(endpoint, includeCloudModels = false)`
+accepts a second parameter `includeCloudModels` that is never referenced in the
+function body — it always returns only `localModels`. The sole caller
+(`App.tsx:936`) passes only the endpoint. This is dead code that could mislead
+contributors into thinking cloud models are merged here.
+
+- [x] **#453** Removed the unused `includeCloudModels` parameter from
+  `fetchOllamaModels` and its type signature. No test stubs referenced it.
+
+### Result
+- Dead code removed; tsc clean. No new tests needed (parameter was unused).
+
+## M143 — `storage.ts` `getSessions`/`getFolders`/`getProjects` lack try/catch around JSON.parse (#454, failing functionality) (one-hundred-sixth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1931 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `storage.ts` — the main session/folder/project
+persistence layer — calls `JSON.parse(localStorage.getItem(...))` without
+try/catch in `getSessions()`, `getFolders()`, and `getProjects()`. If the
+stored data is corrupted (browser extension, partial write, version mismatch),
+the `SyntaxError` propagates up and crashes the app. `getSessions()` is called
+in 10+ places across `App.tsx` including the `useState` initializer for
+projects (line 542), which runs on mount — so corrupted sessions data crashes
+the app on startup. Additionally, `updateSession()`, `deleteSession()`,
+`deleteFolder()`, and `deleteProject()` call `localStorage.setItem()` without
+`QuotaExceededError` handling (unlike `saveSession` which already handles it),
+so a full localStorage throws an unhandled exception. Every other
+localStorage-backed service (`presets.ts`, `openapiTools.ts`, `secrets.ts`,
+`memory.ts`, etc.) already wraps these calls in try/catch.
+
+- [x] **#454** Wrapped `getSessions()`, `getFolders()`, `getProjects()` in
+  try/catch (return `[]` on error, plus `Array.isArray` guard). Wrapped
+  `updateSession()`, `deleteSession()`, `deleteFolder()`, `deleteProject()`
+  `setItem` calls in try/catch for `QuotaExceededError`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1938 passed (215 files)**
+  (+7); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 7 new tests in `storage.test.ts`: corrupted sessions/folders/projects JSON,
+  non-array types, QuotaExceededError on updateSession and deleteSession.
+
+## M144 — `createOllamaModel` re-throws SyntaxError on malformed JSON lines (#455, failing functionality) (one-hundred-seventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1938 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `createOllamaModel` (ollama.ts) has an
+inconsistent catch block that re-throws `SyntaxError` from `JSON.parse` on
+malformed stream lines, unlike `pullOllamaModel` which silently logs and skips.
+The catch block:
+```ts
+catch (e) {
+  if (e instanceof Error && e.message !== line) throw e;
+}
+```
+was intended to re-throw `chunk.error` errors while swallowing `JSON.parse`
+failures, but `SyntaxError` (which extends `Error`) has `e.message !== line`
+(true — the error message is not the raw JSON line), so it is also re-thrown.
+This crashes the model-creation stream on any malformed JSON line, while
+`pullOllamaModel` handles the same situation gracefully. The flush block at
+the end of the function has the same bug.
+
+- [x] **#455** Replace the catch blocks in `createOllamaModel` with
+  `SyntaxError`-aware handling: silently skip malformed JSON lines (matching
+  `pullOllamaModel`'s behavior), re-throw `chunk.error` errors. Add a test
+  that verifies a malformed line in the stream does not crash the function.
+
+- [x] **#455** Replaced the catch blocks in `createOllamaModel` with
+  `SyntaxError`-aware handling: `if (e instanceof SyntaxError) continue;`
+  (loop) / `return;` (flush), re-throwing `chunk.error` errors. Matches
+  `pullOllamaModel`'s graceful skip behavior.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1941 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `ollama.test.ts` (#455): skips malformed JSON lines,
+  re-throws chunk.error, skips malformed JSON in flush buffer.
+
+## M145 — Ollama API functions discard response body error on non-ok responses (#456, failing functionality) (one-hundred-eighth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1941 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: All five Ollama API functions
+(`fetchOllamaChatStream`, `fetchOllamaModels`, `createOllamaModel`,
+`pullOllamaModel`, `deleteOllamaModel`) throw `new Error(\`Ollama … error:
+${response.statusText}\`)` on non-ok HTTP responses, discarding the JSON body
+that Ollama returns with the detailed failure reason (e.g. `{"error":"model
+'llama3' not found, try pulling it first"}`). The user sees a generic
+"Ollama API error: Not Found" or "Internal Server Error" instead of the
+actionable message. Worse, `formatError` in `errorMessages.ts` checks for
+`"model" … "not found"` to map to the friendly "Model not available" guidance,
+but the actual error text is lost so the mapping never fires — the user gets
+the unhelpful fallback "Something went wrong — Ollama API error: Not Found".
+This contrasts with agentic GUIs (Codex, Claude) which always surface the
+server-provided error detail.
+
+- [x] **#456** Added `ollamaErrorFromResponse(response, prefix)` helper that
+  reads `response.json()` and extracts the `.error` field, falling back to
+  `statusText` when the body is absent, non-JSON, or has no `.error`. Wired it
+  into all five Ollama API non-ok handlers.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1950 passed (215 files)**
+  (+9); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 9 new tests in `ollama.test.ts` (#456): helper extracts body error, falls
+  back to statusText when no `.error` / `json()` throws / empty `.error`, and
+  each of the 5 API functions surfaces the body error on non-ok responses.
+
+## M146 — Agentic chat stream discards response body error on non-ok (#457, failing functionality) (one-hundred-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1950 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `agenticChatStream` in `agent.ts` makes its
+own `fetch` call to the Ollama chat endpoint (separate from
+`fetchOllamaChatStream` in `ollama.ts`) and handles non-ok responses with
+`throw new Error(\`Ollama API error: ${response.statusText}\`)` — the exact same
+bug fixed in M145 (#456) for the non-agentic path. When the agent loop hits a
+non-ok response (e.g. model not found), it discards the JSON body error that
+Ollama returns (`{"error":"model 'llama3' not found, try pulling it first"}`),
+so `formatError` cannot map to the helpful "Model not available" guidance and
+the user sees "Ollama API error: Not Found". This is the primary code path for
+agentic/tool-using conversations, so the bug affects every agentic run that
+encounters an API error.
+
+- [x] **#457** Imported `ollamaErrorFromResponse` from `./ollama` and replaced
+  the inline non-ok handler in `agenticChatStream` with
+  `throw await ollamaErrorFromResponse(response, 'Ollama API error')`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1952 passed (215 files)**
+  (+2); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `agent.test.ts` (#457): surfaces body `.error` on non-ok via
+  `onError`, falls back to statusText when body has no `.error`.
+
+## M147 — `streamOpenAiChat` discards response body error on non-ok (#458, failing functionality) (one-hundred-tenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1952 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `streamOpenAiChat` in `connections.ts`
+handles non-ok HTTP responses with
+`throw new Error(\`OpenAI stream error: ${res.statusText}\`)`, discarding the
+JSON body that OpenAI-compatible endpoints (OpenAI, LM Studio, vLLM, etc.)
+return with the detailed failure reason:
+`{"error": {"message": "Invalid API key provided", ...}}`. The user sees a
+generic "OpenAI stream error: Unauthorized" instead of the actionable
+"Invalid API key provided". This affects every chat sent through a registered
+OpenAI-compatible connection that encounters an API error — a core feature for
+users who connect external endpoints alongside Ollama. This is the same class
+of bug as M145 (#456) and M146 (#457), but the OpenAI error format is nested
+(`error.message`) rather than a flat string.
+
+- [x] **#458** Added `openAiErrorFromResponse(res, prefix)` helper that reads
+  `res.json()` and extracts the error detail from three common formats:
+  `body.error.message` (OpenAI), `body.error` as string (Ollama/proxy), and
+  `body.message` / `body.detail` (some proxies). Falls back to `statusText`
+  when the body is absent, non-JSON, or has no error field. Wired it into the
+  `streamOpenAiChat` non-ok handler.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1958 passed (215 files)**
+  (+5); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 6 new tests in `connections.test.ts` (#458): helper extracts nested
+  `error.message`, string `error`, top-level `message`/`detail`, falls back to
+  statusText on no-error-body / `json()` throws, and `streamOpenAiChat`
+  surfaces body error on non-ok.
+
+## M148 — `makeSummarizeFn` and `embed` discard response body error on non-ok (#459, failing functionality) (one-hundred-eleventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1958 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: The last two Ollama API callers that still
+discard the response body error on non-ok responses:
+- `makeSummarizeFn` in `compaction.ts` — called for conversation compaction
+  (auto-compact), throws `Summarize failed: ${resp.statusText}` when the
+  summarization request fails (e.g. model not found).
+- `embed` in `rag.ts` — called for RAG indexing and retrieval, throws
+  `Ollama embed error: ${response.statusText}` when the embedding request
+  fails (e.g. embedding model not pulled).
+
+Both call Ollama endpoints (`/api/chat` and `/api/embed` respectively) that
+return `{"error": "..."}` in the body, but the functions only surface the
+generic HTTP statusText. When compaction or RAG fails, the user sees
+"Summarize failed: Internal Server Error" or "Ollama embed error: Not Found"
+instead of the actionable "model not found, try pulling it first". These are
+the last remaining Ollama API callers that don't use `ollamaErrorFromResponse`
+(fixed in M145 #456 for the chat/agent paths, M146 #457 for the agentic loop).
+
+- [x] **#459** Imported `ollamaErrorFromResponse` in both `compaction.ts` and
+  `rag.ts`. Replaced the inline non-ok handlers with
+  `throw await ollamaErrorFromResponse(resp, 'Summarize failed')` and
+  `throw await ollamaErrorFromResponse(response, 'Ollama embed error')`.
+  Exported `embed` from `rag.ts` (was private) for direct unit testing.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1964 passed (215 files)**
+  (+5); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `compaction.test.ts` (#459): surfaces body `.error` on
+  non-ok, falls back to statusText, returns content on success.
+- 3 new tests in `rag.test.ts` (#459): surfaces body `.error` on non-ok,
+  falls back to statusText, returns embeddings on success.
+
+## M149 — OAuth non-ok responses discard body error detail (#460, failing functionality) (one-hundred-twelfth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1964 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Three OAuth 2.0 non-ok handlers in
+`mcpAuth.ts` throw generic `statusText` errors, discarding the JSON body that
+OAuth endpoints return per RFC 6749 §5.2 and RFC 7591 §3.2:
+- `getOrRegisterClient` (dynamic client registration): `Dynamic client
+  registration failed: ${res.statusText}`
+- `exchangeCode` (authorization-code → token): `Token exchange failed:
+  ${res.statusText}`
+- `refreshAccessToken` (refresh-token → new token): `Token refresh failed:
+  ${res.statusText}`
+
+OAuth endpoints return `{"error": "invalid_grant", "error_description":
+"The refresh token is invalid or expired."}` in the body. The user sees
+"Token refresh failed: Bad Request" instead of the actionable "The refresh
+token is invalid or expired." This is especially harmful for MCP OAuth — when
+a server's token expires and the refresh fails, the user has no idea why and
+no guidance on how to fix it (re-authenticate, check scopes, etc.). Agentic
+GUIs like Claude's MCP connector surface the OAuth error detail directly.
+
+- [x] **#460** Added `oauthErrorFromResponse(res, prefix)` helper that reads
+  `res.json()` and extracts `error_description` (RFC 6749), falling back to
+  `error`, then `message`, then `statusText`. Wired it into all three OAuth
+  non-ok handlers. Exported `exchangeCode` and `refreshAccessToken` (were
+  private) for direct unit testing.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1971 passed (215 files)**
+  (+7); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 7 new tests in `mcpAuth.test.ts` (#460): helper extracts `error_description`,
+  falls back to `error`, falls back to `statusText` (no error body / `json()`
+  throws), and each of the 3 OAuth functions surfaces body error on non-ok.
+
+## M150 — `McpHttpClient.connect()` discards response body error on non-ok (#461, failing functionality) (one-hundred-thirteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1971 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `McpHttpClient.connect()` in `mcp.ts`
+handles non-ok HTTP responses with
+`throw new Error(\`HTTP MCP connection failed: ${response.statusText}\`)`,
+discarding the JSON body that MCP HTTP servers return with the failure reason.
+MCP servers speak JSON-RPC, so errors arrive as
+`{"error": {"code": -32000, "message": "Invalid API key"}}` even on non-ok
+HTTP status codes (401, 403, 404, 500). The user sees "Failed to connect to
+HTTP MCP server: Error: HTTP MCP connection failed: Unauthorized" instead of
+the actionable "Invalid API key". This is the connection entry point for every
+HTTP-based MCP server — a core agentic feature — so the bug affects every HTTP
+MCP connection attempt that encounters an error. The code already reads
+`result.error.message` when `response.ok` is true, but skips the body entirely
+when `response.ok` is false.
+
+- [x] **#461** Added `mcpHttpErrorDetail(response)` helper that reads
+  `response.json()` and extracts the error detail from `body.error.message`
+  (JSON-RPC), `body.error` as string, or `body.message`, falling back to
+  `statusText` when the body is absent, non-JSON, or has no error field. Wired
+  it into the `connect()` non-ok handler.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1975 passed (215 files)**
+  (+4); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 4 new tests in `mcp-transport.test.ts` (#461): surfaces JSON-RPC
+  `error.message` on non-ok, surfaces string `error`, falls back to
+  `statusText` on no-error-body / `json()` throws.
+
+## M151 — `fetchMlxChatStream` and `fetchMlxEmbeddings` discard body error on non-ok (#462, failing functionality) (one-hundred-fourteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1975 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: The two MLX server API functions in
+`mlx.ts` handle non-ok HTTP responses with generic statusText/status errors,
+discarding the JSON body that the MLX OpenAI-compatible server returns with
+the detailed failure reason:
+- `fetchMlxChatStream`: `MLX server error: ${response.status} ${response.statusText}`
+- `fetchMlxEmbeddings`: `MLX embeddings error: ${response.status}`
+
+The MLX server (`mlx_lm.server`) is OpenAI-compatible and returns
+`{"error": {"message": "model not loaded"}}` in the body on errors. The user
+sees "MLX server error: 500 Internal Server Error" instead of the actionable
+"model not loaded". This affects Apple Silicon users who enable MLX
+acceleration — a key performance feature — when the MLX server encounters any
+error (model not loaded, port conflict, OOM, etc.).
+
+- [x] **#462** Imported `openAiErrorFromResponse` from `./connections` (the MLX
+  server is OpenAI-compatible, so the same error format applies). Replaced
+  both non-ok handlers with
+  `throw await openAiErrorFromResponse(response, \`MLX server error ${response.status}\`)`
+  and
+  `throw await openAiErrorFromResponse(response, \`MLX embeddings error ${response.status}\`)`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1980 passed (215 files)**
+  (+5); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 5 new tests in `mlx.test.ts` (#462): `fetchMlxChatStream` surfaces body
+  `error.message` / falls back to statusText; `fetchMlxEmbeddings` surfaces
+  body error / falls back to statusText / returns embeddings on success.
+
+## M152 — `imagegen.ts` unprotected JSON.parse crashes on non-JSON response bodies (#463, failing functionality) (one-hundred-fifteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1980 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Four `JSON.parse(resp.body)` calls in
+`imagegen.ts` are unprotected — if the image generation API returns a 200
+HTTP status but with a non-JSON body (HTML error page from a reverse proxy,
+empty body, text error from a misconfigured server), the function crashes
+with an unhelpful `SyntaxError: Unexpected token...` instead of a meaningful
+error message:
+- `generateA1111` line 126: `JSON.parse(resp.body)` on the A1111 response
+- `generateComfyUI` line 153: `JSON.parse(queueResp.body)` on the ComfyUI
+  queue response
+- `generateComfyUI` line 161: `JSON.parse(histResp.body)` on the history poll
+- `generateOpenAI` line 195: `JSON.parse(resp.body)` on the DALL-E response
+
+Additionally, the ComfyUI queue error (`ComfyUI queue error ${status}`) did
+not include the response body, so the user had no detail about why the queue
+request failed (e.g. "invalid workflow: missing CLIPTextEncode").
+
+- [x] **#463** Wrapped all four `JSON.parse` calls in try/catch. The A1111,
+  DALL-E, and ComfyUI queue parses throw meaningful errors including a body
+  snippet (`<backend> returned non-JSON response: <snippet>`). The ComfyUI
+  history poll parse silently `continue`s on non-JSON (the poll loop retries).
+  Updated the ComfyUI queue error to include the body snippet.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1984 passed (215 files)**
+  (+4); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 4 new tests in `imagegen.test.ts` (#463): A1111 non-JSON 200 response,
+  DALL-E non-JSON 200 response, ComfyUI non-JSON queue response, ComfyUI
+  queue error includes body snippet.
+
+## M153 — `toolCallArgs` throws unhandled SyntaxError on malformed JSON tool arguments (#464, failing functionality) (one-hundred-sixteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1984 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `toolCallArgs` in `tools.ts` calls
+`JSON.parse(args)` without try/catch when a tool call's arguments are a
+string. Smaller Ollama models frequently produce malformed JSON arguments
+(single quotes `{'a': 1}`, trailing commas, truncated JSON, or plain text),
+which causes `JSON.parse` to throw a `SyntaxError`. This propagates into the
+agent loop where it's caught by the tool-execution catch block and sent back
+to the model as `"Error: Unexpected token ' in JSON at position 0"` — an
+unhelpful message that doesn't tell the model what went wrong with its
+arguments or how to fix them. The model cannot recover because it doesn't
+understand the JSON parse error in the context of its tool call.
+
+Agentic tools (Codex, Claude) handle this gracefully by treating unparseable
+arguments as empty, letting the tool's own parameter validation surface a
+clear "missing required parameter: x" error that the model can understand and
+retry with correct arguments.
+
+`toolCallArgs` is called in two critical paths: `agent.ts:257` (autonomy/
+approval gate) and `tools.ts:88` (`executeToolCall`), so the bug affects every
+tool call with string arguments in the agentic loop.
+
+- [x] **#464** Wrapped `JSON.parse(args)` in try/catch in `toolCallArgs`,
+  returning `{}` on parse failure. This lets the tool's own parameter
+  validation produce a clear, actionable error that the model can understand
+  and retry, instead of a raw `SyntaxError`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1989 passed (215 files)**
+  (+5); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 5 new tests in `tools.test.ts` (#464): malformed JSON (single quotes),
+  truncated JSON, non-JSON string, malformed top-level arguments, and
+  `executeToolCall` does not crash on malformed JSON arguments.
+
+## M154 — `mcpAuth.ts` `loadClients`/`tokenStore.load` unprotected JSON.parse on corrupted keychain data (#465, failing functionality) (one-hundred-seventeenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1989 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Two `JSON.parse` calls in `mcpAuth.ts` read
+from the OS keychain via `secretStore` without try/catch:
+- `loadClients()` line 122: `return raw ? JSON.parse(raw) : {};` — reads
+  client credentials. Called in `getOrRegisterClient()` during every MCP
+  OAuth registration attempt.
+- `tokenStore.load()` line 248: `return raw ? (JSON.parse(raw) as OAuthTokens) : null;`
+  — reads OAuth tokens. Called in `getValidTokens()` before every MCP HTTP
+  request that requires auth.
+
+If the keychain data is corrupted (OS keychain migration, encoding issues,
+partial writes, version mismatch), these throw an unhandled `SyntaxError`
+that crashes the MCP auth flow. The user sees "Unexpected token..." instead
+of being prompted to re-authenticate. Every other localStorage-backed service
+in the codebase already wraps these calls in try/catch with safe defaults
+(fixed in M141 #452 for `mcpConfig`/`mcpAuth` localStorage, M143 #454 for
+`storage.ts`), but the keychain-backed reads were missed.
+
+- [x] **#465** Wrapped both `JSON.parse` calls in try/catch. `loadClients`
+  returns `{}` on parse failure (triggers re-registration on next auth).
+  `tokenStore.load` returns `null` on parse failure (triggers re-auth).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1993 passed (215 files)**
+  (+4); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 4 new tests in `mcpAuth.test.ts` (#465): `tokenStore.load` returns null on
+  corrupted data, returns valid tokens on well-formed data, returns null when
+  no data stored, and `getOrRegisterClient` re-registers when client data is
+  corrupted.
+
+## M155 — `streamOpenAiChat` and `fetchMlxChatStream` drop final SSE event without trailing newline (#466, failing functionality) (one-hundred-eighteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1993 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Both SSE-stream parsers — `streamOpenAiChat`
+in `connections.ts` and `fetchMlxChatStream` in `mlx.ts` — lack a flush block
+after the reader `while` loop. When the server sends the last SSE event
+without a trailing newline (common — many SSE implementations don't add `\n`
+after the final event, and TCP/stream closures can split mid-line), that
+content remains in the line buffer (`buf`/`buffer`) and is silently dropped
+when the stream closes. The user sees an incomplete response — the last
+content delta (or the `[DONE]` sentinel) is lost.
+
+Both `fetchOllamaChatStream` in `ollama.ts` and `agenticChatStream` in
+`agent.ts` already have flush blocks (`if (streamBuf.trim()) { try { ... }
+catch { /* ignore trailing partial */ } }`), but the OpenAI-compatible and
+MLX SSE parsers were missed. This affects every chat sent through a
+registered OpenAI-compatible connection (LM Studio, vLLM, etc.) or the MLX
+server when the last event lacks a trailing newline.
+
+- [x] **#466** Added flush blocks to both `streamOpenAiChat` and
+  `fetchMlxChatStream`. After the reader loop, if the buffer contains a
+  complete `data:` line, it's parsed and the content delta is delivered via
+  `onChunk`. A trailing `[DONE]` in the flush buffer triggers `return`.
+  Malformed trailing data is silently skipped (matching the in-loop behavior).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **1997 passed (215 files)**
+  (+4); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `connections.test.ts` (#466): flushes last SSE event
+  without trailing newline, flushes trailing `[DONE]` without newline.
+- 2 new tests in `mlx.test.ts` (#466): same two scenarios for the MLX stream.
+
+## M156 — `fetchOpenApiSpec` discards body error and crashes on non-JSON responses (#467, failing functionality) (one-hundred-nineteenth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **1997 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `fetchOpenApiSpec` in `openapiTools.ts` has
+two issues on its fetch fallback path (used when Tauri is unavailable):
+- Non-ok handler: `throw new Error(\`HTTP ${res.status}\`)` — discards the
+  response body. OpenAPI spec servers return error details in the body (e.g.
+  `{"error": "Invalid API key"}` or `Unauthorized: invalid API key`). The
+  user sees "HTTP 401" instead of the actionable detail.
+- Success path: `return res.json() as Promise<OASpec>` — unprotected. If the
+  server returns a 200 status with a non-JSON body (HTML error page from a
+  reverse proxy, empty body), `res.json()` throws an unhelpful `SyntaxError`.
+
+Additionally, the Tauri path's non-success handler (`HTTP ${res.status}`) and
+`JSON.parse(res.body)` didn't include the body or handle non-JSON gracefully
+(though the `JSON.parse` was inside a try that fell through to fetch, the
+non-success throw also fell through, which is intentional — but the error
+detail was still lost if both paths failed).
+
+- [x] **#467** Updated both paths: Tauri non-success now includes the body
+  snippet (`HTTP ${res.status}: ${res.body.slice(0, 200)}`); Tauri
+  `JSON.parse` throws a meaningful non-JSON error instead of falling through
+  silently; fetch non-ok reads `res.text()` and includes it in the error;
+  fetch `res.json()` is wrapped in try/catch with a meaningful non-JSON error.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2000 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `openapiTools.test.ts` (#467): throws with body snippet on
+  non-ok, throws meaningful error on non-JSON 200, returns parsed spec on
+  success.
+
+## M157 — `transcribeBlob` discards body error on non-ok and crashes on non-JSON (#468, failing functionality) (one-hundred-twentieth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2000 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `transcribeBlob` in `stt.ts` had two issues:
+- Non-ok handler: `throw new Error(\`Whisper inference error ${res.status}: ${res.statusText}\`)`
+  — discarded the response body. The whisper.cpp server returns error details
+  as `{"error": "audio codec not supported"}` in the body. The user saw
+  "Whisper inference error 415: Unsupported Media Type" instead of the
+  actionable "audio codec not supported".
+- Success path: `const data = await res.json()` — unprotected. If the server
+  returned a 200 status with a non-JSON body (proxy error page, empty body),
+  `res.json()` threw an unhelpful `SyntaxError`.
+
+The function already checked `data.error` after reading the body on success,
+but skipped the body entirely on non-ok — the exact pattern fixed across
+M145–M156 for other API callers.
+
+- [x] **#468** Updated the non-ok handler to read `res.json()` and extract the
+  `error` field, falling back to `statusText` when the body is absent,
+  non-JSON, or has no error. Wrapped the success-path `res.json()` in
+  try/catch with a meaningful "non-JSON response" error.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2003 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `stt.test.ts` (#468): surfaces body error on non-ok, falls
+  back to statusText when no body error, throws meaningful error on non-JSON
+  200 response.
+
+## M158 — `streamOpenAiChat` SSE parser skips `data:` events without space after colon (#469, failing functionality) (one-hundred-twenty-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2003 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `streamOpenAiChat` in `connections.ts`
+required `line.startsWith('data: ')` (with a space after the colon) to
+recognize SSE data events. The HTML5 SSE spec allows both `data: value` and
+`data:value` — the field value is everything after the first colon, with a
+single leading space stripped. Some OpenAI-compatible servers and proxies
+emit `data:{"choices":...}` without a space. Those events were silently
+skipped, losing content deltas and potentially the `[DONE]` sentinel — the
+user would see an incomplete or empty response with no error.
+
+The MLX SSE parser (`fetchMlxChatStream` in `mlx.ts`) already handled both
+forms correctly (`startsWith('data:')` + `slice(5).trim()`), but the
+OpenAI-compatible parser in `connections.ts` was stricter. This
+inconsistency meant the same server might work through the MLX path but fail
+through the connections path.
+
+- [x] **#469** Changed both the in-loop check and the flush block from
+  `startsWith('data: ')` / `slice(6)` to `startsWith('data:')` / `slice(5)`,
+  matching the SSE spec and the MLX parser. The `trim()` after the slice
+  handles the optional leading space.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2005 passed (215 files)**
+  (+2); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `connections.test.ts` (#469): parses `data:{...}` without
+  space in the stream, parses `data:{...}` without space in the flush buffer.
+
+## M159 — `mcpConfig.ts` unprotected `setItem` crashes on QuotaExceededError (#470, failing functionality) (one-hundred-twenty-second analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2005 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: Three `localStorage.setItem` calls in
+`mcpConfig.ts` are unprotected against `QuotaExceededError`:
+- `saveServer` line 97: `localStorage.setItem(STORAGE_KEY, JSON.stringify(existing))`
+- `delete` line 120: `localStorage.setItem(STORAGE_KEY, ...)`
+- `markConnected` line 129: `localStorage.setItem(STORAGE_KEY, ...)`
+
+When localStorage is full (common on long-running sessions with many
+conversations, or browsers with low quota), these throw an unhandled
+`DOMException` that crashes the MCP server configuration operation. The user
+loses their server config changes with no error message. The `readPersisted`
+function was already wrapped in try/catch (M141 #452), and `storage.ts`
+mutations were wrapped (M143 #454), but the `mcpConfig.ts` mutation methods
+were missed.
+
+- [x] **#470** Added `safePersist()` helper that wraps `setItem` in try/catch
+  (silently ignores `QuotaExceededError` — the config stays in memory for the
+  current session). Replaced all three unprotected `setItem` calls with
+  `safePersist()`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2008 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `mcpConfig.test.ts` (#470): `save()`, `delete()`, and
+  `markConnected()` do not throw on `QuotaExceededError`.
+
+## M160 — Remaining unprotected `localStorage.setItem` calls crash on QuotaExceededError (#471, failing functionality) (one-hundred-twenty-third analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2008 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: 20 `localStorage.setItem` calls across 16
+service files were unprotected against `QuotaExceededError`. When localStorage
+is full (common on long-running sessions with many conversations, or browsers
+with low quota), these throw an unhandled `DOMException` that crashes the
+operation with no error message.
+
+Files and functions affected:
+- `workspace.ts` — `saveWorkspaceState` (workspace open/close)
+- `connections.ts` — `saveConnections` (model connection config)
+- `commands.ts` — `saveUserCommands` (slash command config)
+- `presets.ts` — `savePresets`, `setActivePreset` (model presets)
+- `memory.ts` — `saveMemory` (cross-session memory)
+- `agentAutonomy.ts` — `saveSettings` (autonomy level)
+- `tokenEstimate.ts` — `savePricing` (token pricing)
+- `voice.ts` — `saveVoiceSettings` (voice settings)
+- `scenario.ts` — `saveScenario`, `deleteScenario` (scenarios)
+- `customTools.ts` — `saveCustomTools`, `saveFunctionDefs` (custom tools)
+- `imagegen.ts` — `saveImageGenConfig` (image generation config)
+- `secrets.ts` — `saveRefs` (secret references)
+- `stt.ts` — `saveSttConfig` (STT config)
+- `websearch.ts` — `saveWebSearchConfig` (web search config)
+- `openapiTools.ts` — `saveOpenApiServers` (OpenAPI server config)
+- `promptLibrary.ts` — `savePrompts` (prompt library)
+- `mcpAuth.ts` — `authMetaStore.save` (OAuth metadata)
+
+Previous milestones fixed `storage.ts` (M143 #454) and `mcpConfig.ts`
+(M159 #470). This milestone completes the codebase-wide sweep — every
+`localStorage.setItem` call in `src-frontend/services/` is now protected.
+
+- [x] **#471** Wrapped all 20 unprotected `setItem` calls in try/catch across
+  16 service files. The pattern is `try { localStorage.setItem(...) } catch { /* quota */ }`
+  — the operation continues with in-memory state for the current session.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2011 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests: `presets.test.ts` (savePresets + setActivePreset don't throw on
+  quota), `workspace.test.ts` (openWorkspace doesn't throw on quota).
+
+## M161 — `agenticChatStream` omits assistant message with tool_calls from conversation context (#472, failing functionality) (one-hundred-twenty-fourth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2011 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `agenticChatStream` in `agent.ts` executes
+tool calls and pushes tool results to `currentMessages`, but does NOT push
+the assistant's intermediate message (the one containing the content and
+`tool_calls`) to `currentMessages` before the tool results. In the next
+iteration, the model sees:
+
+```
+[previous messages...]
+{ role: 'tool', content: 'tool result', name: 'tool_name' }
+```
+
+Without the preceding assistant message that initiated the tool calls:
+
+```
+[previous messages...]
+{ role: 'assistant', content: 'Let me check that.', tool_calls: [...] }
+{ role: 'tool', content: 'tool result', name: 'tool_name' }
+```
+
+The Ollama chat API expects the conversation to follow the
+assistant→tool→assistant pattern. Without the assistant message in context,
+the model sees tool results appearing without a preceding assistant message,
+causing confusion, lower-quality responses, and in some cases failure to
+understand the conversation flow. This is a well-known pattern in agentic
+tool-use loops — Codex, Claude, and other agentic GUIs all include the
+assistant's tool-call message in the context.
+
+- [x] **#472** Added a `currentMessages.push({ role: 'assistant', content:
+  assistantMessage, tool_calls, ... })` call before the tool execution loop,
+  so the model sees its own tool-call message followed by the tool results
+  in the next iteration.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2012 passed (215 files)**
+  (+1); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 1 new test in `agent.test.ts` (#472): verifies the second fetch request's
+  body contains the assistant message with content + tool_calls, and that
+  the tool result message comes after it.
+
+## M162 — `App.tsx` unprotected `localStorage.setItem` calls crash on QuotaExceededError (#473, failing functionality) (one-hundred-twenty-fifth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2012 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: 19 `localStorage.setItem` calls in
+`App.tsx` (the 8381-line main UI component) were unprotected against
+`QuotaExceededError`. These are in UI event handlers — settings toggles
+(auto-compact, resume-last-session, send-on-Ctrl+Enter), font scale, code
+word-wrap, system prompt, generation options, structured output, base URL,
+starred models, sort mode, compaction threshold, and slash commands. When
+localStorage is full, toggling a setting or typing a system prompt crashes
+the UI interaction with an unhandled `DOMException`. Three calls already had
+try/catch (recent models, notify-complete, sound-complete), but the other 16
+were unprotected.
+
+Previous milestones (M143 #454, M159 #470, M160 #471) protected all
+`setItem` calls in `src-frontend/services/`. This milestone completes the
+sweep for the UI layer.
+
+- [x] **#473** Added `safeSetItem(key, value)` utility to `platform.ts` that
+  wraps `localStorage.setItem` in try/catch. Replaced all 19
+  `localStorage.setItem` calls in `App.tsx` with `safeSetItem` (the 3 that
+  already had try/catch are now `try { safeSetItem(...) } catch` — redundant
+  but harmless).
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2015 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `platform.test.ts` (#473): stores value normally, doesn't
+  throw on `QuotaExceededError`, doesn't throw on other `DOMException`.
+
+## M163 — `checkpoints.ts` `saveAll` unprotected `sessionStorage.setItem` crashes on QuotaExceededError (#474, failing functionality) (one-hundred-twenty-sixth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2015 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `checkpoints.ts:35` `saveAll()` calls
+`sessionStorage.setItem` without a try/catch. When sessionStorage is full,
+creating or deleting a checkpoint throws an unhandled `QuotaExceededError`,
+crashing the agent's file-state checkpoint system. `loadAll()` already has a
+try/catch but `saveAll()` did not — the same pattern fixed across
+`localStorage.setItem` in M159–M162.
+
+- [x] **#474** Added `safeSessionSetItem(key, value)` utility to `platform.ts`
+  (wraps `sessionStorage.setItem` in try/catch). Replaced the bare
+  `sessionStorage.setItem` in `saveAll()` with `safeSessionSetItem`.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2018 passed (215 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new tests in `platform.test.ts` (#474): stores value normally, doesn't
+  throw on `QuotaExceededError`, doesn't throw on other `DOMException`.
+
+## M164 — `crossSessionMemory.ts` `saveEntries` unprotected `setItem` crashes on QuotaExceededError (#475, failing functionality) (one-hundred-twenty-seventh analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2018 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Failing functionality found**: `crossSessionMemory.ts:54` `saveEntries()`
+calls `store().setItem()` without a try/catch. When localStorage is full,
+calling `memorySet` or `memoryDelete` throws an unhandled
+`QuotaExceededError`, crashing the cross-session memory feature. `loadEntries()`
+already had a try/catch but `saveEntries()` did not.
+
+- [x] **#475** Wrapped `store().setItem` in `saveEntries()` with try/catch.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2020 passed (215 files)**
+  (+2); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 2 new tests in `crossSessionMemory.test.ts` (#475): `memorySet` and
+  `memoryDelete` don't throw on `QuotaExceededError`.
+
+## M165 — Missing Ollama model memory management API: load, unload, running models, version (#476, missing functionality) (one-hundred-twenty-eighth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2020 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Missing functionality found**: The Ollama API exposes four endpoints that
+the GUI did not use, all of which Codex GUI and other agentic tools surface:
+- `GET /api/ps` — list models currently loaded in memory (RAM/VRAM)
+- `POST /api/generate` with empty prompt + `keep_alive` — pre-load a model
+  so the first chat request doesn't pay cold-start latency
+- `POST /api/generate` with `keep_alive: 0` — unload a model to free RAM
+- `GET /api/version` — server version (for feature-gating and display)
+
+Without these, the user has no visibility into which models are consuming
+memory, cannot pre-load a model before a long agentic run, and cannot free
+RAM when running multiple large models.
+
+- [x] **#476** Added `fetchRunningModels()`, `loadOllamaModel()`,
+  `unloadOllamaModel()`, and `fetchOllamaVersion()` to `ollama.ts`. All use
+  `ollamaErrorFromResponse` for non-ok responses. Added `RunningModel` and
+  `OllamaVersionInfo` types.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2029 passed (215 files)**
+  (+9); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 9 new tests in `ollama.test.ts` (#476): fetchRunningModels returns/empty/
+  error, loadOllamaModel sends correct body + error, unloadOllamaModel sends
+  keep_alive 0 + error, fetchOllamaVersion returns version + error.
+
+## M166 — Model management slash commands: /warm /unload /running /version (#477, missing functionality) (one-hundred-twenty-ninth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2029 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Missing functionality found**: The new Ollama API functions from M165
+(#476) were not wired into the UI. Codex GUI, LM Studio, and other tools let
+users pre-warm models, unload them to free RAM, see which models are
+loaded, and check the server version — all from the command line / chat
+input. Without slash commands, the new API functions were unreachable from
+the UI.
+
+- [x] **#477** Added four slash commands to `commands.ts`:
+  - `/warm <model>` — load a model into memory (5m keep-alive)
+  - `/unload <model>` — unload a model from memory (free RAM)
+  - `/running` — list models currently loaded in Ollama memory with size/VRAM
+  - `/version` — show the Ollama server version
+  Wired all four into `App.tsx` with `showStatusBanner` feedback and
+  `formatErrorLine` error handling.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2034 passed (215 files)**
+  (+5); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 5 new tests in `commands.test.ts` (#477): each command is registered,
+  returns the correct action/arg, and appears in getAllCommands.
+
+## M167 — Loaded model indicator in model selector (#478, missing functionality) (one-hundred-thirtieth analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2034 passed (215 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Missing functionality found**: Codex GUI, LM Studio, and other tools show
+which models are currently loaded in memory (warm) directly in the model
+selector. The Ollama GUI had no visual indicator for this — the user had no
+way to see at a glance which models were consuming RAM/VRAM. The `/api/ps`
+endpoint and slash commands were added in M165/M166 but the selector UI
+didn't reflect running model state.
+
+- [x] **#478** Added `runningModels` state (a `Set<string>` of model names
+  loaded in memory). `refreshModels()` now also fetches `/api/ps` and
+  populates the set. A 30-second poll keeps the indicator current. The model
+  selector `<option>`s show a `●` suffix for warm models (starred, recent,
+  and local Ollama groups). The `<select>` title attribute explains the
+  indicator and references `/running`, `/warm`, `/unload` commands.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2037 passed (216 files)**
+  (+3); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 3 new UI tests in `runningModelIndicator.test.tsx` (#478): shows ● for
+  loaded models, shows no ● when none loaded, selector title explains
+  the indicator.
+
+## M168 — UI test coverage for CommandPalette and Sources components (#479, missing tests) (one-hundred-thirty-first analysis pass)
+
+Baseline: `tsc --noEmit` clean; `vitest run` = **2037 passed (216 files)**; `cargo test --lib` = 92 passed / 1 ignored.
+
+**Missing tests found**: AGENTS.md requires "every feature must have a
+corresponding test." The `Sources.tsx` component (inline citations UI, #120)
+had zero dedicated tests, and the `CommandPalette.tsx` component had basic
+tests but lacked coverage for aria attributes, hint rendering, ArrowUp
+clamping, whitespace query handling, and MouseEnter selection updates.
+
+- [x] **#479** Added `Sources.test.tsx` (10 tests): renders nothing on empty,
+  collapsible summary, clickable source buttons, numbered prefixes, source
+  detail display, InlineCitation rendering + aria-label, and
+  renderWithCitations (marker replacement, out-of-range handling, plain text).
+  Added `commandPaletteUsability.test.tsx` (8 tests): aria attributes, hint
+  rendering, no-hint commands, ArrowDown×2+Enter, ArrowUp clamping, whitespace
+  query, click-to-run, MouseEnter selection update.
+
+### Result
+- `npx tsc --noEmit` clean; `npx vitest run` = **2055 passed (218 files)**
+  (+18); `cargo test --lib` = 92 passed / 1 ignored (unchanged).
+- 18 new tests across 2 new test files (#479).

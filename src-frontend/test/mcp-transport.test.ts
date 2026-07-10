@@ -134,6 +134,72 @@ describe('MCP Transport Tests', () => {
       expect(mockSend).toHaveBeenCalled();
     });
 
+    it('should timeout when stdio server never responds (#446)', async () => {
+      const config: McpServerConfig = {
+        id: 'timeout-stdio',
+        name: 'Timeout Stdio Server',
+        type: 'stdio',
+        command: 'echo',
+        enabled: true,
+        toolsEnabled: true,
+        timeoutMs: 100, // 100ms timeout for fast test
+      };
+
+      mcpServerManager.addServer(config);
+
+      vi.spyOn(TauriMcpStdioTransport, 'spawnProcess')
+        .mockResolvedValue({ sessionId: 'timeout-session', command: 'echo', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+
+      // readResponse returns only the initialize response, then null forever
+      // so the tools/call request (id=2) never gets a response.
+      let readCount = 0;
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse').mockImplementation(async () => {
+        readCount++;
+        if (readCount === 1) return '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}';
+        return null;
+      });
+
+      const client = await mcpServerManager.connectToServer('timeout-stdio') as McpStdioClient;
+      expect(client).toBeInstanceOf(McpStdioClient);
+
+      // callTool internally calls sendRequest which should timeout after 100ms
+      await expect(client.callTool('some_tool', {}))
+        .rejects.toThrow(/timed out after 100ms/);
+    });
+
+    it('should clear timeout when stdio server responds normally (#446)', async () => {
+      const config: McpServerConfig = {
+        id: 'normal-stdio',
+        name: 'Normal Stdio Server',
+        type: 'stdio',
+        command: 'echo',
+        enabled: true,
+        toolsEnabled: true,
+        timeoutMs: 5000,
+      };
+
+      mcpServerManager.addServer(config);
+
+      vi.spyOn(TauriMcpStdioTransport, 'spawnProcess')
+        .mockResolvedValue({ sessionId: 'normal-session', command: 'echo', args: [] });
+      vi.spyOn(TauriMcpStdioTransport, 'sendRequest').mockResolvedValue(undefined);
+
+      let readCount = 0;
+      vi.spyOn(TauriMcpStdioTransport, 'readResponse').mockImplementation(async () => {
+        readCount++;
+        if (readCount === 1) return '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}';
+        // Return the id=2 response on every subsequent poll so it's available
+        // whenever the callTool request is registered (the polling loop may
+        // consume earlier returns before the request is sent).
+        return '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}';
+      });
+
+      const client = await mcpServerManager.connectToServer('normal-stdio') as McpStdioClient;
+      const result = await client.callTool('some_tool', {});
+      expect(result).toEqual({ content: [{ type: 'text', text: 'ok' }] });
+    });
+
     it('should handle stdio process cleanup', async () => {
       const config: McpServerConfig = {
         id: 'test-stdio',
@@ -733,5 +799,65 @@ describe('MCP Transport Tests', () => {
         expect.objectContaining({ MCP_API_URL: 'https://api.kb.example.com', MCP_API_KEY: 'sk-kb-test' }),
       );
     });
+  });
+});
+
+// ── #461: McpHttpClient.connect() surfaces body error on non-ok ─────────────
+
+describe('McpHttpClient connect error surfacing (#461)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('surfaces JSON-RPC error.message on non-ok (#461)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ error: { code: -32000, message: 'Invalid API key' } }),
+    }) as any;
+    const client = new McpHttpClient({
+      id: 'h1', name: 'H1', type: 'http', url: 'http://x/api', enabled: true, toolsEnabled: true,
+    } as McpServerConfig);
+    await expect(client.connect()).rejects.toThrow('Invalid API key');
+  });
+
+  it('surfaces string error on non-ok (#461)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({ error: 'endpoint not found' }),
+    }) as any;
+    const client = new McpHttpClient({
+      id: 'h2', name: 'H2', type: 'http', url: 'http://x/api', enabled: true, toolsEnabled: true,
+    } as McpServerConfig);
+    await expect(client.connect()).rejects.toThrow('endpoint not found');
+  });
+
+  it('falls back to statusText when body has no error (#461)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ unrelated: true }),
+    }) as any;
+    const client = new McpHttpClient({
+      id: 'h3', name: 'H3', type: 'http', url: 'http://x/api', enabled: true, toolsEnabled: true,
+    } as McpServerConfig);
+    await expect(client.connect()).rejects.toThrow('Service Unavailable');
+  });
+
+  it('falls back to statusText when json() throws (#461)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => { throw new SyntaxError('nope'); },
+    }) as any;
+    const client = new McpHttpClient({
+      id: 'h4', name: 'H4', type: 'http', url: 'http://x/api', enabled: true, toolsEnabled: true,
+    } as McpServerConfig);
+    await expect(client.connect()).rejects.toThrow('Internal Server Error');
   });
 });

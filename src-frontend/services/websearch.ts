@@ -41,7 +41,7 @@ export function loadWebSearchConfig(): WebSearchConfig {
 
 export function saveWebSearchConfig(cfg: Partial<WebSearchConfig>): void {
   const current = loadWebSearchConfig();
-  localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...current, ...cfg }));
+  try { localStorage.setItem(CONFIG_KEY, JSON.stringify({ ...current, ...cfg })); } catch { /* quota */ }
 }
 
 // ── Test seam ─────────────────────────────────────────────────────────────────

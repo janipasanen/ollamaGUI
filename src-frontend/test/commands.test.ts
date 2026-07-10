@@ -93,6 +93,18 @@ describe('expandTemplate (#96)', () => {
   it('handles empty args', () => {
     expect(expandTemplate('Review: $ARGUMENTS', '')).toBe('Review: ');
   });
+
+  // ── #440: multiple $ARGUMENTS placeholders ────────────────────────────────
+
+  it('replaces ALL $ARGUMENTS occurrences, not just the first (#440)', () => {
+    expect(expandTemplate('Q: $ARGUMENTS' + '\n' + 'A: $ARGUMENTS', 'what is 2+2'))
+      .toBe('Q: what is 2+2' + '\n' + 'A: what is 2+2');
+  });
+
+  it('replaces multiple $ARGUMENTS with empty args', () => {
+    expect(expandTemplate('$ARGUMENTS and $ARGUMENTS', ''))
+      .toBe(' and ');
+  });
 });
 
 // ── runCommand ────────────────────────────────────────────────────────────────
@@ -724,5 +736,69 @@ describe('/tests command (#359)', () => {
     const r = runCommand('/tests');
     expect(r.kind).toBe('builtin');
     if (r.kind === 'builtin') expect(r.arg).toBe('');
+  });
+});
+
+describe('expandTemplate — $-content safety (#429)', () => {
+  it('preserves $& and $N literally inside $ARGUMENTS text', () => {
+    // Previously: $5 → empty and $& re-inserted the matched '$ARGUMENTS',
+    // corrupting "The price is $5 and $&".
+    expect(expandTemplate('Translate the following: $ARGUMENTS', 'The price is $5 and $&'))
+      .toBe('Translate the following: The price is $5 and $&');
+  });
+
+  it('inserts a $& word literally into a $N slot (not as a substitution)', () => {
+    // The 2nd word is "$&"; it must replace $2 with the literal "$&".
+    expect(expandTemplate('Review: $1 $2', 'code $& more')).toBe('Review: code $&');
+  });
+
+  it('does not re-substitute $N tokens that appear inside expanded $ARGUMENTS', () => {
+    // $5 inside the args must NOT be replaced by the 5th word after expansion.
+    expect(expandTemplate('Body: $ARGUMENTS', 'a b c d $5 f'))
+      .toBe('Body: a b c d $5 f');
+  });
+
+  it('preserves literal $1 in arguments when filling a $1 slot', () => {
+    expect(expandTemplate('Say $1', '$1')).toBe('Say $1');
+  });
+});
+
+// ── #476: model memory management commands ──────────────────────────────────
+
+describe('/warm /unload /running /version commands (#476)', () => {
+  it('/warm is registered as a builtin with arg', () => {
+    expect(findCommand('warm')?.builtin).toBe(true);
+    const r = runCommand('/warm llama3:8b');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('warm'); expect(r.arg).toBe('llama3:8b'); }
+  });
+
+  it('/unload is registered as a builtin with arg', () => {
+    expect(findCommand('unload')?.builtin).toBe(true);
+    const r = runCommand('/unload llama3:8b');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') { expect(r.action).toBe('unload'); expect(r.arg).toBe('llama3:8b'); }
+  });
+
+  it('/running is registered as a builtin with no arg', () => {
+    expect(findCommand('running')?.builtin).toBe(true);
+    const r = runCommand('/running');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('running');
+  });
+
+  it('/version is registered as a builtin with no arg', () => {
+    expect(findCommand('version')?.builtin).toBe(true);
+    const r = runCommand('/version');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('version');
+  });
+
+  it('all four appear in getAllCommands', () => {
+    const names = getAllCommands().map(c => c.name);
+    expect(names).toContain('warm');
+    expect(names).toContain('unload');
+    expect(names).toContain('running');
+    expect(names).toContain('version');
   });
 });

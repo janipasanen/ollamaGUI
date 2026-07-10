@@ -99,3 +99,53 @@ describe('isWorkspaceIndexed (#94)', () => {
     expect(await isWorkspaceIndexed(ROOT)).toBe(true);
   });
 });
+
+describe('isTextFile — multi-dot / dotfile matching (#433)', () => {
+  it('matches the multi-dot .env.example entry (was dead before the fix)', async () => {
+    const { isTextFile } = await import('../services/workspaceRag');
+    expect(isTextFile('.env.example')).toBe(true);
+  });
+
+  it('matches .gitignore', async () => {
+    const { isTextFile } = await import('../services/workspaceRag');
+    expect(isTextFile('.gitignore')).toBe(true);
+  });
+
+  it('does NOT match a real .env (secrets must stay out of the index)', async () => {
+    const { isTextFile } = await import('../services/workspaceRag');
+    expect(isTextFile('.env')).toBe(false);
+  });
+
+  it('matches the last extension of a multi-dot source file', async () => {
+    const { isTextFile } = await import('../services/workspaceRag');
+    expect(isTextFile('foo.test.ts')).toBe(true);
+    expect(isTextFile('component.spec.jsx')).toBe(true);
+  });
+
+  it('rejects non-text extensions and extensionless names not in the set', async () => {
+    const { isTextFile } = await import('../services/workspaceRag');
+    expect(isTextFile('logo.png')).toBe(false);
+    expect(isTextFile('archive.zip')).toBe(false);
+    expect(isTextFile('README')).toBe(false);
+  });
+});
+
+describe('indexWorkspace — .env.example is indexed (#433)', () => {
+  it('includes a .env.example file in the indexed corpus', async () => {
+    const { isWorkspaceIndexed, queryWorkspace } = await import('../services/workspaceRag');
+    const envPath = `${ROOT}/.env.example`;
+    fakeFs[envPath] = 'DATABASE_URL=postgres://example\nSECRET_KEY=changeme';
+    fakeDirs[ROOT] = [
+      ...fakeDirs[ROOT],
+      { name: '.env.example', path: envPath, is_dir: false, size: 40, modified_ms: null },
+    ];
+    try {
+      await indexWorkspace(ROOT);
+      const results = await queryWorkspace(ROOT, 'DATABASE_URL', 5);
+      expect(results.some(r => r.text.includes('DATABASE_URL'))).toBe(true);
+    } finally {
+      delete fakeFs[envPath];
+      fakeDirs[ROOT] = fakeDirs[ROOT].filter(e => e.name !== '.env.example');
+    }
+  });
+});

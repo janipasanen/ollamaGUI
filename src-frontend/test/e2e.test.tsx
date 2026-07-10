@@ -323,6 +323,18 @@ describe('End-to-End Tests', () => {
     });
 
     it('should handle MCP connection errors', async () => {
+      // Deterministically fail the MCP HTTP connect: the previous global fetch
+      // mock returned {ok:true} for every URL, so the connect sometimes
+      // "succeeded" (green) instead of erroring — making the test flaky and not
+      // actually exercising the error path (#426). Reject only the MCP server
+      // URL; keep the safe default for model-loading endpoints.
+      global.fetch = vi.fn().mockImplementation((url: string) => {
+        if (String(url).includes('localhost:1')) {
+          return Promise.reject(new TypeError('fetch failed: connection refused'));
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
+      });
+
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -340,13 +352,13 @@ describe('End-to-End Tests', () => {
         expect(screen.getByText('Fail Server')).toBeInTheDocument();
       });
 
-      // Click Connect — it will fail since port 1 is unreachable
+      // Click Connect — the MCP HTTP initialise fetch rejects, so the connect
+      // handler sets status to 'error' and renders the red status dot.
       fireEvent.click(screen.getByText('Connect'));
 
       await waitFor(() => {
-        // Status should become error (red dot)
         const serverRow = screen.getByText('Fail Server').closest('div');
-        const statusDot = serverRow?.parentElement?.querySelector('.bg-red-400, .bg-yellow-400, .bg-green-400');
+        const statusDot = serverRow?.parentElement?.querySelector('.bg-red-400');
         expect(statusDot).toBeTruthy();
       }, { timeout: 5000 });
     });

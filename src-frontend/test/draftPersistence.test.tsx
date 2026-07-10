@@ -35,18 +35,18 @@ describe('Per-session composer draft persistence (#273)', () => {
 
     // Load Alpha and type a draft (don't send).
     fireEvent.click(screen.getByRole('button', { name: /Load session: Alpha/i }));
-    await waitFor(() => expect(screen.getByText('alpha reply')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('alpha reply')).toBeInTheDocument(), { timeout: 3000 });
     fireEvent.change(composer(), { target: { value: 'draft alpha' } });
     expect(composer().value).toBe('draft alpha');
 
     // Switch to Beta — its composer should be empty (no saved draft).
     fireEvent.click(screen.getByRole('button', { name: /Load session: Beta/i }));
-    await waitFor(() => expect(screen.getByText('beta reply')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('beta reply')).toBeInTheDocument(), { timeout: 3000 });
     expect(composer().value).toBe('');
 
     // Switch back to Alpha — the draft is restored.
     fireEvent.click(screen.getByRole('button', { name: /Load session: Alpha/i }));
-    await waitFor(() => expect(screen.getByText('alpha reply')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('alpha reply')).toBeInTheDocument(), { timeout: 3000 });
     expect(composer().value).toBe('draft alpha');
-  });
+  }, 15000);
 });

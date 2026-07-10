@@ -97,3 +97,24 @@ describe('visual_match scenario step with imageDiff (#79)', () => {
     expect(result.pass).toBe(true);
   });
 });
+
+describe('diffScreenshots — load-failure handling (#434)', () => {
+  afterEach(() => { _mocks.loadImageData = null; });
+
+  it('fails (pass=false) when both screenshots fail to decode (no silent pass)', async () => {
+    _mocks.diff = null;
+    _mocks.loadImageData = async () => null;
+    const result = await diffScreenshots('corrupt', 'corrupt', 0.01);
+    expect(result.pass).toBe(false);
+    expect(result.diffRatio).toBe(1);
+  });
+
+  it('fails when only the before screenshot fails to decode', async () => {
+    _mocks.diff = null;
+    let call = 0;
+    _mocks.loadImageData = async () => { call += 1; return call === 1 ? null : ({ width: 2, height: 2, data: new Uint8ClampedArray(16) } as unknown as ImageData); };
+    const result = await diffScreenshots('corrupt', 'ok', 0.01);
+    expect(result.pass).toBe(false);
+    expect(result.diffRatio).toBe(1);
+  });
+});

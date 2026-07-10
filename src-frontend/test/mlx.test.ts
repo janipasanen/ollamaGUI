@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   applyMlxHierarchy, loadMlxSettings, saveMlxSettings, isMlxActive,
   checkMlxAvailable, fetchMlxChatStream, DEFAULT_MLX_SETTINGS,
-  MlxAvailability, MlxSettings,
+  MlxAvailability, MlxSettings, fetchMlxEmbeddings,
 } from '../services/mlx';
 
 const AVAILABLE: MlxAvailability = {
@@ -171,3 +171,112 @@ describe('fetchMlxChatStream', () => {
   });
 });
 
+// ── #462: MLX non-ok responses must surface body error detail ────────────────
+
+describe('MLX error surfacing (#462)', () => {
+  it('fetchMlxChatStream surfaces body error.message on non-ok (#462)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => ({ error: { message: 'model not loaded' } }),
+    });
+    await expect(
+      fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 8080),
+    ).rejects.toThrow('model not loaded');
+  });
+
+  it('fetchMlxChatStream falls back to statusText when no body error (#462)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'down',
+      json: async () => ({ unrelated: true }),
+    });
+    await expect(
+      fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], () => {}, 8080),
+    ).rejects.toThrow(/MLX server error.*down/);
+  });
+
+  it('fetchMlxEmbeddings surfaces body error on non-ok (#462)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      json: async () => ({ error: { message: 'embedding model not found' } }),
+    });
+    await expect(
+      fetchMlxEmbeddings('hello', 'bge-small', 8080),
+    ).rejects.toThrow('embedding model not found');
+  });
+
+  it('fetchMlxEmbeddings falls back to statusText when no body error (#462)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ data: 42 }),
+    });
+    await expect(
+      fetchMlxEmbeddings('hello', 'bge-small', 8080),
+    ).rejects.toThrow(/MLX embeddings error.*Service Unavailable/);
+  });
+
+  it('fetchMlxEmbeddings returns embeddings on success (#462)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
+    });
+    const result = await fetchMlxEmbeddings('hello', 'bge-small', 8080);
+    expect(result).toEqual([[0.1, 0.2]]);
+  });
+});
+
+// ── #466: flush trailing SSE event without newline ───────────────────────────
+
+describe('fetchMlxChatStream — SSE flush (#466)', () => {
+  function sseBodyNoTrailingNewline(lines: string[]) {
+    const encoder = new TextEncoder();
+    let i = 0;
+    return {
+      getReader: () => ({
+        read: vi.fn().mockImplementation(() => {
+          if (i < lines.length) {
+            const isLast = i === lines.length - 1;
+            const chunk = encoder.encode(lines[i] + (isLast ? '' : '\n'));
+            i++;
+            return Promise.resolve({ done: false, value: chunk });
+          }
+          return Promise.resolve({ done: true, value: undefined });
+        }),
+      }),
+    };
+  }
+
+  it('flushes the last SSE event when it has no trailing newline (#466)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: sseBodyNoTrailingNewline([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+        'data: {"choices":[{"delta":{"content":" world"}}]}',
+        'data: {"choices":[{"delta":{"content":"!"}}]}',
+      ]),
+    });
+    const out: string[] = [];
+    await fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], (d) => out.push(d), 8080);
+    expect(out.join('')).toBe('Hello world!');
+  });
+
+  it('flushes trailing [DONE] without newline and stops (#466)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: sseBodyNoTrailingNewline([
+        'data: {"choices":[{"delta":{"content":"A"}}]}',
+        'data: [DONE]',
+      ]),
+    });
+    const out: string[] = [];
+    await fetchMlxChatStream('m', [{ role: 'user', content: 'hi' }], (d) => out.push(d), 8080);
+    expect(out.join('')).toBe('A');
+  });
+});

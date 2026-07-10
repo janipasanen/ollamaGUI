@@ -43,7 +43,7 @@ export function loadSettings(): AgentAutonomySettings {
 
 export function saveSettings(settings: Partial<AgentAutonomySettings>): void {
   const current = loadSettings();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...settings }));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...settings })); } catch { /* quota */ }
 }
 
 export function getAutonomyLevel(): AutonomyLevel {

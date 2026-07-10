@@ -69,7 +69,7 @@ import {
   isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
-import { pickDirectory, appendPathArg, getSystemMemory } from './services/platform';
+import { pickDirectory, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 import {
@@ -121,8 +121,10 @@ import { registerGitTools, gitDiff, gitStatus, gitStage, gitCommit } from './ser
 import {
   AgentAutonomySettings, AutonomyLevel,
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
+  isPlanMode,
 } from './services/agentAutonomy';
 import { registerHook, makeReadOnlyHook } from './services/toolHooks';
+import { getEnabledToolFilter, listToolStatuses, setToolEnabled, loadDisabledTools } from './services/toolConfig';
 import { registerMemoryTools } from './services/crossSessionMemory';
 import { registerPythonTool } from './services/pyodide';
 import { registerCheckpointTools } from './services/checkpoints';
@@ -136,8 +138,12 @@ import { openExternalUrl, isExternalUrl } from './services/openExternal';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock, type AutocompleteOption, type ContextRef } from './services/hashCommand';
 import { setDiffReviewCallback, clearDiffReviewCallback, type PendingEdit, type EditDecision } from './services/diffReview';
 import { DiffReviewModal } from './components/DiffReviewModal';
+import { setBatchReviewCallback, clearBatchReviewCallback } from './services/diffReview';
+import { setEditAppliedCallback, clearEditAppliedCallback } from './services/diffReview';
+import { autoCommitEdit, loadAutoCommitEdits, saveAutoCommitEdits, undoLastAutoCommit } from './services/autoCommit';
+import { DiffReviewBatchModal } from './components/DiffReviewBatchModal';
 import { ContextMenu, type ContextMenuItem } from './components/ContextMenu';
-import { registerPlanTool, getPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
+import { registerPlanTool, getPlan, setPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
@@ -507,6 +513,14 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   // Live agentic phase indicator: 'Thinking…' / 'Running: <tool>' / 'Waiting for approval' (#394).
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
+  // Agentic step/iteration progress (Codex CLI / Claude Code parity, #398).
+  const [agentStep, setAgentStep] = useState<{ iteration: number; max: number } | null>(null);
+  // Per-tool enable/disable (Claude Code parity, #399).
+  const [disabledTools, setDisabledTools] = useState<Set<string>>(() => loadDisabledTools());
+  // Auto-commit after agentic edits (Aider parity, #401).
+  const [autoCommitEdits, setAutoCommitEdits] = useState<boolean>(() => loadAutoCommitEdits());
+  // Agentic "Continue past max-iterations" affordance (Codex/Claude parity, #403).
+  const [agentHitMax, setAgentHitMax] = useState(false);
 
   // Session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -568,7 +582,7 @@ const App: React.FC = () => {
   const toggleCodeWordWrap = useCallback(() => {
     setCodeWordWrap(prev => {
       const next = !prev;
-      localStorage.setItem('ollama_gui_code_wordwrap', JSON.stringify(next));
+      safeSetItem('ollama_gui_code_wordwrap', JSON.stringify(next));
       return next;
     });
   }, []);
@@ -580,7 +594,7 @@ const App: React.FC = () => {
   const adjustFontScale = useCallback((delta: number) => {
     setFontScale(prev => {
       const next = Math.min(1.5, Math.max(0.8, Math.round((prev + delta) * 10) / 10));
-      localStorage.setItem('ollama_gui_font_scale', String(next));
+      safeSetItem('ollama_gui_font_scale', String(next));
       return next;
     });
   }, []);
@@ -617,14 +631,17 @@ const App: React.FC = () => {
   const [recentModels, setRecentModels] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_recent_models') ?? '[]'); } catch { return []; }
   });
-  // Starred/favourite models (#339) — pinned to the top of the selector.
-  const [starredModels, setStarredModels] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('ollama_gui_starred_models') ?? '[]'); } catch { return []; }
-  });
+ // Starred/favourite models (#339) — pinned to the top of the selector.
+ const [starredModels, setStarredModels] = useState<string[]>(() => {
+   try { return JSON.parse(localStorage.getItem('ollama_gui_starred_models') ?? '[]'); } catch { return []; }
+ });
+  // Models currently loaded in Ollama memory (#478) — refreshed periodically
+  // so the selector shows a ● badge next to warm models (LM Studio / Codex parity).
+  const [runningModels, setRunningModels] = useState<Set<string>>(new Set());
   const toggleStarModel = useCallback((name: string) => {
     setStarredModels(prev => {
       const next = prev.includes(name) ? prev.filter(m => m !== name) : [...prev, name];
-      localStorage.setItem('ollama_gui_starred_models', JSON.stringify(next));
+      safeSetItem('ollama_gui_starred_models', JSON.stringify(next));
       return next;
     });
   }, []);
@@ -759,6 +776,9 @@ const App: React.FC = () => {
   // Diff review modal (#84/#185)
   const [pendingDiffEdit, setPendingDiffEdit] = useState<PendingEdit | null>(null);
   const diffReviewResolveRef = useRef<((d: EditDecision) => void) | null>(null);
+  // Batch (multi-file) diff review modal (#400)
+  const [pendingDiffEdits, setPendingDiffEdits] = useState<PendingEdit[] | null>(null);
+  const batchDiffResolveRef = useRef<((d: EditDecision[]) => void) | null>(null);
 
   // Live plan checklist (#239) — rendered when the agent calls update_plan.
   const [plan, setPlanState] = useState<PlanItem[]>(() => getPlan());
@@ -796,6 +816,24 @@ const App: React.FC = () => {
 
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Session-only auto-approve list for general agent tools (#406, Codex/Claude
+  // "Yes, and don't ask again" parity). Not persisted — resets on reload, like
+  // the CLI `cliAllowlist`.
+  const sessionToolAllowlistRef = useRef<Set<string>>(new Set());
+
+  // Plan-mode gating (#408, Codex/Claude plan-mode parity): until the user
+  // approves the published plan, mutating tools are blocked; after approval
+  // the agent executes the plan without per-tool prompts for the rest of the
+  // run. Resets each run.
+  const planApprovedRef = useRef(false);
+  const [pendingPlanApproval, setPendingPlanApproval] = useState<{
+    toolName: string;
+    resolve: (approved: boolean) => void;
+  } | null>(null);
+  // Plan-approval edit mode (#409): lets the user tweak the published plan
+  // steps before approving (Codex plan-edit parity).
+  const [planEditDraft, setPlanEditDraft] = useState<string[] | null>(null);
 
   // Message queue: enqueue prompts while a reply streams; auto-send FIFO (#137).
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -905,10 +943,24 @@ const App: React.FC = () => {
       ...availableModels.map(m => ({ ...m, cloud: isCloudModel(m.name) })), // preserve size/quant
       ...cloudModels,
     ];
-    setModels(combined);
-    // Fetch extra connection models in parallel (#123)
-    fetchAllConnectionModels(loadConnections()).then(setConnectedModels).catch(() => {});
-    return combined;
+   setModels(combined);
+   // Fetch extra connection models in parallel (#123)
+   fetchAllConnectionModels(loadConnections()).then(setConnectedModels).catch(() => {});
+    // Refresh running models list (#478)
+    fetchRunningModels(url('/api/ps'))
+      .then(r => setRunningModels(new Set(r.map(m => m.name))))
+      .catch(() => {});
+   return combined;
+ }, [ollamaBaseUrl]);
+
+  // Poll running models every 30s so the warm indicator stays current (#478).
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchRunningModels(url('/api/ps'))
+        .then(r => setRunningModels(new Set(r.map(m => m.name))))
+        .catch(() => {});
+    }, 30_000);
+    return () => clearInterval(id);
   }, [ollamaBaseUrl]);
 
   useEffect(() => {
@@ -999,12 +1051,23 @@ const App: React.FC = () => {
       registerFileTools();
       // Diff review callback (#84/#185) — intercepts write_file/apply_edit for user approval
       setDiffReviewCallback((edit: PendingEdit) =>
-        new Promise<EditDecision>(resolve => {
-          setPendingDiffEdit(edit);
-          diffReviewResolveRef.current = resolve;
-        })
-      );
-      // Wire the read-only mode hook (#146) so the hook chain enforces it.
+       new Promise<EditDecision>(resolve => {
+         setPendingDiffEdit(edit);
+         diffReviewResolveRef.current = resolve;
+       })
+     );
+     // Batch (multi-file) diff review callback (#400) — intercepts apply_patch
+     // with several ops for a single combined review.
+     setBatchReviewCallback((edits: PendingEdit[]) =>
+      new Promise<EditDecision[]>(resolve => {
+        setPendingDiffEdits(edits);
+        batchDiffResolveRef.current = resolve;
+      })
+    );
+     // Auto-commit after an edit is applied to disk (#401). Reads the setting
+     // fresh from localStorage so toggling it takes effect immediately.
+     setEditAppliedCallback((path, label) => { void autoCommitEdit(path, label, loadAutoCommitEdits()); });
+     // Wire the read-only mode hook (#146) so the hook chain enforces it.
       registerHook('builtin:read-only', makeReadOnlyHook());
       // Cross-session memory tools (#95/#178) — memory_set/get/list/delete
       registerMemoryTools();
@@ -1124,7 +1187,7 @@ const App: React.FC = () => {
   }, []);
 
   // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
-  useEffect(() => () => { clearDiffReviewCallback(); clearBrowserApprovalCallback(); }, []);
+  useEffect(() => () => { clearDiffReviewCallback(); clearBatchReviewCallback(); clearEditAppliedCallback(); clearBrowserApprovalCallback(); }, []);
   // Refresh relative timestamps every minute (#260)
   useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 60_000);
@@ -1419,7 +1482,7 @@ const App: React.FC = () => {
       }
       // Escape cancels an in-progress generation when no overlay is open (#257),
       // mirroring Codex CLI / Claude Code interrupt behaviour.
-      if (e.key === 'Escape' && isLoading && !chatSearchOpen && !paletteOpen && !isSettingsOpen && !showHelp) {
+      if (e.key === 'Escape' && isLoading && !chatSearchOpen && !paletteOpen && !isSettingsOpen && !showHelp && !pendingToolApproval && !pendingApproval && !pendingPlanApproval) {
         e.preventDefault();
         abortControllerRef.current?.abort();
         return;
@@ -1522,7 +1585,7 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '0') {
         e.preventDefault();
         setFontScale(1);
-        localStorage.setItem('ollama_gui_font_scale', '1');
+        safeSetItem('ollama_gui_font_scale', '1');
         showStatusBanner('Zoom reset to 100%');
       } else if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
@@ -1531,7 +1594,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions, promptPreview]);
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions, promptPreview, pendingToolApproval, pendingApproval, pendingPlanApproval]);
 
   // Keyboard shortcuts for the CLI approval modal (#361) — Enter = Allow Once,
   // Escape = Deny, A = Always Allow.
@@ -1560,6 +1623,55 @@ const App: React.FC = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [pendingApproval]);
+
+  // Keyboard shortcuts for the agent tool approval modal (#407, Codex/Claude
+  // parity with the CLI approval modal #361): Escape = Deny, Enter = Allow,
+  // A = Allow for session.
+  useEffect(() => {
+    if (!pendingToolApproval) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!pendingToolApproval) return;
+      const active = document.activeElement;
+      const isButton = active instanceof HTMLButtonElement;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        pendingToolApproval.resolve(false);
+        setPendingToolApproval(null);
+      } else if (e.key === 'Enter' && !isButton) {
+        e.preventDefault();
+        pendingToolApproval.resolve(true);
+        setPendingToolApproval(null);
+      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        sessionToolAllowlistRef.current.add(pendingToolApproval.toolName);
+        pendingToolApproval.resolve(true);
+        setPendingToolApproval(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingToolApproval]);
+
+  // Keyboard shortcuts for the plan-mode approval modal (#408): Escape =
+  // Deny, Enter = Approve plan.
+  useEffect(() => {
+    if (!pendingPlanApproval) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!pendingPlanApproval) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        pendingPlanApproval.resolve(false);
+        setPendingPlanApproval(null);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        planApprovedRef.current = true;
+        pendingPlanApproval.resolve(true);
+        setPendingPlanApproval(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingPlanApproval]);
 
   // When mode is 'system', track OS light/dark changes live.
   useEffect(() => {
@@ -1596,13 +1708,13 @@ const App: React.FC = () => {
 
   const updateSystemPrompt = (val: string) => {
     setSystemPrompt(val);
-    localStorage.setItem('ollama_gui_system_prompt', val);
+    safeSetItem('ollama_gui_system_prompt', val);
   };
 
   const updateGenOptions = (patch: Partial<GenerationOptions>) => {
     setGenOptions(prev => {
       const next = { ...prev, ...patch };
-      localStorage.setItem('ollama_gui_gen_options', JSON.stringify(next));
+      safeSetItem('ollama_gui_gen_options', JSON.stringify(next));
       return next;
     });
   };
@@ -1610,7 +1722,7 @@ const App: React.FC = () => {
   const updateStructuredOutput = (patch: Partial<{ enabled: boolean; schema: string }>) => {
     setStructuredOutput(prev => {
       const next = { ...prev, ...patch };
-      localStorage.setItem('ollama_gui_structured', JSON.stringify(next));
+      safeSetItem('ollama_gui_structured', JSON.stringify(next));
       return next;
     });
     setSchemaError(null);
@@ -1618,7 +1730,7 @@ const App: React.FC = () => {
 
   const updateBaseUrl = (val: string) => {
     setOllamaBaseUrl(val);
-    localStorage.setItem('ollama_gui_base_url', val);
+    safeSetItem('ollama_gui_base_url', val);
   };
 
   // Update MLX settings: enforce the toggle hierarchy, persist, and manage the
@@ -2069,11 +2181,28 @@ const App: React.FC = () => {
 
   const cancelStream = () => {
     abortControllerRef.current?.abort();
+    // If the agent is blocked on an approval prompt (CLI command #361, agent
+    // tool #88, or plan #408), the AbortSignal alone can't unblock the awaited
+    // promise — resolve it as denied so the loop reaches its top-of-iteration
+    // abort guard and completes cleanly, and close the modal immediately.
+    if (pendingApproval) { pendingApproval.resolve(false); setPendingApproval(null); }
+    if (pendingToolApproval) { pendingToolApproval.resolve(false); setPendingToolApproval(null); }
+    if (pendingPlanApproval) { pendingPlanApproval.resolve(false); setPendingPlanApproval(null); setPlanEditDraft(null); }
+    setIsLoading(false);
+    setAgentStatus(null);
+    setAgentStep(null);
   };
 
   // Send message
-  const sendMessage = async (textOverride?: string, modelOverride?: string) => {
+  const sendMessage = async (textOverride?: string, modelOverride?: string, continueMode: boolean = false) => {
     let text = textOverride ?? input;
+    // Agentic "Continue past max-iterations" (#403): re-run the agentic loop with
+    // the current context (no new user message). Reset the hit-max flag on entry.
+    setAgentHitMax(false);
+    // Each run starts with the plan un-approved (#408).
+    planApprovedRef.current = false;
+    setPendingPlanApproval(null);
+    if (continueMode) text = '';
     // Record non-slash-command prompts for Alt+Up/Alt+Down recall (#332)
     if (!text.trimStart().startsWith('/') && text.trim()) {
       promptHistoryRef.current = [...promptHistoryRef.current.filter(t => t !== text), text].slice(-50);
@@ -2085,7 +2214,7 @@ const App: React.FC = () => {
       text = pendingContextBlocks.join('\n\n') + '\n\n' + text;
       setPendingContextBlocks([]);
     }
-    if (!text.trim() && attachedImages.length === 0) return;
+    if (!continueMode && !text.trim() && attachedImages.length === 0) return;
 
     // Slash commands (#96) — dispatch before /image special case
     if (text.trimStart().startsWith('/') && !text.trimStart().startsWith('/image ')) {
@@ -2254,7 +2383,7 @@ const App: React.FC = () => {
           // /reset restores generation parameters to defaults (#348).
           const defaults = { num_ctx: 4096 };
           setGenOptions(defaults);
-          localStorage.setItem('ollama_gui_gen_options', JSON.stringify(defaults));
+          safeSetItem('ollama_gui_gen_options', JSON.stringify(defaults));
           showStatusBanner('Reset generation parameters to defaults');
           return;
         }
@@ -2553,7 +2682,7 @@ ${block}`;
             showStatusBanner(`System prompt: ${systemPrompt}`);
           } else {
             setSystemPrompt(arg);
-            localStorage.setItem('ollama_gui_system_prompt', arg);
+            safeSetItem('ollama_gui_system_prompt', arg);
             showStatusBanner('System prompt updated');
           }
           return;
@@ -2761,6 +2890,24 @@ ${lines.join('\n')}`;
           showStatusBanner(`Model: ${model} · Workspace: ${wsRoot ?? 'none'} · Ollama: ${conn} · Messages: ${messages.length}`);
           return;
         }
+        if (result.action === 'tools') {
+          // /tools lists registered agent tools with enabled state (#399).
+          const statuses = listToolStatuses(disabledTools);
+          if (statuses.length === 0) { showStatusBanner('No tools registered'); return; }
+          const on = statuses.filter(s => s.enabled).length;
+          const detail = statuses.map(s => `${s.enabled ? '✅' : '⛔'} ${s.name}${s.readOnly ? ' (read-only)' : ''}`).join(' · ');
+          showStatusBanner(`Tools: ${on}/${statuses.length} enabled — ${detail}`);
+         return;
+       }
+        if (result.action === 'gitundo') {
+          // /gitundo reverts the most recent agent auto-commit (#402, Aider /undo parity).
+          void (async () => {
+            const res = await undoLastAutoCommit();
+            if (res.reverted) showStatusBanner(`Reverted auto-commit: ${res.subject}`);
+            else showStatusBanner(`Could not revert: ${res.error ?? 'unknown reason'}`);
+          })();
+          return;
+        }
         if (result.action === 'save') {
           // /save writes the current conversation snapshot into the workspace (#386).
           const saveRoot = getActiveRoot();
@@ -2823,11 +2970,68 @@ ${lines.join('\n')}`;
           trunkMessagesRef.current = merged;
           setMessages(merged);
           saveCurrentSession(merged);
-          showStatusBanner(`Merged ${target.messages.length} message${target.messages.length === 1 ? '' : 's'} from "${target.title}"`);
+         showStatusBanner(`Merged ${target.messages.length} message${target.messages.length === 1 ? '' : 's'} from "${target.title}"`);
+         return;
+       }
+        if (result.action === 'warm') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /warm <model-name>'); return; }
+          showStatusBanner(`Loading ${arg} into memory…`);
+          void (async () => {
+            try {
+              await loadOllamaModel(arg, 300, url('/api/generate'));
+              showStatusBanner(`✅ ${arg} loaded into memory (5m keep-alive)`);
+            } catch (err) {
+              showStatusBanner(`Failed to load: ${formatErrorLine(err, 'ollama')}`);
+            }
+          })();
           return;
         }
-        return;
-      }
+        if (result.action === 'unload') {
+          const arg = (result.arg ?? '').trim();
+          if (!arg) { showStatusBanner('Usage: /unload <model-name>'); return; }
+          showStatusBanner(`Unloading ${arg} from memory…`);
+          void (async () => {
+            try {
+              await unloadOllamaModel(arg, url('/api/generate'));
+              showStatusBanner(`✅ ${arg} unloaded from memory`);
+            } catch (err) {
+              showStatusBanner(`Failed to unload: ${formatErrorLine(err, 'ollama')}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'running') {
+          void (async () => {
+            try {
+              const running = await fetchRunningModels(url('/api/ps'));
+              if (running.length === 0) { showStatusBanner('No models currently loaded in memory'); return; }
+              const lines = running.map(m => {
+                const mb = Math.round(m.size / 1024 / 1024);
+                const vram = m.sizeVram ? ` (VRAM: ${Math.round(m.sizeVram / 1024 / 1024)} MB)` : '';
+                const exp = m.expiresRelativeToNow ? ` · expires in ${m.expiresRelativeToNow}` : '';
+                return `  ${m.name} — ${mb} MB${vram}${exp}`;
+              });
+              showStatusBanner(`Loaded models (${running.length}):\n${lines.join('\n')}`);
+            } catch (err) {
+              showStatusBanner(`Failed to list running models: ${formatErrorLine(err, 'ollama')}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'version') {
+          void (async () => {
+            try {
+              const info = await fetchOllamaVersion(url('/api/version'));
+              showStatusBanner(`Ollama server version: ${info.version}`);
+            } catch (err) {
+              showStatusBanner(`Failed to fetch version: ${formatErrorLine(err, 'ollama')}`);
+            }
+          })();
+          return;
+        }
+       return;
+     }
       if (result.kind === 'prompt') {
         setInput('');
         setCommandSuggestions([]);
@@ -2887,7 +3091,7 @@ ${lines.join('\n')}`;
     // Prepend pinned-file context so it stays present across turns (#350).
     // Done after the slash-command dispatch so /-commands still work with
     // pinned files active. Pinned files persist until /drop or /clear.
-    const pinnedBlock = pinnedContextBlock(pinnedFiles);
+    const pinnedBlock = continueMode ? '' : pinnedContextBlock(pinnedFiles);
     if (pinnedBlock) text = pinnedBlock + '\n\n' + text;
     const userMessage: Message = {
       role: 'user',
@@ -2922,10 +3126,12 @@ ${lines.join('\n')}`;
     });
 
     // Apply filter inlets before dispatch (#127)
+    const stripMaxIter = (m: Message) =>
+      !(continueMode && m.role === 'assistant' && m.content.startsWith('⚠️ Agent stopped: maximum tool iterations'));
     let rawHistory: Message[] = [
       { role: 'system', content: composedSystem },
-      ...messages.map(toApiMsg),
-      toApiMsg(userMessage),
+      ...messages.filter(stripMaxIter).map(toApiMsg),
+      ...(continueMode ? [] : [toApiMsg(userMessage)]),
     ];
 
     // Model override for "regenerate with a different model" (#270). Falls back
@@ -2934,7 +3140,7 @@ ${lines.join('\n')}`;
     // Track recent model usage (#322)
     setRecentModels(prev => {
       const next = [activeModel, ...prev.filter(m => m !== activeModel)].slice(0, 5);
-      try { localStorage.setItem('ollama_gui_recent_models', JSON.stringify(next)); } catch { /* ignore */ }
+      try { safeSetItem('ollama_gui_recent_models', JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
 
@@ -2948,7 +3154,7 @@ ${lines.join('\n')}`;
 
     const chatHistory = await applyFilterInlet(rawHistory);
 
-    setMessages([...messages, userMessage]);
+    setMessages(continueMode ? messages.filter(stripMaxIter) : [...messages, userMessage]);
     if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
     setAttachedImages([]);
     setIsLoading(true);
@@ -3056,9 +3262,43 @@ ${lines.join('\n')}`;
           signal: abortControllerRef.current?.signal,
           options: genOptions,
           format,
+          onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
+          onMaxIterations: () => setAgentHitMax(true),
+          // Clean abort handling (#405): a user-initiated Stop during an
+          // agentic fetch marks the partial assistant reply as cancelled
+          // (parity with the normal streaming cancel-keep-partial #303)
+          // instead of surfacing an "Error: aborted" banner.
+          onCancel: () => {
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant') {
+                const updated = [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*', wasCancelled: true }] as Message[];
+                saveCurrentSession(updated);
+                return updated;
+              }
+              return prev;
+            });
+          },
+         // Only filter when some built-in tool is disabled (#399); default = expose all.
+          ...(disabledTools.size > 0 ? { toolFilter: getEnabledToolFilter(disabledTools) ?? undefined } : {}),
           // Plan/ask autonomy gate (#88/#89/#189)
           onApprovalNeeded: (toolName, args) =>
             new Promise<boolean>(resolve => {
+              // Session auto-approve (#406): skip the modal for tools the user
+              // already allowed "for this session".
+              if (sessionToolAllowlistRef.current.has(toolName)) {
+                resolve(true);
+                return;
+              }
+              // Plan-mode gating (#408): in plan autonomy, the agent must get
+              // its published plan approved before executing any mutating
+              // tool. After approval, mutating tools auto-approve for the run.
+              if (isPlanMode()) {
+                if (planApprovedRef.current) { resolve(true); return; }
+                setAgentStatus('Waiting for plan approval');
+                setPendingPlanApproval({ toolName, resolve });
+                return;
+              }
               setAgentStatus(`Waiting for approval: ${toolName}`);
               setPendingToolApproval({ toolName, args, resolve });
             }),
@@ -3116,6 +3356,11 @@ ${lines.join('\n')}`;
           onComplete: () => {
             setIsLoading(false);
             setAgentStatus(null);
+            setAgentStep(null);
+            // Intentionally do NOT reset agentHitMax here: a max-iterations
+            // stop sets it via onMaxIterations and the "Continue agent" button
+            // (#403) must remain visible after the run completes. sendMessage
+            // clears it on the next send.
           },
           onError: (error) => {
             setMessages(prev => [
@@ -3124,11 +3369,19 @@ ${lines.join('\n')}`;
             ]);
             setIsLoading(false);
             setAgentStatus(null);
+            setAgentStep(null);
+            setAgentHitMax(false);
           },
         });
 
         for await (const message of agentStream) {
-          // Messages are already handled by the callbacks
+          // Messages are already handled by the callbacks — except the
+          // max-iterations stop warning, which is yielded directly by the
+          // generator (not via onAssistantMessage) and must be surfaced to
+          // the UI so the "Continue agent" button (#403) can attach to it.
+          if (message.role === 'assistant' && typeof message.content === 'string' && message.content.startsWith('⚠️ Agent stopped: maximum tool iterations')) {
+            setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
+          }
         }
         // Stamp final-turn generation stats onto the last assistant reply (#391, #392).
         if (agenticGenStats) {
@@ -3445,6 +3698,13 @@ ${lines.join('\n')}`;
     }
   };
 
+  // Continue the agentic loop past the max-iterations stop (#403, Codex/Claude parity).
+  // Re-runs the agentic turn with the current context (no new user message).
+  const continueAgent = () => {
+    if (isLoading || !isAgenticMode) return;
+    void sendMessage(undefined, undefined, true);
+  };
+
   // Retry a failed assistant message (#299). Removes the error placeholder
   // and re-sends the last user prompt — parity with Codex / Claude retry
   // affordances after a generation failure.
@@ -3587,7 +3847,7 @@ ${lines.join('\n')}`;
     { id: 'prev-convo', label: 'Previous Conversation', hint: 'Ctrl+[', run: () => switchConversationRef.current(-1) },
     { id: 'zoom-in', label: 'Zoom In', hint: 'Ctrl+=', run: () => { adjustFontScale(0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
     { id: 'zoom-out', label: 'Zoom Out', hint: 'Ctrl+-', run: () => { adjustFontScale(-0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
-    { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); localStorage.setItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
+    { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); safeSetItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
   ];
 
   return (
@@ -3699,7 +3959,7 @@ ${lines.join('\n')}`;
           {(['recent', 'name', 'messages'] as const).map(m => (
             <button
               key={m}
-              onClick={() => { setSortMode(m); localStorage.setItem('ollama_gui_sort_mode', m); }}
+              onClick={() => { setSortMode(m); safeSetItem('ollama_gui_sort_mode', m); }}
               aria-label={`Sort by ${m}`}
               aria-pressed={sortMode === m}
               className={`text-[10px] px-2 py-0.5 rounded-full border ${sortMode === m ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
@@ -4008,6 +4268,7 @@ ${lines.join('\n')}`;
               />
               <select
                 value={activePresetId ? `preset:${activePresetId}` : model}
+                title="● = model loaded in memory (warm). Use /running to list, /warm to load, /unload to free RAM."
                 onChange={(e) => {
                   const val = e.target.value;
                   if (val.startsWith('preset:')) {
@@ -4029,20 +4290,20 @@ ${lines.join('\n')}`;
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
-                {starredModels.length > 0 && !activePresetId && (
-                  <optgroup label="— ★ Starred —">
-                    {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`starred:${m}`} value={m}>{m}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {recentModels.length > 0 && !activePresetId && (
-                  <optgroup label="— Recent —">
-                    {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`recent:${m}`} value={m}>{m}</option>
-                    ))}
-                  </optgroup>
-                )}
+               {starredModels.length > 0 && !activePresetId && (
+                 <optgroup label="— ★ Starred —">
+                   {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                      <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                   ))}
+                 </optgroup>
+               )}
+               {recentModels.length > 0 && !activePresetId && (
+                 <optgroup label="— Recent —">
+                   {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                      <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                   ))}
+                 </optgroup>
+               )}
                 {presets.length > 0 && (
                   <optgroup label="— Presets —">
                     {presets.map(p => (
@@ -4052,13 +4313,13 @@ ${lines.join('\n')}`;
                     ))}
                   </optgroup>
                 )}
-                {models.filter(m => !m.cloud).length > 0 && (
-                  <optgroup label="— Local Ollama —">
-                    {models.filter(m => !m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}</option>
-                    ))}
-                  </optgroup>
-                )}
+               {models.filter(m => !m.cloud).length > 0 && (
+                 <optgroup label="— Local Ollama —">
+                   {models.filter(m => !m.cloud).map((m) => (
+                      <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
+                   ))}
+                 </optgroup>
+               )}
                 {models.filter(m => m.cloud).length > 0 && (
                   <optgroup label="— Cloud Ollama —">
                     {models.filter(m => m.cloud).map((m) => (
@@ -4115,9 +4376,10 @@ ${lines.join('\n')}`;
                 <span
                   role="status"
                   aria-live="polite"
-                  aria-label={`Agent status: ${agentStatus}`}
+                  aria-label={`Agent status: ${agentStep ? `step ${agentStep.iteration} of ${agentStep.max}, ` : ''}${agentStatus}`}
                   className={`text-xs px-2 py-0.5 rounded-full animate-pulse ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-200 text-zinc-700'}`}
                 >
+                  {agentStep && <span className="opacity-70 mr-1">Step {agentStep.iteration}/{agentStep.max}</span>}
                   {agentStatus}
                 </span>
               )}
@@ -4451,7 +4713,7 @@ ${lines.join('\n')}`;
                     {msg.tool_calls.map((toolCall: any, idx: number) => (
                       <div key={idx} className="text-xs font-mono">
                         <span className="text-yellow-300">{toolCallName(toolCall)}</span>(
-                        <span className="text-green-300">{toolCall.function.arguments}</span>
+                        <span className="text-green-300">{typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : JSON.stringify(toolCall.function?.arguments ?? toolCall.arguments ?? {})}</span>
                         )
                       </div>
                     ))}
@@ -4584,6 +4846,15 @@ ${lines.join('\n')}`;
                     className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-blue-900/50 text-blue-300 hover:bg-blue-800/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'} disabled:opacity-40`}
                   >▶ Continue</button>
                 )}
+                {/* Continue the agentic loop past max-iterations (#403) */}
+                {msg.role === 'assistant' && msg.content.startsWith('⚠️ Agent stopped: maximum tool iterations') && agentHitMax && !isLoading && isAgenticMode && i === messages.length - 1 && (
+                  <button
+                    onClick={continueAgent}
+                    aria-label="Continue agent"
+                    title="Continue — run another batch of tool iterations"
+                    className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-blue-900/50 text-blue-300 hover:bg-blue-800/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+                  >▶ Continue agent</button>
+                )}
                 {/* Thumbs feedback on completed assistant replies (#137) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
                   <div className="flex items-center gap-1 mt-1 flex-wrap">
@@ -4699,8 +4970,12 @@ ${lines.join('\n')}`;
                         key={action.id}
                         aria-label={`Action: ${action.name}`}
                         onClick={async () => {
-                          const result = await runAction(action.id, msg);
-                          if (result) sendMessage(result);
+                          try {
+                            const result = await runAction(action.id, msg);
+                            if (result) sendMessage(result);
+                          } catch (e) {
+                            showStatusBanner(`Action '${action.name}' failed: ${e instanceof Error ? e.message : String(e)}`);
+                          }
                         }}
                         className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                       >{action.name}</button>
@@ -5853,11 +6128,14 @@ ${lines.join('\n')}`;
                                <div className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'} truncate`}>{tool.description}</div>
                              </div>
                              <span className="ml-3 text-xs shrink-0 flex items-center gap-1.5">
-                               {paramNames.length > 0 && (
-                                 <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{paramNames.length} param{paramNames.length === 1 ? '' : 's'}</span>
-                               )}
-                               <span className="text-green-400">✓</span>
-                             </span>
+                              {paramNames.length > 0 && (
+                                <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{paramNames.length} param{paramNames.length === 1 ? '' : 's'}</span>
+                              )}
+                              {/* Per-tool enable/disable (Claude Code parity, #399) */}
+                              <span onClick={e => e.stopPropagation()} title={disabledTools.has(tool.name) ? 'Enable this tool' : 'Disable this tool'}>
+                                <Toggle dark={dark} label={`Toggle ${tool.name}`} checked={!disabledTools.has(tool.name)} onChange={() => { const next = setToolEnabled(tool.name, disabledTools.has(tool.name)); setDisabledTools(new Set(next)); }} />
+                              </span>
+                            </span>
                            </summary>
                            {paramNames.length > 0 ? (
                              <div className={`px-3 pb-2 space-y-1 ${dark ? 'bg-zinc-800/40' : 'bg-zinc-100/60'}`}>
@@ -6966,7 +7244,7 @@ ${lines.join('\n')}`;
                         onChange={() => {
                           const next = !notifyOnComplete;
                           setNotifyOnComplete(next);
-                          try { localStorage.setItem('ollama_gui_notify_complete', String(next)); } catch { /* ignore */ }
+                          try { safeSetItem('ollama_gui_notify_complete', String(next)); } catch { /* ignore */ }
                           if (next && 'Notification' in window && Notification.permission !== 'granted') {
                             Notification.requestPermission().catch(() => {});
                           }
@@ -6988,7 +7266,7 @@ ${lines.join('\n')}`;
                         onChange={() => {
                           const next = !playSoundOnComplete;
                           setPlaySoundOnComplete(next);
-                          try { localStorage.setItem('ollama_gui_sound_complete', String(next)); } catch { /* ignore */ }
+                          try { safeSetItem('ollama_gui_sound_complete', String(next)); } catch { /* ignore */ }
                         }}
                         dark={dark}
                         label="Play sound on completion"
@@ -7274,6 +7552,14 @@ ${lines.join('\n')}`;
                       <Toggle dark={dark} label="Smart approve" checked={autonomySettings.smartApprove} onChange={() => { const s = { ...autonomySettings, smartApprove: !autonomySettings.smartApprove }; setAutonomySettings(s); saveAutonomySettings(s); }} />
                     </div>
                   )}
+                  {/* Auto-commit after edits (Aider parity, #401) */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-commit edits</span>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Stage & commit each applied file edit to the workspace git repo with a descriptive message.</p>
+                    </div>
+                    <Toggle dark={dark} label="Auto-commit edits" checked={autoCommitEdits} onChange={() => { const v = !autoCommitEdits; setAutoCommitEdits(v); saveAutoCommitEdits(v); }} />
+                  </div>
                 </div>
 
                 {/* Memory (#95) */}
@@ -7654,12 +7940,12 @@ ${lines.join('\n')}`;
                   <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Automatically summarise old messages when the conversation approaches the context limit. Keeps recent turns intact.</p>
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-compact</span>
-                    <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); localStorage.setItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
-                    <Toggle checked={resumeLastSession} onChange={() => { const v = !resumeLastSession; setResumeLastSession(v); localStorage.setItem('ollama_gui_resume_last_session', JSON.stringify(v)); }} dark={dark} label="Resume last conversation on startup" />
+                    <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); safeSetItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
+                    <Toggle checked={resumeLastSession} onChange={() => { const v = !resumeLastSession; setResumeLastSession(v); safeSetItem('ollama_gui_resume_last_session', JSON.stringify(v)); }} dark={dark} label="Resume last conversation on startup" />
                   </div>
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Send on Ctrl+Enter (Enter = newline)</span>
-                    <Toggle checked={sendOnCtrlEnter} onChange={() => { const v = !sendOnCtrlEnter; setSendOnCtrlEnter(v); localStorage.setItem('ollama_gui_send_on_ctrl_enter', JSON.stringify(v)); }} dark={dark} label="Toggle send on Ctrl+Enter" />
+                    <Toggle checked={sendOnCtrlEnter} onChange={() => { const v = !sendOnCtrlEnter; setSendOnCtrlEnter(v); safeSetItem('ollama_gui_send_on_ctrl_enter', JSON.stringify(v)); }} dark={dark} label="Toggle send on Ctrl+Enter" />
                   </div>
                   <div className="flex items-center gap-2">
                     <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Threshold (tokens)</label>
@@ -7668,7 +7954,7 @@ ${lines.join('\n')}`;
                       min={500}
                       max={32000}
                       value={compactionThreshold}
-                      onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) { setCompactionThreshold(v); localStorage.setItem('ollama_gui_compact_threshold', String(v)); } }}
+                      onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) { setCompactionThreshold(v); safeSetItem('ollama_gui_compact_threshold', String(v)); } }}
                       className={`w-24 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
                     />
                   </div>
@@ -7991,6 +8277,91 @@ ${lines.join('\n')}`;
                   onClick={() => { pendingToolApproval.resolve(true); setPendingToolApproval(null); }}
                   className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold"
                 >Allow</button>
+                <button
+                  onClick={() => {
+                    sessionToolAllowlistRef.current.add(pendingToolApproval.toolName);
+                    pendingToolApproval.resolve(true);
+                    setPendingToolApproval(null);
+                  }}
+                  title={`Allow ${pendingToolApproval.toolName} without asking again for the rest of this session`}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border ${dark ? 'border-zinc-600 text-blue-300 hover:bg-zinc-700' : 'border-zinc-300 text-blue-600 hover:bg-zinc-100'}`}
+                >Allow for session</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Plan-mode approval modal (#408) — in plan autonomy, mutating tools
+            are blocked until the user approves the published plan. Approve
+            unblocks the whole plan run; Deny blocks the tool and keeps the
+            plan un-approved. */}
+        {pendingPlanApproval && (
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <span>📋</span> Approve plan to begin execution?
+                </h2>
+              </div>
+              <p className={`text-sm mb-3 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                The agent has published a plan and wants to start executing it. The next step is:
+              </p>
+              <div className={`rounded-lg px-4 py-3 font-mono text-sm mb-4 border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-200 text-zinc-900'}`}>
+                <span className={`font-bold ${dark ? 'text-blue-400' : 'text-blue-600'}`}>{pendingPlanApproval.toolName}</span>
+              </div>
+              {plan.length > 0 && (
+                planEditDraft ? (
+                  <ol className={`mb-4 max-h-60 overflow-y-auto space-y-1 text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                    {planEditDraft.map((stepText, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className="shrink-0 opacity-60">{idx + 1}.</span>
+                        <textarea
+                          aria-label={`Edit plan step ${idx + 1}`}
+                          value={stepText}
+                          onChange={(e) => setPlanEditDraft(draft => draft ? draft.map((t, j) => (j === idx ? e.target.value : t)) : draft)}
+                          className={`flex-1 min-h-[2rem] rounded px-2 py-1 text-xs font-mono border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <ol className={`mb-4 max-h-40 overflow-y-auto space-y-1 text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                    {plan.map((item, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className="shrink-0 opacity-60">{idx + 1}.</span>
+                        <span>{item.step}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )
+              )}
+              <div className="flex gap-2 justify-end">
+                {plan.length > 0 && !planEditDraft && (
+                  <button
+                    onClick={() => setPlanEditDraft(plan.map(item => item.step))}
+                    className={`mr-auto px-3 py-2 rounded-lg text-sm font-medium border ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                  >Edit plan</button>
+                )}
+                <button
+                  onClick={() => { pendingPlanApproval.resolve(false); setPendingPlanApproval(null); setPlanEditDraft(null); }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-700'}`}
+                >Deny</button>
+                <button
+                  onClick={() => {
+                    // Persist edited steps before unblocking execution (#409).
+                    if (planEditDraft) {
+                      setPlan(plan.map((item, idx) => ({
+                        step: planEditDraft[idx] ?? item.step,
+                        status: item.status,
+                      })));
+                    }
+                    planApprovedRef.current = true;
+                    pendingPlanApproval.resolve(true);
+                    setPendingPlanApproval(null);
+                    setPlanEditDraft(null);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold"
+                >Approve plan</button>
               </div>
             </div>
           </div>
@@ -8003,13 +8374,26 @@ ${lines.join('\n')}`;
             dark={dark}
             onResolve={(decision) => {
               diffReviewResolveRef.current?.(decision);
-              diffReviewResolveRef.current = null;
-              setPendingDiffEdit(null);
-            }}
-          />
-        )}
+            diffReviewResolveRef.current = null;
+            setPendingDiffEdit(null);
+          }}
+        />
+      )}
 
-        {/* Right-click context menu on chat messages (#378) */}
+       {/* Batch (multi-file) diff review modal (#400) — one review for apply_patch with several ops */}
+       {pendingDiffEdits && pendingDiffEdits.length > 0 && (
+         <DiffReviewBatchModal
+           edits={pendingDiffEdits}
+           dark={dark}
+           onResolve={(decisions) => {
+             batchDiffResolveRef.current?.(decisions);
+             batchDiffResolveRef.current = null;
+             setPendingDiffEdits(null);
+           }}
+         />
+       )}
+
+      {/* Right-click context menu on chat messages (#378) */}
         {contextMenu && (() => {
           const mi = contextMenu.index;
           const msg = messages[mi];
@@ -8070,3 +8454,4 @@ const AppWithErrorBoundary: React.FC = () => (
 );
 
 export default AppWithErrorBoundary;
+import { loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion } from './services/ollama';

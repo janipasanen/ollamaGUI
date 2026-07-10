@@ -27,7 +27,7 @@ function loadRefs(): SecretRef[] {
 }
 
 function saveRefs(refs: SecretRef[]): void {
-  localStorage.setItem(KEYS_STORE, JSON.stringify(refs));
+  try { localStorage.setItem(KEYS_STORE, JSON.stringify(refs)); } catch { /* quota */ }
 }
 
 /** Store a secret value in the OS keychain. Tracks the (service, key) pair. */

@@ -68,7 +68,7 @@ export function loadPricing(): TokenPricing {
 }
 
 export function savePricing(pricing: TokenPricing): void {
-  localStorage.setItem(PRICE_STORAGE_KEY, JSON.stringify(pricing));
+  try { localStorage.setItem(PRICE_STORAGE_KEY, JSON.stringify(pricing)); } catch { /* quota */ }
 }
 
 /** Estimate cost for a token count under the given (or stored) pricing. */

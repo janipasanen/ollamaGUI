@@ -49,11 +49,11 @@ export function saveScenario(s: BrowserScenario): void {
   const all = listScenarios();
   const idx = all.findIndex(x => x.id === s.id);
   if (idx >= 0) all[idx] = s; else all.push(s);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(all)); } catch { /* quota */ }
 }
 
 export function deleteScenario(id: string): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(listScenarios().filter(s => s.id !== id)));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(listScenarios().filter(s => s.id !== id))); } catch { /* quota */ }
 }
 
 export function getScenario(id: string): BrowserScenario | undefined {
@@ -86,17 +86,17 @@ async function captureScreenshot(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-async function executeStep(step: ScenarioStep): Promise<{ pass: boolean; error?: string }> {
+async function executeStep(step: ScenarioStep): Promise<{ pass: boolean; error?: string; diffRatio?: number }> {
   try {
     switch (step.action) {
       case 'navigate':
         await cdpInvoke('browser_cdp_navigate', { url: step.args.url });
         return { pass: true };
       case 'click':
-        await cdpInvoke('browser_cdp_click', { ref_id: step.args.refId ?? step.args.ref_id });
+        await cdpInvoke('browser_cdp_click', { refId: step.args.refId ?? step.args.ref_id });
         return { pass: true };
       case 'type':
-        await cdpInvoke('browser_cdp_type', { ref_id: step.args.refId ?? step.args.ref_id, text: step.args.text });
+        await cdpInvoke('browser_cdp_type', { refId: step.args.refId ?? step.args.ref_id, text: step.args.text });
         return { pass: true };
       case 'wait_for':
         await cdpInvoke('browser_cdp_wait_for', { selector: step.args.selector, timeoutMs: step.args.timeoutMs ?? 5000 });
@@ -121,6 +121,7 @@ async function executeStep(step: ScenarioStep): Promise<{ pass: boolean; error?:
         const diff = await diffFn(before, after, threshold);
         return {
           pass: diff.pass,
+          diffRatio: diff.diffRatio,
           error: diff.pass ? undefined : `Visual diff ratio ${diff.diffRatio.toFixed(4)} exceeds threshold ${threshold}`,
         };
       }
@@ -136,28 +137,47 @@ async function executeStep(step: ScenarioStep): Promise<{ pass: boolean; error?:
 
 export interface RunOptions {
   onStep?: (index: number, result: StepResult) => void;
+  /**
+   * When true, capture before/after screenshots for every step (debugging
+   * mode). When false (default), screenshots are only captured for
+   * visual_match steps, avoiding wasted IPC for steps that never use them.
+   * #448
+   */
+  captureScreenshots?: boolean;
 }
 
 export async function runScenario(scenario: BrowserScenario, opts: RunOptions = {}): Promise<ScenarioResult> {
   const stepResults: StepResult[] = [];
   let overallPass = true;
   let failedStepIndex: number | undefined;
+  const captureAll = opts.captureScreenshots ?? false;
 
   for (let i = 0; i < scenario.steps.length; i++) {
     const step = scenario.steps[i];
-    const beforeScreenshot = await captureScreenshot();
-    // For visual_match steps, inject the captured screenshots so the executor
-    // can call diffScreenshots without needing its own capture calls.
+    // Only capture screenshots for visual_match steps, or when the caller
+    // explicitly opts into debugging mode (captureScreenshots: true).
+    // Non-visual steps never use the screenshots — capturing them wastes
+    // a Tauri IPC round-trip per step. #448
+    const needsScreenshot = captureAll || step.action === 'visual_match';
+    const beforeScreenshot = needsScreenshot ? await captureScreenshot() : undefined;
+    // For visual_match steps, inject the before screenshot so the executor can
+    // call diffScreenshots. Do NOT overwrite `after` — the runner captures it
+    // below and re-runs the diff; overwriting with undefined would discard a
+    // pre-existing step.args.after and make executeStep always fail (#441).
     const enrichedStep: ScenarioStep = step.action === 'visual_match'
-      ? { ...step, args: { ...step.args, before: beforeScreenshot, after: undefined } }
+      ? { ...step, args: { ...step.args, before: beforeScreenshot } }
       : step;
-    const { pass, error } = await executeStep(enrichedStep);
-    const afterScreenshot = await captureScreenshot();
-    // If this is a visual_match, re-run the diff with the actual after screenshot.
+    const execResult = await executeStep(enrichedStep);
+    const { pass, error } = execResult;
+    const afterScreenshot = needsScreenshot ? await captureScreenshot() : undefined;
     let finalPass = pass;
     let finalError = error;
-    let diffRatio: number | undefined;
-    if (step.action === 'visual_match' && beforeScreenshot && afterScreenshot) {
+    let diffRatio: number | undefined = execResult.diffRatio;
+    // For visual_match without a pre-defined reference (step.args.after), the
+    // executor could not compare — re-run with the captured before/after
+    // screenshots. When a reference IS provided, the executor already did the
+    // comparison and we use its result (#441).
+    if (step.action === 'visual_match' && !step.args.after && beforeScreenshot && afterScreenshot) {
       const diffFn = _mocks.diffScreenshots
         ?? (await import('./imageDiff')).diffScreenshots;
       const threshold: number = step.args.threshold ?? 0.01;

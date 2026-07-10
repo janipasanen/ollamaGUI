@@ -155,6 +155,48 @@ describe('agenticChatStream', () => {
 
     expect(completeCb).toHaveBeenCalledOnce();
   });
+
+  // ── #457: surface Ollama response body error on non-ok in agentic loop ──
+
+  it('surfaces body .error on non-ok response via onError (#457)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Not Found',
+      json: async () => ({ error: "model 'llama3' not found, try pulling it first" }),
+    }));
+
+    const errors: Error[] = [];
+    const yielded: unknown[] = [];
+    for await (const msg of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onError: e => errors.push(e),
+    })) {
+      yielded.push(msg);
+    }
+
+    expect(errors[0]?.message).toContain("model 'llama3' not found, try pulling it first");
+    expect(yielded.some((m: any) => m.content?.includes("model 'llama3' not found"))).toBe(true);
+  });
+
+  it('falls back to statusText on non-ok when body has no .error (#457)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      statusText: 'Internal Server Error',
+      json: async () => ({ something: 'else' }),
+    }));
+
+    const errors: Error[] = [];
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onError: e => errors.push(e),
+    })) {
+      void _;
+    }
+
+    expect(errors[0]?.message).toContain('Ollama API error: Internal Server Error');
+  });
 });
 
 
@@ -199,5 +241,59 @@ describe('agenticChatStream onGenStats (#391, #392)', () => {
     })) { /* drain */ }
 
     expect(called).toBe(false);
+  });
+});
+
+// ── #472: assistant message with tool_calls must be in context for next turn ─
+
+describe('agenticChatStream assistant message in context (#472)', () => {
+  beforeEach(() => {
+    for (const t of toolRegistry.getAllTools()) toolRegistry.unregisterTool(t.name);
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('includes assistant message with tool_calls in the second request (#472)', async () => {
+    vi.spyOn(toolRegistry, 'executeToolCall').mockResolvedValue({ content: '42', name: 'calculate' });
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        body: makeStream([
+          {
+            message: {
+              role: 'assistant',
+              content: 'Let me calculate that.',
+              tool_calls: [{ id: 'call_1', function: { name: 'calculate', arguments: { expr: '6*7' } } }],
+            },
+          },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: makeStream([{ message: { role: 'assistant', content: 'The answer is 42.' } }]),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'What is 6*7?' }],
+    })) { void _; }
+
+    // The second fetch call's body should contain the assistant message
+    // with content and tool_calls, before the tool result
+    const secondCallBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    const messages = secondCallBody.messages;
+    
+    // Find the assistant message that has tool_calls
+    const assistantWithTools = messages.find((m: any) => m.role === 'assistant' && m.tool_calls);
+    expect(assistantWithTools).toBeDefined();
+    expect(assistantWithTools.content).toContain('Let me calculate that.');
+    expect(assistantWithTools.tool_calls).toHaveLength(1);
+    expect(assistantWithTools.tool_calls[0].function.name).toBe('calculate');
+
+    // The tool result should come after the assistant message
+    const assistantIdx = messages.indexOf(assistantWithTools);
+    const toolIdx = messages.findIndex((m: any) => m.role === 'tool');
+    expect(toolIdx).toBeGreaterThan(assistantIdx);
   });
 });

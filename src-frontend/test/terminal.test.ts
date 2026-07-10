@@ -122,12 +122,25 @@ describe('killTerminal (#87)', () => {
     let killedId: number | null = null;
     _mocks.invoke = async (cmd, args) => {
       if (cmd === 'terminal_run') return 200;
-      if (cmd === 'terminal_kill') { killedId = (args as any).session_id; return undefined; }
+      if (cmd === 'terminal_kill') { killedId = (args as any).sessionId; return undefined; }
       return undefined;
     };
     const id = await startTerminal('sleep 60');
     await killTerminal(id);
     expect(killedId).toBe(200);
+  });
+
+  it('sends sessionId (camelCase) to terminal_kill, not session_id (#442)', async () => {
+    let killArgs: Record<string, unknown> | null = null;
+    _mocks.invoke = async (cmd, args) => {
+      if (cmd === 'terminal_run') return 300;
+      if (cmd === 'terminal_kill') { killArgs = args as Record<string, unknown>; return undefined; }
+      return undefined;
+    };
+    const id = await startTerminal('sleep 60');
+    await killTerminal(id);
+    expect(killArgs).toHaveProperty('sessionId', 300);
+    expect(killArgs).not.toHaveProperty('session_id');
   });
 
   it('is a no-op for an unknown session id', async () => {

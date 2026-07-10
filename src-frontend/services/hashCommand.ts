@@ -8,6 +8,7 @@
 
 import { listCollections, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './knowledge';
 import { retrieve, type RetrievedChunk } from './rag';
+import { getKnowledgeDB } from './db';
 import { fetchUrl, type FetchedPage } from './webfetch';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -116,19 +117,25 @@ export async function resolveContextRef(
   }
 
   if (ref.kind === 'file' && ref.id) {
-    const chunks: RetrievedChunk[] = await retrieve([], query, k, opts);
-    const filtered = chunks.filter(c => c.fileId === ref.id);
-    if (filtered.length > 0) {
-      return filtered.map(c => ({
-        id: `chunk:${c.fileId}:${c.chunkIndex}`,
-        kind: 'file' as const,
-        label: c.fileName,
-        fileId: c.fileId,
-        chunkIndex: c.chunkIndex,
-        text: c.text,
-      }));
+    // A specific #file reference injects THAT file's own content — not a
+    // query-relevance-ranked subset across the corpus. The previous code called
+    // retrieve([], …) which always returned [] (no collection ids → no chunks
+    // iterated), so every file ref fell through to the "(file not yet indexed)"
+    // placeholder even for fully-indexed files (#427). Load the file record
+    // directly and return its extracted text (or concatenated chunks).
+    const db = await getKnowledgeDB();
+    const file = await db.getFile(ref.id);
+    const text = file?.text ?? file?.chunks?.map(c => c.text).join('\n\n') ?? '';
+    if (text) {
+      return [{
+        id: `file:${ref.id}`,
+        kind: 'file',
+        label: file?.name ?? ref.label,
+        fileId: ref.id,
+        text: text.slice(0, 20_000),
+      }];
     }
-    // File not indexed — use raw text
+    // File record missing or no extractable text
     return [{
       id: `file:${ref.id}`,
       kind: 'file' as const,

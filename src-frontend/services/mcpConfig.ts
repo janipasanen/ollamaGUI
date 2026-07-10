@@ -67,8 +67,19 @@ function fromPersistedServer(s: PersistedServer): McpServerConfig {
 }
 
 function readPersisted(): PersistedServer[] {
-  return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
+
+/** Persist with QuotaExceededError guard (#470). */
+function safePersist(servers: PersistedServer[]): void {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(servers)); }
+  catch { /* QuotaExceededError — non-fatal, config stays in memory */ }
+ }
 
 const envSecretKey = (serverId: string, envKey: string) => `env:${serverId}:${envKey}`;
 
@@ -89,7 +100,7 @@ export const mcpConfigStore = {
     const existing = readPersisted();
     const idx = existing.findIndex(s => s.id === server.id);
     if (idx >= 0) existing[idx] = persisted; else existing.push(persisted);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+    safePersist(existing);
   },
 
   /** Rehydrate a server's env values from the keychain (call at connect time). */
@@ -112,7 +123,7 @@ export const mcpConfigStore = {
       for (const k of Object.keys(cfg.env)) await secretStore.delete(envSecretKey(id, k));
     }
     await secretStore.delete(`tokens:${id}`);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(readPersisted().filter(s => s.id !== id)));
+    safePersist(readPersisted().filter(s => s.id !== id));
   },
 
   /** Record a successful connection time (#55) so it can be auto-reconnected next launch. */
@@ -121,7 +132,7 @@ export const mcpConfigStore = {
     const idx = existing.findIndex(s => s.id === id);
     if (idx < 0) return;
     existing[idx] = { ...existing[idx], lastConnected: when };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+    safePersist(existing);
   },
 
   /**

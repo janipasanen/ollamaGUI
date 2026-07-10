@@ -4,6 +4,7 @@ import {
   clearCheckpoints, rewindToCheckpoint,
 } from '../services/checkpoints';
 import { _mocks as fileMocks } from '../services/fileTools';
+import { setBatchReviewCallback, clearBatchReviewCallback, clearDiffReviewCallback, type PendingEdit } from '../services/diffReview';
 
 const FILE_A = '/w/src/app.ts';
 const FILE_B = '/w/src/utils.ts';
@@ -118,5 +119,59 @@ describe('clearCheckpoints', () => {
     await createCheckpoint([], 'b');
     clearCheckpoints();
     expect(listCheckpoints()).toHaveLength(0);
+  });
+});
+
+describe('rewindToCheckpoint — diff-review gate (#432)', () => {
+  afterEach(() => {
+    clearBatchReviewCallback();
+    clearDiffReviewCallback();
+  });
+
+  it('routes the restore through the batch review callback (no bypass)', async () => {
+    const fs = { [FILE_A]: 'original', [FILE_B]: 'original-b' };
+    makeFilesystem(fs);
+    const ckpt = await createCheckpoint([FILE_A, FILE_B], 'snap');
+    fs[FILE_A] = 'dirty';
+    fs[FILE_B] = 'dirty-b';
+
+    // The user rejects every proposed restore in the batch review modal.
+    let seenEdits = 0;
+    setBatchReviewCallback(async (edits: PendingEdit[]) => {
+      seenEdits = edits.length;
+      return edits.map(e => ({ id: e.id, accepted: false }));
+    });
+
+    const restored = await rewindToCheckpoint(ckpt.id);
+    expect(seenEdits).toBe(2);           // the rewind was surfaced for review
+    expect(restored).toHaveLength(0);    // nothing overwritten after rejection
+    expect(fs[FILE_A]).toBe('dirty');    // current (dirty) content preserved
+    expect(fs[FILE_B]).toBe('dirty-b');
+  });
+
+  it('applies the restore when the batch review accepts', async () => {
+    const fs = { [FILE_A]: 'original' };
+    makeFilesystem(fs);
+    const ckpt = await createCheckpoint([FILE_A], 'snap');
+    fs[FILE_A] = 'dirty';
+
+    setBatchReviewCallback(async (edits: PendingEdit[]) => edits.map(e => ({ id: e.id, accepted: true })));
+
+    const restored = await rewindToCheckpoint(ckpt.id);
+    expect(restored).toEqual([FILE_A]);
+    expect(fs[FILE_A]).toBe('original'); // restored to the checkpointed state
+  });
+
+  it('with no callback registered, applies all (autonomous mode unchanged)', async () => {
+    const fs = { [FILE_A]: 'orig', [FILE_B]: 'orig-b' };
+    makeFilesystem(fs);
+    const ckpt = await createCheckpoint([FILE_A, FILE_B], 'snap');
+    fs[FILE_A] = 'dirty';
+    fs[FILE_B] = 'dirty-b';
+
+    const restored = await rewindToCheckpoint(ckpt.id);
+    expect(restored).toHaveLength(2);
+    expect(fs[FILE_A]).toBe('orig');
+    expect(fs[FILE_B]).toBe('orig-b');
   });
 });

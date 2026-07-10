@@ -19,21 +19,27 @@ export interface ToolDefinition {
 export interface ToolCall {
   id?: string;
   type?: 'function';
-  function: {
+  /** Some Ollama models send { name, arguments } without nested function (#445/#449). */
+  function?: {
     name: string;
-    arguments: string;
+    arguments: string | Record<string, unknown>;
   };
   /** Fallback name used by some LLM outputs (e.g. Ollama tool calls). */
   name?: string;
+  /** Fallback arguments used when function is absent (some Ollama models). */
+  arguments?: string | Record<string, unknown>;
 }
 
 export function toolCallName(toolCall: ToolCall): string {
-  return toolCall.name ?? toolCall.function.name;
+  return toolCall.name ?? toolCall.function?.name ?? 'unknown';
 }
 
 export function toolCallArgs(toolCall: ToolCall): Record<string, unknown> {
-  const args = toolCall.function.arguments;
-  if (typeof args === 'string') return JSON.parse(args) as Record<string, unknown>;
+  const args = toolCall.function?.arguments ?? toolCall.arguments;
+  if (typeof args === 'string') {
+    try { return JSON.parse(args) as Record<string, unknown>; }
+    catch { return {}; } // malformed JSON from model — let tool validation surface the error (#464)
+  }
   return (args ?? {}) as Record<string, unknown>;
 }
 
@@ -76,8 +82,8 @@ class ToolRegistry {
   }
   
   async executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
-    const tool = this.getTool(toolCall.function.name);
     const toolName = toolCallName(toolCall);
+    const tool = this.getTool(toolName);
     if (!tool) {
       throw new Error(`Tool ${toolName} not found`);
     }
@@ -103,6 +109,26 @@ export const cliAllowlist = new Set<string>();
 
 export function persistCliAllowlist(): void {
   // no-op: session-only by design
+}
+
+// ── Tool-output truncation (#396, Codex/Claude/Cursor parity) ────────────────
+//
+// Tool results are fed back into the model context. Without a cap, a single
+// large `read_file`, `run_shell_command`, or test run can exhaust the context
+// window and degrade the agentic loop. The UI keeps the full output; only the
+// copy sent to the model is truncated.
+
+/** Maximum characters of a tool result forwarded to the model context. */
+export const MAX_TOOL_OUTPUT_CHARS = 20_000;
+
+/**
+ * Truncate `content` to at most `limit` characters, appending a notice when
+ * content was trimmed so the model knows output was elided.
+ */
+export function truncateToolContent(content: string, limit: number = MAX_TOOL_OUTPUT_CHARS): string {
+  if (content.length <= limit) return content;
+  const omitted = content.length - limit;
+  return `${content.slice(0, limit)}\n…[output truncated: ${omitted} chars omitted]`;
 }
 
 interface CliResult {

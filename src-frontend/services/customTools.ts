@@ -123,7 +123,7 @@ export function loadCustomTools(): CustomTool[] {
 }
 
 export function saveCustomTools(tools: CustomTool[]): void {
-  localStorage.setItem(TOOLS_KEY, JSON.stringify(tools));
+  try { localStorage.setItem(TOOLS_KEY, JSON.stringify(tools)); } catch { /* quota */ }
 }
 
 export function addCustomTool(tool: Omit<CustomTool, 'id'>): CustomTool {
@@ -180,7 +180,7 @@ export function loadFunctionDefs(): FunctionDef[] {
 }
 
 export function saveFunctionDefs(fns: FunctionDef[]): void {
-  localStorage.setItem(FUNCTIONS_KEY, JSON.stringify(fns));
+  try { localStorage.setItem(FUNCTIONS_KEY, JSON.stringify(fns)); } catch { /* quota */ }
 }
 
 export function addFunctionDef(fn: Omit<FunctionDef, 'id'>): FunctionDef {
@@ -268,7 +268,13 @@ export async function runAction(functionId: string, message: Message): Promise<s
     if (typeof action === 'function') return action(params.message);
     return null;
   `;
-  const out = await _sandboxRun(wrapCode, { message });
+  let out: any;
+  try {
+    out = await _sandboxRun(wrapCode, { message });
+  } catch (err) {
+    console.error(`[customTools] Action '${fn.name}' failed:`, err);
+    return null;
+  }
   return typeof out === 'string' ? out : null;
 }
 

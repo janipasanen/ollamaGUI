@@ -7,7 +7,425 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+#### M135 — MCP stdio `sendRequest` had no per-request timeout (#446)
+- **Bug fix** (#446): `McpStdioClient.sendRequest` (mcp.ts) put a
+  `{resolve, reject}` into `pendingRequests` with no timeout. If an MCP server
+  accepted a JSON-RPC request but never responded, the Promise hung forever,
+  blocking the agentic tool loop indefinitely. Added a per-request timeout
+  (default 30 s, configurable via `McpServerConfig.timeoutMs`) that rejects
+  with a descriptive error and is cleared on normal resolve/reject. 2 new tests.
+
+#### M136 — `runAction` didn't catch sandbox errors → unhandled rejection (#447)
+- **Bug fix** (#447): `runAction` (customTools.ts) called `_sandboxRun` without
+  a try/catch. If the user's action code threw (syntax error, runtime error,
+  timeout), the rejection propagated unhandled to the `onClick` handler in
+  `App.tsx` — the user clicked an action button, nothing happened, and an
+  unhandled Promise rejection was logged. Now wrapped with try/catch that logs
+  and returns `null`; the `onClick` handler also catches and shows a status
+  banner. 3 new tests.
+
+#### M137 — `scenario.ts` wasted IPC on screenshots for non-visual steps (#448)
+- **Bug fix** (#448): `runScenario` (scenario.ts) called `captureScreenshot()`
+  before AND after every step regardless of action type. For non-`visual_match`
+  steps the screenshots were stored in `StepResult` but never consumed by the
+  UI. Added `captureScreenshots?: boolean` to `RunOptions` (default `false`):
+  only `visual_match` steps capture by default; `true` enables all-step capture
+  for debugging. 4 new/updated tests.
+
+### Fixed
+#### M138 — `executeToolCall` and safe accessors crash on malformed tool calls (#449)
+- **Bug fix** (#449): `tools.ts` `executeToolCall` called
+  `this.getTool(toolCall.function.name)` directly — crashes with `TypeError`
+  if `function` is missing (some Ollama models send `{ name, arguments }`
+  without nested `function`). `toolCallName` and `toolCallArgs` also didn't
+  handle missing `function`. `App.tsx` tool call display accessed
+  `toolCall.function.arguments` directly. Made `function` optional in
+  `ToolCall` interface; all accessors now safely handle its absence.
+  7 new tests in `tools.test.ts`.
+
+#### M139 — `browserPreview.ts` race: follow-up calls fire before `openPreview` IPC completes (#450)
+- **Bug fix** (#450): `openPreview` set `_open = true` optimistically before
+  the IPC resolved. `navigatePreview`/`setBoundsPreview`/`reloadPreview` could
+  fire before the webview was created, sending commands to a non-existent
+  webview. Added `_openingPromise` that follow-up calls await. Added a
+  generation counter so stale `openPreview` calls from previous sessions
+  don't corrupt `_open` state. 4 new tests in `browserPreview.test.ts`.
+
+### Fixed
+#### M140 — `memory.ts` and `crossSessionMemory.ts` shared localStorage key with incompatible data shapes (#451)
+- **Bug fix** (#451): Both modules used `'ollama_gui_memory'` as their localStorage
+  key — `memory.ts` stored a `MemoryEntry[]` array, `crossSessionMemory.ts` stored
+  a `Record<string, MemoryEntry>` object. When both were active (they're both
+  imported by `App.tsx`), they corrupted each other's data. Gave
+  `crossSessionMemory.ts` its own key `'ollama_gui_cross_session_memory'`.
+  1 new test.
+
+#### M141 — `mcpConfig.ts` `readPersisted` and `mcpAuth.ts` `authMetaStore` lacked try/catch (#452)
+- **Bug fix** (#452): `readPersisted()` parsed `localStorage` without try/catch —
+  corrupted data crashed the UI on startup via `mcpConfigStore.list()`. Also
+  `authMetaStore.save()`/`.load()` had the same issue. Added try/catch with
+  safe defaults (`[]` / `{}` / `null`) and an `Array.isArray` guard.
+  6 new tests across `mcpConfig.test.ts` and `mcpAuth.test.ts`.
+
+#### M142 — `ollama.ts` `fetchOllamaModels` had unused `includeCloudModels` parameter (#453)
+- **Cleanup** (#453): Removed dead `includeCloudModels` parameter that was never
+  referenced in the function body or by any caller.
+
+### Fixed
+#### M143 — `storage.ts` JSON.parse and setItem without try/catch (#454)
+- **Bug fix** (#454): `getSessions()`, `getFolders()`, and `getProjects()` parsed
+  `localStorage` without try/catch — corrupted data crashed the app on startup
+  (the `useState` initializer calls `getProjects()` on mount). Also
+  `updateSession()`, `deleteSession()`, `deleteFolder()`, and `deleteProject()`
+  called `localStorage.setItem()` without `QuotaExceededError` handling, unlike
+  `saveSession` which already had it. Added try/catch with safe defaults (`[]`)
+  and `Array.isArray` guards to all three getters; wrapped all four mutation
+  methods' `setItem` calls in try/catch. 7 new tests in `storage.test.ts`.
+
+### Fixed
+#### M117 — #file context ref always returned "(not yet indexed)" (#427)
+- **Bug fix** (#427): a `#file` knowledge reference (#119) called
+  `retrieve([], …)` with an empty collection-id list, so `rag.retrieve` always
+  returned `[]` and every file ref fell through to the "(file not yet indexed)"
+  placeholder — even for fully-indexed files. The file branch now loads the file
+  record directly and injects its text (capped at 20 000 chars). 4 new tests;
+  tsc clean; vitest 1841 passed.
+
+#### M118 — @-mention token-boundary, $-content safety, subdir expansion (#428)
+- **Bug fix** (#428): `isAtTrigger`/`atQuery` no longer fire on emails / mid-word
+  `@` (now anchored to a token boundary — Codex/Claude parity). `resolveAtMention`
+  now uses a function replacement so file content with `$&`/`$1` is inserted
+  literally instead of being mangled by `String.replace` substitution.
+- **Feature** (#428): `getAtOptions` now expands one level of subdirectories
+  (documented but previously unimplemented), so nested files like `src/App.tsx`
+  are @-mentionable. 10 new tests; tsc clean; vitest 1851 passed.
+
+#### M119 — expandTemplate $-injection + draft-persistence test flake (#429, #430)
+- **Bug fix** (#429): `expandTemplate` no longer corrupts slash-command
+  arguments containing `$` (e.g. `$&` re-inserted the matched token, `$5`
+  became empty, and `$N` inside expanded args was re-substituted). Now uses
+  function replacements and substitutes `$1`…`$N` before `$ARGUMENTS`.
+- **Test fix** (#430): the draft-persistence UI test no longer times out under
+  parallel-suite load (15 s test timeout, 3 s `waitFor`). 4 new tests; tsc clean;
+  vitest 1855 passed.
+
+#### M120 — ComfyUI image generation broken at /view binary fetch (#431)
+- **Bug fix** (#431): `generateComfyUI` (#130) always failed when an image was
+  ready — it fetched the binary PNG from `/view` as text and called `btoa()`,
+  which throws on out-of-Latin1 code points (and the Rust `mcp_http_request`
+  .text() corrupts binary). Added a Rust `http_get_binary` command returning
+  base64 and a TS `httpGetBase64` helper (fetch→Blob→FileReader fallback).
+  3 new TS tests + 2 cargo tests; tsc clean; vitest 1858 passed; cargo 89 passed.
+
+#### M121 — rewind_checkpoint bypassed the diff-review approval gate (#432)
+- **Bug fix** (#432): the `rewind_checkpoint` agent tool overwrote files via
+  `writeFile` directly, bypassing the diff-review gate that `write_file` /
+  `apply_edit` / `apply_patch` all enforce. `rewindToCheckpoint` now routes
+  through `proposeEdits` (batch review); autonomous mode is unchanged. 3 new
+  tests; tsc clean; vitest 1861 passed.
+
+#### M122 — Workspace RAG never indexed .env.example / multi-dot text files (#433)
+- **Bug fix** (#433): `isTextFile` reduced `.env.example` to `.example` via
+  `slice(lastIndexOf('.'))`, so the `.env.example`/`.gitignore` entries in
+  `TEXT_EXTENSIONS` were dead and those files were never indexed. Now also
+  matches the whole lowercased filename. 6 new tests; tsc clean; vitest 1867
+  passed.
+
+#### M123 — Visual diff silently passed when screenshots failed to decode (#434)
+- **Bug fix** (#434): `diffScreenshots` returned `pass: true` when a screenshot
+  failed to decode, silently passing visual regression. A load failure is now a
+  2 new tests; tsc clean; vitest 1869 passed.
+
+#### M124 — MCP HTTP IPC deserialization broken (camelCase mismatch) (#435)
+- **Bug fix** (#435): `McpHttpRequest` in `src-tauri/src/lib.rs` had
+  snake_case fields with no `#[serde(rename_all = "camelCase")]`, so every
+  `mcp_http_request` invoke that sent camelCase keys (`sessionId`,
+  `authToken`) failed to deserialize — breaking all HTTP MCP servers in
+  production. OpenAPI/image-gen calls that omitted `sessionId` also failed,
+  silently falling back to browser `fetch` (CORS). Added
+  `#[serde(rename_all = "camelCase")]` + `#[serde(default)]` on
+  `session_id`. 1 new cargo test; tsc clean; vitest 1869 passed; cargo 90 passed.
+
+#### M125 — MCP stdio transport silently ignored success:false from spawn (#436)
+- **Bug fix** (#436): `TauriMcpStdioTransport.spawnProcess` never checked
+  `result.success` from the Rust `mcp_stdio_spawn` response. A soft failure
+  (duplicate session → `success: false`) was silently treated as success,
+  causing confusing timeouts or 'Session not found' errors later. Now throws
+  with the response message. 15 new direct unit tests for `mcp-tauri.ts`;
+  tsc clean; vitest 1884 passed.
+
+#### M126 — openPreview stale _open on rejection + CliCommandRequest/Response camelCase (#437)
+- **Bug fix** (#437): `openPreview` set `_open = true` optimistically before
+  the IPC; on rejection the flag stayed true, so navigate/setBounds/reload
+  sent commands to a non-existent webview. Now resets `_open = false` on
+  rejection. Also added `#[serde(rename_all = "camelCase")]` to
+  `CliCommandRequest`/`CliCommandResponse` (latent same-class-as-#435 bug).
+  3 new TS tests + 1 cargo test; tsc clean; vitest 1887 passed; cargo 91 passed.
+
+#### M127 — Browser scenario click/type sent ref_id (snake_case) to Tauri (#438)
+- **Bug fix** (#438): `scenario.ts` called `browser_cdp_click` and
+  `browser_cdp_type` with `ref_id` (snake_case) but Tauri expects `refId`
+  (camelCase) — breaking all click/type steps in browser scenarios in production.
+  Now sends `refId`. 3 new tests; tsc clean; vitest 1890 passed.
+
+#### M128 — terminal_run used sh -c on all platforms, broken on Windows (#439)
+- **Bug fix** (#439): `terminal_run` hardcoded `sh -c` with no
+  `#[cfg(windows)]` branch, so the terminal panel failed on Windows where
+  `sh` is not in PATH. Now uses the same `cfg(unix)`/`cfg(windows)` split
+  as `run_cli` (`sh -c` / `cmd /C`). tsc clean; cargo 91 passed.
+
+#### M129 — expandTemplate only replaced the first $ARGUMENTS occurrence (#440)
+- **Bug fix** (#440): `expandTemplate` used `replace` for `$ARGUMENTS`
+  (first occurrence only) while `$1`/`$2` used `replaceAll`. A
+  user-defined template with `$ARGUMENTS` twice would leave the second as
+  literal text. Now uses `replaceAll`. 2 new tests; tsc clean; vitest 1892 passed.
+
+#### M130 — Scenario visual_match overwrote pre-defined after + double-ran diff (#441)
+- **Bug fix** (#441): `runScenario` overwrote `step.args.after` with
+  `undefined` in the enriched step, discarding any pre-defined reference
+  screenshot. It also always re-ran the diff with captured screenshots,
+  overriding `executeStep's` result. Now preserves `step.args.after`,
+  `executeStep` returns `diffRatio`, and the runner only re-runs when no
+  reference is provided. 2 new tests; tsc clean; vitest 1894 passed.
+
+#### M131 — terminal_kill sent session_id (snake_case) to Tauri (#442)
+- **Bug fix** (#442): `terminal.ts` called `terminal_kill` with
+  `session_id` (snake_case) but Tauri expects `sessionId` (camelCase) —
+  breaking the terminal Kill button in production. Also added
+  `#[serde(rename_all = "camelCase")]` to `McpStdioResponse` (last
+  snake_case response struct). 1 new TS test + 1 cargo test; tsc clean;
+  vitest 1895 passed; cargo 92 passed.
+
+#### M132 — Agent tool call dedup dropped all id-less calls after the first (#443)
+- **Bug fix** (#443): `agenticChatStream` deduplicated tool calls by
+  `tc.id === toolCall.id`, but `id` is optional. When a model sent multiple
+  tool calls without `id`, `undefined === undefined` was true, so only the
+  first was kept — all others were silently dropped. Now uses a composite
+  fallback key (`name:arguments`) when `id` is missing. 2 new tests;
+  tsc clean; vitest 1897 passed.
+
+#### M133 — Ollama stream parser lost JSON lines split across chunks (#444)
+- **Bug fix** (#444): `fetchOllamaChatStream`, `agenticChatStream`,
+  `pullOllamaModel`, and `createOllamaModel` split the stream by newline
+  without buffering incomplete lines. A JSON line split across TCP packets
+  would fail to parse and be silently lost. All four now use a buffer
+  accumulator (matching the MLX parser pattern). 3 new tests; tsc clean;
+  vitest 1900 passed.
+
+#### M134 — Agent catch block crashed on malformed tool call (#445)
+- **Bug fix** (#445): `agenticChatStream` catch block accessed
+  `toolCall.function.name` directly, crashing with a TypeError when
+  `function` was missing (some Ollama models omit it). Now uses
+  `toolCallName(toolCall)` with a `toolCall.name` fallback. 6 new tests
+  for `toolCallName`/`toolCallArgs`; tsc clean; vitest 1906 passed.
+
+#### M113 — Disabled-tool execution enforcement (#423)
+- **Bug fix** (#423): a per-tool disable (#399) now blocks execution, not just
+  the request payload — the agentic loop refuses to run a tool excluded from
+  the active `toolFilter` even if the model returns a call to it.
+- 3 new tests; tsc clean; vitest 1839 passed.
+
+### Tests
+#### M116 — Stabilise flaky MCP connection-error e2e test (#426)
+- **Test fix** (#426): the e2e "MCP connection errors" test flaked because the
+  blanket `fetch` mock made the "unreachable" server sometimes connect (green).
+  The test now rejects only the MCP URL and asserts the red error dot
+  specifically. 5/5 isolated runs green at ~1.8 s (was 5–8 s); no production
+  change.
+
+#### M115 — Stabilise flaky CLI approval keyboard tests (#425)
+- **Test fix** (#425): the three CLI-approval keyboard UI tests (Enter/Escape/A,
+  #361) flaked ~20% from a post-paint `useEffect` race — the keydown fired before
+  the listener attached. Keydowns now retry inside `waitFor` until the modal
+  closes. 8/8 isolated runs green; no production change.
+
+#### M114 — Many-models fan-out tests (#126 / #424)
+- **Coverage** (#424): added `manyModels.test.ts` (14) — `hasSameHostConflict`,
+  `groupByHost`, and `runManyModels` (sequential same-host, parallel
+  different-host, abort, error state, OpenAI routing + reasoning passthrough).
+  tsc clean; vitest 1837 passed (214 files), +14 over the 1823 baseline.
+
+#### M112 — Scroll-to-bottom button click→scroll UI test (#422)
+- **Coverage** (#422): added `scrollButton.test.tsx` (1) — the button appears
+  when scrolled up and clicking it scrolls to the latest message and hides it.
+- 1 new test; tsc clean; vitest 1836 passed.
+
+#### M111 — Up-arrow quick-edit last user message UI tests (#421)
+- **Coverage** (#421): added `upArrowEdit.test.tsx` (2) — ArrowUp opens inline
+  edit on the last user message and re-sends the edit; ignored while
+  generating (#267).
+- 2 new tests; tsc clean; vitest green.
+
+#### M110 — Prompt history recall UI tests (#420)
+- **Coverage** (#420): added `promptHistory.test.tsx` (2) — Alt+Up/Alt+Down
+  recall navigation + slash commands excluded from history (#332).
+- 2 new tests; tsc clean; vitest 1835 passed.
+
+#### M109 — Continue-generation click + regenerate-with-model UI tests (#418, #419)
+- **Coverage** (#418/#419): clicking Continue on a cancelled reply resumes and
+  clears the note; the regenerate-with-model ↺▾ menu lists models and
+  regenerates with the chosen model.
+- 2 new tests; tsc clean; vitest green.
+
+#### M108 — Message queue UI tests (#417)
+- **Coverage** (#417): added `messageQueue.test.tsx` (2) — enqueue while
+  streaming + FIFO auto-send on completion, and remove-before-send.
+- 2 new tests; tsc clean; vitest green.
+
+#### M107 — MCP pure helpers + server-manager registry tests (#416)
+- **Coverage** (#416): added `mcp.test.ts` (12) — `normalizeToolsList` mapping
+  and the transport-free `McpServerManager` registry methods (add/get/upsert/
+  remove/active-ids/unknown-connect).
+- 12 new tests; tsc clean; vitest 1833 passed.
+
+#### M106 — LibreOffice onboarding persistence tests (#415)
+- **Coverage** (#415): added `libreOfficeOnboarding.test.ts` (9) via the
+  `_store` seam — default/round-trip/dismiss/path/corruption/needsOnboarding.
+- 9 new tests; tsc clean; vitest 1821 passed.
+
+#### M105 — KnowledgeDB in-memory store unit tests (#414)
+- **Coverage** (#414): added `db.test.ts` (10) for `createMemoryKnowledgeDB` —
+  the KnowledgeDB contract (collections + files CRUD, filtering, scope, instance
+  isolation) that rag.ts / knowledge.ts rely on.
+- 10 new tests; tsc clean; vitest 1812 passed.
+
+#### M104 — MCP preset catalog integrity tests (#413)
+- **Coverage** (#413): added `mcpPresets.test.ts` (9) — unique keys, required
+  fields, transport/command/url sanity, deprecated entries carry a security
+  note, getMcpPreset lookup, secret env-field flagging.
+- 9 new tests; tsc clean; vitest 1802 passed.
+
+#### M103 — mcpConfig store unit tests (#412)
+- **Coverage** (#412): added `mcpConfig.test.ts` (12) for the security-sensitive
+  MCP config store — env-value blanking in localStorage, keychain storage /
+  rehydration, delete purging, auto-reconnect eligibility (#55), id generation.
+- 12 new tests; tsc clean; vitest 1793 passed.
+
+#### M102 — systemPrompt + structuredOutput unit tests (#411)
+- **Coverage** (#411): added tests for two core untested modules —
+  `systemPrompt.ts` (composeSystemPrompt ordering/trimming/empty-sources) and
+  `structuredOutput.ts` (schema parsing, JSON-Schema conformance, response
+  classification). AGENTS.md requires every feature to have a test.
+- 20 new tests; tsc clean; vitest 1781 passed.
+
 ### Added
+#### M101 — Cancel unblocks approval-waiting runs (#410)
+- **Bug fix** (#410): Stop now denies any pending approval (CLI / tool / plan)
+  and closes the modal instead of hanging the run while the agent awaited an
+  approval promise that the AbortSignal alone couldn't resolve.
+- 1 new test; tsc clean; vitest 1761 passed.
+
+#### M100 — Plan edit-before-approve (#409)
+- **Plan-edit parity** (Codex, #409): the plan-approval modal now has an "Edit
+  plan" toggle to rewrite the proposed steps before approving; edits persist
+  to the plan panel (statuses preserved).
+- 1 new test; tsc clean; vitest 1760 passed.
+
+#### M99 — Plan-mode gating: approve plan before execution (#408)
+- **Plan-mode parity** (Codex/Claude, #408): `isPlanMode()` is now wired in. In
+  plan autonomy, the agent publishes a plan (read-only `update_plan`) freely,
+  then mutating tools are blocked behind a plan-approval modal; after approval
+  the plan executes without per-tool prompts for the rest of the run. Approve /
+  Deny buttons + Enter/Escape shortcuts; resets each run.
+- 2 new tests; tsc clean; vitest 1759 passed.
+
+#### M98 — Tool approval keyboard shortcuts + Escape fix (#407)
+- **Approval parity** (Codex/Claude, #407): the agent tool approval modal now
+  has keyboard shortcuts (Escape=Deny, Enter=Allow, A=Allow for session), and
+  Escape no longer aborts the whole run while an approval modal is open (also
+  fixes the latent CLI-approval Escape double-action).
+- 2 new tests; tsc clean; vitest 1757 passed.
+
+#### M97 — Tool approval "Allow for session" (#406)
+- **Approval parity** (Codex/Claude "don't ask again", #406): the agent tool
+  approval modal now has an "Allow for session" button that auto-approves
+  subsequent calls to the same tool without re-prompting (session-only, not
+  persisted — matching the CLI `cliAllowlist`).
+- 1 new test; tsc clean; vitest 1755 passed.
+
+#### M96 — Agentic clean abort / cancel-keep-partial (#405)
+- **Agentic Stop** (Codex/Claude parity, #405): aborting an agentic run
+  mid-fetch no longer surfaces an `Error: aborted` banner. The agentic loop's
+  outer catch now classifies an abort and fires `onCancel`, which marks the
+  partial assistant reply `*(generation cancelled)*` + `wasCancelled` (matching
+  the normal streaming cancel-keep-partial #257/#303). Non-abort errors still
+  fire `onError`.
+- 4 new tests; tsc clean; vitest 1754 passed.
+
+#### M95 — secrets.ts keychain wrapper tests (#404)
+- **Keychain wrapper coverage** (#404): added `secrets.test.ts` covering the
+  `secrets.ts` wrapper (Tauri `secret_set/get/delete` mapping + localStorage
+  `(service, key)` ref tracker, dedupe, null handling, corruption resilience,
+  round-trip). Reconciled stale ROADMAP checkboxes (#224–#228 all already done).
+- 8 new tests; tsc clean; vitest 1750 passed.
+
+#### M94 — Agentic "Continue" past max-iterations (#403)
+- **Continue agent** (Codex/Claude parity, #403): when the agentic loop hits
+  `maxIterations` without a final answer, a `▶ Continue agent` button appears
+  under the stop warning and re-runs the agentic turn with the current context
+  (no new user message). The max-iterations warning is now surfaced to the UI
+  from the generator yield, and `agentHitMax` persists past `onComplete`.
+- 3 new tests; tsc clean; vitest 1742 passed.
+
+#### M93 — /gitundo revert last agent auto-commit (#402)
+- **`/gitundo`** (Aider `/undo` parity, #402): reverts the most recent agent
+  auto-commit by hard-resetting `HEAD~1`, but only when the last commit subject
+  starts with the `ollama-gui:` auto-commit prefix (refuses to touch user commits).
+  Added a Rust `git_reset` command, a `gitReset` frontend helper, an
+  `undoLastAutoCommit()` service, and the `/gitundo` slash command. Non-fatal when
+  there is no workspace, no commits, or git fails.
+- 10 new tests; tsc clean; `cargo check` clean; vitest 1739 passed.
+
+#### M92 — Auto-commit after agentic edits (#401)
+- **Auto-commit edits** (Aider parity, #401): opt-in setting that stages &
+  commits each applied file edit (`write_file` / `apply_edit` / `apply_patch`) to
+  the workspace git repo with a `ollama-gui: <label> — <path>` message. Added an
+  `autoCommit` service, an `EditAppliedCallback` in `diffReview.ts` fired after
+  every successful apply, and an "Auto-commit edits" toggle in Settings. Off by
+  default; no-workspace / not-a-repo / git failures are non-fatal.
+- 12 new tests; tsc clean; vitest 1729 passed.
+
+#### M91 — Combined batch diff review for multi-file apply_patch (#400)
+- **Batch diff review** (Codex GUI / Cursor parity, #400): when `apply_patch` carries
+  several file operations, all update/create ops are now presented in a single
+  multi-file review instead of N sequential popups. Added `proposeEdits` +
+  `setBatchReviewCallback` in `diffReview.ts` (falls back to the single-edit
+  callback per edit when no batch callback is set), routed `apply_patch` through
+  one batch review, and a new `DiffReviewBatchModal` with per-file Accept/Reject,
+  Accept All / Reject All, and Enter/Esc shortcuts. Single-op patches keep the
+  existing single-edit flow.
+- 13 new tests; tsc clean; vitest 1717 passed.
+
+#### M90 — Agentic step progress & per-tool enable/disable (#398–#399)
+- **Agentic step/iteration progress** (Codex CLI / Claude Code parity, #398): the
+  agent loop now fires `onIteration(iteration, maxIterations)` at the start of each
+  loop turn, and the header agent-status badge shows "Step N/M" alongside the
+  phase label ("Thinking…" / "Running: <tool>") during agentic generation.
+- **Per-tool enable/disable** (Claude Code parity, #399): a new `toolConfig` service
+  persists a disabled-tool set to localStorage. The main agentic call passes a
+  `toolFilter` (only when some tool is disabled, so default behaviour is unchanged).
+  Each tool in the Settings "Available Tools" listing gets a toggle switch, and a
+  `/tools` slash command lists every registered tool with an enabled count.
+- 15 new tests; tsc clean; vitest 1704 passed.
+
+#### M89 — Agentic loop robustness & multi-file edit parity (#395–#397)
+- **PostToolUse hooks** (Claude Code parity, #395): a parallel post-tool hook
+  registry (`registerPostToolUseHook` / `runPostToolUseHooks`) runs after every
+  tool execution and can `transform` (e.g. redact secrets via `makeRedactHook`)
+  or `block` the output before it reaches the model. The UI still shows the full
+  original tool result.
+- **Tool-output truncation** (Codex / Claude / Cursor parity, #396): tool results
+  fed to the model context are now capped at `MAX_TOOL_OUTPUT_CHARS` (20 000) with
+  a trailing `[output truncated: N chars omitted]` notice, so a large `cat`, test
+  run or `read_file` can no longer blow the context window. The chat UI keeps the
+  full output.
+- **Multi-file `apply_patch` tool** (Codex CLI parity, #397): a new `apply_patch`
+  tool applies an ordered `operations` array (`update` / `create` / `delete`) in
+  one shot; each update/create routes through the existing inline diff review and
+  a new Rust `delete_file` command backs the delete op. Returns a per-op summary.
+- 16 new tests; tsc clean; vitest 1689 passed; `cargo check` clean.
+
 #### M88 — Folder rename, drag-file-to-composer & /redo (#387–#389)
 - Sidebar folder chips now have a **rename** button (✏️) that prompts for a new
   name and updates the folder via `storage.saveFolder` — VS Code/ChatGPT/Codex

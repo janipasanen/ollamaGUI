@@ -75,6 +75,12 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'status', description: 'Show a quick overview (model, workspace, connection, message count)', builtin: true },
   { name: 'save', description: 'Save the current conversation snapshot into the workspace (e.g. /save my-chat)', builtin: true },
   { name: 'load', description: 'Load a conversation snapshot from the workspace (e.g. /load my-chat)', builtin: true },
+  { name: 'tools', description: 'List registered agent tools and their enabled/disabled state', builtin: true },
+  { name: 'gitundo', description: 'Revert the most recent agent auto-commit (Aider /undo parity)', builtin: true },
+  { name: 'warm', description: 'Load a model into memory for faster first response (e.g. /warm llama3:8b)', builtin: true },
+  { name: 'unload', description: 'Unload a model from memory to free RAM (e.g. /unload llama3:8b)', builtin: true },
+  { name: 'running', description: 'List models currently loaded in Ollama memory', builtin: true },
+  { name: 'version', description: 'Show the Ollama server version', builtin: true },
   { name: 'review', description: 'Ask the model to review text or code', template: 'Please review the following and provide feedback:\n\n$ARGUMENTS' },
   { name: 'explain', description: 'Ask the model to explain something', template: 'Please explain the following in plain terms:\n\n$ARGUMENTS' },
   { name: 'summarize', description: 'Summarize the provided text', template: 'Please provide a concise summary of the following:\n\n$ARGUMENTS' },
@@ -90,7 +96,7 @@ export function loadUserCommands(): SlashCommand[] {
 }
 
 export function saveUserCommands(cmds: SlashCommand[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cmds));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cmds)); } catch { /* quota */ }
 }
 
 export function addUserCommand(cmd: Omit<SlashCommand, 'builtin'>): SlashCommand {
@@ -129,16 +135,23 @@ export function findCommand(name: string): SlashCommand | undefined {
 
 // ── Execution ─────────────────────────────────────────────────────────────────
 
-/** Expand $ARGUMENTS, $1, $2, … in a template string */
+/** Expand $ARGUMENTS, $1, $2, … in a template string.
+ *  - Function replacements are used so `$` in the user's arguments (code,
+ *    prices, regex, `$&`, `$1`) is inserted literally, not interpreted as
+ *    String.replace substitution patterns.
+ *  - `$1`…`$N` are substituted BEFORE `$ARGUMENTS` so that `$N` tokens that
+ *    appear inside the expanded argument text are not re-substituted (#429). */
 export function expandTemplate(template: string, args: string): string {
-  const words = args.trim().split(/\s+/);
-  let result = template.replace('$ARGUMENTS', args.trim());
-  words.forEach((w, i) => { result = result.replaceAll(`$${i + 1}`, w); });
+  const trimmed = args.trim();
+  const words = trimmed ? trimmed.split(/\s+/) : [];
+  let result = template;
+  words.forEach((w, i) => { result = result.replaceAll(`$${i + 1}`, () => w); });
+  result = result.replaceAll('$ARGUMENTS', () => trimmed);
   return result;
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -206,6 +219,12 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'status') return { kind: 'builtin', action: 'status' };
     if (cmd.name === 'save') return { kind: 'builtin', action: 'save', arg: args };
     if (cmd.name === 'load') return { kind: 'builtin', action: 'load', arg: args };
+    if (cmd.name === 'tools') return { kind: 'builtin', action: 'tools' };
+    if (cmd.name === 'gitundo') return { kind: 'builtin', action: 'gitundo' };
+    if (cmd.name === 'warm') return { kind: 'builtin', action: 'warm', arg: args };
+    if (cmd.name === 'unload') return { kind: 'builtin', action: 'unload', arg: args };
+    if (cmd.name === 'running') return { kind: 'builtin', action: 'running' };
+    if (cmd.name === 'version') return { kind: 'builtin', action: 'version' };
   }
   if (cmd.template) {
     return { kind: 'prompt', text: expandTemplate(cmd.template, args) };

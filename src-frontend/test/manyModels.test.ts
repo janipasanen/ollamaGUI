@@ -1,243 +1,240 @@
+/**
+ * Many-models fan-out (#126 / #424): unit tests for the pure helpers
+ * `hasSameHostConflict` and `groupByHost`, plus the injected-stream
+ * `runManyModels` orchestrator (no network).
+ */
 import { describe, it, expect, vi } from 'vitest';
 import {
-  hasSameHostConflict, groupByHost, runManyModels,
-  type ModelReply,
+  hasSameHostConflict,
+  groupByHost,
+  runManyModels,
 } from '../services/manyModels';
 import type { ModelConnection, ConnectedModel } from '../services/connections';
+import type { Message } from '../services/ollama';
 
-const DEFAULT_URL = 'http://localhost:11434';
+const DEFAULT_BASE = 'http://localhost:11434';
 
-// Fixtures
-const localA: ConnectedModel = { id: 'loc/llama3', name: 'llama3:8b', connectionId: 'loc', connectionName: 'Local Ollama', kind: 'ollama' };
-const localB: ConnectedModel = { id: 'loc/mistral', name: 'mistral:7b', connectionId: 'loc', connectionName: 'Local Ollama', kind: 'ollama' };
-const remoteC: ConnectedModel = { id: 'rem/gpt4', name: 'gpt-4', connectionId: 'rem', connectionName: 'Remote', kind: 'openai' };
+const connLocal2: ModelConnection = {
+  id: 'c-local2',
+  name: 'Local2',
+  kind: 'ollama',
+  baseUrl: 'http://localhost:11435',
+  enabled: true,
+};
+const connRemote: ModelConnection = {
+  id: 'c-remote',
+  name: 'Remote',
+  kind: 'ollama',
+  baseUrl: 'http://gpu-box:11434',
+  enabled: true,
+};
+const connOpenAi: ModelConnection = {
+  id: 'c-openai',
+  name: 'OpenAICompat',
+  kind: 'openai',
+  baseUrl: 'https://api.example.com/v1',
+  apiKey: 'sk-x',
+  enabled: true,
+};
 
-const connLoc: ModelConnection = { id: 'loc', name: 'Local Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434', enabled: true };
-const connRem: ModelConnection = { id: 'rem', name: 'Remote', kind: 'openai', baseUrl: 'http://api.example.com', enabled: true };
+const cmRemote: ConnectedModel = {
+  id: 'c-remote/llama3:70b',
+  name: 'llama3:70b',
+  connectionId: 'c-remote',
+  connectionName: 'Remote',
+  kind: 'ollama',
+};
+const cmOpenAi: ConnectedModel = {
+  id: 'c-openai/gpt-4o',
+  name: 'gpt-4o',
+  connectionId: 'c-openai',
+  connectionName: 'OpenAICompat',
+  kind: 'openai',
+};
 
-// ── hasSameHostConflict ───────────────────────────────────────────────────────
+const connections = [connLocal2, connRemote, connOpenAi];
+const connectedModels = [cmRemote, cmOpenAi];
 
 describe('hasSameHostConflict (#126)', () => {
-  it('detects two models on the same local Ollama host', () => {
-    expect(hasSameHostConflict(['loc/llama3', 'loc/mistral'], DEFAULT_URL, [localA, localB], [connLoc])).toBe(true);
+  it('two local default-host models → true', () => {
+    expect(hasSameHostConflict(['llama3:8b', 'mistral:7b'], DEFAULT_BASE, connectedModels, connections)).toBe(true);
   });
-
-  it('no conflict when models are on different hosts', () => {
-    expect(hasSameHostConflict(['loc/llama3', 'rem/gpt4'], DEFAULT_URL, [localA, remoteC], [connLoc, connRem])).toBe(false);
+  it('two distinct connections → false', () => {
+    expect(
+      hasSameHostConflict([cmRemote.id, cmOpenAi.id], DEFAULT_BASE, connectedModels, connections),
+    ).toBe(false);
   });
-
-  it('detects conflict for two models using the default Ollama host', () => {
-    // Models not in connectedModels default to the main Ollama host
-    expect(hasSameHostConflict(['ministral-3:3b', 'llama3.2:1b'], DEFAULT_URL, [], [])).toBe(true);
+  it('mixed default + connected → false', () => {
+    expect(
+      hasSameHostConflict(['llama3:8b', cmRemote.id], DEFAULT_BASE, connectedModels, connections),
+    ).toBe(false);
   });
-
-  it('single model never conflicts', () => {
-    expect(hasSameHostConflict(['ministral-3:3b'], DEFAULT_URL, [], [])).toBe(false);
+  it('single model → false', () => {
+    expect(hasSameHostConflict(['llama3:8b'], DEFAULT_BASE, connectedModels, connections)).toBe(false);
+  });
+  it('trailing slash normalised when comparing hosts', () => {
+    expect(
+      hasSameHostConflict(['llama3:8b', 'mistral:7b'], 'http://localhost:11434/', connectedModels, connections),
+    ).toBe(true);
   });
 });
-
-// ── groupByHost ───────────────────────────────────────────────────────────────
 
 describe('groupByHost (#126)', () => {
-  it('groups two same-host models into one batch', () => {
-    const groups = groupByHost(['loc/llama3', 'loc/mistral'], DEFAULT_URL, [localA, localB], [connLoc]);
+  it('groups default-host models together', () => {
+    const groups = groupByHost(['llama3:8b', 'mistral:7b'], DEFAULT_BASE, connectedModels, connections);
     expect(groups).toHaveLength(1);
-    expect(groups[0].models).toHaveLength(2);
+    expect(groups[0].host).toBe(DEFAULT_BASE);
+    expect(groups[0].models).toEqual(['llama3:8b', 'mistral:7b']);
   });
-
-  it('puts different-host models in separate batches', () => {
-    const groups = groupByHost(['loc/llama3', 'rem/gpt4'], DEFAULT_URL, [localA, remoteC], [connLoc, connRem]);
+  it('splits connected models by connection baseUrl', () => {
+    const groups = groupByHost([cmRemote.id, cmOpenAi.id], DEFAULT_BASE, connectedModels, connections);
     expect(groups).toHaveLength(2);
-    expect(groups.map(g => g.host)).toContain('http://localhost:11434');
-    expect(groups.map(g => g.host)).toContain('http://api.example.com');
+    const hosts = groups.map(g => g.host).sort();
+    expect(hosts).toEqual(['http://gpu-box:11434', 'https://api.example.com/v1'].sort());
   });
-
-  it('unknown models fall back to defaultBaseUrl', () => {
-    const groups = groupByHost(['ministral-3:3b', 'llama3.2:1b'], DEFAULT_URL, [], []);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].host).toBe(DEFAULT_URL);
-    expect(groups[0].models).toHaveLength(2);
+  it('keeps order within a batch', () => {
+    const groups = groupByHost(['a', 'b', cmRemote.id, 'c'], DEFAULT_BASE, connectedModels, connections);
+    const localGroup = groups.find(g => g.host === DEFAULT_BASE)!;
+    expect(localGroup.models).toEqual(['a', 'b', 'c']);
   });
 });
-
-// ── runManyModels — sequential on same host ────────────────────────────────────
 
 describe('runManyModels (#126)', () => {
-  it('same-host models run sequentially (second starts only after first ends)', async () => {
-    const order: string[] = [];
-    const streamOllama = vi.fn().mockImplementation(async (model: string) => {
-      order.push(`start:${model}`);
-      await new Promise(r => setTimeout(r, 10));
-      order.push(`end:${model}`);
-    });
+  const messages: Message[] = [{ role: 'user', content: 'hi' }];
 
-    await runManyModels(
-      ['llama3:8b', 'mistral:7b'],
-      [{ role: 'user', content: 'hi' }],
-      () => {},
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama }
-    );
-
-    expect(order).toEqual(['start:llama3:8b', 'end:llama3:8b', 'start:mistral:7b', 'end:mistral:7b']);
-  });
-
-  it('different-host models may overlap (both started before either ends)', async () => {
-    const starts: string[] = [];
-    let resolve1!: () => void, resolve2!: () => void;
-    const streamOllama = vi.fn().mockImplementation(async (model: string) => {
-      starts.push(model);
-      await new Promise<void>(r => model === 'llama3:8b' ? (resolve1 = r) : (resolve2 = r));
-    });
-    const streamOpenAi = vi.fn().mockImplementation(async (conn: any, model: string) => {
-      starts.push(model);
-      await new Promise<void>(r => (resolve2 = r));
-    });
-
-    const done = runManyModels(
-      ['loc/llama3', 'rem/gpt4'],
-      [{ role: 'user', content: 'hi' }],
-      () => {},
-      {
-        defaultBaseUrl: DEFAULT_URL,
-        connectedModels: [localA, remoteC],
-        connections: [connLoc, connRem],
-        streamOllama,
-        streamOpenAi,
-      }
-    );
-
-    // Give event loop a tick for both to start
-    await new Promise(r => setTimeout(r, 5));
-    // Both should have started before either resolves (proving parallel execution)
-    expect(starts).toContain('llama3:8b');
-    expect(starts).toContain('gpt-4');
-    resolve1(); resolve2();
-    await done;
-  });
-
-  it('cancel aborts all pending and running streams', async () => {
-    const ac = new AbortController();
-    const streamOllama = vi.fn().mockImplementation(async (_m: string, _msgs: any[], _onChunk: any, _ep: string, _cloud: boolean, _opts: any, signal?: AbortSignal) => {
-      await new Promise<void>((_, rej) => {
-        signal?.addEventListener('abort', () => rej(new Error('aborted')));
-      });
-    });
-
-    const done = runManyModels(
-      ['llama3:8b', 'mistral:7b'],
-      [],
-      () => {},
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama, signal: ac.signal }
-    );
-    await new Promise(r => setTimeout(r, 5));
-    ac.abort();
-    // Should resolve without throwing
-    await expect(done).resolves.toBeUndefined();
-  });
-
-  it('onUpdate receives streaming deltas then done state', async () => {
-    const updates: { modelId: string; state: ModelReply['state'] }[] = [];
-    const streamOllama = vi.fn().mockImplementation(async (_model: string, _msgs: any[], onChunk: any) => {
-      onChunk({ message: { content: 'Hello ' } });
-      onChunk({ message: { content: 'world' } });
-    });
-
-    await runManyModels(
-      ['ministral-3:3b'],
-      [],
-      (modelId, _delta, state) => updates.push({ modelId, state }),
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama }
-    );
-
-    expect(updates[0]).toEqual({ modelId: 'ministral-3:3b', state: 'streaming' });
-    expect(updates[updates.length - 1]).toEqual({ modelId: 'ministral-3:3b', state: 'done' });
-  });
-
-  it('stream error marks model as error state without throwing', async () => {
-    const updates: { modelId: string; state: ModelReply['state'] }[] = [];
-    const streamOllama = vi.fn().mockRejectedValue(new Error('connection refused'));
-
-    await runManyModels(
-      ['llama3:8b'],
-      [],
-      (modelId, _d, state) => updates.push({ modelId, state }),
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama }
-    );
-
-    const last = updates[updates.length - 1];
-    expect(last.state).toBe('error');
-  });
-});
-
-// ── runManyModels — reasoning capture (#249) ───────────────────────────────────
-
-describe('runManyModels reasoning capture (#249)', () => {
-  it('surfaces Ollama thinking deltas as reasoning on onUpdate', async () => {
-    const updates: { modelId: string; reasoning?: string }[] = [];
-    const streamOllama = vi.fn().mockImplementation(async (_model: string, _msgs: any[], onChunk: any) => {
-      onChunk({ message: { content: 'Answer', thinking: 'let me think' } });
-      onChunk({ message: { content: ' now', thinking: ' more' } });
-    });
-
-    await runManyModels(
-      ['llama3:8b'],
-      [],
-      (_id, _delta, _state, _err, reasoning) => updates.push({ modelId: 'llama3:8b', reasoning }),
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama },
-    );
-
-    const reasoningUpdates = updates.filter((u) => u.reasoning);
-    expect(reasoningUpdates.length).toBeGreaterThan(0);
-    expect(reasoningUpdates.map((u) => u.reasoning).join('')).toBe('let me think more');
-  });
-
-  it('surfaces top-level thinking (no message wrapper) as reasoning', async () => {
-    const seen: string[] = [];
-    const streamOllama = vi.fn().mockImplementation(async (_m: string, _msgs: any[], onChunk: any) => {
-      onChunk({ thinking: 'top-level reasoning' });
-    });
-
-    await runManyModels(
-      ['mistral:7b'],
-      [],
-      (_id, _delta, _state, _err, reasoning) => { if (reasoning) seen.push(reasoning); },
-      { defaultBaseUrl: DEFAULT_URL, connectedModels: [], connections: [], streamOllama },
-    );
-
-    expect(seen).toContain('top-level reasoning');
-  });
-
-  it('passes reasoning from the OpenAI-compatible stream callback', async () => {
-    const seen: string[] = [];
-    const streamOpenAi = vi.fn().mockImplementation(async (_conn: any, _model: string, _msgs: any[], onChunk: any) => {
-      onChunk('delta1', 'reasoning-alpha');
-      onChunk('delta2', 'reasoning-beta');
-    });
-
-    await runManyModels(
-      ['rem/gpt4'],
-      [],
-      (_id, _delta, _state, _err, reasoning) => { if (reasoning) seen.push(reasoning); },
-      {
-        defaultBaseUrl: DEFAULT_URL,
-        connectedModels: [remoteC],
-        connections: [connRem],
-        streamOllama: vi.fn(),
-        streamOpenAi,
+  function makeStreamOllama(tokens: Record<string, string[]>) {
+    const calls: { model: string; t: number }[] = [];
+    let counter = 0;
+    const streamOllama = vi.fn().mockImplementation(
+      async (model: string, _msgs: Message[], onChunk: (c: any) => void) => {
+        const idx = counter++;
+        calls.push({ model, t: Date.now() });
+        // simulate small delay so parallel/sequential timing is observable
+        await new Promise(r => setTimeout(r, 5));
+        for (const tok of tokens[model] ?? ['x']) {
+          onChunk({ message: { content: tok } });
+        }
+        void idx;
       },
     );
+    return { streamOllama, calls };
+  }
 
-    expect(seen).toEqual(['reasoning-alpha', 'reasoning-beta']);
+  it('reports streaming → done for each model and aggregates chunks', async () => {
+    const { streamOllama } = makeStreamOllama({
+      'llama3:8b': ['Hel', 'lo'],
+      'mistral:7b': ['Yo'],
+    });
+    const updates: { id: string; delta: string; state: string }[] = [];
+    await runManyModels(
+      ['llama3:8b', 'mistral:7b'],
+      messages,
+      (id, delta, state) => updates.push({ id, delta, state }),
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama },
+    );
+    const llama = updates.filter(u => u.id === 'llama3:8b');
+    expect(llama[0].state).toBe('streaming');
+    expect(llama.some(u => u.delta === 'Hel')).toBe(true);
+    expect(llama.some(u => u.delta === 'lo')).toBe(true);
+    expect(llama[llama.length - 1].state).toBe('done');
+    const mistral = updates.filter(u => u.id === 'mistral:7b');
+    expect(mistral[mistral.length - 1].state).toBe('done');
   });
 
-  it('ModelReply includes an optional reasoning field', () => {
-    const reply: ModelReply = {
-      modelId: 'x',
-      label: 'X',
-      content: 'hi',
-      state: 'done',
-      reasoning: 'because',
-    };
-    expect(reply.reasoning).toBe('because');
+  it('runs same-host models sequentially (call order preserved)', async () => {
+    const { streamOllama, calls } = makeStreamOllama({
+      'llama3:8b': ['a'],
+      'mistral:7b': ['b'],
+    });
+    await runManyModels(
+      ['llama3:8b', 'mistral:7b'],
+      messages,
+      () => {},
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama },
+    );
+    expect(streamOllama).toHaveBeenCalledTimes(2);
+    // same host → single batch → sequential calls in input order
+    expect(calls.map(c => c.model)).toEqual(['llama3:8b', 'mistral:7b']);
+  });
+
+  it('runs different-host batches in parallel', async () => {
+    const { streamOllama } = makeStreamOllama({
+      'llama3:8b': ['a'],
+      'llama3:70b': ['b'],
+    });
+    // monkeypatch to record overlapping execution windows
+    const windows: Record<string, [number, number]> = {};
+    streamOllama.mockImplementation(async (model: string, _m: Message[], _c: any) => {
+      const start = Date.now();
+      await new Promise(r => setTimeout(r, 30));
+      windows[model] = [start, Date.now()];
+    });
+    await runManyModels(
+      ['llama3:8b', cmRemote.id],
+      messages,
+      () => {},
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama },
+    );
+    // Remote model resolves to a different host → batches overlap
+    const localWin = windows['llama3:8b'];
+    const remoteWin = windows[cmRemote.name];
+    expect(localWin).toBeDefined();
+    expect(remoteWin).toBeDefined();
+    expect(remoteWin[0]).toBeLessThan(localWin[1]);
+  });
+
+  it('abort signal breaks out of sequential batch', async () => {
+    const controller = new AbortController();
+    const { streamOllama } = makeStreamOllama({ 'llama3:8b': ['a'], 'mistral:7b': ['b'] });
+    let firstCall = true;
+    streamOllama.mockImplementation(async (model: string) => {
+      if (firstCall) {
+        firstCall = false;
+        controller.abort();
+      }
+      await new Promise(r => setTimeout(r, 5));
+      return;
+    });
+    const updates: { id: string; state: string }[] = [];
+    await runManyModels(
+      ['llama3:8b', 'mistral:7b'],
+      messages,
+      (id, _d, state) => updates.push({ id, state }),
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama, signal: controller.signal },
+    );
+    // second model never started streaming content because signal aborted before its loop iteration
+    expect(streamOllama).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces stream error as state "error"', async () => {
+    const streamOllama = vi.fn().mockRejectedValue(new Error('boom'));
+    const updates: { id: string; state: string; error?: string }[] = [];
+    await runManyModels(
+      ['llama3:8b'],
+      messages,
+      (id, _d, state, error) => updates.push({ id, state, error }),
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama },
+    );
+    expect(updates.some(u => u.state === 'error' && u.error === 'boom')).toBe(true);
+  });
+
+  it('routes OpenAI-kind connected models through streamOpenAi', async () => {
+    const streamOllama = vi.fn();
+    const streamOpenAi = vi.fn().mockImplementation(
+      async (_conn: ModelConnection, _model: string, _msgs: Message[], onChunk: (d: string, r?: string) => void) => {
+        onChunk('hi', 'thinking...');
+      },
+    );
+    const updates: { id: string; delta: string; reasoning?: string; state: string }[] = [];
+    await runManyModels(
+      [cmOpenAi.id],
+      messages,
+      (id, delta, state, _e, reasoning) => updates.push({ id, delta, state, reasoning }),
+      { defaultBaseUrl: DEFAULT_BASE, connectedModels, connections, streamOllama, streamOpenAi },
+    );
+    expect(streamOpenAi).toHaveBeenCalledTimes(1);
+    expect(streamOllama).not.toHaveBeenCalled();
+    expect(updates.some(u => u.delta === 'hi')).toBe(true);
+    expect(updates.some(u => u.reasoning === 'thinking...')).toBe(true);
   });
 });

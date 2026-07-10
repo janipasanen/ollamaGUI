@@ -60,6 +60,7 @@ import {
   removeOpenApiServer,
   loadOpenApiServers,
   saveOpenApiServers,
+  fetchOpenApiSpec,
 } from '../services/openapiTools';
 
 describe('OpenAPI tool servers (#129)', () => {
@@ -269,5 +270,39 @@ describe('OpenAPI tool servers (#129)', () => {
     ];
     saveOpenApiServers(configs);
     expect(loadOpenApiServers()).toEqual(configs);
+  });
+});
+
+// ── #467: fetchOpenApiSpec error surfacing ───────────────────────────────────
+
+describe('fetchOpenApiSpec error handling (#467)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; _invokeImpl = null; });
+  afterEach(() => { global.fetch = origFetch; _invokeImpl = null; });
+
+  it('throws with body snippet on non-ok fetch response (#467)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => 'Unauthorized: invalid API key',
+    }) as any;
+    await expect(fetchOpenApiSpec('https://x.example.com/openapi.json')).rejects.toThrow(/invalid API key/);
+  });
+
+  it('throws meaningful error on non-JSON 200 response (#467)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => { throw new SyntaxError('Unexpected token'); },
+    }) as any;
+    await expect(fetchOpenApiSpec('https://x.example.com/openapi.json')).rejects.toThrow(/non-JSON/);
+  });
+
+  it('returns parsed spec on success (#467)', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => PET_SPEC,
+    }) as any;
+    const spec = await fetchOpenApiSpec('https://x.example.com/openapi.json');
+    expect(spec.paths?.['/pets']?.get?.operationId).toBe('listPets');
   });
 });

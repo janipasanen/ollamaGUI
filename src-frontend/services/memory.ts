@@ -25,7 +25,7 @@ export function loadMemory(): MemoryEntry[] {
 }
 
 export function saveMemory(entries: MemoryEntry[]): void {
-  localStorage.setItem(MEMORY_KEY, JSON.stringify(entries));
+  try { localStorage.setItem(MEMORY_KEY, JSON.stringify(entries)); } catch { /* quota */ }
 }
 
 export function addMemoryEntry(text: string, scope: string = 'global'): MemoryEntry {

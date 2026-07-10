@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
-  buildOpenAiChatRequest, streamOpenAiChat,
+  buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
   type ModelConnection,
 } from '../services/connections';
 
@@ -216,6 +216,47 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
     await expect(streamOpenAiChat(conn, 'gpt-4', [], () => {})).rejects.toThrow('OpenAI stream error');
   });
 
+  // ── #458: surface response body error on non-ok ──────────────────────────
+
+  it('openAiErrorFromResponse extracts nested error.message (#458)', async () => {
+    const res = { statusText: 'Unauthorized', json: async () => ({ error: { message: 'Invalid API key provided' } }) } as any;
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    expect(err.message).toBe('OpenAI stream error: Invalid API key provided');
+  });
+
+  it('openAiErrorFromResponse extracts string error (#458)', async () => {
+    const res = { statusText: 'Bad Request', json: async () => ({ error: 'model not found' }) } as any;
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    expect(err.message).toBe('OpenAI stream error: model not found');
+  });
+
+  it('openAiErrorFromResponse extracts top-level message/detail (#458)', async () => {
+    const res = { statusText: 'Internal Server Error', json: async () => ({ detail: 'GPU out of memory' }) } as any;
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    expect(err.message).toBe('OpenAI stream error: GPU out of memory');
+  });
+
+  it('openAiErrorFromResponse falls back to statusText when no body error (#458)', async () => {
+    const res = { statusText: 'Forbidden', json: async () => ({ models: [] }) } as any;
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    expect(err.message).toBe('OpenAI stream error: Forbidden');
+  });
+
+  it('openAiErrorFromResponse falls back to statusText when json() throws (#458)', async () => {
+    const res = { statusText: 'Service Unavailable', json: async () => { throw new SyntaxError('nope'); } } as any;
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    expect(err.message).toBe('OpenAI stream error: Service Unavailable');
+  });
+
+  it('streamOpenAiChat surfaces body error.message on non-ok (#458)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      statusText: 'Unauthorized',
+      json: async () => ({ error: { message: 'Invalid API key provided' } }),
+    } as any);
+    await expect(streamOpenAiChat(conn, 'gpt-4', [], () => {})).rejects.toThrow('Invalid API key provided');
+  });
+
   it('passes reasoning_content deltas as the second onChunk arg (#244)', async () => {
     const deltas: string[] = [];
     const reasons: string[] = [];
@@ -240,3 +281,93 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
   });
 });
 
+// ── #466: flush trailing SSE event without newline ───────────────────────────
+
+describe('streamOpenAiChat — SSE flush (#466)', () => {
+  const conn: ModelConnection = { id: 'lm', name: 'LM', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+
+  function mockSseNoTrailingNewline(lines: string[]) {
+    const encoder = new TextEncoder();
+    let i = 0;
+    const body = new ReadableStream({
+      pull(ctrl) {
+        if (i < lines.length) {
+          const isLast = i === lines.length - 1;
+          ctrl.enqueue(encoder.encode(lines[i++] + (isLast ? '' : '\n')));
+        } else ctrl.close();
+      },
+    });
+    return { ok: true, status: 200, body } as any;
+  }
+
+  it('flushes the last SSE event when it has no trailing newline (#466)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSseNoTrailingNewline([
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+      'data: {"choices":[{"delta":{"content":" world"}}]}',
+      'data: {"choices":[{"delta":{"content":"!"}}]}',
+    ])));
+    const chunks: string[] = [];
+    await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
+    expect(chunks).toEqual(['Hello', ' world', '!']);
+  });
+
+  it('flushes trailing [DONE] without newline and stops (#466)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSseNoTrailingNewline([
+      'data: {"choices":[{"delta":{"content":"A"}}]}',
+      'data: [DONE]',
+    ])));
+    const chunks: string[] = [];
+    await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
+    expect(chunks).toEqual(['A']);
+  });
+});
+
+// ── #469: SSE data: field without space after colon ───────────────────────────
+
+describe('streamOpenAiChat — SSE data: without space (#469)', () => {
+  const conn: ModelConnection = { id: 'lm', name: 'LM', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+
+  function mockSse(lines: string[]) {
+    const encoder = new TextEncoder();
+    let i = 0;
+    const body = new ReadableStream({
+      pull(ctrl) {
+        if (i < lines.length) ctrl.enqueue(encoder.encode(lines[i++] + '\n'));
+        else ctrl.close();
+      },
+    });
+    return { ok: true, status: 200, body } as any;
+  }
+
+  it('parses data:{...} without space after colon (#469)', async () => {
+    const chunks: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data:{"choices":[{"delta":{"content":"Hello"}}]}',
+      'data:{"choices":[{"delta":{"content":" world"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
+    expect(chunks).toEqual(['Hello', ' world']);
+  });
+
+  it('parses data:{...} without space in flush buffer (#469)', async () => {
+    const encoder = new TextEncoder();
+    let i = 0;
+    const lines = [
+      'data:{"choices":[{"delta":{"content":"A"}}]}',
+      'data:{"choices":[{"delta":{"content":"B"}}]}',  // no trailing newline
+    ];
+    const body = new ReadableStream({
+      pull(ctrl) {
+        if (i < lines.length) {
+          const isLast = i === lines.length - 1;
+          ctrl.enqueue(encoder.encode(lines[i++] + (isLast ? '' : '\n')));
+        } else ctrl.close();
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve({ ok: true, status: 200, body } as any));
+    const chunks: string[] = [];
+    await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
+    expect(chunks).toEqual(['A', 'B']);
+  });
+});

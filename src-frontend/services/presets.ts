@@ -32,7 +32,7 @@ export function loadPresets(): ModelPreset[] {
 }
 
 export function savePresets(presets: ModelPreset[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(presets)); } catch { /* quota */ }
 }
 
 export function addPreset(preset: Omit<ModelPreset, 'id'>): ModelPreset {
@@ -57,7 +57,7 @@ export function loadActivePresetId(): string | null {
 }
 
 export function setActivePreset(id: string | null): void {
-  if (id) localStorage.setItem(ACTIVE_KEY, id);
+  if (id) { try { localStorage.setItem(ACTIVE_KEY, id); } catch { /* quota */ } }
   else clearActivePreset();
 }
 

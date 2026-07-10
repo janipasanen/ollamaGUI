@@ -198,12 +198,17 @@ export async function fetchOpenApiSpec(url: string, apiKey?: string, apiKeyHeade
     const res = await invoke('mcp_http_request', {
       request: { method: 'GET', url, headers },
     }) as { success: boolean; status: number; body: string };
-    if (!res.success) throw new Error(`HTTP ${res.status}`);
-    return JSON.parse(res.body) as OASpec;
+    if (!res.success) throw new Error(`HTTP ${res.status}: ${res.body.slice(0, 200)}`);
+    try { return JSON.parse(res.body) as OASpec; }
+    catch { throw new Error(`OpenAPI spec at ${url} returned non-JSON response: ${res.body.slice(0, 200)}`); }
   } catch {
     const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json() as Promise<OASpec>;
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    }
+    try { return await res.json() as OASpec; }
+    catch { throw new Error(`OpenAPI spec at ${url} returned non-JSON response`); }
   }
 }
 
@@ -241,7 +246,7 @@ export function loadOpenApiServers(): OpenApiServerConfig[] {
 }
 
 export function saveOpenApiServers(configs: OpenApiServerConfig[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(configs));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(configs)); } catch { /* quota */ }
 }
 
 export function addOpenApiServer(config: Omit<OpenApiServerConfig, 'id'>): OpenApiServerConfig {

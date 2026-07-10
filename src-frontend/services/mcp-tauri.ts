@@ -6,7 +6,7 @@ let _stubPending: { id: number | string; method: string } | null = null;
 
 /** Spec-shaped default stub used when Tauri is unavailable (tests / browser dev). */
 function stdioStub(cmd: string, args: any): any {
-  if (cmd === 'mcp_stdio_spawn') return { success: true, session_id: args?.sessionId };
+  if (cmd === 'mcp_stdio_spawn') return { success: true, sessionId: args?.sessionId };
   if (cmd === 'mcp_stdio_send') {
     try {
       const parsed = JSON.parse(args?.request ?? '{}');
@@ -63,6 +63,14 @@ export class TauriMcpStdioTransport {
         args,
         env,
       });
+
+      // The Rust side returns Ok({ success: false, message }) for soft failures
+      // (e.g. duplicate session id) rather than an Err. Without this check the
+      // transport would silently proceed as if the spawn succeeded, causing
+      // confusing timeouts or 'Session not found' errors later (#436).
+      if (result?.success === false) {
+        throw new Error(`Failed to spawn MCP process: ${result.message ?? 'unknown error'}`);
+      }
 
       const client: McpTauriStdioClient = {
         sessionId,
