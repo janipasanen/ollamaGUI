@@ -39,7 +39,6 @@ zip = "2"
 quick-xml = "0.41"
 lopdf = { version = "0.43", default-features = false }
 calamine = "0.36"
-umya-spreadsheet = "3.0.0"
 # Bump transitive `plist` (via tauri) from 1.9 → 1.10 so its quick-xml dep
 # resolves to the patched 0.41 line instead of the vulnerable 0.39.4 (#395).
 plist = "1.10"

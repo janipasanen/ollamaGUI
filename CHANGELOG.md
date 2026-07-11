@@ -833,3 +833,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `libgirepository1.0-dev`, `librsvg2-dev`, `libssl-dev`, `pkg-config`. macOS/
   Windows already ship their webview SDKs. Previously masked by earlier
   failures (#395/#397) and `fail-fast` matrix cancellation.
+
+#### M173 — Replace umya-spreadsheet to clear quick-xml 0.37.5 DoS advisories (#396)
+- **Bug fix / security** (#396): Removed the `umya-spreadsheet` dependency, the
+  only consumer of the vulnerable `quick-xml 0.37.5` (RUSTSEC-2026-0194
+  quadratic-runtime DoS, RUSTSEC-2026-0195 memory-exhaustion DoS). `umya 3.0.0`
+  hard-pins `quick-xml ^0.37.1` with no upstream backport; the 0.37→0.41
+  namespace rewrite cannot be cleanly backported, so the crate had to go.
+- **Feature** (#396): `xlsx_set_cell_impl` (`document_xlsx_set_cell`) is now a
+  surgical in-place edit built on the `zip` + `quick-xml 0.41` crates already
+  present — the same lossless pattern used for `.docx`/`.odt` editing. It
+  resolves sheet name → worksheet part via `xl/workbook.xml` + rels, then
+  rewrites/inserts a single `<c r="…">` cell, preserving all other cells,
+  styling, and the shared-strings table. Handles existing, self-closing, and
+  missing cells (cell insert, row insert), and numeric vs inline-string values
+  (matching umya's number/string typing). Added a `xlsx_read_cell_value`
+  helper (inline strings, shared strings, numbers) for verification/preview.
+- **Tests**: 7 xlsx tests (preserves neighbors, insert missing cell/row,
+  numeric stored as number, shared-string neighbor untouched, empty
+  self-closing cell rewritten not duplicated). `cargo audit` now reports 0
+  vulnerabilities / 0 ignored real advisories (the two `unsound` advisories —
+  `anyhow`, `glib` — remain visible non-fatal warnings). The `paste` and
+  `quick-xml 0.37.x` transitive clusters are gone from the tree.

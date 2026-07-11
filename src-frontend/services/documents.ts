@@ -146,7 +146,7 @@ export async function checkLibreOffice(): Promise<LibreOfficeAvailability> {
   return tauriInvoke<LibreOfficeAvailability>('check_libreoffice_available', {});
 }
 
-/** Set a single cell of an existing .xlsx in place (umya), preserving the rest (#141). */
+/** Set a single cell of an existing .xlsx in place (surgical zip+quick-xml edit), preserving the rest (#141, #396). */
 export async function setXlsxCell(path: string, cell: string, value: string, sheet?: string): Promise<{ preview_text: string; changed: boolean }> {
   return tauriInvoke('document_xlsx_set_cell', { path, sheet: sheet ?? null, cell, value });
 }

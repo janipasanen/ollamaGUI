@@ -4020,3 +4020,28 @@ The `build` job never installed the Tauri v2 Linux system dependencies
 ### Result
 - ubuntu `Build Tauri App` should now compile; `fail-fast` no longer cancels
   the macos/windows jobs. `security-audit` and `e2e` remain green.
+
+## M173 — Replace umya-spreadsheet to clear quick-xml 0.37.5 DoS advisories (#396) (one-hundred-thirty-fourth analysis pass)
+
+### Context
+#395 left RUSTSEC-2026-0194/0195 as documented exceptions in `.cargo/audit.toml`
+because `umya-spreadsheet 3.0.0` hard-pins the vulnerable `quick-xml 0.37.x`
+with no available backport. #396 replaces that dependency so the advisories
+leave the tree entirely.
+
+### Work
+- [x] **#396** Removed `umya-spreadsheet` from `Cargo.toml`.
+- [x] **#396** Reimplemented `xlsx_set_cell_impl` as a surgical `zip` +
+  `quick-xml 0.41` edit: sheet→part resolution via `xl/workbook.xml` + rels,
+  single-cell rewrite/insert (existing, self-closing, missing cell/row),
+  numeric vs inline-string typing, shared-strings preserved. Added
+  `xlsx_read_cell_value` for verification.
+- [x] **#396** Cleaned `.cargo/audit.toml`: removed the RUSTSEC-2026-0194/0195
+  and `paste` ignores (gone from the tree); kept the `unic-*` ignores (now via
+  `urlpattern`/`tauri-utils`, not umya). The two `unsound` advisories (`anyhow`,
+  `glib`) stay as visible non-fatal warnings.
+
+### Result
+- `cargo audit` exit 0, **0 vulnerabilities / 0 ignored real advisories**
+  (2 visible `unsound` warnings). `cargo test --lib` 97 passed / 1 ignored;
+  `tsc --noEmit` clean; `vitest run` 2055 passed (218 files).

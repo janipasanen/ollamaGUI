@@ -647,10 +647,268 @@ pub fn xlsx_replace_text(file_bytes: &[u8], find: &str, replace: &str) -> Result
     ooxml_repack(&parts)
 }
 
-// ─── XLSX cell edit via umya-spreadsheet (#141) ──────────────────────────────
+// ─── XLSX cell edit via surgical zip + quick-xml (#141, #396) ────────────────
+//
+// In-place single-cell edit of an existing `.xlsx` that does NOT depend on
+// `umya-spreadsheet` (whose hard-pinned `quick-xml ^0.37.1` carries two
+// unfixable DoS advisories — RUSTSEC-2026-0194/0195). Instead we surgically
+// rewrite just the target cell inside the worksheet part, reusing the `zip` +
+// `quick-xml` crates already present (the same lossless-edit pattern used for
+// `.docx`/`.odt`). Everything else in the workbook — other cells, styling,
+// the shared-strings table, the rest of the archive — is preserved verbatim.
+
+/// Strip an XML attribute key's namespace prefix, e.g. `r:id` → `id`,
+/// `sheetId` → `sheetId`. quick-xml with default (no namespace expansion)
+/// config returns raw keys, so we compare on the local part.
+fn attr_local(key: &[u8]) -> &[u8] {
+    match key.iter().position(|&b| b == b':') {
+        Some(i) => &key[i + 1..],
+        None => key,
+    }
+}
+
+/// Read a named attribute from a start tag as an unescaped `String`.
+fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
+    for a in e.attributes().flatten() {
+        if attr_local(a.key.as_ref()) == name {
+            return a.normalized_value(quick_xml::XmlVersion::default()).ok().map(|v| v.into_owned());
+        }
+    }
+    None
+}
+
+/// Split an A1-style cell reference (`"B2"`) into `(uppercase_column, row)`.
+/// Validates the ref shape; the uppercase form is used for case-insensitive
+/// matching against `r="B2"` attributes.
+fn split_a1(cell: &str) -> Result<(String, u32), String> {
+    let upper = cell.trim().to_uppercase();
+    let col: String = upper.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    let row_str: String = upper.chars().filter(|c| c.is_ascii_digit()).collect();
+    if col.is_empty() || row_str.is_empty() {
+        return Err(format!(
+            "Invalid cell reference '{cell}' (expected e.g. \"B2\")"
+        ));
+    }
+    let row = row_str
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid row in cell reference '{cell}'"))?;
+    Ok((col, row))
+}
+
+/// Match umya's behaviour: a value that parses as a finite f64 is stored as a
+/// number cell (so Excel shows it right-aligned and usable in formulas); any
+/// other text is stored as an inline string. `inf`/`nan`/etc. parse as f64 but
+/// are not Excel numbers, so they are treated as text.
+fn looks_like_number(value: &str) -> bool {
+    let t = value.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t.parse::<f64>()
+        .map(|f| f.is_finite())
+        .unwrap_or(false)
+}
+
+/// Resolve a (optional) sheet name to its worksheet part path inside the xlsx
+/// zip (e.g. `"xl/worksheets/sheet1.xml"`), defaulting to the first sheet.
+fn resolve_worksheet_part(
+    parts: &[(String, Vec<u8>)],
+    sheet: Option<&str>,
+) -> Result<(String, String), String> {
+    fn part<'a>(parts: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8]> {
+        parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+    }
+    let wb = part(parts, "xl/workbook.xml")
+        .ok_or("Not a valid xlsx: missing xl/workbook.xml")?;
+    // Sheet order in workbook.xml defines the visible order; first = default.
+    let mut sheets: Vec<(String, String)> = Vec::new();
+    let mut reader = quick_xml::Reader::from_reader(wb);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf).map_err(|e| format!("workbook.xml: {e}"))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheet" => {
+                let name = attr_value(&e, b"name").unwrap_or_default();
+                // `r:id` (the relationship id) — not `sheetId`, which is a
+                // different, unrelated ordering field.
+                let rid = attr_value(&e, b"id").unwrap_or_default();
+                sheets.push((name, rid));
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if sheets.is_empty() {
+        return Err("Workbook has no sheets".into());
+    }
+    let (sheet_name, r_id) = match sheet {
+        Some(s) => sheets
+            .into_iter()
+            .find(|(n, _)| n == s)
+            .ok_or_else(|| format!("Sheet '{s}' not found"))?,
+        None => sheets.into_iter().next().unwrap(),
+    };
+    let rels = part(parts, "xl/_rels/workbook.xml.rels")
+        .ok_or("Not a valid xlsx: missing xl/_rels/workbook.xml.rels")?;
+    let mut target: Option<String> = None;
+    let mut reader = quick_xml::Reader::from_reader(rels);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf).map_err(|e| format!("workbook rels: {e}"))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
+                if attr_value(&e, b"Id").as_deref() == Some(r_id.as_str()) {
+                    target = attr_value(&e, b"Target");
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let target = target.ok_or_else(|| format!("Relationship {r_id} not found in workbook.xml.rels"))?;
+    // Target is relative to `xl/` (e.g. "worksheets/sheet1.xml").
+    let norm = target.trim_start_matches("./");
+    Ok((sheet_name, format!("xl/{norm}")))
+}
+
+/// Build the owned event sequence for a `<c r="...">…</c>` cell carrying
+/// `value`. `keep` are extra attributes to preserve (e.g. `s` style index);
+/// `r` and `t` are always recomputed here.
+fn make_cell_events(
+    cell_ref: &str,
+    value: &str,
+    keep: &[(String, String)],
+) -> Result<Vec<Event<'static>>, String> {
+    let number = looks_like_number(value);
+    let mut bs = quick_xml::events::BytesStart::new("c");
+    bs.push_attribute(("r", cell_ref));
+    for (k, v) in keep {
+        bs.push_attribute((k.as_str(), v.as_str()));
+    }
+    if !number {
+        bs.push_attribute(("t", "inlineStr"));
+    }
+    let mut events: Vec<Event<'static>> = Vec::new();
+    events.push(Event::Start(bs.into_owned()));
+    if number {
+        events.push(Event::Start(quick_xml::events::BytesStart::new("v").into_owned()));
+        events.push(Event::Text(quick_xml::events::BytesText::new(value).into_owned()));
+        events.push(Event::End(quick_xml::events::BytesEnd::new("v").into_owned()));
+    } else {
+        events.push(Event::Start(quick_xml::events::BytesStart::new("is").into_owned()));
+        events.push(Event::Start(quick_xml::events::BytesStart::new("t").into_owned()));
+        events.push(Event::Text(quick_xml::events::BytesText::new(value).into_owned()));
+        events.push(Event::End(quick_xml::events::BytesEnd::new("t").into_owned()));
+        events.push(Event::End(quick_xml::events::BytesEnd::new("is").into_owned()));
+    }
+    events.push(Event::End(quick_xml::events::BytesEnd::new("c").into_owned()));
+    Ok(events)
+}
+
+/// Build the owned event sequence for a `<row r="N"><c …/></row>` carrying a
+/// single cell. Used when the target row does not yet exist in the sheet.
+fn make_row_events(row: u32, cell_ref: &str, value: &str) -> Result<Vec<Event<'static>>, String> {
+    let r = row.to_string();
+    let mut bs = quick_xml::events::BytesStart::new("row");
+    bs.push_attribute(("r", r.as_str()));
+    let mut events: Vec<Event<'static>> = Vec::new();
+    events.push(Event::Start(bs.into_owned()));
+    events.extend(make_cell_events(cell_ref, value, &[])?);
+    events.push(Event::End(quick_xml::events::BytesEnd::new("row").into_owned()));
+    Ok(events)
+}
+
+/// Collect a cell's attributes to preserve (everything except `r` and `t`,
+/// which are recomputed) as owned `(key, value)` pairs.
+fn collect_keep_attrs(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, String)> {
+    let mut keep: Vec<(String, String)> = Vec::new();
+    for a in e.attributes().flatten() {
+        let local = attr_local(a.key.as_ref());
+        if local != b"r" && local != b"t" {
+            keep.push((
+                String::from_utf8_lossy(local).into_owned(),
+                a.normalized_value(quick_xml::XmlVersion::default())
+                    .map(|v| v.into_owned())
+                    .unwrap_or_default(),
+            ));
+        }
+    }
+    keep
+}
+
+/// Rewrite (or insert) a single cell inside a row's owned event stream.
+/// Called only when the row is the target row. If the cell already exists it is
+/// rewritten in place (preserving non-`r`/`t` attributes such as the style `s`);
+/// otherwise a fresh cell is inserted just before `</row>`.
+fn rewrite_cell_in_row(
+    raw: Vec<Event<'static>>,
+    target_ref: &str,
+    value: &str,
+) -> Result<Vec<Event<'static>>, String> {
+    // Borrow pass: does the target cell already exist in this row? A cell may
+    // be a normal `<c>…</c>` (Start) or a self-closing `<c/>` (Empty).
+    let has_cell = raw.iter().any(|ev| match ev {
+        Event::Start(e) | Event::Empty(e) => {
+            e.local_name().as_ref() == b"c"
+                && attr_value(e, b"r").as_deref() == Some(target_ref)
+        }
+        _ => false,
+    });
+    let last = raw.len().saturating_sub(1); // index of the row's End event
+
+    let mut raw_iter = raw.into_iter();
+    let mut out: Vec<Event<'static>> = Vec::new();
+
+    if has_cell {
+        // Advance to the target cell, capturing keep-attrs from it.
+        loop {
+            match raw_iter.next().ok_or("row ended before <c>")? {
+                // Self-closing `<c r="A1"/>`: replace the single Empty event
+                // with the full new cell (Start…End). No body to skip.
+                Event::Empty(e) if e.local_name().as_ref() == b"c"
+                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                {
+                    let keep = collect_keep_attrs(&e);
+                    out.extend(make_cell_events(target_ref, value, &keep)?);
+                    break;
+                }
+                Event::Start(e) if e.local_name().as_ref() == b"c"
+                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                {
+                    let keep = collect_keep_attrs(&e);
+                    // Skip the original cell body up to and including </c>.
+                    let mut depth = 1i32;
+                    while depth > 0 {
+                        match raw_iter.next().ok_or("unterminated <c> in row")? {
+                            Event::Start(_) => depth += 1,
+                            Event::End(_) => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    out.extend(make_cell_events(target_ref, value, &keep)?);
+                    break;
+                }
+                ev => out.push(ev),
+            }
+        }
+        for ev in raw_iter {
+            out.push(ev);
+        }
+    } else {
+        // Target row but cell missing: insert a new cell before </row>.
+        for _ in 0..last {
+            out.push(raw_iter.next().unwrap());
+        }
+        out.extend(make_cell_events(target_ref, value, &[])?);
+        out.push(raw_iter.next().unwrap()); // </row>
+    }
+    Ok(out)
+}
 
 /// Set a single cell of an existing `.xlsx` workbook in place, preserving all
-/// other cells and formatting (umya reads → mutates → writes the full model).
+/// other cells and formatting via a surgical rewrite of the worksheet part.
 ///
 /// `cell` is an A1-style reference (e.g. `"B2"`). `sheet` defaults to the first
 /// worksheet when omitted.
@@ -680,22 +938,262 @@ pub fn xlsx_set_cell_impl(
     cell: &str,
     value: &str,
 ) -> Result<(), String> {
-    let mut book = umya_spreadsheet::reader::xlsx::read(path)
-        .map_err(|e| format!("Failed to read xlsx: {e}"))?;
-    let sheet_name = match sheet {
-        Some(s) => s.to_string(),
-        None => book
-            .get_sheet_collection()
-            .first()
-            .map(|w| w.get_name().to_string())
-            .ok_or("Workbook has no sheets")?,
+    split_a1(cell)?; // validate up front
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read xlsx: {e}"))?;
+    let mut parts = ooxml_unpack(&bytes)?;
+    let (_sheet_name, sheet_part) = resolve_worksheet_part(&parts, sheet)?;
+    let mut edited = false;
+    for (name, data) in parts.iter_mut() {
+        if name == &sheet_part {
+            *data = edit_worksheet_cell(data, cell, value)?;
+            edited = true;
+            break;
+        }
+    }
+    if !edited {
+        return Err(format!("Sheet part '{sheet_part}' not found in archive"));
+    }
+    let out = ooxml_repack(&parts)?;
+    std::fs::write(path, out).map_err(|e| format!("Failed to write xlsx: {e}"))?;
+    Ok(())
+}
+
+/// Stream-edit a worksheet XML part, rewriting/inserting a single cell and
+/// re-serializing everything else through quick-xml (content-lossless).
+fn edit_worksheet_cell(xml: &[u8], cell: &str, value: &str) -> Result<Vec<u8>, String> {
+    let target_ref = cell.trim().to_uppercase();
+    let (_, target_row) = split_a1(cell)?;
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    reader.config_mut().trim_text(false);
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    let mut buf = Vec::new();
+    let mut in_sheetdata = false;
+    let mut target_row_seen = false;
+    loop {
+        buf.clear();
+        let ev = reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("worksheet read: {e}"))?;
+        if matches!(ev, Event::Eof) {
+            break;
+        }
+        match ev {
+            Event::Start(e) if e.local_name().as_ref() == b"sheetData" => {
+                in_sheetdata = true;
+                writer
+                    .write_event(Event::Start(e.to_owned()))
+                    .map_err(|e| format!("worksheet write: {e}"))?;
+            }
+            Event::End(e) if e.local_name().as_ref() == b"sheetData" => {
+                if !target_row_seen {
+                    for rev in make_row_events(target_row, &target_ref, value)? {
+                        writer
+                            .write_event(rev)
+                            .map_err(|e| format!("worksheet write: {e}"))?;
+                    }
+                }
+                in_sheetdata = false;
+                writer
+                    .write_event(Event::End(e.to_owned()))
+                    .map_err(|e| format!("worksheet write: {e}"))?;
+            }
+            Event::Start(e) if in_sheetdata && e.local_name().as_ref() == b"row" => {
+                let row_start = e.to_owned();
+                let (row_events, is_target) =
+                    capture_row(&mut reader, row_start, &target_ref, target_row, value)?;
+                if is_target {
+                    target_row_seen = true;
+                }
+                for rev in row_events {
+                    writer
+                        .write_event(rev)
+                        .map_err(|e| format!("worksheet write: {e}"))?;
+                }
+            }
+            other => {
+                writer
+                    .write_event(other.to_owned())
+                    .map_err(|e| format!("worksheet write: {e}"))?;
+            }
+        }
+    }
+    Ok(writer.into_inner())
+}
+
+/// Given the just-read `<row>` start event, read forward until and including
+/// `</row>`, returning the (possibly edited) owned row events plus whether this
+/// row was the target row.
+fn capture_row(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    row_start: quick_xml::events::BytesStart<'static>,
+    target_ref: &str,
+    target_row: u32,
+    value: &str,
+) -> Result<(Vec<Event<'static>>, bool), String> {
+    let is_target =
+        attr_value(&row_start, b"r").and_then(|s| s.parse::<u32>().ok()) == Some(target_row);
+    let mut raw: Vec<Event<'static>> = Vec::new();
+    raw.push(Event::Start(row_start));
+    let mut depth = 1i32;
+    let mut buf = Vec::new();
+    while depth > 0 {
+        buf.clear();
+        let ev = reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("worksheet row read: {e}"))?;
+        match ev {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            Event::Eof => return Err("unexpected EOF inside <row>".into()),
+            _ => {}
+        }
+        raw.push(ev.into_owned());
+    }
+    if !is_target {
+        return Ok((raw, false));
+    }
+    let processed = rewrite_cell_in_row(raw, target_ref, value)?;
+    Ok((processed, true))
+}
+
+/// Extract `(t_attr, <v> text, inline-string text)` for a cell ref from a
+/// worksheet part. Used by [`xlsx_read_cell_value`].
+fn extract_cell(
+    ws: &[u8],
+    target: &str,
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+    let mut reader = quick_xml::Reader::from_reader(ws);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut depth = 0i32;
+    let mut in_target = false;
+    let mut cell_depth = 0i32;
+    let mut t_attr: Option<String> = None;
+    let mut v_text: Option<String> = None;
+    let mut is_text: Option<String> = None;
+    let mut capture_v = false;
+    let mut capture_is = false;
+    loop {
+        buf.clear();
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("worksheet read: {e}"))?
+        {
+            Event::Start(e) => {
+                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                if depth > 0 && loc == b"c" && attr_value(&e, b"r").as_deref() == Some(target) {
+                    in_target = true;
+                    cell_depth = depth;
+                    t_attr = attr_value(&e, b"t");
+                } else if in_target && loc == b"v" {
+                    capture_v = true;
+                } else if in_target && loc == b"is" {
+                    capture_is = true;
+                }
+                depth += 1;
+            }
+            Event::Text(t) => {
+                if capture_v {
+                    v_text = Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                } else if capture_is {
+                    is_text =
+                        Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                }
+            }
+            Event::End(e) => {
+                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                if loc == b"v" {
+                    capture_v = false;
+                } else if loc == b"is" {
+                    capture_is = false;
+                } else if in_target && loc == b"c" && depth - 1 == cell_depth {
+                    in_target = false;
+                    return Ok((t_attr, v_text, is_text));
+                }
+                depth -= 1;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok((t_attr, v_text, is_text))
+}
+
+/// Look up a shared-string index in `xl/sharedStrings.xml`. Each `<si>` may be
+/// a plain `<t>` or a rich run `<r><t>…</t></r>`; concatenate all `<t>` text.
+fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, String> {
+    let Some(ss) = parts.iter().find(|(n, _)| n == "xl/sharedStrings.xml").map(|(_, b)| b.as_slice()) else {
+        return Err("shared strings table not found".into());
     };
-    let ws = book
-        .get_sheet_by_name_mut(&sheet_name)
-        .map_err(|_| format!("Sheet '{sheet_name}' not found"))?;
-    ws.get_cell_mut(cell).set_value(value.to_string());
-    umya_spreadsheet::writer::xlsx::write(&book, path)
-        .map_err(|e| format!("Failed to write xlsx: {e}"))
+    let mut reader = quick_xml::Reader::from_reader(ss);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut depth = 0i32;
+    let mut in_si = false;
+    let mut si_depth = 0i32;
+    let mut current = String::new();
+    let mut count = 0usize;
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf).map_err(|e| format!("sharedStrings: {e}"))? {
+            Event::Start(e) => {
+                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                if loc == b"si" {
+                    in_si = true;
+                    si_depth = depth;
+                    current.clear();
+                }
+                depth += 1;
+            }
+            Event::Text(t) if in_si => {
+                current.push_str(&t.xml10_content().map_err(|e| format!("decode: {e}"))?);
+            }
+            Event::End(e) => {
+                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                if in_si && loc == b"si" && depth - 1 == si_depth {
+                    if count == idx {
+                        return Ok(current);
+                    }
+                    count += 1;
+                    in_si = false;
+                }
+                depth -= 1;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Err(format!("shared string index {idx} out of range"))
+}
+
+/// Read a single cell's display value from an `.xlsx` (test helper / preview
+/// path). Handles inline strings, shared strings, and numbers.
+pub fn xlsx_read_cell_value(
+    path: &std::path::Path,
+    sheet: Option<&str>,
+    cell: &str,
+) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read xlsx: {e}"))?;
+    let parts = ooxml_unpack(&bytes)?;
+    let (_sheet_name, sheet_part) = resolve_worksheet_part(&parts, sheet)?;
+    let ws = parts
+        .iter()
+        .find(|(n, _)| n == &sheet_part)
+        .map(|(_, b)| b.as_slice())
+        .ok_or_else(|| format!("Sheet part '{sheet_part}' not found"))?;
+    let target = cell.trim().to_uppercase();
+    let (t_attr, v_text, is_text) = extract_cell(ws, &target)?;
+    if let Some(is) = is_text {
+        return Ok(is);
+    }
+    if let Some(v) = v_text {
+        if t_attr.as_deref() == Some("s") {
+            let idx: usize = v.parse().map_err(|_| format!("bad shared-string index '{v}'"))?;
+            return shared_string_at(&parts, idx);
+        }
+        return Ok(v);
+    }
+    Err(format!("Cell '{cell}' not found"))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -705,26 +1203,157 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xlsx_set_cell_preserves_neighbors() {
-        // Build a workbook with two cells, edit one via umya, assert the other survives.
-        let path = std::env::temp_dir().join("umya_set_cell_test.xlsx");
-        let mut book = umya_spreadsheet::new_file();
-        {
-            let ws = book.get_sheet_by_name_mut("Sheet1").expect("default sheet");
-            ws.get_cell_mut("A1").set_value("keep");
-            ws.get_cell_mut("B2").set_value("old");
-        }
-        umya_spreadsheet::writer::xlsx::write(&book, &path).expect("write");
-
-        xlsx_set_cell_impl(&path, None, "B2", "new").expect("edit");
-
-        let reread = umya_spreadsheet::reader::xlsx::read(&path).expect("reread");
-        let ws = reread.get_sheet_by_name("Sheet1").expect("sheet");
-        assert_eq!(ws.get_value("B2"), "new");
-        assert_eq!(ws.get_value("A1"), "keep"); // neighbor untouched
+    fn xlsx_set_cell_rewrites_empty_self_closing_cell() {
+        // A self-closing `<c r="A1"/>` (empty) must be replaced, not duplicated.
+        let rows = r#"<row r="1"><c r="A1"/></row>"#;
+        let path = std::env::temp_dir().join("xlsx_empty_cell_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, None)).expect("write");
+        xlsx_set_cell_impl(&path, None, "A1", "filled").expect("edit");
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "filled");
+        // Exactly one A1 cell must remain in the worksheet.
+        let ws = std::fs::read(&path).unwrap();
+        let parts = ooxml_unpack(&ws).unwrap();
+        let sheet = parts
+            .iter()
+            .find(|(n, _)| n == "xl/worksheets/sheet1.xml")
+            .map(|(_, b)| String::from_utf8_lossy(b))
+            .unwrap();
+        assert_eq!(sheet.matches(r#"r="A1""#).count(), 1, "duplicate A1 cell: {sheet}");
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn xlsx_set_cell_preserves_neighbors() {
+        // Build a workbook with two inline-string cells, edit one, assert the
+        // other survives — without umya-spreadsheet (#396).
+        let rows = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>keep</t></is></c></row>
+<row r="2"><c r="B2" t="inlineStr"><is><t>old</t></is></c></row>"#;
+        let path = std::env::temp_dir().join("xlsx_set_cell_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, None)).expect("write");
+        xlsx_set_cell_impl(&path, None, "B2", "new").expect("edit");
+        assert_eq!(xlsx_read_cell_value(&path, None, "B2").unwrap(), "new");
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "keep");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn xlsx_set_cell_inserts_missing_cell_in_existing_row() {
+        let rows = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>keep</t></is></c></row>"#;
+        let path = std::env::temp_dir().join("xlsx_insert_cell_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, None)).expect("write");
+        xlsx_set_cell_impl(&path, None, "C1", "z").expect("edit");
+        assert_eq!(xlsx_read_cell_value(&path, None, "C1").unwrap(), "z");
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "keep");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn xlsx_set_cell_inserts_missing_row() {
+        let rows = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>keep</t></is></c></row>"#;
+        let path = std::env::temp_dir().join("xlsx_insert_row_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, None)).expect("write");
+        xlsx_set_cell_impl(&path, None, "D5", "hi").expect("edit");
+        assert_eq!(xlsx_read_cell_value(&path, None, "D5").unwrap(), "hi");
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "keep");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn xlsx_set_cell_numeric_stored_as_number() {
+        let rows = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>old</t></is></c></row>"#;
+        let path = std::env::temp_dir().join("xlsx_number_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, None)).expect("write");
+        xlsx_set_cell_impl(&path, None, "A1", "42").expect("edit");
+        // A numeric value is stored as a number cell (no t="inlineStr") and
+        // read back as "42".
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "42");
+        let ws = std::fs::read(&path).unwrap();
+        let parts = ooxml_unpack(&ws).unwrap();
+        let sheet = parts
+            .iter()
+            .find(|(n, _)| n == "xl/worksheets/sheet1.xml")
+            .map(|(_, b)| String::from_utf8_lossy(b))
+            .unwrap();
+        // The rewritten cell must NOT be an inline string (it is a number), and
+        // must carry a numeric <v>.
+        assert!(
+            !sheet.contains(r#"r="A1" t="inlineStr""#),
+            "numeric cell should not be inlineStr: {sheet}"
+        );
+        assert!(sheet.contains("<v>42</v>"), "expected numeric <v>42</v>: {sheet}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn xlsx_set_cell_preserves_shared_string_neighbor() {
+        // A shared-strings workbook: A1 -> "Alpha" (idx 0), B1 -> "Beta" (idx 1).
+        // Editing A1 to an inline string must leave B1's shared-string lookup
+        // and the shared-strings table untouched.
+        let rows = r#"<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>"#;
+        let shared = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2"><si><t>Alpha</t></si><si><t>Beta</t></si></sst>"#;
+        let path = std::env::temp_dir().join("xlsx_shared_test.xlsx");
+        std::fs::write(&path, build_xlsx(rows, Some(shared))).expect("write");
+        xlsx_set_cell_impl(&path, None, "A1", "new").expect("edit");
+        assert_eq!(xlsx_read_cell_value(&path, None, "A1").unwrap(), "new");
+        assert_eq!(xlsx_read_cell_value(&path, None, "B1").unwrap(), "Beta");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Build a minimal but structurally valid `.xlsx` in memory. The worksheet
+    /// body (`sheetData` rows) is supplied so tests can vary the cells; an
+    /// optional `xl/sharedStrings.xml` part may be added.
+    fn build_xlsx(sheet_data_rows: &str, shared_strings: Option<&str>) -> Vec<u8> {
+        let mut content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml""#
+            .to_string();
+        if shared_strings.is_some() {
+            content_types.push_str(
+                "\n<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>",
+            );
+        }
+        content_types.push_str("\n</Types>");
+
+        let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+
+        let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+
+        let workbook_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#;
+
+        let worksheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{sheet_data_rows}</sheetData></worksheet>"#
+        );
+
+        let mut parts: Vec<(String, Vec<u8>)> = vec![
+            ("[Content_Types].xml".to_string(), content_types.into_bytes()),
+            ("_rels/.rels".to_string(), rels.as_bytes().to_vec()),
+            ("xl/workbook.xml".to_string(), workbook.as_bytes().to_vec()),
+            (
+                "xl/_rels/workbook.xml.rels".to_string(),
+                workbook_rels.as_bytes().to_vec(),
+            ),
+            (
+                "xl/worksheets/sheet1.xml".to_string(),
+                worksheet.into_bytes(),
+            ),
+        ];
+        if let Some(ss) = shared_strings {
+            parts.push(("xl/sharedStrings.xml".to_string(), ss.as_bytes().to_vec()));
+        }
+        ooxml_repack(&parts).expect("repack test xlsx")
+    }
     /// Build a minimal but structurally valid `.docx` in memory. The
     /// `document.xml` is supplied so individual tests can vary the body markup
     /// (e.g. clean run vs. fragmented run).
