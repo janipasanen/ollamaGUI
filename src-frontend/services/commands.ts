@@ -64,6 +64,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'files', description: 'List files currently pinned into the chat context', builtin: true },
   { name: 'run', description: 'Run a shell command and feed its output into the chat (e.g. /run npm test)', builtin: true },
   { name: 'commit', description: 'Stage all changes and commit (e.g. /commit fix parser); generates a message if omitted', builtin: true },
+  { name: 'unstage', description: 'Unstage all currently-staged changes (git reset; keeps working-tree edits)', builtin: true },
   { name: 'tests', description: 'Run a test command and feed failures to the model (e.g. /tests npm test)', builtin: true },
   { name: 'init', description: 'Generate an AGENTS.md project-rules file from the workspace (Aider-style)', builtin: true },
   { name: 'web', description: 'Search the web and feed results into the chat (e.g. /web latest LLM news)', builtin: true },
@@ -151,7 +152,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -208,6 +209,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'files') return { kind: 'builtin', action: 'files' };
     if (cmd.name === 'run') return { kind: 'builtin', action: 'run', arg: args };
     if (cmd.name === 'commit') return { kind: 'builtin', action: 'commit', arg: args };
+    if (cmd.name === 'unstage') return { kind: 'builtin', action: 'unstage' };
     if (cmd.name === 'tests') return { kind: 'builtin', action: 'tests', arg: args };
     if (cmd.name === 'init') return { kind: 'builtin', action: 'init' };
     if (cmd.name === 'web') return { kind: 'builtin', action: 'web', arg: args };

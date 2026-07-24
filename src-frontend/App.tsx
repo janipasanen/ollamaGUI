@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
@@ -60,7 +60,7 @@ import { registerFileTreePanel } from './components/FileTreePanel';
 import { registerTerminalPanel } from './components/TerminalPanel';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
-import { checkLibreOffice, convertDocument } from './services/documents';
+import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
 import {
@@ -117,7 +117,7 @@ import {
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
 import { openWorkspace, getActiveRoot } from './services/workspace';
 
-import { registerGitTools, gitDiff, gitStatus, gitStage, gitCommit } from './services/git';
+import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit } from './services/git';
 import {
   AgentAutonomySettings, AutonomyLevel,
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
@@ -143,10 +143,10 @@ import { setEditAppliedCallback, clearEditAppliedCallback } from './services/dif
 import { autoCommitEdit, loadAutoCommitEdits, saveAutoCommitEdits, undoLastAutoCommit } from './services/autoCommit';
 import { DiffReviewBatchModal } from './components/DiffReviewBatchModal';
 import { ContextMenu, type ContextMenuItem } from './components/ContextMenu';
-import { registerPlanTool, getPlan, setPlan, clearPlan, subscribe as subscribePlan, _resetPlanStore, type PlanItem } from './services/planStore';
+import { registerPlanTool, getPlan, setPlan, clearPlan, subscribe as subscribePlan, type PlanItem } from './services/planStore';
 import PlanPanel from './components/PlanPanel';
 import { ChatSearch, findMessageMatches } from './components/ChatSearch';
-import { CommandPalette, filterCommands as filterPaletteCommands, type PaletteCommand } from './components/CommandPalette';
+import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
@@ -717,6 +717,7 @@ const App: React.FC = () => {
   const [activePresetId, setActivePresetId] = useState<string | null>(() => loadActivePresetId());
   const [showAddPreset, setShowAddPreset] = useState(false);
   const [newPreset, setNewPreset] = useState({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' });
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null); // #419 edit affordance
 
   // Modelfile builder (#125)
   const [modelfileFields, setModelfileFields] = useState({ name: '', system: '', temperature: '', numCtx: '', stop: '', template: '' });
@@ -730,6 +731,7 @@ const App: React.FC = () => {
   const [connectedModels, setConnectedModels] = useState<ConnectedModel[]>([]);
   const [showAddConnection, setShowAddConnection] = useState(false);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  const [editingConnId, setEditingConnId] = useState<string | null>(null); // #419 edit affordance
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
   // Remote Ollama quick-add state
   const [newRemoteOllamaUrl, setNewRemoteOllamaUrl] = useState('');
@@ -802,6 +804,7 @@ const App: React.FC = () => {
 
   const [userCommands, setUserCommands] = useState<SlashCommand[]>(() => loadUserCommands());
   const [newCmd, setNewCmd] = useState({ name: '', description: '', template: '' });
+  const [editingCmdName, setEditingCmdName] = useState<string | null>(null); // #419 edit affordance
 
   // Web Speech API voice (#101)
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
@@ -2524,6 +2527,23 @@ const App: React.FC = () => {
               showStatusBanner(`Committed ${result2.hash}: ${message}`);
             } catch (err) {
               showStatusBanner(`Commit failed: ${formatErrorLine(err)}`);
+            }
+          })();
+          return;
+        }
+        if (result.action === 'unstage') {
+          // /unstage removes all currently-staged files from the index (#419).
+          const wsRoot = projects.find(p => p.id === activeProjectId)?.workspaceRoot;
+          if (!wsRoot) { showStatusBanner('No workspace open — open a project folder first'); return; }
+          void (async () => {
+            try {
+              const status = await gitStatus(wsRoot);
+              const staged = status.staged ?? [];
+              if (staged.length === 0) { showStatusBanner('Nothing staged to unstage'); return; }
+              await gitUnstage(wsRoot, staged);
+              showStatusBanner(`Unstaged ${staged.length} file${staged.length !== 1 ? 's' : ''}`);
+            } catch (err) {
+              showStatusBanner(`Unstage failed: ${formatErrorLine(err)}`);
             }
           })();
           return;
@@ -6207,7 +6227,10 @@ ${lines.join('\n')}`;
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Connections ({connections.length})</label>
-                    <button onClick={() => setShowAddConnection(v => !v)}
+                    <button onClick={() => {
+                        if (showAddConnection) { setEditingConnId(null); setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' }); }
+                        setShowAddConnection(v => !v);
+                      }}
                       className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}>
                       {showAddConnection ? 'Cancel' : '+ Add'}
                     </button>
@@ -6220,25 +6243,30 @@ ${lines.join('\n')}`;
                           <option value="openai">OpenAI-compat</option>
                           <option value="ollama">Ollama</option>
                         </select>
-                        <input placeholder="Name (e.g. LM Studio)" value={newConn.name} onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
+                        <input aria-label="Connection name" placeholder="Name (e.g. LM Studio)" value={newConn.name} onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       </div>
-                      <input placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
+                      <input aria-label="Connection base URL" placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       {newConn.kind === 'openai' && (
-                        <input placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
+                        <input aria-label="Connection API key" placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       )}
                       <button onClick={() => {
                         if (!newConn.name.trim() || !newConn.baseUrl.trim()) return;
-                        const conn = addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
+                        if (editingConnId) {
+                          // #419: edit an existing connection in place.
+                          updateConnection(editingConnId, { name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined });
+                        } else {
+                          addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
+                        }
                         const updated = loadConnections();
                         setConnections(updated);
                         fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {});
                         setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' });
+                        setEditingConnId(null);
                         setShowAddConnection(false);
-                        void conn;
-                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add Connection</button>
+                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">{editingConnId ? 'Update Connection' : 'Add Connection'}</button>
                     </div>
                   )}
                   <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
@@ -6272,6 +6300,12 @@ ${lines.join('\n')}`;
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>
                                 {connTestStatus[conn.id] === 'testing' ? '…' : 'Test'}
                               </button>
+                              <button aria-label={`Edit connection ${conn.name}`} onClick={() => {
+                                // #419: load the connection into the form for in-place editing.
+                                setNewConn({ name: conn.name, kind: conn.kind, baseUrl: conn.baseUrl, apiKey: conn.apiKey ?? '' });
+                                setEditingConnId(conn.id);
+                                setShowAddConnection(true);
+                              }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
                               <button onClick={() => {
                                 const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
                                 saveConnections(updated); setConnections(updated);
@@ -6815,9 +6849,9 @@ ${lines.join('\n')}`;
                     </div>
                     {showAddCustomTool && (
                       <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
-                        <input placeholder="Tool name (alphanumeric, _)" value={newCustomTool.name} onChange={e => setNewCustomTool(v => ({ ...v, name: e.target.value }))}
+                        <input aria-label="Tool name" placeholder="Tool name (alphanumeric, _)" value={newCustomTool.name} onChange={e => setNewCustomTool(v => ({ ...v, name: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <input placeholder="Description" value={newCustomTool.description} onChange={e => setNewCustomTool(v => ({ ...v, description: e.target.value }))}
+                        <input aria-label="Tool description" placeholder="Description" value={newCustomTool.description} onChange={e => setNewCustomTool(v => ({ ...v, description: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                         <textarea placeholder='Parameters JSON: {"key":{"type":"string","description":"desc"}}' rows={2} value={newCustomTool.paramsJson} onChange={e => setNewCustomTool(v => ({ ...v, paramsJson: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
@@ -6879,10 +6913,10 @@ ${lines.join('\n')}`;
                             <option value="filter">Filter</option>
                             <option value="action">Action</option>
                           </select>
-                          <input placeholder="Name" value={newFunction.name} onChange={e => setNewFunction(v => ({ ...v, name: e.target.value }))}
+                          <input aria-label="Function name" placeholder="Name" value={newFunction.name} onChange={e => setNewFunction(v => ({ ...v, name: e.target.value }))}
                             className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                           {newFunction.kind === 'filter' && (
-                            <input placeholder="Priority" value={newFunction.priority} onChange={e => setNewFunction(v => ({ ...v, priority: e.target.value }))}
+                            <input aria-label="Function priority" placeholder="Priority" value={newFunction.priority} onChange={e => setNewFunction(v => ({ ...v, priority: e.target.value }))}
                               className={`w-16 border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                           )}
                         </div>
@@ -6926,7 +6960,11 @@ ${lines.join('\n')}`;
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Model Presets ({presets.length})</label>
-                    <button onClick={() => setShowAddPreset(v => !v)}
+                    <button onClick={() => {
+                        // Toggling closed (or opening fresh) clears any in-progress edit (#419).
+                        if (showAddPreset) { setEditingPresetId(null); setNewPreset({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' }); }
+                        setShowAddPreset(v => !v);
+                      }}
                       className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}>
                       {showAddPreset ? 'Cancel' : '+ Add'}
                     </button>
@@ -6934,17 +6972,17 @@ ${lines.join('\n')}`;
                   {showAddPreset && (
                     <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
                       <div className="flex gap-1.5">
-                        <input placeholder="Icon (emoji)" value={newPreset.icon} onChange={e => setNewPreset(v => ({ ...v, icon: e.target.value }))}
+                        <input aria-label="Preset icon" placeholder="Icon (emoji)" value={newPreset.icon} onChange={e => setNewPreset(v => ({ ...v, icon: e.target.value }))}
                           className={`w-14 border rounded px-2 py-1 text-xs text-center focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <input placeholder="Preset name" value={newPreset.name} onChange={e => setNewPreset(v => ({ ...v, name: e.target.value }))}
+                        <input aria-label="Preset name" placeholder="Preset name" value={newPreset.name} onChange={e => setNewPreset(v => ({ ...v, name: e.target.value }))}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       </div>
                       <textarea placeholder="System prompt" rows={2} value={newPreset.systemPrompt} onChange={e => setNewPreset(v => ({ ...v, systemPrompt: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       <div className="flex gap-1.5">
-                        <input placeholder="Temp (0-1)" value={newPreset.temperature} onChange={e => setNewPreset(v => ({ ...v, temperature: e.target.value }))}
+                        <input aria-label="Preset temperature" placeholder="Temp (0-1)" value={newPreset.temperature} onChange={e => setNewPreset(v => ({ ...v, temperature: e.target.value }))}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <input placeholder="Context window" value={newPreset.numCtx} onChange={e => setNewPreset(v => ({ ...v, numCtx: e.target.value }))}
+                        <input aria-label="Preset context window" placeholder="Context window" value={newPreset.numCtx} onChange={e => setNewPreset(v => ({ ...v, numCtx: e.target.value }))}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       </div>
                       <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base model: currently selected model ({model})</p>
@@ -6955,11 +6993,17 @@ ${lines.join('\n')}`;
                         if (!isNaN(t)) params.temperature = t;
                         const nc = parseInt(newPreset.numCtx);
                         if (!isNaN(nc)) params.num_ctx = nc;
-                        addPreset({ name: newPreset.name.trim(), icon: newPreset.icon.trim() || undefined, baseModel: model, systemPrompt: newPreset.systemPrompt, params, toolNames: [], mcpServerIds: [], knowledgeCollectionIds: [] });
+                        if (editingPresetId) {
+                          // #419: edit an existing preset in place.
+                          updatePreset(editingPresetId, { name: newPreset.name.trim(), icon: newPreset.icon.trim() || undefined, systemPrompt: newPreset.systemPrompt, params });
+                        } else {
+                          addPreset({ name: newPreset.name.trim(), icon: newPreset.icon.trim() || undefined, baseModel: model, systemPrompt: newPreset.systemPrompt, params, toolNames: [], mcpServerIds: [], knowledgeCollectionIds: [] });
+                        }
                         setPresets(loadPresets());
                         setNewPreset({ name: '', icon: '', systemPrompt: '', temperature: '', numCtx: '' });
+                        setEditingPresetId(null);
                         setShowAddPreset(false);
-                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Save Preset</button>
+                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">{editingPresetId ? 'Update Preset' : 'Save Preset'}</button>
                     </div>
                   )}
                   <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
@@ -6979,6 +7023,18 @@ ${lines.join('\n')}`;
                             applyPreset(p, { setModel, setSystemPrompt, setGenOptions });
                             setActivePresetId(p.id); setActivePreset(p.id);
                           }} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Apply</button>
+                          <button aria-label={`Edit preset ${p.name}`} onClick={() => {
+                            // #419: load the preset into the form for in-place editing.
+                            setNewPreset({
+                              name: p.name,
+                              icon: p.icon ?? '',
+                              systemPrompt: p.systemPrompt ?? '',
+                              temperature: p.params?.temperature != null ? String(p.params.temperature) : '',
+                              numCtx: p.params?.num_ctx != null ? String(p.params.num_ctx) : '',
+                            });
+                            setEditingPresetId(p.id);
+                            setShowAddPreset(true);
+                          }} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
                           <button aria-label={`Remove preset ${p.name}`} onClick={() => { removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
                             className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                         </div>
@@ -7114,7 +7170,7 @@ ${lines.join('\n')}`;
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Create Model (Modelfile)</label>
                   <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
                     <div className="flex gap-1.5">
-                      <input placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
+                      <input aria-label="New model name" placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
                         const f = { ...modelfileFields, name: e.target.value };
                         setModelfileFields(f);
                         setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
@@ -7129,9 +7185,9 @@ ${lines.join('\n')}`;
                     }}
                       className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     <div className="flex gap-1.5">
-                      <input placeholder="Temperature" value={modelfileFields.temperature} onChange={e => setModelfileFields(v => ({ ...v, temperature: e.target.value }))}
+                      <input aria-label="Modelfile temperature" placeholder="Temperature" value={modelfileFields.temperature} onChange={e => setModelfileFields(v => ({ ...v, temperature: e.target.value }))}
                         className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      <input placeholder="num_ctx" value={modelfileFields.numCtx} onChange={e => setModelfileFields(v => ({ ...v, numCtx: e.target.value }))}
+                      <input aria-label="Modelfile context window" placeholder="num_ctx" value={modelfileFields.numCtx} onChange={e => setModelfileFields(v => ({ ...v, numCtx: e.target.value }))}
                         className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     </div>
                     {modelfilePreview && (
@@ -7338,7 +7394,7 @@ ${lines.join('\n')}`;
                     }
                   </div>
                   <div className="flex flex-col gap-1">
-                    <input placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
+                    <input aria-label="Prompt name" placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
                       className={`border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     <textarea placeholder="Prompt body (or use 'Save input' to save the current draft)" value={newPromptBody} onChange={e => setNewPromptBody(e.target.value)}
                       rows={2}
@@ -7377,26 +7433,45 @@ ${lines.join('\n')}`;
                       <div key={cmd.name} className="flex items-center gap-1.5">
                         <span className={`font-mono text-xs ${dark ? 'text-blue-400' : 'text-blue-600'}`}>/{cmd.name}</span>
                         <span className={`flex-1 text-xs truncate ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{cmd.description}</span>
-                        <button aria-label={`Remove command /${cmd.name}`} onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                        <button aria-label={`Edit command /${cmd.name}`} onClick={() => {
+                          // #419: load the command into the form for in-place editing.
+                          setNewCmd({ name: cmd.name, description: cmd.description, template: cmd.template ?? '' });
+                          setEditingCmdName(cmd.name);
+                        }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
+                        <button aria-label={`Remove command /${cmd.name}`} onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); if (editingCmdName === cmd.name) { setEditingCmdName(null); setNewCmd({ name: '', description: '', template: '' }); } }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
                       </div>
                     ))}
                     <div className="flex gap-1.5 pt-1">
-                      <input placeholder="name" value={newCmd.name} onChange={e => setNewCmd(v => ({ ...v, name: e.target.value.replace(/[^a-z0-9_-]/gi, '').toLowerCase() }))}
+                      <input aria-label="Command name" placeholder="name" value={newCmd.name} onChange={e => setNewCmd(v => ({ ...v, name: e.target.value.replace(/[^a-z0-9_-]/gi, '').toLowerCase() }))}
                         className={`w-24 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      <input placeholder="description" value={newCmd.description} onChange={e => setNewCmd(v => ({ ...v, description: e.target.value }))}
+                      <input aria-label="Command description" placeholder="description" value={newCmd.description} onChange={e => setNewCmd(v => ({ ...v, description: e.target.value }))}
                         className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     </div>
-                    <input placeholder="Template — use $ARGUMENTS or $1 $2 for substitution" value={newCmd.template} onChange={e => setNewCmd(v => ({ ...v, template: e.target.value }))}
+                    <input aria-label="Command template" placeholder="Template — use $ARGUMENTS or $1 $2 for substitution" value={newCmd.template} onChange={e => setNewCmd(v => ({ ...v, template: e.target.value }))}
                       className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    <button
-                      onClick={() => {
-                        if (!newCmd.name || !newCmd.description || !newCmd.template) return;
-                        addUserCommand({ name: newCmd.name, description: newCmd.description, template: newCmd.template });
-                        setUserCommands(loadUserCommands());
-                        setNewCmd({ name: '', description: '', template: '' });
-                      }}
-                      className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white"
-                    >+ Add Command</button>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => {
+                          if (!newCmd.name || !newCmd.description || !newCmd.template) return;
+                          if (editingCmdName) {
+                            // #419: edit an existing command in place (supports rename).
+                            updateUserCommand(editingCmdName, { name: newCmd.name, description: newCmd.description, template: newCmd.template });
+                          } else {
+                            addUserCommand({ name: newCmd.name, description: newCmd.description, template: newCmd.template });
+                          }
+                          setUserCommands(loadUserCommands());
+                          setNewCmd({ name: '', description: '', template: '' });
+                          setEditingCmdName(null);
+                        }}
+                        className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                      >{editingCmdName ? 'Update Command' : '+ Add Command'}</button>
+                      {editingCmdName && (
+                        <button
+                          onClick={() => { setEditingCmdName(null); setNewCmd({ name: '', description: '', template: '' }); }}
+                          className={`text-xs px-3 py-1 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >Cancel</button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
