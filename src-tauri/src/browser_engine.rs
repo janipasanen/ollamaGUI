@@ -285,6 +285,25 @@ pub struct AssertResult {
     pub actual: String,
 }
 
+/// Pure evaluation of an assertion result (extracted for unit testing, #415).
+///
+/// Given the JSON value a page eval returned and an optional `expected` string:
+///   - `actual` is the string form (raw string, or JSON stringification otherwise).
+///   - `pass` is `actual == expected` when `expected` is given; otherwise the
+///     value's truthiness (JS-like: a bool uses its value, non-null is truthy,
+///     null/absent is falsy).
+fn evaluate_assertion(raw: &serde_json::Value, expected: Option<&str>) -> AssertResult {
+    let actual = match raw {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let pass = match expected {
+        Some(exp) => actual == exp,
+        None => raw.as_bool().unwrap_or(!raw.is_null()),
+    };
+    AssertResult { pass, actual }
+}
+
 /// Evaluate a JS expression and check whether its string representation equals
 /// `value` (if given) or is truthy (#181). Returns AssertResult { pass, actual }.
 #[tauri::command]
@@ -293,15 +312,7 @@ pub async fn browser_cdp_assert(assertion: String, value: Option<String>) -> Res
     let engine = slot.as_mut().ok_or("Engine not started")?;
     let eval = engine.page.evaluate(assertion).await.map_err(|e| e.to_string())?;
     let raw: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Null);
-    let actual = match &raw {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    let pass = match &value {
-        Some(expected) => &actual == expected,
-        None => raw.as_bool().unwrap_or(!raw.is_null()),
-    };
-    Ok(AssertResult { pass, actual })
+    Ok(evaluate_assertion(&raw, value.as_deref()))
 }
 
 // ---------------------------------------------------------------------------
@@ -329,5 +340,69 @@ mod spike_harness {
         // click-by-ref / type-by-ref success. We assert the loop is mechanically
         // possible end-to-end here.
         browser_engine_stop().await.expect("engine stop");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runnable unit tests for the pure engine logic (#415). These need no Chromium
+// and cover the assertion-evaluation decision table + result serialization.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn assert_string_equals_expected() {
+        let r = evaluate_assertion(&json!("Login"), Some("Login"));
+        assert!(r.pass);
+        assert_eq!(r.actual, "Login");
+    }
+
+    #[test]
+    fn assert_string_not_equal_expected() {
+        let r = evaluate_assertion(&json!("Logout"), Some("Login"));
+        assert!(!r.pass);
+        assert_eq!(r.actual, "Logout");
+    }
+
+    #[test]
+    fn assert_number_stringifies_and_compares() {
+        // Non-string values compare against their JSON stringification.
+        let r = evaluate_assertion(&json!(42), Some("42"));
+        assert!(r.pass);
+        assert_eq!(r.actual, "42");
+        let miss = evaluate_assertion(&json!(42), Some("7"));
+        assert!(!miss.pass);
+    }
+
+    #[test]
+    fn assert_truthy_without_expected() {
+        // Bool true → pass; bool false → fail.
+        assert!(evaluate_assertion(&json!(true), None).pass);
+        assert!(!evaluate_assertion(&json!(false), None).pass);
+    }
+
+    #[test]
+    fn assert_null_is_falsy_and_nonnull_is_truthy() {
+        assert!(!evaluate_assertion(&serde_json::Value::Null, None).pass);
+        // Non-null, non-bool (e.g. an object/number) is truthy when no expected value.
+        assert!(evaluate_assertion(&json!({"ok": 1}), None).pass);
+        assert!(evaluate_assertion(&json!(0), None).pass); // non-null → truthy here
+    }
+
+    #[test]
+    fn assert_result_serializes_to_expected_shape() {
+        let r = evaluate_assertion(&json!("x"), Some("x"));
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v, json!({ "pass": true, "actual": "x" }));
+    }
+
+    #[test]
+    fn nav_and_console_structs_serialize() {
+        let nav = NavResult { url: "https://e.com".into(), title: "E".into() };
+        assert_eq!(serde_json::to_value(&nav).unwrap(), json!({ "url": "https://e.com", "title": "E" }));
+        let ce = ConsoleEntry { text: "hi".into() };
+        assert_eq!(serde_json::to_value(&ce).unwrap(), json!({ "text": "hi" }));
     }
 }

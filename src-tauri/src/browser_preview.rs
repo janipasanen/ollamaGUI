@@ -7,27 +7,24 @@
 //! still feeling embedded (per ADR-0001).
 //!
 //! Spinning up that child webview uses Tauri's `WebviewWindow::add_child` API,
-//! which is gated behind the **`unstable`** Cargo feature and is genuinely
-//! runtime-dependent (needs a live `AppHandle` + window + a real event loop). We
-//! deliberately keep that body DEFERRED here so the build stays on stable Tauri,
-//! and instead implement the fully testable half now:
+//! which is gated behind the **`unstable`** Cargo feature (enabled in
+//! `Cargo.toml`) and is runtime-dependent (needs a live `AppHandle` + window +
+//! event loop). This module provides both the pure, testable core and the live
+//! command bodies:
 //!
 //!   - [`is_navigation_allowed`] — the pure allow-list nav guard the child
-//!     webview's navigation handler will consult before committing a load. This
-//!     is the security-sensitive bit, so it is unit-tested exhaustively below.
-//!   - the `preview_webview_*` command *signatures* + registration surface, so
-//!     the IPC contract the frontend codes against is stable today, and
+//!     webview's navigation handler consults before committing a load. This is
+//!     the security-sensitive bit, so it is unit-tested exhaustively below.
+//!   - the `preview_webview_*` commands ([`preview_webview_open`] /
+//!     [`preview_webview_navigate`] / [`preview_webview_set_bounds`] /
+//!     [`preview_webview_reload`] / [`preview_webview_close`]) — implemented
+//!     against the real `add_child`/`WebviewWindow` API.
 //!   - [`PREVIEW_OPEN`], an `AtomicBool` tracking whether a native preview is
 //!     currently mounted, so open/close are idempotent and `set_bounds`/`reload`
 //!     can no-op cleanly when nothing is open.
 //!
-//! DEFERRED (needs Tauri `unstable` feature for `add_child`, plus a runtime
-//! window/event-loop):
-//!   - the real bodies of [`preview_webview_open`] / [`preview_webview_navigate`]
-//!     / [`preview_webview_set_bounds`] / [`preview_webview_reload`] /
-//!     [`preview_webview_close`]. A reference shape for `open` is sketched in its
-//!     doc-comment. See manifest.deferred for the full plan + the Cargo.toml
-//!     feature flip that the orchestrator must apply.
+//! The command bodies require a live window/event loop, so they are exercised at
+//! runtime rather than in unit tests; the pure nav-guard core is unit-tested below.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -41,8 +38,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Used to make `open`/`close` idempotent and to let `set_bounds` / `navigate` /
 /// `reload` short-circuit (returning `Ok(())`) when there is nothing to act on,
-/// rather than erroring. The deferred bodies flip this once they actually create
-/// or tear down the child webview.
+/// rather than erroring. The command bodies flip this when they create or tear
+/// down the child webview.
 pub static PREVIEW_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Label of the native preview child webview created via `window.add_child`.
@@ -98,7 +95,7 @@ pub struct PreviewRect {
 /// allow-list an unparseable URL is still allowed, since there is nothing to
 /// check against.
 ///
-/// This is the security-relevant gate the deferred navigation handler will call
+/// This is the security-relevant gate the navigation handler calls
 /// before committing a load, so it is exhaustively unit-tested below.
 pub fn is_navigation_allowed(url: &str, allow: &[String]) -> bool {
     // Empty allow-list ⇒ unrestricted.
@@ -184,30 +181,15 @@ fn extract_host(raw: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Tauri commands (signatures stable now; bodies DEFERRED)
+// Tauri commands (implemented against the `unstable` add_child API)
 // ---------------------------------------------------------------------------
 
 /// Open (mount) the native preview child webview over the host `<div>` and load
 /// `url`, constrained to the `rect` the frontend computed from the placeholder.
 ///
-/// `allow` is the optional host allow-list the navigation handler will enforce
-/// via [`is_navigation_allowed`]; an empty/omitted list means "unrestricted".
-///
-/// DEFERRED (needs Tauri `unstable` feature for `WebviewWindow::add_child`, plus
-/// a live `AppHandle`/window + event loop). Reference shape for the real body:
-/// ```ignore
-/// use tauri::{Manager, Url, LogicalPosition, LogicalSize, webview::WebviewBuilder};
-/// let win = app.get_window("main").ok_or("no main window")?;
-/// let child = win.add_child(
-///     WebviewBuilder::new("browser-preview", tauri::WebviewUrl::External(Url::parse(&url)?))
-///         .on_navigation(move |u| is_navigation_allowed(u.as_str(), &allow)),
-///     LogicalPosition::new(rect.x, rect.y),
-///     LogicalSize::new(rect.width, rect.height),
-/// )?;
-/// PREVIEW_OPEN.store(true, Ordering::SeqCst);
-/// ```
-/// Until the `unstable` feature is enabled this returns a clear deferred error so
-/// the frontend surfaces "native preview unavailable" rather than silently no-op.
+/// `allow` is the optional host allow-list the navigation handler enforces via
+/// [`is_navigation_allowed`]; an empty/omitted list means "unrestricted".
+/// Re-opening replaces any existing preview webview (idempotent).
 #[tauri::command]
 pub async fn preview_webview_open(
     app: tauri::AppHandle,
@@ -247,8 +229,6 @@ pub async fn preview_webview_open(
 
 /// Navigate the already-mounted native preview to a new `url`, subject to the
 /// same allow-list guard. No-ops cleanly (`Ok(())`) when no preview is open.
-///
-/// DEFERRED (needs Tauri `unstable` add_child child handle to call `.navigate()`).
 #[tauri::command]
 pub async fn preview_webview_navigate(
     app: tauri::AppHandle,
@@ -274,9 +254,6 @@ pub async fn preview_webview_navigate(
 /// Called on `ResizeObserver` / `window.resize`. When no preview is open this is
 /// a deliberate no-op (`Ok(())`) so the frontend's geometry listeners can fire
 /// freely without guarding on open-state themselves.
-///
-/// DEFERRED (needs the `unstable` child handle to call `.set_position()` /
-/// `.set_size()`).
 #[tauri::command]
 pub async fn preview_webview_set_bounds(app: tauri::AppHandle, rect: PreviewRect) -> Result<(), String> {
     use tauri::{LogicalPosition, LogicalSize, Manager};
@@ -289,8 +266,6 @@ pub async fn preview_webview_set_bounds(app: tauri::AppHandle, rect: PreviewRect
 }
 
 /// Reload the currently mounted native preview. No-ops when nothing is open.
-///
-/// DEFERRED (needs the `unstable` child handle to call `.reload()`).
 #[tauri::command]
 pub async fn preview_webview_reload(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -303,10 +278,8 @@ pub async fn preview_webview_reload(app: tauri::AppHandle) -> Result<(), String>
 
 /// Close (unmount) the native preview child webview if one is open.
 ///
-/// Idempotent: closing when nothing is open is a no-op success. The deferred body
-/// will tear down the child handle and flip [`PREVIEW_OPEN`] back to `false`.
-///
-/// DEFERRED (needs the `unstable` child handle to call `.close()`).
+/// Idempotent: closing when nothing is open is a no-op success. The body tears
+/// down the child handle and flips [`PREVIEW_OPEN`] back to `false`.
 #[tauri::command]
 pub async fn preview_webview_close(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -414,7 +387,7 @@ mod tests {
 
     #[test]
     fn preview_open_flag_defaults_closed() {
-        // Default state is closed; the deferred open/close bodies flip this.
+        // Default state is closed; the open/close command bodies flip this.
         // (We don't mutate it here to avoid cross-test ordering coupling on a
         // process-global; this only asserts the initial-read helper compiles and
         // reflects the static's default.)

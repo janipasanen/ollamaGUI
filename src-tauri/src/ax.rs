@@ -54,31 +54,27 @@
 //! flat form, a `properties` entry — see [`node_is_secret`]) marking a sensitive
 //! input whose name must be redacted in the outline.
 //!
-//! ## DEFERRED — chromiumoxide CDP I/O (needs the `chromiumoxide` crate + runtime)
+//! ## Relationship to the live CDP engine
 //!
-//! The actual CDP transport lives behind the [`BrowserEngine`] trait below so the
-//! command surface is stable and testable today, while the network/process side
-//! is added later. The Tauri commands that the trait will back are:
+//! This module is the pure, unit-tested *core* — AX-tree serialization
+//! ([`serialize_ax_tree`]), ref resolution ([`resolve_ref`]), credential
+//! stripping ([`strip_query_credentials`]), and the console ring ([`ConsoleRing`]).
+//! The live CDP transport lives in `browser_engine.rs`, which drives
+//! `chromiumoxide::Page` directly and exposes the Tauri commands:
 //!
-//!   - `browser_engine_start` / `browser_engine_stop`  — launch/teardown the
-//!     headless (or headful) Chromium process and attach a CDP session.
-//!   - `browser_cdp_navigate { url }`                  — navigate, stripping
-//!     credentials via [`strip_query_credentials`] first.
+//!   - `browser_engine_start` / `browser_engine_stop`  — launch/teardown Chromium.
+//!   - `browser_cdp_navigate { url }`                  — navigate (credentials
+//!     stripped via [`strip_query_credentials`] first).
 //!   - `browser_cdp_get_ax_tree`                       — `Accessibility.getFullAXTree`
 //!     then [`serialize_ax_tree`] -> `{ outline, refs }`.
 //!   - `browser_cdp_click { ref }` / `browser_cdp_type { ref, text }` — resolve
-//!     the ref via [`resolve_ref`], then `DOM.resolveNode` + input dispatch.
+//!     the ref via [`resolve_ref`], then input dispatch.
 //!   - `browser_cdp_screenshot`                        — `Page.captureScreenshot`.
 //!   - `browser_cdp_eval { expression }`               — `Runtime.evaluate`.
 //!   - `browser_cdp_read_console`                      — drain the [`ConsoleRing`].
-//!   - `browser_cdp_read_network`                      — drain captured requests
-//!     (URLs scrubbed with [`strip_query_credentials`]).
 //!
-//! A `BROWSER_ENGINE` global (e.g. `lazy_static! { static ref BROWSER_ENGINE:
-//! Mutex<Option<Box<dyn BrowserEngine>>> }`) will hold the live engine. The
-//! concrete `ChromiumoxideEngine: BrowserEngine` impl and the command bodies are
-//! the only parts that need the crate; everything in *this* module is the pure
-//! core they build on. See `manifest.deferred` and the `sharedEdits` snippet.
+//! Note: network capture (`read_network`) is not currently exposed as a command;
+//! only console capture is surfaced to the frontend.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -566,36 +562,6 @@ impl Default for ConsoleRing {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DEFERRED: chromiumoxide engine surface (needs the `chromiumoxide` crate)
-// ---------------------------------------------------------------------------
-
-/// The CDP automation engine contract. Kept as a trait so the command layer and
-/// the pure core (this module) compile and test today, while the concrete
-/// chromiumoxide-backed implementation is added behind the crate later.
-///
-/// DEFERRED — the only implementor (`ChromiumoxideEngine`) needs the
-/// `chromiumoxide` crate + a tokio runtime + a launched Chromium process. Each
-/// method's body is the I/O half; the *data shaping* (serialize/resolve/redact/
-/// strip) it relies on is already implemented and tested above.
-pub trait BrowserEngine: Send {
-    /// Navigate to `url` (caller must pre-scrub via [`strip_query_credentials`]).
-    fn navigate(&mut self, url: &str) -> Result<(), String>;
-    /// Fetch + serialize the AX tree into `(outline, refs)`.
-    fn get_ax_tree(&mut self) -> Result<(String, HashMap<String, i64>), String>;
-    /// Click the element behind `backend_dom_node_id` (from [`resolve_ref`]).
-    fn click(&mut self, backend_dom_node_id: i64) -> Result<(), String>;
-    /// Type `text` into the element behind `backend_dom_node_id`.
-    fn type_text(&mut self, backend_dom_node_id: i64, text: &str) -> Result<(), String>;
-    /// Capture a PNG screenshot, returned base64-encoded.
-    fn screenshot(&mut self) -> Result<String, String>;
-    /// Evaluate `expression` in the page and return its JSON result.
-    fn eval(&mut self, expression: &str) -> Result<Value, String>;
-    /// Drain captured console lines (backed by a [`ConsoleRing`]).
-    fn read_console(&mut self) -> Vec<String>;
-    /// Drain captured network request records (URLs credential-scrubbed).
-    fn read_network(&mut self) -> Vec<Value>;
-}
 
 // ---------------------------------------------------------------------------
 // Tests

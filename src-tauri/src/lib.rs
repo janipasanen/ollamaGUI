@@ -30,6 +30,15 @@ struct CliOutput {
 /// Run a shell command and return captured stdout/stderr.
 /// Executed via `sh -c` on Unix/macOS, `cmd /C` on Windows.
 /// Output is truncated to 10 000 chars (stdout) / 2 000 chars (stderr).
+///
+/// SECURITY MODEL: this executor is intentionally unrestricted at the Rust
+/// layer — it runs whatever command it is given. The security boundary lives in
+/// the frontend `run_shell_command` tool (services/tools.ts), which requires an
+/// explicit user-approval modal for every command not already on the session
+/// allow-list before it ever calls this command (the same approval-gated model
+/// as Claude Code's shell tool). Do NOT rely on this function to filter
+/// commands. See `run_cli_command` below for the alternative allow/deny-list
+/// executor (not currently wired to the frontend).
 #[tauri::command]
 async fn run_cli(
     command: String,
@@ -550,6 +559,16 @@ async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
     })
 }
 
+/// Hardened CLI executor that enforces [`CLI_ALLOWLIST`]/[`CLI_DENYLIST`] before
+/// running a command.
+///
+/// NOTE (#410): this is NOT currently wired to the frontend — the removal of
+/// `CliToolWrapper` in #223 left the live agentic path on `run_cli` (which is
+/// user-approval-gated; see its doc). This command and its allow/deny lists are
+/// retained as an opt-in hardened alternative for callers that want static
+/// command filtering instead of interactive approval. It stays registered so the
+/// IPC contract remains available; re-point the `run_shell_command` tool at it
+/// to switch to list-based enforcement.
 #[tauri::command]
 async fn run_cli_command(
     request: CliCommandRequest,

@@ -899,10 +899,10 @@ fn rewrite_cell_in_row(
     } else {
         // Target row but cell missing: insert a new cell before </row>.
         for _ in 0..last {
-            out.push(raw_iter.next().unwrap());
+            out.push(raw_iter.next().ok_or("malformed row: unexpected end of events")?);
         }
         out.extend(make_cell_events(target_ref, value, &[])?);
-        out.push(raw_iter.next().unwrap()); // </row>
+        out.push(raw_iter.next().ok_or("malformed row: missing </row>")?); // </row>
     }
     Ok(out)
 }
