@@ -17,7 +17,7 @@ jobs:
     # (10.15) compatibility line lives on the `macOS-10.15` branch, which sets
     # MACOSX_DEPLOYMENT_TARGET=10.15 in its own workflow copy.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
   security-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -96,7 +96,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
