@@ -83,9 +83,12 @@ cargo tauri build
 
 #### macOS
 - **Output**: `.app` bundle and `.dmg` in `src-tauri/target/release/bundle/dmg/`
-- **Requirements**: macOS 10.15+
-- **Build**: Export `MACOSX_DEPLOYMENT_TARGET=10.15` or run `scripts/build-macos-10.15.sh`. The deployment target is also pinned in `src-tauri/.cargo/config.toml`.
+- **Requirements**: current macOS (Big Sur 11+) on `master` / `development`
+- **Build (default, newer macOS)**: `cd src-tauri && cargo tauri build`. No deployment-target pin — the build follows the host SDK default so the app can use modern macOS APIs.
+- **Build (Catalina 10.15 compatibility line)**: check out the `macOS-10.15` branch and run `scripts/build-macos-10.15.sh` (it exports `MACOSX_DEPLOYMENT_TARGET=10.15`; that branch also pins the flag for the apple-darwin targets in `src-tauri/.cargo/config.toml`).
 - **Notarization**: Required for Gatekeeper approval
+
+> **Branching model**: `master` and `development` target current macOS + Linux + Windows. The `macOS-10.15` branch is the dedicated backward-compatibility line for macOS 10.15 (Catalina) and carries the deployment-target pin. Feature work lands on `development`, then merges to `master`.
 
 #### Linux
 - **Output**: `.AppImage` and `.deb` in `src-tauri/target/release/bundle/`

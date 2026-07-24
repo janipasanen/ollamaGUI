@@ -1,12 +1,16 @@
-# Pin the macOS deployment target to 10.15 so the Rust backend and its
-# C/WebKit dependencies do not pick up symbols only available on newer OSes.
-# Users must also export MACOSX_DEPLOYMENT_TARGET=10.15 before invoking npm/cargo.
+# macOS deployment target
 #
-# The flag is scoped to the macOS targets ONLY. A previous global `[build]`
-# section re-applied `-mmacosx-version-min=10.15` to every target, which made
-# `gcc`/`cc` reject it on Linux/Windows and broke `Build Tauri App` there (#397).
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
-
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
+# On `master` / `development` we intentionally DO NOT pin a macOS deployment
+# target: the build follows the host SDK's default so the backend and its
+# C/WebKit dependencies can use APIs available on current macOS releases. This
+# line targets newer macOS (11 Big Sur and up), Linux, and Windows.
+#
+# The Catalina (macOS 10.15) compatibility line lives on the `macOS-10.15`
+# branch, which pins `-mmacosx-version-min=10.15` for the two apple-darwin
+# targets here and exports MACOSX_DEPLOYMENT_TARGET=10.15 (see
+# scripts/build-macos-10.15.sh).
+#
+# Do NOT add a global `[build]` rustflags pin for the deployment target — it
+# leaks the macOS-only `-mmacosx-version-min` flag onto Linux/Windows, where
+# gcc/cc reject it and `Build Tauri App` fails (#397). Any macOS pin must be
+# scoped to `[target.x86_64-apple-darwin]` / `[target.aarch64-apple-darwin]`.

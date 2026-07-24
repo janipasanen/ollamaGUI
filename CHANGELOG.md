@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+#### Platform: bring the feature line to `master`/`development` targeting newer macOS + Linux + Windows (#216)
+- **Branching model**: the full feature set (M29–M173) previously developed on
+  the `macOS-10.15` branch is consolidated onto `master`, with ongoing work on a
+  new `development` branch. `macOS-10.15` is retained as the dedicated Catalina
+  (macOS 10.15) backward-compatibility line.
+- **Build**: removed the `-mmacosx-version-min=10.15` deployment-target pin from
+  `src-tauri/.cargo/config.toml` on this line so builds follow the host SDK
+  default and can use modern macOS (11+) APIs. The pin (and the
+  `MACOSX_DEPLOYMENT_TARGET=10.15` export) remain on the `macOS-10.15` branch and
+  in `scripts/build-macos-10.15.sh` for Catalina builds. The `[target.*-apple-darwin]`
+  scoping that keeps the flag off Linux/Windows (#397) is preserved as guidance.
+- **CI**: dropped the global `MACOSX_DEPLOYMENT_TARGET=10.15` env from the default
+  build matrix and added `development` to the build/PR triggers.
+- **Docs**: `DEPLOYMENT.md` now documents the two-line model (current-macOS
+  `master`/`development` vs. Catalina `macOS-10.15`).
+
 ### Fixed
 #### M135 — MCP stdio `sendRequest` had no per-request timeout (#446)
 - **Bug fix** (#446): `McpStdioClient.sendRequest` (mcp.ts) put a
