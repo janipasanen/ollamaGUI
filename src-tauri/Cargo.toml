@@ -37,7 +37,7 @@ sysinfo = "0.33"
 # Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
 zip = "2"
 quick-xml = "0.41"
-lopdf = { version = "0.43", default-features = false }
+lopdf = { version = "0.44", default-features = false }
 calamine = "0.36"
 # Bump transitive `plist` (via tauri) from 1.9 → 1.10 so its quick-xml dep
 # resolves to the patched 0.41 line instead of the vulnerable 0.39.4 (#395).
