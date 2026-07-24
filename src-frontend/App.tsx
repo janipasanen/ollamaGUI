@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, orderSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -123,7 +123,7 @@ import {
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
   isPlanMode,
 } from './services/agentAutonomy';
-import { registerHook, makeReadOnlyHook } from './services/toolHooks';
+import { registerHook, makeReadOnlyHook, registerPostToolUseHook, makeSecretsRedactHook } from './services/toolHooks';
 import { getEnabledToolFilter, listToolStatuses, setToolEnabled, loadDisabledTools } from './services/toolConfig';
 import { registerMemoryTools } from './services/crossSessionMemory';
 import { registerPythonTool } from './services/pyodide';
@@ -1086,6 +1086,11 @@ const App: React.FC = () => {
      setEditAppliedCallback((path, label) => { void autoCommitEdit(path, label, loadAutoCommitEdits()); });
      // Wire the read-only mode hook (#146) so the hook chain enforces it.
       registerHook('builtin:read-only', makeReadOnlyHook());
+      // Redact known secrets (connection API keys) from tool output before it
+      // reaches the model, so tokens never leak into the prompt context (#409).
+      registerPostToolUseHook('builtin:redact-secrets', makeSecretsRedactHook(
+        () => loadConnections().map(c => c.apiKey ?? '').filter(Boolean),
+      ));
       // Cross-session memory tools (#95/#178) — memory_set/get/list/delete
       registerMemoryTools();
       // In-browser Python execution via Pyodide (#128/#179)
@@ -3550,6 +3555,13 @@ ${lines.join('\n')}`;
             m => m.role === 'tool' && !!m.name && ['document_create', 'document_convert'].includes(m.name),
           );
           if (docMsg) {
+            // One-time LibreOffice onboarding nudge (#145/#405): when a document
+            // tool runs and the optional engine is missing (and not dismissed),
+            // surface the onboarding modal. needsOnboarding() respects the
+            // persisted "dismissed" flag so this shows at most once.
+            void checkLibreOffice()
+              .then(lo => { if (needsOnboarding(!!lo.available)) setShowLoOnboarding(true); })
+              .catch(() => { if (needsOnboarding(false)) setShowLoOnboarding(true); });
             try {
               const res = JSON.parse(docMsg.content || '{}');
               const path: string | undefined = res.path || res.dest;
@@ -4195,7 +4207,7 @@ ${lines.join('\n')}`;
                   {(s.tags ?? []).map(tag => (
                     <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${tagFilter === tag ? 'bg-blue-600 text-white' : (dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600')}`}>
                       <button onClick={() => setTagFilter(prev => prev === tag ? null : tag)} className="hover:underline" title={tagFilter === tag ? 'Clear tag filter' : 'Filter by tag'}>{tag}</button>
-                      <button onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
+                      <button aria-label={`Remove tag ${tag}`} onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
                     </span>
                   ))}
                   {folders.length > 0 && (
@@ -5158,7 +5170,7 @@ ${lines.join('\n')}`;
         {storageWarning && (
           <div className="mx-4 mb-2 flex items-center justify-between rounded-lg bg-amber-900/60 border border-amber-700 px-3 py-2 text-xs text-amber-200">
             <span>⚠️ Chat history is nearly full. Export and delete old conversations to free space.</span>
-            <button onClick={() => setStorageWarning(false)} className="ml-3 text-amber-400 hover:text-amber-200">✕</button>
+            <button aria-label="Dismiss storage warning" onClick={() => setStorageWarning(false)} className="ml-3 text-amber-400 hover:text-amber-200">✕</button>
           </div>
         )}
 
@@ -5320,7 +5332,7 @@ ${lines.join('\n')}`;
                  {pendingContextBlocks.map((_, i) => (
                    <span key={i} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
                      <span>#context {i + 1}</span>
-                     <button type="button" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); setPendingContextBlocks(prev => prev.filter((_, j) => j !== i)); }}>×</button>
+                     <button type="button" aria-label="Remove context block" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); setPendingContextBlocks(prev => prev.filter((_, j) => j !== i)); }}>×</button>
                    </span>
                  ))}
                </div>
@@ -5664,12 +5676,12 @@ ${lines.join('\n')}`;
         {/* Settings Overlay */}
         {isSettingsOpen && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
+            <div role="dialog" aria-modal="true" aria-labelledby="settings-title" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Settings</h2>
-                <button onClick={() => setIsSettingsOpen(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+                <h2 id="settings-title" className="text-xl font-bold">Settings</h2>
+                <button aria-label="Close settings" onClick={() => setIsSettingsOpen(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
               </div>
 
               <div className="space-y-6">
@@ -5790,6 +5802,7 @@ ${lines.join('\n')}`;
                                className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-emerald-700 text-emerald-400' : 'border-emerald-400 text-emerald-600') : (dark ? 'border-zinc-600 text-zinc-500' : 'border-zinc-300 text-zinc-400')}`}
                              >{conn.enabled ? 'On' : 'Off'}</button>
                              <button
+                               aria-label={`Remove connection ${conn.name}`}
                                onClick={() => {
                                  const updated = connections.filter(c => c.id !== conn.id);
                                  saveConnections(updated);
@@ -6266,7 +6279,7 @@ ${lines.join('\n')}`;
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                                 {conn.enabled ? 'On' : 'Off'}
                               </button>
-                              <button onClick={() => { removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
+                              <button aria-label={`Remove connection ${conn.name}`} onClick={() => { removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
                                 className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                             </div>
                           </div>
@@ -6833,7 +6846,7 @@ ${lines.join('\n')}`;
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${t.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                               {t.enabled ? 'On' : 'Off'}
                             </button>
-                            <button onClick={() => { removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
+                            <button aria-label={`Remove tool ${t.name}`} onClick={() => { removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                           </div>
                         ))
@@ -6897,7 +6910,7 @@ ${lines.join('\n')}`;
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${f.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                               {f.enabled ? 'On' : 'Off'}
                             </button>
-                            <button onClick={() => { removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
+                            <button aria-label={`Remove function ${f.name}`} onClick={() => { removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                           </div>
                         ))
@@ -6966,7 +6979,7 @@ ${lines.join('\n')}`;
                             applyPreset(p, { setModel, setSystemPrompt, setGenOptions });
                             setActivePresetId(p.id); setActivePreset(p.id);
                           }} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Apply</button>
-                          <button onClick={() => { removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
+                          <button aria-label={`Remove preset ${p.name}`} onClick={() => { removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
                             className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                         </div>
                       ))
@@ -7319,7 +7332,7 @@ ${lines.join('\n')}`;
                             title="Insert into chat input"
                             className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                           >Use</button>
-                          <button onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                          <button aria-label={`Remove prompt ${p.name}`} onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
                         </div>
                       ))
                     }
@@ -7364,7 +7377,7 @@ ${lines.join('\n')}`;
                       <div key={cmd.name} className="flex items-center gap-1.5">
                         <span className={`font-mono text-xs ${dark ? 'text-blue-400' : 'text-blue-600'}`}>/{cmd.name}</span>
                         <span className={`flex-1 text-xs truncate ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{cmd.description}</span>
-                        <button onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                        <button aria-label={`Remove command /${cmd.name}`} onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
                       </div>
                     ))}
                     <div className="flex gap-1.5 pt-1">
@@ -7482,6 +7495,7 @@ ${lines.join('\n')}`;
                         >Choose…</button>
                         {p.workspaceRoot && (
                           <button
+                            aria-label="Clear workspace folder"
                             onClick={() => {
                               const updated = { ...p, workspaceRoot: '' };
                               storage.saveProject(updated);
@@ -7595,7 +7609,7 @@ ${lines.join('\n')}`;
                       <div key={e.id} className={`flex items-start gap-2 text-xs rounded px-2 py-1 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-zinc-700'}`}>
                         <span className="flex-1 break-words">{e.text}</span>
                         {e.scope !== 'global' && <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{e.scope}</span>}
-                        <button onClick={() => { removeMemoryEntry(e.id); setMemoryEntries(loadMemory()); }} className="shrink-0 text-red-400 hover:text-red-300">✕</button>
+                        <button aria-label="Remove memory entry" onClick={() => { removeMemoryEntry(e.id); setMemoryEntries(loadMemory()); }} className="shrink-0 text-red-400 hover:text-red-300">✕</button>
                       </div>
                     ))}
                     {memoryEntries.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No memory entries.</p>}
@@ -7702,6 +7716,7 @@ ${lines.join('\n')}`;
                         <span className="flex-1 font-mono">{r.key}</span>
                         <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-300'}`}>••••••••</span>
                         <button
+                          aria-label={`Delete secret ${r.key}`}
                           onClick={async () => {
                             await secretDelete(r.service, r.key);
                             setSecretKeys(secretListRefs());
@@ -7781,6 +7796,7 @@ ${lines.join('\n')}`;
                           <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
                           <button
                             type="button"
+                            aria-label={`Delete collection ${col.name}`}
                             onClick={async e => {
                               e.stopPropagation();
                               if (!confirm(`Delete collection "${col.name}" and all its files?`)) return;
@@ -7802,6 +7818,7 @@ ${lines.join('\n')}`;
                                   <span className={`shrink-0 opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{(f.sizeBytes / 1024).toFixed(1)} KB</span>
                                   <button
                                     type="button"
+                                    aria-label={`Remove file ${f.name}`}
                                     onClick={async () => {
                                       await removeFile(f.id);
                                       const files = await getFilesForCollection(col.id);
@@ -7916,6 +7933,7 @@ ${lines.join('\n')}`;
                                 className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning ? 'opacity-50 cursor-wait' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
                               >{isRunning ? '…' : '▶ Run'}</button>
                               <button
+                                aria-label={`Delete scenario ${sc.name}`}
                                 onClick={() => { deleteScenario(sc.id); setScenarios(listScenarios()); setScenarioResults(prev => { const n = { ...prev }; delete n[sc.id]; return n; }); }}
                                 className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}
                               >✕</button>
@@ -8014,7 +8032,7 @@ ${lines.join('\n')}`;
                     onClick={() => { navigator.clipboard.writeText(promptPreview); showStatusBanner('Copied to clipboard'); }}
                     className={`text-xs px-3 py-1.5 rounded-lg font-medium ${dark ? 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-700 hover:bg-zinc-300'}`}
                   >Copy</button>
-                  <button onClick={() => setPromptPreview(null)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+                  <button aria-label="Close prompt preview" onClick={() => setPromptPreview(null)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
                 </div>
               </div>
               <div className={`overflow-auto flex-1 p-6 text-sm font-mono whitespace-pre-wrap ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
@@ -8030,12 +8048,12 @@ ${lines.join('\n')}`;
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
+            <div role="dialog" aria-modal="true" aria-labelledby="help-title" className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Keyboard Shortcuts</h2>
-                <button onClick={() => setShowHelp(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+                <h2 id="help-title" className="text-xl font-bold">Keyboard Shortcuts</h2>
+                <button aria-label="Close keyboard shortcuts" onClick={() => setShowHelp(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
               </div>
               <div className="space-y-1">
                 {[
@@ -8209,7 +8227,7 @@ ${lines.join('\n')}`;
         {/* CLI Command Approval Modal */}
         {pendingApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
+            <div role="dialog" aria-modal="true" aria-label="Command approval required" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-4">
@@ -8275,7 +8293,7 @@ ${lines.join('\n')}`;
         {/* Tool approval modal (#88/#89/#189) — shown in plan/ask autonomy mode */}
         {pendingToolApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+            <div role="dialog" aria-modal="true" aria-label="Agent tool-use approval" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
                   <span>🤖</span> Agent wants to use a tool
@@ -8321,7 +8339,7 @@ ${lines.join('\n')}`;
             plan un-approved. */}
         {pendingPlanApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+            <div role="dialog" aria-modal="true" aria-label="Approve plan to begin execution" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
                   <span>📋</span> Approve plan to begin execution?
@@ -8478,4 +8496,3 @@ const AppWithErrorBoundary: React.FC = () => (
 );
 
 export default AppWithErrorBoundary;
-import { loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion } from './services/ollama';

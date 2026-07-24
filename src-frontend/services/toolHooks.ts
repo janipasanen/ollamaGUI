@@ -196,3 +196,20 @@ export function makeRedactHook(secret: string): PostToolUseHook {
     return { action: 'transform', content: content.split(secret).join('[REDACTED]') };
   };
 }
+
+/**
+ * Redact any of a dynamic set of secrets from tool output before it reaches the
+ * model. `getSecrets` is invoked on every tool result, so secrets added at
+ * runtime (e.g. newly-configured connection API keys) are covered without
+ * re-registering the hook. Secrets shorter than 6 chars are ignored to avoid
+ * accidental over-redaction of common substrings (#409).
+ */
+export function makeSecretsRedactHook(getSecrets: () => string[]): PostToolUseHook {
+  return (_toolName, _args, content) => {
+    let out = content;
+    for (const s of getSecrets()) {
+      if (s && s.length >= 6 && out.includes(s)) out = out.split(s).join('[REDACTED]');
+    }
+    return out === content ? { action: 'allow' } : { action: 'transform', content: out };
+  };
+}

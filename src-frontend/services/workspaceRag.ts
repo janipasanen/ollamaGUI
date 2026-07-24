@@ -137,23 +137,20 @@ export async function isWorkspaceIndexed(workspaceRoot: string): Promise<boolean
 
 // ── Agent tool registration (#94/#194) ───────────────────────────────────────
 
-/** Returns the current workspace root from fileTools (for tool implementations). */
-function getCurrentRoot(): string | null {
-  // fileTools exposes getWorkspaceRoot(); use dynamic import to avoid circular dep.
-  return (globalThis as any).__workspaceRoot ?? null;
-}
-
 /**
  * Register workspace RAG agent tools (#94/#194).
  *   - index_workspace: index (or re-index) all text files under the workspace root.
  *   - query_workspace: semantic search over previously-indexed workspace files.
+ *
+ * The tool closures read the live workspace root via getWorkspaceRoot() from
+ * fileTools (dynamic import avoids a circular dependency). Registration failures
+ * are logged rather than surfaced as an unhandled rejection (#407).
  */
 export function registerWorkspaceRagTools(): void {
   import('./tools').then(({ toolRegistry }) => {
     if (toolRegistry.getTool('query_workspace')) return;
 
-    // Expose the current root via a global so the tool closures can read it.
-    import('./fileTools').then(({ getWorkspaceRoot }) => {
+    return import('./fileTools').then(({ getWorkspaceRoot }) => {
       toolRegistry.registerTool({
         name: 'index_workspace',
         description: 'Index all text source files in the current workspace for semantic search. Run before query_workspace.',
@@ -196,5 +193,9 @@ export function registerWorkspaceRagTools(): void {
         },
       });
     });
+  }).catch((e) => {
+    // Non-fatal: if the dynamic import of tools/fileTools fails, the workspace
+    // RAG tools simply won't be available. Log rather than throw (#407).
+    console.error('registerWorkspaceRagTools: failed to register workspace tools', e);
   });
 }
