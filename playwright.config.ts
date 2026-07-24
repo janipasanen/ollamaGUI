@@ -20,9 +20,16 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
+  // The frontend entry (App.tsx) is large; a cold dev-server compile or a first
+  // navigation can legitimately exceed Playwright's 30 s default, so give tests
+  // and navigations more headroom (also covers slower CI runners).
+  timeout: 60_000,
+  expect: { timeout: 15_000 },
   use: {
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',
+    navigationTimeout: 60_000,
+    actionTimeout: 15_000,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
