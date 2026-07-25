@@ -55,12 +55,14 @@ function TreeNode({
 }): React.ReactElement {
   const isExpanded = expanded.has(entry.path);
   const [children, setChildren] = useState<DirEntry[]>([]);
+  // A failed expansion must not look identical to an empty folder (#446).
+  const [childError, setChildError] = useState<string | null>(null);
 
   useEffect(() => {
     if (entry.is_dir && isExpanded) {
       listDirSafe(entry.path)
-        .then(setChildren)
-        .catch(() => setChildren([]));
+        .then((list) => { setChildren(list); setChildError(null); })
+        .catch((e) => { setChildren([]); setChildError(e instanceof Error ? e.message : String(e)); });
     }
     // reloadNonce forces a re-list after a filesystem mutation (#433).
   }, [entry.path, entry.is_dir, isExpanded, reloadNonce]);
@@ -98,6 +100,15 @@ function TreeNode({
       </div>
       {entry.is_dir && isExpanded && (
         <div data-testid={`file-tree-children-${entry.path.replace(/[^a-zA-Z0-9]/g, '-')}`}>
+          {childError && (
+            <div
+              role="alert"
+              className="px-2 py-1 text-[10px] text-red-400"
+              style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}
+            >
+              ⚠ Could not read folder: {childError}
+            </div>
+          )}
           {children.map((child) => (
             <TreeNode
               key={child.path}
@@ -136,6 +147,9 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry } | null>(null);
   // Bumped after a filesystem mutation to force every TreeNode to re-list (#433).
   const [reloadNonce, setReloadNonce] = useState(0);
+  // False until the first listDir resolves, so the initial async load shows
+  // "Loading…" instead of a misleading "Empty workspace." (#446).
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   const root = state.root;
 
@@ -148,6 +162,8 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
     } catch (e) {
       setError(String(e));
       setEntries([]);
+    } finally {
+      setHasLoaded(true);
     }
   }, [root]);
 
@@ -237,7 +253,9 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
       {root && (
         <div data-testid="file-tree-list" className="flex-1 overflow-auto py-1">
           {entries.length === 0 && !error && (
-            <div className={`p-3 text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Empty workspace.</div>
+            <div className={`p-3 text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+              {hasLoaded ? 'Empty workspace.' : 'Loading…'}
+            </div>
           )}
           {entries.map((entry) => (
             <TreeNode
