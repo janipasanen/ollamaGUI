@@ -48,8 +48,8 @@ export function clearWorkspaceRoot(): void {
   _workspaceRoot = null;
 }
 
-export async function readFile(path: string): Promise<string> {
-  return tauriInvoke<string>('read_file', { path });
+export async function readFile(path: string, offset?: number, limit?: number): Promise<string> {
+  return tauriInvoke<string>('read_file', { path, offset: offset ?? null, limit: limit ?? null });
 }
 
 export async function writeFile(path: string, content: string): Promise<void> {
@@ -67,6 +67,21 @@ export async function applyEdit(path: string, oldString: string, newString: stri
 /** Delete a file within the workspace (#397 — apply_patch delete op). */
 export async function deleteFile(path: string): Promise<void> {
   return tauriInvoke<void>('delete_file', { path });
+}
+
+/** Move/rename a file within the workspace (#421). */
+export async function movePath(from: string, to: string): Promise<void> {
+  return tauriInvoke<void>('move_path', { from, to });
+}
+
+/** Copy a file within the workspace (#421). */
+export async function copyPath(from: string, to: string): Promise<void> {
+  return tauriInvoke<void>('copy_path', { from, to });
+}
+
+/** Create a directory (and missing parents) within the workspace (#421). */
+export async function createDir(path: string): Promise<void> {
+  return tauriInvoke<void>('create_dir', { path });
 }
 
 /** A single file:line match from {@link searchFiles} (#420). */
@@ -104,17 +119,23 @@ export async function globFiles(pattern: string, maxResults?: number): Promise<s
 export function registerFileTools(): void {
   toolRegistry.registerTool({
     name: 'read_file',
-    description: 'Read the text content of a file within the workspace.',
+    description: 'Read the text content of a file within the workspace. Optionally pass offset (1-indexed start line) and limit (line count) to read only a range of a large file.',
     readOnly: true,
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path (absolute or relative to workspace root)' },
+        offset: { type: 'number', description: '1-indexed start line (optional).' },
+        limit: { type: 'number', description: 'Number of lines to read from offset (optional).' },
       },
       required: ['path'],
     },
     execute: async (params: Record<string, unknown>) => {
-      const content = await readFile(params.path as string);
+      const content = await readFile(
+        params.path as string,
+        params.offset as number | undefined,
+        params.limit as number | undefined,
+      );
       return { content };
     },
   });
@@ -319,6 +340,74 @@ export function registerFileTools(): void {
     execute: async (params: Record<string, unknown>) => {
       const files = await globFiles(params.pattern as string, params.max_results as number | undefined);
       return { count: files.length, files };
+    },
+  });
+
+  // File operations (#421). These mutate the filesystem, so they are NOT marked
+  // readOnly and go through the agent's approval gate in ask/plan mode.
+  toolRegistry.registerTool({
+    name: 'move_file',
+    description: 'Move or rename a file within the workspace. Creates destination parent directories as needed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Source file path within the workspace.' },
+        to: { type: 'string', description: 'Destination file path within the workspace.' },
+      },
+      required: ['from', 'to'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      await movePath(params.from as string, params.to as string);
+      return { success: true };
+    },
+  });
+
+  toolRegistry.registerTool({
+    name: 'copy_file',
+    description: 'Copy a file within the workspace (files only). Creates destination parent directories as needed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Source file path within the workspace.' },
+        to: { type: 'string', description: 'Destination file path within the workspace.' },
+      },
+      required: ['from', 'to'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      await copyPath(params.from as string, params.to as string);
+      return { success: true };
+    },
+  });
+
+  toolRegistry.registerTool({
+    name: 'create_directory',
+    description: 'Create a directory (and any missing parent directories) within the workspace.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path within the workspace.' },
+      },
+      required: ['path'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      await createDir(params.path as string);
+      return { success: true };
+    },
+  });
+
+  toolRegistry.registerTool({
+    name: 'delete_file',
+    description: 'Delete a single file within the workspace. Refuses to delete directories.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path within the workspace.' },
+      },
+      required: ['path'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      await deleteFile(params.path as string);
+      return { success: true };
     },
   });
 }

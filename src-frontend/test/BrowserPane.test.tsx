@@ -111,13 +111,25 @@ describe('BrowserPane (#71, #72)', () => {
     render(<BrowserPane dark={false} />);
     navigateTo('http://localhost:5173');
     // Enable auto-reload.
-    fireEvent.click(screen.getByLabelText('Auto-reload'));
+    fireEvent.click(screen.getByLabelText('Auto-refresh preview'));
     const before = screen.getByTestId('browser-iframe').getAttribute('data-iframe-key');
     act(() => {
       browserBus.emit('loaded', 'http://localhost:5173');
     });
     const after = screen.getByTestId('browser-iframe').getAttribute('data-iframe-key');
     expect(before).not.toBe(after);
+  });
+
+  it('Back/Forward walk the navigation history (#436)', () => {
+    render(<BrowserPane dark={false} />);
+    const addr = () => (screen.getByLabelText('Address bar') as HTMLInputElement).value;
+    navigateTo('http://localhost:5173/a');
+    navigateTo('http://localhost:5173/b');
+    expect(addr()).toBe('http://localhost:5173/b');
+    fireEvent.click(screen.getByLabelText('Back'));
+    expect(addr()).toBe('http://localhost:5173/a');
+    fireEvent.click(screen.getByLabelText('Forward'));
+    expect(addr()).toBe('http://localhost:5173/b');
   });
 
   it('switching to an external url calls preview_webview_open with a rect (mocked invoke)', () => {

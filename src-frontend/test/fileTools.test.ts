@@ -175,4 +175,34 @@ describe('registerFileTools (#83)', () => {
     expect((result as any).count).toBe(2);
     expect((result as any).files).toContain('src/b.ts');
   });
+
+  it('read_file tool forwards offset/limit (#422)', async () => {
+    let captured: any = null;
+    _mocks.invoke = async (cmd, args) => { captured = { cmd, args }; return 'line3\nline4'; };
+    const tool = toolRegistry.getTool('read_file')!;
+    const result = await tool.execute({ path: 'big.ts', offset: 3, limit: 2 });
+    expect(captured.args.offset).toBe(3);
+    expect(captured.args.limit).toBe(2);
+    expect((result as any).content).toBe('line3\nline4');
+  });
+
+  it('registers move_file, copy_file, create_directory, delete_file (#421)', () => {
+    expect(toolRegistry.getTool('move_file')).toBeDefined();
+    expect(toolRegistry.getTool('copy_file')).toBeDefined();
+    expect(toolRegistry.getTool('create_directory')).toBeDefined();
+    expect(toolRegistry.getTool('delete_file')).toBeDefined();
+    // Mutating file ops must NOT be readOnly (so autonomy gates them).
+    expect(toolRegistry.getTool('move_file')?.readOnly).toBeFalsy();
+    expect(toolRegistry.getTool('delete_file')?.readOnly).toBeFalsy();
+  });
+
+  it('move_file tool invokes move_path with { from, to } (#421)', async () => {
+    let captured: any = null;
+    _mocks.invoke = async (cmd, args) => { captured = { cmd, args }; return undefined; };
+    const tool = toolRegistry.getTool('move_file')!;
+    const result = await tool.execute({ from: 'a.ts', to: 'b.ts' });
+    expect(captured.cmd).toBe('move_path');
+    expect(captured.args).toMatchObject({ from: 'a.ts', to: 'b.ts' });
+    expect((result as any).success).toBe(true);
+  });
 });

@@ -1234,11 +1234,23 @@ fn set_workspace_root(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read a file, optionally a line range. `offset` is a 1-indexed start line and
+/// `limit` a line count; omitting both returns the whole file (#422).
 #[tauri::command]
-async fn read_file(path: String) -> Result<String, String> {
+async fn read_file(path: String, offset: Option<usize>, limit: Option<usize>) -> Result<String, String> {
     let abs = resolve_workspace_path(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read_to_string(&abs).map_err(|e| e.to_string())
+        let content = std::fs::read_to_string(&abs).map_err(|e| e.to_string())?;
+        if offset.is_none() && limit.is_none() {
+            return Ok(content);
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        let start = offset.unwrap_or(1).max(1).saturating_sub(1).min(lines.len());
+        let end = match limit {
+            Some(l) => start.saturating_add(l).min(lines.len()),
+            None => lines.len(),
+        };
+        Ok(lines[start..end].join("\n"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1477,6 +1489,55 @@ async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<S
         }
         out.sort();
         Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── File operations: move/copy/mkdir (#421) ──────────────────────────────────
+
+/// Move/rename a file within the workspace. Creates the destination's parent
+/// directory as needed. Both paths must resolve inside the workspace root.
+#[tauri::command]
+async fn move_path(from: String, to: String) -> Result<(), String> {
+    let abs_from = resolve_workspace_path(&from)?;
+    let abs_to = resolve_workspace_path(&to)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = abs_to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&abs_from, &abs_to).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Copy a file within the workspace (files only). Creates the destination's
+/// parent directory as needed.
+#[tauri::command]
+async fn copy_path(from: String, to: String) -> Result<(), String> {
+    let abs_from = resolve_workspace_path(&from)?;
+    let abs_to = resolve_workspace_path(&to)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&abs_from).map_err(|e| e.to_string())?;
+        if meta.is_dir() {
+            return Err("copy_path does not support directories.".to_string());
+        }
+        if let Some(parent) = abs_to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&abs_from, &abs_to).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Create a directory (and any missing parents) within the workspace.
+#[tauri::command]
+async fn create_dir(path: String) -> Result<(), String> {
+    let abs = resolve_workspace_path(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&abs).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2101,6 +2162,9 @@ pub fn run() {
             delete_file,
             search_files,
             glob_files,
+            move_path,
+            copy_path,
+            create_dir,
             terminal_run,
             terminal_kill,
             git_status,

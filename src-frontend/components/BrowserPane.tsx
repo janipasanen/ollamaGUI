@@ -96,6 +96,18 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   const autoReloadRef = useRef<boolean>(autoReload);
   autoReloadRef.current = autoReload;
 
+  // Navigation history for real Back/Forward (#436). historyRef holds the visited
+  // URLs; histIdxRef points at the current entry. canBack/canForward drive the
+  // button enabled state.
+  const historyRef = useRef<string[]>(browserSession.navUrl ? [browserSession.navUrl] : []);
+  const histIdxRef = useRef<number>(browserSession.navUrl ? 0 : -1);
+  const [canBack, setCanBack] = useState(false);
+  const [canForward, setCanForward] = useState(false);
+  const updateNavState = useCallback(() => {
+    setCanBack(histIdxRef.current > 0);
+    setCanForward(histIdxRef.current < historyRef.current.length - 1);
+  }, []);
+
   // -------------------------------------------------------------------------
   // Chromium engine consent (#217). The browser-automation tools need a
   // Chromium-class engine; if none is found we offer a consented download.
@@ -158,32 +170,43 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
     void openPreview(url, rect, []).catch(() => {});
   }, []);
 
+  /** Commit a URL to the surface (address bar + iframe/native preview) without
+   *  touching history — used by both new navigations and Back/Forward (#436). */
+  const applyUrl = useCallback((url: string) => {
+    setNavUrl(url);
+    if (isLocalhostUrl(url)) {
+      void closePreview().catch(() => {});
+    } else {
+      openNativePreview(url);
+    }
+  }, [openNativePreview]);
+
   // -------------------------------------------------------------------------
   // Bus subscriptions
   // -------------------------------------------------------------------------
 
   useEffect(() => {
     // `navigate`: a new target url was committed (address bar or programmatic).
+    // Back/Forward navigations carry a `direction` and are handled by their own
+    // handlers (they must NOT push history), so we ignore those here.
     const onNavigate = (payload: any) => {
-      // Payload may be a bare string (setNavUrl) or an object (setMode).
+      if (payload && typeof payload === 'object' && payload.direction) return;
       const url = typeof payload === 'string' ? payload : payload?.url;
-      if (typeof url === 'string') {
-        setNavUrl(url);
-        if (isLocalhostUrl(url)) {
-          // Leaving external mode — tear any native preview down.
-          void closePreview().catch(() => {});
-        } else {
-          openNativePreview(url);
-        }
+      if (typeof url !== 'string') return;
+      applyUrl(url);
+      // Push onto history unless it's the same as the current entry. Drop any
+      // forward entries first (standard browser behaviour).
+      if (historyRef.current[histIdxRef.current] !== url) {
+        historyRef.current = historyRef.current.slice(0, histIdxRef.current + 1);
+        historyRef.current.push(url);
+        histIdxRef.current = historyRef.current.length - 1;
+        updateNavState();
       }
     };
 
-    // `loaded`: a page finished loading. Under auto-reload, force the iframe to
-    // remount so the local surface reflects the latest build.
+    // `loaded`: a page finished loading (emitted by the engine layer, if wired).
     const onLoaded = () => {
-      if (autoReloadRef.current) {
-        setIframeKey((k) => k + 1);
-      }
+      if (autoReloadRef.current) setIframeKey((k) => k + 1);
     };
 
     browserBus.on('navigate', onNavigate);
@@ -192,7 +215,16 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
       browserBus.off('navigate', onNavigate);
       browserBus.off('loaded', onLoaded);
     };
-  }, [openNativePreview]);
+  }, [applyUrl, updateNavState]);
+
+  // Auto-refresh (#437): the previous `loaded`-driven reload never fired because
+  // nothing emits `loaded`. When the user enables Auto, periodically remount the
+  // iframe so a rebuilding local dev server surface is picked up.
+  useEffect(() => {
+    if (!autoReload) return;
+    const id = setInterval(() => setIframeKey((k) => k + 1), 2000);
+    return () => clearInterval(id);
+  }, [autoReload]);
 
   // -------------------------------------------------------------------------
   // Panel registration
@@ -252,9 +284,20 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
     }
   }, [isLocal]);
 
-  /** Back / Forward are navigation intents the engine layer fulfils. */
-  const goBack = useCallback(() => browserBus.emit('navigate', { direction: 'back', url: browserSession.navUrl }), []);
-  const goForward = useCallback(() => browserBus.emit('navigate', { direction: 'forward', url: browserSession.navUrl }), []);
+  /** Back / Forward walk the local history stack (#436). They re-commit a
+   *  previously-visited URL without pushing a new history entry. */
+  const goBack = useCallback(() => {
+    if (histIdxRef.current <= 0) return;
+    histIdxRef.current -= 1;
+    applyUrl(historyRef.current[histIdxRef.current]);
+    updateNavState();
+  }, [applyUrl, updateNavState]);
+  const goForward = useCallback(() => {
+    if (histIdxRef.current >= historyRef.current.length - 1) return;
+    histIdxRef.current += 1;
+    applyUrl(historyRef.current[histIdxRef.current]);
+    updateNavState();
+  }, [applyUrl, updateNavState]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -275,10 +318,10 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
           dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
         }`}
       >
-        <button type="button" onClick={goBack} aria-label="Back" title="Back" className={btnCls}>
+        <button type="button" onClick={goBack} disabled={!canBack} aria-label="Back" title="Back" className={`${btnCls} ${!canBack ? 'opacity-40 cursor-not-allowed' : ''}`}>
           ←
         </button>
-        <button type="button" onClick={goForward} aria-label="Forward" title="Forward" className={btnCls}>
+        <button type="button" onClick={goForward} disabled={!canForward} aria-label="Forward" title="Forward" className={`${btnCls} ${!canForward ? 'opacity-40 cursor-not-allowed' : ''}`}>
           →
         </button>
         <button type="button" onClick={reload} aria-label="Reload" title="Reload" className={btnCls}>
@@ -306,12 +349,15 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
           </button>
         </form>
 
-        <label className={`flex items-center gap-1 text-xs cursor-pointer select-none ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+        <label
+          title="Auto-refresh the preview every 2 seconds"
+          className={`flex items-center gap-1 text-xs cursor-pointer select-none ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}
+        >
           <input
             type="checkbox"
             checked={autoReload}
             onChange={(e) => setAutoReload(e.target.checked)}
-            aria-label="Auto-reload"
+            aria-label="Auto-refresh preview"
           />
           Auto
         </label>
