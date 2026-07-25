@@ -12,6 +12,7 @@
 
 import { toolRegistry, runCliOnce } from './tools';
 import { getWorkspaceRoot } from './fileTools';
+import type { PostToolUseHook } from './toolHooks';
 
 const TEST_CMD_KEY = 'ollama_gui_test_command';
 const CHECK_CMD_KEY = 'ollama_gui_check_command';
@@ -75,6 +76,46 @@ export async function runDevCommand(command: string): Promise<ParsedRun & { comm
   if (!root) return { command, error: 'No workspace open — open a project folder first.' } as any;
   const res = await runCliOnce(command, root, LONG_TIMEOUT_MS);
   return { command, ...parseRunOutput(res) };
+}
+
+// ── Post-edit verification hook (#425) ───────────────────────────────────────
+
+const EDIT_TOOLS = new Set(['write_file', 'apply_edit', 'apply_patch']);
+const AUTO_VERIFY_KEY = 'ollama_gui_auto_verify_edits';
+
+export function isAutoVerifyEnabled(): boolean {
+  try { return localStorage.getItem(AUTO_VERIFY_KEY) === 'true'; } catch { return false; }
+}
+export function setAutoVerifyEnabled(on: boolean): void {
+  try { localStorage.setItem(AUTO_VERIFY_KEY, on ? 'true' : 'false'); } catch { /* ignore */ }
+}
+
+/**
+ * PostToolUse hook (#425): after a successful file edit, run the project's check
+ * command and append a concise diagnostic summary to the tool result, so the
+ * model self-corrects within the same run. Enabled only when `isEnabled()` is
+ * true (default off) — running checks after every edit is expensive.
+ */
+export function makePostEditVerifyHook(isEnabled: () => boolean): PostToolUseHook {
+  return async (toolName, _args, resultContent) => {
+    if (!isEnabled() || !EDIT_TOOLS.has(toolName)) return { action: 'allow' };
+    // Only verify if the edit actually applied.
+    if (!/success"?\s*:\s*true|"applied"\s*:\s*[1-9]/.test(resultContent)) return { action: 'allow' };
+    try {
+      const run = await runDevCommand(getCheckCommand());
+      if ((run as { error?: string }).error) return { action: 'allow' };
+      if (run.passed) {
+        return { action: 'transform', content: `${resultContent}\n\n[auto-verify] ✓ checks passed (${run.summary}).` };
+      }
+      const diag = run.failures.slice(0, 8).join('\n');
+      return {
+        action: 'transform',
+        content: `${resultContent}\n\n[auto-verify] ✕ checks FAILED (${run.summary}). Fix these before continuing:\n${diag}`,
+      };
+    } catch {
+      return { action: 'allow' };
+    }
+  };
 }
 
 export function registerDevTools(): void {

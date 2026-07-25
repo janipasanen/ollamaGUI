@@ -115,7 +115,7 @@ import {
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
 } from './services/artifacts';
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
-import { registerDevTools } from './services/devTools';
+import { registerDevTools, makePostEditVerifyHook, isAutoVerifyEnabled, setAutoVerifyEnabled } from './services/devTools';
 import { registerCodeNavTools } from './services/codeNav';
 import { openWorkspace, getActiveRoot } from './services/workspace';
 
@@ -538,6 +538,8 @@ const App: React.FC = () => {
   const [disabledTools, setDisabledTools] = useState<Set<string>>(() => loadDisabledTools());
   // Auto-commit after agentic edits (Aider parity, #401).
   const [autoCommitEdits, setAutoCommitEdits] = useState<boolean>(() => loadAutoCommitEdits());
+  // Auto-verify (run project checks) after agentic edits (#425).
+  const [autoVerifyEdits, setAutoVerifyEdits] = useState<boolean>(() => isAutoVerifyEnabled());
   // Agentic "Continue past max-iterations" affordance (Codex/Claude parity, #403).
   const [agentHitMax, setAgentHitMax] = useState(false);
 
@@ -1103,6 +1105,9 @@ const App: React.FC = () => {
       registerPostToolUseHook('builtin:redact-secrets', makeSecretsRedactHook(
         () => loadConnections().map(c => c.apiKey ?? '').filter(Boolean),
       ));
+      // Post-edit verification (#425): when enabled (Settings), run the project
+      // checks after each successful edit and feed diagnostics back to the model.
+      registerPostToolUseHook('builtin:auto-verify-edits', makePostEditVerifyHook(isAutoVerifyEnabled));
       // Cross-session memory tools (#95/#178) — memory_set/get/list/delete
       registerMemoryTools();
       // In-browser Python execution via Pyodide (#128/#179)
@@ -7699,6 +7704,14 @@ ${lines.join('\n')}`;
                       <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Stage & commit each applied file edit to the workspace git repo with a descriptive message.</p>
                     </div>
                     <Toggle dark={dark} label="Auto-commit edits" checked={autoCommitEdits} onChange={() => { const v = !autoCommitEdits; setAutoCommitEdits(v); saveAutoCommitEdits(v); }} />
+                  </div>
+                  {/* Auto-verify after edits (#425) */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-verify edits</span>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>After each applied edit, run the project checks (run_checks command) and feed any diagnostics back to the model. Slower, but catches broken edits automatically.</p>
+                    </div>
+                    <Toggle dark={dark} label="Auto-verify edits" checked={autoVerifyEdits} onChange={() => { const v = !autoVerifyEdits; setAutoVerifyEdits(v); setAutoVerifyEnabled(v); }} />
                   </div>
                 </div>
 

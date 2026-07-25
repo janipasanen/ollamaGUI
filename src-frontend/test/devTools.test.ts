@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { parseRunOutput, registerDevTools, getTestCommand, getCheckCommand } from '../services/devTools';
+import { parseRunOutput, registerDevTools, getTestCommand, getCheckCommand, makePostEditVerifyHook } from '../services/devTools';
 import { toolRegistry, _cliMocks } from '../services/tools';
 import { setWorkspaceRoot, clearWorkspaceRoot, _mocks as fsMocks } from '../services/fileTools';
 
@@ -86,5 +86,45 @@ describe('run_tests / run_checks tools (#423/#424)', () => {
   it('defaults to the configured commands', () => {
     expect(getTestCommand()).toBeTruthy();
     expect(getCheckCommand()).toBeTruthy();
+  });
+});
+
+describe('makePostEditVerifyHook (#425)', () => {
+  it('is a no-op when disabled', async () => {
+    const hook = makePostEditVerifyHook(() => false);
+    const res = await hook('write_file', {}, '{"success":true}');
+    expect(res.action).toBe('allow');
+  });
+
+  it('is a no-op for non-edit tools even when enabled', async () => {
+    const hook = makePostEditVerifyHook(() => true);
+    const res = await hook('read_file', {}, '{"content":"x"}');
+    expect(res.action).toBe('allow');
+  });
+
+  it('appends failing diagnostics after a successful edit', async () => {
+    fsMocks.invoke = async () => undefined;
+    await setWorkspaceRoot('/w');
+    _cliMocks.invoke = async () => ({
+      stdout: "src/a.ts(1,1): error TS1005: ';' expected.",
+      stderr: '',
+      exit_code: 2,
+      timed_out: false,
+    });
+    const hook = makePostEditVerifyHook(() => true);
+    const res = await hook('apply_edit', { path: 'src/a.ts' }, '{"success":true}');
+    expect(res.action).toBe('transform');
+    expect(res.content).toContain('checks FAILED');
+    expect(res.content).toContain('error TS1005');
+  });
+
+  it('notes success when checks pass', async () => {
+    fsMocks.invoke = async () => undefined;
+    await setWorkspaceRoot('/w');
+    _cliMocks.invoke = async () => ({ stdout: '0 errors', stderr: '', exit_code: 0, timed_out: false });
+    const hook = makePostEditVerifyHook(() => true);
+    const res = await hook('write_file', {}, '{"success":true}');
+    expect(res.action).toBe('transform');
+    expect(res.content).toContain('checks passed');
   });
 });
