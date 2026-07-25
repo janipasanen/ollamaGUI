@@ -39,11 +39,13 @@ describe('extractSymbols (#426)', () => {
       'impl Engine {}',
     ].join('\n');
     const syms = extractSymbols(src, 'rs');
-    const kinds = Object.fromEntries(syms.map(s => [s.name, s.kind]));
-    expect(kinds.run).toBe('fn');
-    expect(kinds.Engine).toBe('struct'); // first match on the struct line
-    expect(kinds.State).toBe('enum');
-    expect(kinds.Draw).toBe('trait');
+    const has = (name: string, kind: string) => syms.some(s => s.name === name && s.kind === kind);
+    expect(has('run', 'fn')).toBe(true);
+    // `Engine` appears twice (struct + impl); both should be captured.
+    expect(has('Engine', 'struct')).toBe(true);
+    expect(has('Engine', 'impl')).toBe(true);
+    expect(has('State', 'enum')).toBe(true);
+    expect(has('Draw', 'trait')).toBe(true);
   });
 
   it('extracts Python def/class', () => {
