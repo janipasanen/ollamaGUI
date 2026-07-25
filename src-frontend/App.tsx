@@ -678,7 +678,14 @@ const App: React.FC = () => {
     try { return localStorage.getItem('ollama_gui_notify_complete') === 'true'; } catch { return false; }
   });
   const [isMobile, setIsMobile] = useState(false);
-  const [isAgenticMode, setIsAgenticMode] = useState(false);
+  // Persisted (#440): previously reset to OFF on every restart, so users had to
+  // re-enable tool calling each session.
+  const [isAgenticMode, setIsAgenticMode] = useState(() => {
+    try { return localStorage.getItem('ollama_gui_agentic_mode') === 'true'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('ollama_gui_agentic_mode', String(isAgenticMode)); } catch { /* ignore */ }
+  }, [isAgenticMode]);
   const [pendingApproval, setPendingApproval] = useState<{
     command: string;
     cwd?: string;
@@ -3986,6 +3993,10 @@ ${lines.join('\n')}`;
     { id: 'toggle-theme', label: 'Toggle Theme', hint: 'Ctrl+Shift+D', run: () => toggleTheme() },
     { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
     { id: 'toggle-artifacts', label: 'Toggle Artifacts Panel', hint: 'Ctrl+Shift+A', run: () => togglePanel('artifacts') },
+    { id: 'toggle-code-search', label: 'Toggle Code Search Panel', run: () => togglePanel('code-search') },
+    { id: 'toggle-source-control', label: 'Toggle Source Control Panel', run: () => togglePanel('source-control') },
+    { id: 'toggle-checkpoints', label: 'Toggle Checkpoints Panel', run: () => togglePanel('checkpoints') },
+    { id: 'toggle-agent-activity', label: 'Toggle Agent Activity Panel', run: () => togglePanel('agent-activity') },
     { id: 'regenerate', label: 'Regenerate Last Reply', hint: 'Ctrl+R', run: () => regenerateLastResponse() },
     { id: 'copy-last-reply', label: 'Copy Last Reply', hint: 'Ctrl+Shift+C', run: () => {
       for (let j = messages.length - 1; j >= 0; j--) {
@@ -4450,6 +4461,15 @@ ${lines.join('\n')}`;
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
+               {/* Empty-state placeholder (#438): without this the dropdown renders
+                   zero options and is a blank, unexplained control on fresh installs. */}
+               {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
+                 <option value="" disabled>
+                   {ollamaConnected === false
+                     ? 'No models — is Ollama running?'
+                     : 'No models — pull one (e.g. ollama pull llama3)'}
+                 </option>
+               )}
                {starredModels.length > 0 && !activePresetId && (
                  <optgroup label="— ★ Starred —">
                    {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
@@ -4681,6 +4701,24 @@ ${lines.join('\n')}`;
                  >
                    ▶
                  </button>
+                 {/* New dock-panel toggles (M176): code search, source control, checkpoints, activity */}
+                 {([
+                   { id: 'code-search', icon: '🔎', label: 'Code Search' },
+                   { id: 'source-control', icon: '⑂', label: 'Source Control' },
+                   { id: 'checkpoints', icon: '🕰', label: 'Checkpoints' },
+                   { id: 'agent-activity', icon: '📡', label: 'Agent Activity' },
+                 ] as const).map(p => (
+                   <button
+                     key={p.id}
+                     onClick={() => togglePanel(p.id)}
+                     title={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label.toLowerCase()} panel`}
+                     aria-label={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label} panel`}
+                     aria-pressed={isPanelOpen(p.id)}
+                     className={`p-2 rounded-md transition-colors ${isPanelOpen(p.id) ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                   >
+                     {p.icon}
+                   </button>
+                 ))}
                  <ConversationStatsButton
                    stats={computeConversationStats(messages)}
                    dark={dark}
@@ -4733,10 +4771,15 @@ ${lines.join('\n')}`;
           </div>
         )}
 
-        {/* Messages - Responsive: full width on mobile, padded on desktop */}
+        {/* Messages - Responsive: full width on mobile, padded on desktop.
+            role="log" + aria-live announce streamed assistant replies to screen
+            readers (#439); without this the app's core output is silent to AT. */}
         <div
           ref={messagesContainerRef}
           data-testid="messages-container"
+          role="log"
+          aria-live="polite"
+          aria-label="Conversation messages"
           className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 relative"
         >
           {/* Context limit warning (#319) */}

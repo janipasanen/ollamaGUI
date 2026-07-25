@@ -56,6 +56,34 @@ describe('SourceControlPanel (#434)', () => {
     await waitFor(() => expect(calls).toContain('git_stage'));
   });
 
+  it('surfaces a stage failure in an alert instead of swallowing it (#441)', async () => {
+    gitMocks.invoke = async (cmd) => {
+      if (cmd === 'git_status') return { staged: [], unstaged: ['b.ts'], untracked: [] };
+      if (cmd === 'git_stage') throw new Error('index.lock exists');
+      return undefined;
+    };
+    render(<SourceControlPanel dark={false} />);
+    await waitFor(() => expect(screen.getByText('b.ts')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Stage b.ts'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Stage failed for b.ts/));
+    expect(screen.getByRole('alert')).toHaveTextContent(/index.lock/);
+  });
+
+  it('shows a loading placeholder instead of a stale diff while fetching (#442)', async () => {
+    let resolveDiff: (v: any) => void = () => {};
+    gitMocks.invoke = async (cmd) => {
+      if (cmd === 'git_status') return { staged: [], unstaged: ['b.ts'], untracked: [] };
+      if (cmd === 'git_diff') return new Promise((res) => { resolveDiff = res; });
+      return undefined;
+    };
+    render(<SourceControlPanel dark={false} />);
+    await waitFor(() => expect(screen.getByText('b.ts')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('b.ts'));
+    await waitFor(() => expect(screen.getByText(/Loading diff…/)).toBeInTheDocument());
+    resolveDiff({ diff: '+done' });
+    await waitFor(() => expect(screen.getByText('+done')).toBeInTheDocument());
+  });
+
   it('shows "Working tree clean" when there are no changes', async () => {
     gitMocks.invoke = async () => ({ staged: [], unstaged: [], untracked: [] });
     render(<SourceControlPanel dark={false} />);

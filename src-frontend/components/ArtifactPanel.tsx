@@ -31,9 +31,13 @@ export async function openDocumentPath(path: string): Promise<void> {
       await (opener as any).openPath(path);
     } else if (typeof (opener as any).open === 'function') {
       await (opener as any).open(path);
+    } else {
+      throw new Error('opener plugin has no open/openPath');
     }
   } catch (e) {
-    console.warn(`[artifact] openDocumentPath unavailable: ${e}`);
+    // Re-throw so the UI can surface the failure instead of a silent no-op (#443).
+    console.warn(`[artifact] openDocumentPath failed: ${e}`);
+    throw new Error(`Could not open the document: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -50,7 +54,7 @@ export async function exportDocumentPath(path: string): Promise<void> {
   try {
     const { save } = await import('@tauri-apps/plugin-dialog');
     const dest = await save({ defaultPath: path.split(/[\\/]/).pop() ?? 'document' });
-    if (!dest) return;
+    if (!dest) return; // user cancelled — not an error
 
     const { invoke } = await import('@tauri-apps/api/core');
     const command = navigator.platform.startsWith('Win')
@@ -58,7 +62,9 @@ export async function exportDocumentPath(path: string): Promise<void> {
       : `cp "${path}" "${dest}"`;
     await invoke('run_cli', { command });
   } catch (e) {
-    console.warn(`[artifact] exportDocumentPath unavailable: ${e}`);
+    // Re-throw so the UI can surface the failure instead of a silent no-op (#443).
+    console.warn(`[artifact] exportDocumentPath failed: ${e}`);
+    throw new Error(`Could not save the document: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -70,6 +76,37 @@ export const _mocks = {
 
 function isDocumentArtifact(a: AnyArtifact | null): a is DocumentArtifactData {
   return !!a && (a as DocumentArtifactData).kind === 'document';
+}
+
+/**
+ * Wraps DocumentArtifact so Open/Save failures surface as an inline alert
+ * instead of vanishing into console.warn (#443).
+ */
+function DocumentArtifactWithFeedback({ data, dark }: { data: DocumentArtifactData; dark: boolean }): React.ReactElement {
+  const [actionError, setActionError] = useState<string | null>(null);
+  const run = async (fn: (path: string) => Promise<void>, path: string) => {
+    setActionError(null);
+    try {
+      await fn(path);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <div className="flex flex-col h-full">
+      {actionError && (
+        <p role="alert" className="px-3 py-1.5 text-xs text-red-400 shrink-0">{actionError}</p>
+      )}
+      <div className="flex-1 min-h-0">
+        <DocumentArtifact
+          data={data}
+          dark={dark}
+          onOpen={(p) => { void run(openDocumentPath, p); }}
+          onExport={(p) => { void run(exportDocumentPath, p); }}
+        />
+      </div>
+    </div>
+  );
 }
 
 function ArtifactPanel({ artifact, dark }: ArtifactPanelProps): React.ReactElement | null {
@@ -90,14 +127,7 @@ function ArtifactPanel({ artifact, dark }: ArtifactPanelProps): React.ReactEleme
   }
 
   if (isDocumentArtifact(artifact)) {
-    return (
-      <DocumentArtifact
-        data={artifact}
-        dark={dark}
-        onOpen={openDocumentPath}
-        onExport={exportDocumentPath}
-      />
-    );
+    return <DocumentArtifactWithFeedback data={artifact} dark={dark} />;
   }
 
   return (

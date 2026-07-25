@@ -47,6 +47,8 @@ export default function SourceControlPanel({ dark }: SourceControlPanelProps) {
   const openDiff = useCallback(async (file: string, staged: boolean) => {
     if (!root) return;
     setSelected({ file, staged });
+    // Show a loading placeholder instead of the previous file's stale diff (#442).
+    setDiff('Loading diff…');
     try {
       const d = await gitDiff(root, file, staged);
       setDiff(d.diff || '(no diff)');
@@ -55,17 +57,39 @@ export default function SourceControlPanel({ dark }: SourceControlPanelProps) {
     }
   }, [root]);
 
+  // Per-file in-flight marker so a double-click can't fire the command twice,
+  // and failures surface in a dedicated action-error line (#441). A separate
+  // channel from `error` because refresh() clears that one on success.
+  const [pendingFile, setPendingFile] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const doStage = useCallback(async (file: string) => {
-    if (!root) return;
-    await gitStage(root, [file]).catch(() => {});
+    if (!root || pendingFile) return;
+    setPendingFile(file);
+    setActionError(null);
+    try {
+      await gitStage(root, [file]);
+    } catch (e) {
+      setActionError(`Stage failed for ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPendingFile(null);
+    }
     await refresh();
-  }, [root, refresh]);
+  }, [root, refresh, pendingFile]);
 
   const doUnstage = useCallback(async (file: string) => {
-    if (!root) return;
-    await gitUnstage(root, [file]).catch(() => {});
+    if (!root || pendingFile) return;
+    setPendingFile(file);
+    setActionError(null);
+    try {
+      await gitUnstage(root, [file]);
+    } catch (e) {
+      setActionError(`Unstage failed for ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPendingFile(null);
+    }
     await refresh();
-  }, [root, refresh]);
+  }, [root, refresh, pendingFile]);
 
   const rowCls = `group/scrow w-full flex items-center gap-1 px-2 py-0.5 text-xs ${dark ? 'hover:bg-zinc-800' : 'hover:bg-zinc-100'}`;
   const muted = dark ? 'text-zinc-500' : 'text-zinc-400';
@@ -86,11 +110,11 @@ export default function SourceControlPanel({ dark }: SourceControlPanelProps) {
               {f}
             </button>
             {section === 'staged' ? (
-              <button type="button" onClick={() => doUnstage(f)} aria-label={`Unstage ${f}`} title="Unstage"
-                className={`shrink-0 opacity-0 group-hover/scrow:opacity-100 px-1 ${muted} hover:text-red-400`}>−</button>
+              <button type="button" disabled={pendingFile !== null} onClick={() => doUnstage(f)} aria-label={`Unstage ${f}`} title="Unstage"
+                className={`shrink-0 opacity-0 group-hover/scrow:opacity-100 px-1 ${muted} hover:text-red-400 disabled:opacity-40`}>{pendingFile === f ? '…' : '−'}</button>
             ) : (
-              <button type="button" onClick={() => doStage(f)} aria-label={`Stage ${f}`} title="Stage"
-                className={`shrink-0 opacity-0 group-hover/scrow:opacity-100 px-1 ${muted} hover:text-green-400`}>+</button>
+              <button type="button" disabled={pendingFile !== null} onClick={() => doStage(f)} aria-label={`Stage ${f}`} title="Stage"
+                className={`shrink-0 opacity-0 group-hover/scrow:opacity-100 px-1 ${muted} hover:text-green-400 disabled:opacity-40`}>{pendingFile === f ? '…' : '+'}</button>
             )}
           </div>
         ))}
@@ -110,6 +134,7 @@ export default function SourceControlPanel({ dark }: SourceControlPanelProps) {
 
       <div className={`overflow-y-auto text-xs ${diff ? 'max-h-[45%]' : 'flex-1'}`}>
         {error && <p className="px-2 py-2 text-red-400">{error}</p>}
+        {actionError && <p className="px-2 py-1 text-red-400" role="alert">{actionError}</p>}
         {loading && !status && <p className={`px-2 py-2 ${muted}`}>Loading…</p>}
         {empty && <p className={`px-2 py-2 ${muted}`}>Working tree clean.</p>}
         {status && !empty && (
