@@ -58,6 +58,7 @@ import './components/FileTreePanel';
 import './components/TerminalPanel';
 import { registerFileTreePanel } from './components/FileTreePanel';
 import { registerTerminalPanel } from './components/TerminalPanel';
+import { registerCodeSearchPanel } from './components/CodeSearchPanel';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import { checkLibreOffice } from './services/documents';
@@ -1120,6 +1121,7 @@ const App: React.FC = () => {
       registerTerminalTool();
       registerTerminalPanel();
       registerFileTreePanel();
+      registerCodeSearchPanel(); // workspace grep UI (#431)
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
       // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
