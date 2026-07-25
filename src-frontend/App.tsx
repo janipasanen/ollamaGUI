@@ -61,6 +61,8 @@ import { registerTerminalPanel } from './components/TerminalPanel';
 import { registerCodeSearchPanel } from './components/CodeSearchPanel';
 import { registerSourceControlPanel } from './components/SourceControlPanel';
 import { registerCheckpointPanel } from './components/CheckpointPanel';
+import { registerAgentActivityPanel } from './components/AgentActivityPanel';
+import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import { checkLibreOffice } from './services/documents';
@@ -1126,6 +1128,7 @@ const App: React.FC = () => {
       registerCodeSearchPanel(); // workspace grep UI (#431)
       registerSourceControlPanel(); // git working-tree UI (#434)
       registerCheckpointPanel(); // checkpoint browser / rewind UI (#435)
+      registerAgentActivityPanel(); // live tool-call timeline (#432)
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
       // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
@@ -3420,6 +3423,11 @@ ${lines.join('\n')}`;
           onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
             setAgentStatus(`Running: ${toolCallName(toolCall)}`);
+            // Feed the agent-activity timeline (#432).
+            try {
+              const args = (toolCall as any).function?.arguments ?? (toolCall as any).arguments;
+              pushActivity('call', toolCallName(toolCall), args ? JSON.stringify(args) : undefined);
+            } catch { /* non-fatal */ }
             setMessages(prev => [
               ...prev,
               {
@@ -3431,6 +3439,7 @@ ${lines.join('\n')}`;
           },
           onToolResult: (toolResult) => {
             setAgentStatus('Thinking…');
+            pushActivity('result', toolResult.name, toolResult.content); // (#432)
             setMessages(prev => [
               ...prev,
               {
