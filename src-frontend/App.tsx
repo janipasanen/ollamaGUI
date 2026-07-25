@@ -764,6 +764,9 @@ const App: React.FC = () => {
   const trunkMessagesRef = useRef<Message[]>([]);
   // /redo stack: stores exchanges dropped by /undo so they can be restored (#389).
   const redoStackRef = useRef<{ messages: Message[]; branch: BranchState }[]>([]);
+  // Recursion-depth guard for spawn_subagent (#429). Sub-agents run sequentially
+  // within the tool loop, so a single counter correctly tracks nesting depth.
+  const subagentDepthRef = useRef(0);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
 
@@ -1141,7 +1144,7 @@ const App: React.FC = () => {
       // Register spawn_subagent tool (#104) — isolated sub-agent with scoped context
       toolRegistry.registerTool({
         name: 'spawn_subagent',
-        description: 'Spawn an isolated sub-agent with a fresh context to complete a focused task. Only the final result returns to the parent context. Depth is bounded to prevent recursion.',
+        description: 'Spawn an isolated sub-agent with a fresh context to complete a focused task. Only the final result returns to the parent context. Nesting depth is bounded (max 2) to prevent runaway recursion.',
         parameters: {
           type: 'object',
           properties: {
@@ -1151,21 +1154,39 @@ const App: React.FC = () => {
           required: ['task'],
         },
         execute: async (params: { task: string; tools?: string[] }) => {
-          let result = '';
-          const subMessages: Message[] = [
-            { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
-            { role: 'user', content: params.task },
-          ];
-          const gen = agenticChatStream({
-            model,
-            messages: subMessages,
-            maxIterations: 3, // bounded depth
-            endpoint: url('/api/chat'),
-            toolFilter: params.tools && params.tools.length > 0 ? params.tools : undefined,
-            onAssistantMessage: (msg) => { result = msg; },
-          });
-          for await (const _m of gen) { /* consume */ }
-          return { result };
+          // Enforce a real recursion-depth bound (#429). The previous version only
+          // capped maxIterations, so a sub-agent — which received spawn_subagent in
+          // its toolset — could nest sub-agents without limit.
+          const MAX_SUBAGENT_DEPTH = 2;
+          if (subagentDepthRef.current >= MAX_SUBAGENT_DEPTH) {
+            return { error: `Max sub-agent nesting depth (${MAX_SUBAGENT_DEPTH}) reached — refusing to spawn another sub-agent.` };
+          }
+          subagentDepthRef.current += 1;
+          try {
+            let result = '';
+            const subMessages: Message[] = [
+              { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
+              { role: 'user', content: params.task },
+            ];
+            // If the caller did not scope the toolset, deny the child spawn_subagent
+            // so it cannot recurse further (defense-in-depth beyond the counter).
+            const allToolNames = toolRegistry.getAllTools().map(t => t.name).filter(n => n !== 'spawn_subagent');
+            const toolFilter = params.tools && params.tools.length > 0
+              ? params.tools.filter(n => n !== 'spawn_subagent')
+              : allToolNames;
+            const gen = agenticChatStream({
+              model,
+              messages: subMessages,
+              maxIterations: 3,
+              endpoint: url('/api/chat'),
+              toolFilter,
+              onAssistantMessage: (msg) => { result = msg; },
+            });
+            for await (const _m of gen) { /* consume */ }
+            return { result };
+          } finally {
+            subagentDepthRef.current -= 1;
+          }
         },
       });
       // Register remember tool (#95) — agent can persist facts across sessions

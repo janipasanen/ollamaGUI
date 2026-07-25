@@ -69,6 +69,36 @@ export async function deleteFile(path: string): Promise<void> {
   return tauriInvoke<void>('delete_file', { path });
 }
 
+/** A single file:line match from {@link searchFiles} (#420). */
+export interface SearchHit {
+  file: string;
+  line: number;
+  text: string;
+}
+
+export interface SearchOptions {
+  isRegex?: boolean;
+  caseSensitive?: boolean;
+  includeGlob?: string;
+  maxResults?: number;
+}
+
+/** Literal or regex code search across the workspace (#420). */
+export async function searchFiles(query: string, opts: SearchOptions = {}): Promise<SearchHit[]> {
+  return tauriInvoke<SearchHit[]>('search_files', {
+    query,
+    isRegex: opts.isRegex ?? false,
+    caseSensitive: opts.caseSensitive ?? false,
+    includeGlob: opts.includeGlob ?? null,
+    maxResults: opts.maxResults ?? null,
+  });
+}
+
+/** Resolve a path glob (e.g. `src/**/*.ts`) to matching workspace-relative paths (#420). */
+export async function globFiles(pattern: string, maxResults?: number): Promise<string[]> {
+  return tauriInvoke<string[]>('glob_files', { pattern, maxResults: maxResults ?? null });
+}
+
 // ── Tool registration ─────────────────────────────────────────────────────────
 
 export function registerFileTools(): void {
@@ -238,6 +268,57 @@ export function registerFileTools(): void {
         }
       }
       return { success: allOk, applied: results.filter(r => r.success).length, total: ops.length, results };
+    },
+  });
+
+  // Literal / regex code search across the workspace (#420).
+  toolRegistry.registerTool({
+    name: 'search_files',
+    description:
+      'Search the workspace for a string or regex and return structured file:line matches. ' +
+      'Prefer this over shell grep — it is fast, needs no approval, and skips node_modules/.git/target/dist. ' +
+      'Set is_regex:true for a regex pattern. Optionally restrict to files matching include_glob (e.g. "src/**/*.ts").',
+    readOnly: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The text or regex to search for.' },
+        is_regex: { type: 'boolean', description: 'Treat query as a regular expression (default false).' },
+        case_sensitive: { type: 'boolean', description: 'Case-sensitive match (default false).' },
+        include_glob: { type: 'string', description: 'Only search files whose path matches this glob (e.g. "**/*.rs").' },
+        max_results: { type: 'number', description: 'Max hits to return (default 200).' },
+      },
+      required: ['query'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      const hits = await searchFiles(params.query as string, {
+        isRegex: params.is_regex as boolean | undefined,
+        caseSensitive: params.case_sensitive as boolean | undefined,
+        includeGlob: params.include_glob as string | undefined,
+        maxResults: params.max_results as number | undefined,
+      });
+      return { count: hits.length, hits };
+    },
+  });
+
+  // Glob / find-files-by-pattern (#420).
+  toolRegistry.registerTool({
+    name: 'glob_files',
+    description:
+      'Find files whose workspace-relative path matches a glob pattern (** across dirs, * within a segment, ?). ' +
+      'Example: "src/**/*.test.ts". Skips node_modules/.git/target/dist. Returns a sorted list of paths.',
+    readOnly: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'The glob pattern, e.g. "src/**/*.ts".' },
+        max_results: { type: 'number', description: 'Max paths to return (default 500).' },
+      },
+      required: ['pattern'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      const files = await globFiles(params.pattern as string, params.max_results as number | undefined);
+      return { count: files.length, files };
     },
   });
 }

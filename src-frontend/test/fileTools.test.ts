@@ -139,4 +139,40 @@ describe('registerFileTools (#83)', () => {
     const result = await tool.execute({ path: 'f.ts', old_string: 'a', new_string: 'b' });
     expect((result as any).success).toBe(true);
   });
+
+  it('registers search_files and glob_files (#420)', () => {
+    expect(toolRegistry.getTool('search_files')).toBeDefined();
+    expect(toolRegistry.getTool('glob_files')).toBeDefined();
+    expect(toolRegistry.getTool('search_files')?.readOnly).toBe(true);
+    expect(toolRegistry.getTool('glob_files')?.readOnly).toBe(true);
+  });
+
+  it('search_files tool passes options and returns { count, hits } (#420)', async () => {
+    let captured: any = null;
+    _mocks.invoke = async (cmd, args) => {
+      captured = { cmd, args };
+      return [{ file: 'src/a.ts', line: 3, text: 'const x = 1' }];
+    };
+    const tool = toolRegistry.getTool('search_files')!;
+    const result = await tool.execute({ query: 'const', is_regex: false, include_glob: 'src/**/*.ts' });
+    expect(captured.cmd).toBe('search_files');
+    expect(captured.args.query).toBe('const');
+    expect(captured.args.includeGlob).toBe('src/**/*.ts');
+    expect((result as any).count).toBe(1);
+    expect((result as any).hits[0].line).toBe(3);
+  });
+
+  it('glob_files tool passes pattern and returns { count, files } (#420)', async () => {
+    let captured: any = null;
+    _mocks.invoke = async (cmd, args) => {
+      captured = { cmd, args };
+      return ['src/a.ts', 'src/b.ts'];
+    };
+    const tool = toolRegistry.getTool('glob_files')!;
+    const result = await tool.execute({ pattern: 'src/**/*.ts' });
+    expect(captured.cmd).toBe('glob_files');
+    expect(captured.args.pattern).toBe('src/**/*.ts');
+    expect((result as any).count).toBe(2);
+    expect((result as any).files).toContain('src/b.ts');
+  });
 });

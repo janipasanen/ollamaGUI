@@ -1325,6 +1325,163 @@ async fn delete_file(path: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+// ── Code search: literal/regex grep + glob (#420) ────────────────────────────
+
+/// Directories skipped during workspace-wide search/glob (noise + VCS + builds).
+const SEARCH_SKIP_DIRS: &[&str] = &[
+    "node_modules", ".git", "target", "dist", "build", ".next", ".vite", ".turbo",
+];
+
+#[derive(serde::Serialize)]
+struct SearchHit {
+    /// Path relative to the workspace root, forward-slash separated.
+    file: String,
+    /// 1-indexed line number.
+    line: u32,
+    /// The matching line (trimmed to 400 chars).
+    text: String,
+}
+
+/// Convert a path glob (`**`, `*`, `?`) into an anchored regex over
+/// forward-slash relative paths. `**` matches across separators (and an
+/// optional trailing `/`); `*` and `?` stay within a single path segment.
+fn glob_to_regex(glob: &str) -> String {
+    let bytes = glob.as_bytes();
+    let mut re = String::from("^");
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        match c {
+            '*' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                    re.push_str(".*");
+                    i += 1; // consume second '*'
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                        i += 1; // consume the '/' so `**/` matches zero dirs too
+                    }
+                } else {
+                    re.push_str("[^/]*");
+                }
+            }
+            '?' => re.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\' => {
+                re.push('\\');
+                re.push(c);
+            }
+            _ => re.push(c),
+        }
+        i += 1;
+    }
+    re.push('$');
+    re
+}
+
+/// True if `dir_name` is a directory we should not descend into.
+fn is_skip_dir(dir_name: &str) -> bool {
+    SEARCH_SKIP_DIRS.contains(&dir_name)
+}
+
+/// Literal or regex search for `query` across text files in the workspace.
+/// Returns structured file:line hits (relative paths), capped at `max_results`.
+#[tauri::command]
+async fn search_files(
+    query: String,
+    is_regex: Option<bool>,
+    case_sensitive: Option<bool>,
+    include_glob: Option<String>,
+    max_results: Option<usize>,
+) -> Result<Vec<SearchHit>, String> {
+    let root = {
+        let guard = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+    };
+    let max = max_results.unwrap_or(200).min(2000);
+    let case_sensitive = case_sensitive.unwrap_or(false);
+    let use_regex = is_regex.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let pattern = if use_regex { query.clone() } else { regex::escape(&query) };
+        let matcher = regex::RegexBuilder::new(&pattern)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .map_err(|e| format!("Invalid pattern: {e}"))?;
+        let include = match include_glob {
+            Some(g) if !g.is_empty() => Some(
+                regex::Regex::new(&glob_to_regex(&g)).map_err(|e| format!("Invalid include glob: {e}"))?,
+            ),
+            _ => None,
+        };
+        let mut hits: Vec<SearchHit> = Vec::new();
+        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
+            !(e.file_type().is_dir()
+                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+        });
+        for entry in walker {
+            let entry = match entry { Ok(e) => e, Err(_) => continue };
+            if !entry.file_type().is_file() { continue; }
+            let rel = entry
+                .path()
+                .strip_prefix(&root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if let Some(ref inc) = include {
+                if !inc.is_match(&rel) { continue; }
+            }
+            let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
+            for (idx, line) in content.lines().enumerate() {
+                if matcher.is_match(line) {
+                    hits.push(SearchHit {
+                        file: rel.clone(),
+                        line: (idx as u32) + 1,
+                        text: line.chars().take(400).collect(),
+                    });
+                    if hits.len() >= max { return Ok(hits); }
+                }
+            }
+        }
+        Ok(hits)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Resolve a path glob (e.g. `src/**/*.ts`) to matching workspace-relative
+/// file paths, capped at `max_results`.
+#[tauri::command]
+async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<String>, String> {
+    let root = {
+        let guard = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+    };
+    let max = max_results.unwrap_or(500).min(5000);
+    tauri::async_runtime::spawn_blocking(move || {
+        let re = regex::Regex::new(&glob_to_regex(&pattern)).map_err(|e| format!("Invalid glob: {e}"))?;
+        let mut out: Vec<String> = Vec::new();
+        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
+            !(e.file_type().is_dir()
+                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+        });
+        for entry in walker {
+            let entry = match entry { Ok(e) => e, Err(_) => continue };
+            if !entry.file_type().is_file() { continue; }
+            let rel = entry
+                .path()
+                .strip_prefix(&root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if re.is_match(&rel) {
+                out.push(rel);
+                if out.len() >= max { break; }
+            }
+        }
+        out.sort();
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─── Git integration commands (#103) ─────────────────────────────────────────
 //
 // Thin wrappers around `git` subprocess calls. All operations are scoped to
@@ -1942,6 +2099,8 @@ pub fn run() {
             list_dir,
             apply_edit,
             delete_file,
+            search_files,
+            glob_files,
             terminal_run,
             terminal_kill,
             git_status,
@@ -1997,6 +2156,49 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::{glob_to_regex, is_skip_dir};
+
+    #[test]
+    fn glob_star_stays_within_segment() {
+        let re = regex::Regex::new(&glob_to_regex("src/*.ts")).unwrap();
+        assert!(re.is_match("src/App.ts"));
+        assert!(!re.is_match("src/sub/App.ts")); // * does not cross '/'
+        assert!(!re.is_match("src/App.tsx"));
+    }
+
+    #[test]
+    fn glob_globstar_crosses_segments_and_zero_dirs() {
+        let re = regex::Regex::new(&glob_to_regex("**/*.ts")).unwrap();
+        assert!(re.is_match("a.ts"));            // zero dirs
+        assert!(re.is_match("src/a.ts"));        // one dir
+        assert!(re.is_match("src/deep/a.ts"));   // many dirs
+        assert!(!re.is_match("src/a.rs"));
+    }
+
+    #[test]
+    fn glob_question_matches_single_char() {
+        let re = regex::Regex::new(&glob_to_regex("file?.ts")).unwrap();
+        assert!(re.is_match("file1.ts"));
+        assert!(!re.is_match("file.ts"));
+        assert!(!re.is_match("file12.ts"));
+    }
+
+    #[test]
+    fn glob_escapes_regex_metachars() {
+        // A dot in the glob is literal, not "any char".
+        let re = regex::Regex::new(&glob_to_regex("a.b.txt")).unwrap();
+        assert!(re.is_match("a.b.txt"));
+        assert!(!re.is_match("axbxtxt"));
+    }
+
+    #[test]
+    fn skip_dirs_covers_common_noise() {
+        assert!(is_skip_dir("node_modules"));
+        assert!(is_skip_dir(".git"));
+        assert!(is_skip_dir("target"));
+        assert!(!is_skip_dir("src"));
+    }
+
     #[test]
     fn system_memory_is_plausible() {
         let mut sys = sysinfo::System::new();
