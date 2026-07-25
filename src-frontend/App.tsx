@@ -8213,6 +8213,10 @@ ${lines.join('\n')}`;
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-compact</span>
                     <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); safeSetItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
+                  </div>
+                  {/* Own labeled row (#449) — was an unlabeled toggle jammed into the Auto-compact row. */}
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Resume last conversation on startup</span>
                     <Toggle checked={resumeLastSession} onChange={() => { const v = !resumeLastSession; setResumeLastSession(v); safeSetItem('ollama_gui_resume_last_session', JSON.stringify(v)); }} dark={dark} label="Resume last conversation on startup" />
                   </div>
                   <div className="flex items-center justify-between mb-2">

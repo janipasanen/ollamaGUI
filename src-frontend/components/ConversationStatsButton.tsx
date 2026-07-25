@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ConversationStats } from '../services/conversationStats';
 import { formatTokenCount } from '../services/tokenEstimate';
 
@@ -14,6 +14,15 @@ interface Props {
  */
 export function ConversationStatsButton({ stats, dark }: Props) {
   const [open, setOpen] = useState(false);
+
+  // Escape dismisses the popover (#449), matching the app's other overlays.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
   if (!stats || stats.totalMessages === 0) return null;
 
   const rows: Array<[string, string]> = [

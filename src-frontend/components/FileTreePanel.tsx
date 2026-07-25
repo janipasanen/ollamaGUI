@@ -57,6 +57,8 @@ function TreeNode({
   const [children, setChildren] = useState<DirEntry[]>([]);
   // A failed expansion must not look identical to an empty folder (#446).
   const [childError, setChildError] = useState<string | null>(null);
+  // Transient ✓ after copying the path (#449).
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (entry.is_dir && isExpanded) {
@@ -92,11 +94,16 @@ function TreeNode({
         <span className="truncate">{entry.name}</span>
         </button>
         <button
-          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(entry.path); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(entry.path);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
           aria-label={`Copy path: ${entry.name}`}
           title="Copy path"
-          className={`shrink-0 opacity-0 group-hover/node:opacity-100 transition-opacity px-1 rounded ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
-        >⧉</button>
+          className={`shrink-0 transition-opacity px-1 rounded ${copied ? 'opacity-100 text-green-400' : `opacity-0 group-hover/node:opacity-100 ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}`}
+        >{copied ? '✓' : '⧉'}</button>
       </div>
       {entry.is_dir && isExpanded && (
         <div data-testid={`file-tree-children-${entry.path.replace(/[^a-zA-Z0-9]/g, '-')}`}>

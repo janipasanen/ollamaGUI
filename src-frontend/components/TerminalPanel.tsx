@@ -35,6 +35,9 @@ function statusClass(status: TerminalSession['status'], dark: boolean): string {
 function TerminalSessionView({ session, dark }: { session: TerminalSession; dark: boolean }): React.ReactElement {
   const [lines, setLines] = useState<TerminalLine[]>(session.lines);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Stop-button feedback (#449): in-flight state + surfaced failure.
+  const [killing, setKilling] = useState(false);
+  const [killError, setKillError] = useState<string | null>(null);
 
   useEffect(() => {
     setLines(session.lines);
@@ -57,14 +60,26 @@ function TerminalSessionView({ session, dark }: { session: TerminalSession; dark
         </div>
         {session.status === 'running' && (
           <button
-            onClick={() => { void killTerminal(session.id); }}
+            disabled={killing}
+            onClick={async () => {
+              setKilling(true);
+              setKillError(null);
+              try {
+                await killTerminal(session.id);
+              } catch (e) {
+                setKillError(`Stop failed: ${e instanceof Error ? e.message : String(e)}`);
+              } finally {
+                setKilling(false);
+              }
+            }}
             aria-label="Kill session"
-            className={`text-xs px-2 py-0.5 rounded transition-colors ${dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
+            className={`text-xs px-2 py-0.5 rounded transition-colors disabled:opacity-50 ${dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
           >
-            Stop
+            {killing ? 'Stopping…' : 'Stop'}
           </button>
         )}
       </div>
+      {killError && <p role="alert" className="px-3 py-1 text-[11px] text-red-400">{killError}</p>}
       <div data-testid="terminal-lines" className="flex-1 overflow-auto p-2 font-mono text-xs leading-relaxed">
         {lines.length === 0 && (
           <div className={`italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Waiting for output…</div>
