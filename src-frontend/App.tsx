@@ -1209,6 +1209,63 @@ const App: React.FC = () => {
           }
         },
       });
+      // Register spawn_parallel_subagents tool (#430) — fan out several focused
+      // sub-agents concurrently and collect all results. Reuses the same depth
+      // guard + tool scoping as spawn_subagent so recursion stays bounded.
+      toolRegistry.registerTool({
+        name: 'spawn_parallel_subagents',
+        description: 'Run several focused sub-agents in parallel — each with a fresh context on its own task — and collect all their final answers. Use to decompose a task into independent parts that can run concurrently. Concurrency is capped.',
+        parameters: {
+          type: 'object',
+          properties: {
+            tasks: { type: 'array', items: { type: 'string' }, description: 'Independent tasks, one per sub-agent.' },
+            tools: { type: 'array', items: { type: 'string' }, description: 'Optional tool names to give each sub-agent. Leave empty for all tools.' },
+          },
+          required: ['tasks'],
+        },
+        execute: async (params: { tasks: string[]; tools?: string[] }) => {
+          const MAX_SUBAGENT_DEPTH = 2;
+          const MAX_PARALLEL = 4;
+          if (subagentDepthRef.current >= MAX_SUBAGENT_DEPTH) {
+            return { error: `Max sub-agent nesting depth (${MAX_SUBAGENT_DEPTH}) reached — refusing to fan out sub-agents.` };
+          }
+          const tasks = Array.isArray(params.tasks) ? params.tasks.filter(t => typeof t === 'string' && t.trim()) : [];
+          if (tasks.length === 0) return { error: 'No tasks provided.' };
+          const limited = tasks.slice(0, MAX_PARALLEL);
+          subagentDepthRef.current += 1;
+          try {
+            const spawnNames = new Set(['spawn_subagent', 'spawn_parallel_subagents']);
+            const allToolNames = toolRegistry.getAllTools().map(t => t.name).filter(n => !spawnNames.has(n));
+            const toolFilter = params.tools && params.tools.length > 0
+              ? params.tools.filter(n => !spawnNames.has(n))
+              : allToolNames;
+            const runOne = async (task: string): Promise<string> => {
+              let result = '';
+              const gen = agenticChatStream({
+                model,
+                messages: [
+                  { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
+                  { role: 'user', content: task },
+                ],
+                maxIterations: 3,
+                endpoint: url('/api/chat'),
+                toolFilter,
+                onAssistantMessage: (msg) => { result = msg; },
+              });
+              for await (const _m of gen) { /* consume */ }
+              return result;
+            };
+            const settled = await Promise.allSettled(limited.map(runOne));
+            const results = settled.map((s, i) => ({
+              task: limited[i],
+              result: s.status === 'fulfilled' ? s.value : `Error: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`,
+            }));
+            return { ranInParallel: limited.length, dropped: tasks.length - limited.length, results };
+          } finally {
+            subagentDepthRef.current -= 1;
+          }
+        },
+      });
       // Register remember tool (#95) — agent can persist facts across sessions
       toolRegistry.registerTool({
         name: 'remember',
