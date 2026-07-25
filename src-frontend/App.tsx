@@ -62,6 +62,7 @@ import { registerCodeSearchPanel } from './components/CodeSearchPanel';
 import { registerSourceControlPanel } from './components/SourceControlPanel';
 import { registerCheckpointPanel } from './components/CheckpointPanel';
 import { registerAgentActivityPanel } from './components/AgentActivityPanel';
+import { useModalFocus } from './components/useModalFocus';
 import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
@@ -873,6 +874,15 @@ const App: React.FC = () => {
   // Plan-approval edit mode (#409): lets the user tweak the published plan
   // steps before approving (Codex plan-edit parity).
   const [planEditDraft, setPlanEditDraft] = useState<string[] | null>(null);
+
+  // Modal focus management (#447): focus-in, Tab trap, focus-restore for the
+  // main overlays. Each ref is attached to its dialog element in the JSX.
+  const settingsModalRef = useModalFocus<HTMLDivElement>(isSettingsOpen);
+  const helpModalRef = useModalFocus<HTMLDivElement>(showHelp);
+  const cliApprovalModalRef = useModalFocus<HTMLDivElement>(!!pendingApproval);
+  const toolApprovalModalRef = useModalFocus<HTMLDivElement>(!!pendingToolApproval);
+  const planApprovalModalRef = useModalFocus<HTMLDivElement>(!!pendingPlanApproval);
+  const promptPreviewModalRef = useModalFocus<HTMLDivElement>(!!promptPreview);
 
   // Message queue: enqueue prompts while a reply streams; auto-send FIFO (#137).
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -5845,7 +5855,7 @@ ${lines.join('\n')}`;
         {/* Settings Overlay */}
         {isSettingsOpen && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div role="dialog" aria-modal="true" aria-labelledby="settings-title" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
+            <div ref={settingsModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="settings-title" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-6">
@@ -8261,7 +8271,7 @@ ${lines.join('\n')}`;
         {/* Composed system-prompt preview (#376) */}
         {promptPreview && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className={`border w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+            <div ref={promptPreviewModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Composed system prompt preview" className={`border w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className={`flex items-center justify-between px-6 py-4 border-b shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
                 <h2 className="text-lg font-bold">Composed System Prompt</h2>
                 <div className="flex items-center gap-2">
@@ -8285,7 +8295,7 @@ ${lines.join('\n')}`;
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div role="dialog" aria-modal="true" aria-labelledby="help-title" className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
+            <div ref={helpModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="help-title" className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-6">
@@ -8460,11 +8470,12 @@ ${lines.join('\n')}`;
           }}
           onOpenDownload={() => { void openSource({ id: 'lo', label: 'LibreOffice', kind: 'url', url: 'https://www.libreoffice.org/download/download/' }); }}
           onDismiss={() => { markDismissed(); setShowLoOnboarding(false); }}
+          onClose={() => setShowLoOnboarding(false)}
         />
         {/* CLI Command Approval Modal */}
         {pendingApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div role="dialog" aria-modal="true" aria-label="Command approval required" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
+            <div ref={cliApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Command approval required" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
               <div className="flex justify-between items-center mb-4">
@@ -8530,7 +8541,7 @@ ${lines.join('\n')}`;
         {/* Tool approval modal (#88/#89/#189) — shown in plan/ask autonomy mode */}
         {pendingToolApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div role="dialog" aria-modal="true" aria-label="Agent tool-use approval" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+            <div ref={toolApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Agent tool-use approval" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
                   <span>🤖</span> Agent wants to use a tool
@@ -8576,7 +8587,7 @@ ${lines.join('\n')}`;
             plan un-approved. */}
         {pendingPlanApproval && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div role="dialog" aria-modal="true" aria-label="Approve plan to begin execution" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
+            <div ref={planApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Approve plan to begin execution" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
                   <span>📋</span> Approve plan to begin execution?

@@ -11,7 +11,7 @@
  * null when `open` is false so it can sit unconditionally in the tree.
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 
 export interface LibreOfficeOnboardingProps {
   open: boolean;
@@ -22,6 +22,12 @@ export interface LibreOfficeOnboardingProps {
   onOpenDownload: () => void;
   /** Dismiss the prompt for good. */
   onDismiss: () => void;
+  /**
+   * Close without the permanent dismissal (#447). Escape uses this when
+   * provided so a stray keypress doesn't silence the prompt forever; falls
+   * back to onDismiss otherwise.
+   */
+  onClose?: () => void;
 }
 
 export default function LibreOfficeOnboarding({
@@ -30,7 +36,18 @@ export default function LibreOfficeOnboarding({
   onDetect,
   onOpenDownload,
   onDismiss,
+  onClose,
 }: LibreOfficeOnboardingProps) {
+  // Escape dismisses the modal (#447) — temporarily via onClose when available.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') (onClose ?? onDismiss)();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose, onDismiss]);
+
   if (!open) return null;
 
   return (
