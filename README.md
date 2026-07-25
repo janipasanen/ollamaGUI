@@ -78,6 +78,60 @@ runs are fast. Make sure Ollama is running first.
 > (filesystem, terminal, git, documents, native browser preview, OS keychain) are
 > unavailable — use `npm run tauri dev` for the full app.
 
+## Building & installing the app
+
+One command builds the production app **and** the platform installers
+(`bundle.targets` is `"all"` in `src-tauri/tauri.conf.json`):
+
+```bash
+npm install          # once
+npm run tauri build
+```
+
+The first build compiles the whole Rust backend in release mode and takes a while;
+afterwards everything lands under `src-tauri/target/release/`:
+
+| Platform | Artifacts (under `src-tauri/target/release/bundle/`) | Install |
+|----------|------------------------------------------------------|---------|
+| **macOS** | `macos/ollama-gui.app`, `dmg/ollama-gui_0.1.0_<arch>.dmg` | Open the `.dmg` and drag **ollama-gui.app** to `/Applications` (or copy the `.app` there directly) |
+| **Windows** | `msi/ollama-gui_0.1.0_x64_en-US.msi`, `nsis/ollama-gui_0.1.0_x64-setup.exe` | Run either installer; it registers Start-menu shortcuts and an uninstaller |
+| **Linux** | `deb/ollama-gui_0.1.0_amd64.deb`, `rpm/ollama-gui-0.1.0-1.x86_64.rpm`, `appimage/ollama-gui_0.1.0_amd64.AppImage` | `sudo dpkg -i <file>.deb` / `sudo rpm -i <file>.rpm`, or `chmod +x` the AppImage and run it anywhere |
+
+Platform notes:
+
+- **Cross-compiling is not supported** — build on the OS you are targeting
+  (CI builds all three; see `.github/workflows/build.yml`).
+- **macOS**: the app is unsigned by default, so the first launch needs
+  right-click → *Open* (or `xattr -cr /Applications/ollama-gui.app`) to pass
+  Gatekeeper. To target a specific architecture use
+  `npm run tauri build -- --target aarch64-apple-darwin` (Apple Silicon) or
+  `x86_64-apple-darwin` (Intel); with both Rust targets installed,
+  `--target universal-apple-darwin` produces one binary that runs on both.
+- **Windows**: end users need the WebView2 runtime (preinstalled on Windows 11;
+  the installer bootstraps it on Windows 10 if missing).
+- **Linux**: the `.deb`/`.rpm` declare the WebKitGTK dependencies for you; the
+  AppImage bundles most of them. On the build machine install the
+  [Tauri v2 Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+  first (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev`, …).
+
+### Standalone binary
+
+Yes — Tauri compiles the entire frontend (`dist/`) **into** the executable, so the
+bare release binary is fully standalone (no separate asset folder needed):
+
+```bash
+# build just the executable, skipping all installer packaging
+npm run tauri build -- --no-bundle
+```
+
+The binary is at `src-tauri/target/release/ollama-gui`
+(`ollama-gui.exe` on Windows). You can copy it to any machine of the same OS and
+architecture and run it directly — the only external requirement is the
+platform's webview runtime (WebKit ships with macOS, WebView2 with Windows 11,
+`webkit2gtk-4.1` from your distro's packages on Linux) plus a running Ollama.
+Optional engines (Chromium, Pandoc, LibreOffice, Poppler) are looked up at
+runtime, never bundled.
+
 ## Testing
 
 ```bash
