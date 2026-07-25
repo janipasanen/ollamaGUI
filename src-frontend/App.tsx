@@ -116,6 +116,7 @@ import {
 } from './services/artifacts';
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
 import { registerDevTools } from './services/devTools';
+import { registerCodeNavTools } from './services/codeNav';
 import { openWorkspace, getActiveRoot } from './services/workspace';
 
 import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit } from './services/git';
@@ -1075,6 +1076,8 @@ const App: React.FC = () => {
       registerFileTools();
       // Agent quality tools (#423/#424): run_tests + run_checks with parsed output.
       registerDevTools();
+      // Code navigation (#426/#427): list_symbols + find_references + go_to_definition.
+      registerCodeNavTools();
       // Diff review callback (#84/#185) — intercepts write_file/apply_edit for user approval
       setDiffReviewCallback((edit: PendingEdit) =>
        new Promise<EditDecision>(resolve => {
