@@ -3803,6 +3803,8 @@ ${lines.join('\n')}`;
   // Delete a single message from the conversation (#280).
   const deleteMessage = (index: number) => {
     if (isLoading) return;
+    // Deleting a message is irreversible — confirm first (#448).
+    if (!window.confirm('Delete this message? This cannot be undone.')) return;
     const updated = messages.filter((_, j) => j !== index);
     trunkMessagesRef.current = updated;
     setMessages(updated);
@@ -5971,6 +5973,7 @@ ${lines.join('\n')}`;
                              <button
                                aria-label={`Remove connection ${conn.name}`}
                                onClick={() => {
+                                 if (!window.confirm(`Remove connection "${conn.name}"?`)) return;
                                  const updated = connections.filter(c => c.id !== conn.id);
                                  saveConnections(updated);
                                  setConnections(updated);
@@ -6460,7 +6463,7 @@ ${lines.join('\n')}`;
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                                 {conn.enabled ? 'On' : 'Off'}
                               </button>
-                              <button aria-label={`Remove connection ${conn.name}`} onClick={() => { removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
+                              <button aria-label={`Remove connection ${conn.name}`} onClick={() => { if (!window.confirm(`Remove connection "${conn.name}"?`)) return; removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
                                 className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                             </div>
                           </div>
@@ -7027,7 +7030,7 @@ ${lines.join('\n')}`;
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${t.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                               {t.enabled ? 'On' : 'Off'}
                             </button>
-                            <button aria-label={`Remove tool ${t.name}`} onClick={() => { removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
+                            <button aria-label={`Remove tool ${t.name}`} onClick={() => { if (!window.confirm(`Remove tool "${t.name}"?`)) return; removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                           </div>
                         ))
@@ -7091,7 +7094,7 @@ ${lines.join('\n')}`;
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${f.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                               {f.enabled ? 'On' : 'Off'}
                             </button>
-                            <button aria-label={`Remove function ${f.name}`} onClick={() => { removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
+                            <button aria-label={`Remove function ${f.name}`} onClick={() => { if (!window.confirm(`Remove function "${f.name}"?`)) return; removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
                               className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                           </div>
                         ))
@@ -7182,7 +7185,7 @@ ${lines.join('\n')}`;
                             setEditingPresetId(p.id);
                             setShowAddPreset(true);
                           }} className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
-                          <button aria-label={`Remove preset ${p.name}`} onClick={() => { removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
+                          <button aria-label={`Remove preset ${p.name}`} onClick={() => { if (!window.confirm(`Remove preset "${p.name}"?`)) return; removePreset(p.id); setPresets(loadPresets()); if (activePresetId === p.id) { setActivePresetId(null); } }}
                             className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                         </div>
                       ))
@@ -7535,7 +7538,7 @@ ${lines.join('\n')}`;
                             title="Insert into chat input"
                             className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                           >Use</button>
-                          <button aria-label={`Remove prompt ${p.name}`} onClick={() => { removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                          <button aria-label={`Remove prompt ${p.name}`} onClick={() => { if (!window.confirm(`Remove prompt "${p.name}"?`)) return; removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
                         </div>
                       ))
                     }
@@ -7585,7 +7588,7 @@ ${lines.join('\n')}`;
                           setNewCmd({ name: cmd.name, description: cmd.description, template: cmd.template ?? '' });
                           setEditingCmdName(cmd.name);
                         }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
-                        <button aria-label={`Remove command /${cmd.name}`} onClick={() => { removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); if (editingCmdName === cmd.name) { setEditingCmdName(null); setNewCmd({ name: '', description: '', template: '' }); } }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
+                        <button aria-label={`Remove command /${cmd.name}`} onClick={() => { if (!window.confirm(`Remove command /${cmd.name}?`)) return; removeUserCommand(cmd.name); setUserCommands(loadUserCommands()); if (editingCmdName === cmd.name) { setEditingCmdName(null); setNewCmd({ name: '', description: '', template: '' }); } }} className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
                       </div>
                     ))}
                     <div className="flex gap-1.5 pt-1">

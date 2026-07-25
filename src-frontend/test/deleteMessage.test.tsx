@@ -9,11 +9,14 @@ beforeEach(() => {
   localStorage.clear();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
+  // Message deletion is confirm-gated (#448); accept the confirm in tests.
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 
 afterEach(() => {
   global.fetch = origFetch;
   localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 function streamReply(content: string) {

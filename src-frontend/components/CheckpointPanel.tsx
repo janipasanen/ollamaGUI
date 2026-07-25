@@ -35,7 +35,12 @@ export default function CheckpointPanel({ dark }: CheckpointPanelProps) {
     }
   }, []);
 
-  const remove = useCallback((id: string) => { deleteCheckpoint(id); refresh(); }, [refresh]);
+  const remove = useCallback((id: string) => {
+    // Individual delete now confirms, matching Clear-all (#448).
+    if (!window.confirm('Delete this checkpoint? Its saved file states cannot be restored afterwards.')) return;
+    deleteCheckpoint(id);
+    refresh();
+  }, [refresh]);
   const clearAll = useCallback(() => {
     if (window.confirm('Delete all checkpoints?')) { clearCheckpoints(); refresh(); setStatus('All checkpoints cleared.'); }
   }, [refresh]);

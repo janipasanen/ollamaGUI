@@ -28,13 +28,25 @@ describe('CheckpointPanel (#435)', () => {
     expect(screen.getByText(/No checkpoints yet/)).toBeInTheDocument();
   });
 
-  it('deletes a checkpoint', async () => {
+  it('deletes a checkpoint after confirmation (#448)', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     await createCheckpoint(['a.ts'], 'cp-to-delete');
     render(<CheckpointPanel dark={false} />);
     expect(screen.getByText('cp-to-delete')).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Delete checkpoint cp-to-delete'));
     expect(screen.queryByText('cp-to-delete')).not.toBeInTheDocument();
     expect(listCheckpoints()).toHaveLength(0);
+    (window.confirm as any).mockRestore?.();
+  });
+
+  it('keeps the checkpoint when the confirm is declined (#448)', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await createCheckpoint(['a.ts'], 'cp-kept');
+    render(<CheckpointPanel dark={false} />);
+    fireEvent.click(screen.getByLabelText('Delete checkpoint cp-kept'));
+    expect(screen.getByText('cp-kept')).toBeInTheDocument();
+    expect(listCheckpoints()).toHaveLength(1);
+    (window.confirm as any).mockRestore?.();
   });
 
   it('clears all checkpoints (confirmed)', async () => {
