@@ -115,6 +115,7 @@ import {
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
 } from './services/artifacts';
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
+import { registerDevTools } from './services/devTools';
 import { openWorkspace, getActiveRoot } from './services/workspace';
 
 import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit } from './services/git';
@@ -1072,6 +1073,8 @@ const App: React.FC = () => {
       // File & git tools (#83, #103) — must be called once; workspace root is
       // set separately when a project is activated (see activeProjectId effect).
       registerFileTools();
+      // Agent quality tools (#423/#424): run_tests + run_checks with parsed output.
+      registerDevTools();
       // Diff review callback (#84/#185) — intercepts write_file/apply_edit for user approval
       setDiffReviewCallback((edit: PendingEdit) =>
        new Promise<EditDecision>(resolve => {

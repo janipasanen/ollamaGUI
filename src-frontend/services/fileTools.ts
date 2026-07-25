@@ -109,7 +109,8 @@ export async function searchFiles(query: string, opts: SearchOptions = {}): Prom
   });
 }
 
-/** Resolve a path glob (e.g. `src/**/*.ts`) to matching workspace-relative paths (#420). */
+/** Resolve a path glob (double-star crosses directories) to matching
+ *  workspace-relative paths, e.g. a recursive "*.ts" pattern under src (#420). */
 export async function globFiles(pattern: string, maxResults?: number): Promise<string[]> {
   return tauriInvoke<string[]>('glob_files', { pattern, maxResults: maxResults ?? null });
 }
