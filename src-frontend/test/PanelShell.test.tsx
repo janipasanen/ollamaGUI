@@ -211,3 +211,21 @@ describe('PanelShell responsiveness', () => {
     expect(screen.queryByTestId('chat-child')).toBeNull();
   });
 });
+
+describe('dock size clamping (#444)', () => {
+  it('clampDockWidth caps at 60% of the viewport and floors at the minimum', async () => {
+    const { clampDockWidth } = await import('../components/PanelShell');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    expect(clampDockWidth(5000)).toBe(600);  // capped at 60% of 1000
+    expect(clampDockWidth(100)).toBe(320);   // floored at MIN_DOCK_WIDTH
+    expect(clampDockWidth(400)).toBe(400);   // in-range passes through
+  });
+
+  it('clampBottomHeight caps at 70% of the viewport height', async () => {
+    const { clampBottomHeight } = await import('../components/PanelShell');
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 800 });
+    expect(clampBottomHeight(5000)).toBe(560); // 70% of 800
+    expect(clampBottomHeight(50)).toBe(120);   // floored at MIN_BOTTOM_HEIGHT
+    expect(clampBottomHeight(300)).toBe(300);
+  });
+});

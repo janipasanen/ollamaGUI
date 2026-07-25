@@ -110,6 +110,24 @@ const MIN_DOCK_WIDTH = 320;
 const DEFAULT_BOTTOM_HEIGHT = 240;
 const MIN_BOTTOM_HEIGHT = 120;
 
+/**
+ * Clamp a dock width to the current viewport (#444): never wider than 60% of
+ * the window so the chat column stays usable. A size persisted on a large
+ * monitor must not swallow the whole window on a smaller one.
+ */
+export function clampDockWidth(px: number): number {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : Infinity;
+  const max = Number.isFinite(vw) ? Math.max(MIN_DOCK_WIDTH, Math.floor(vw * 0.6)) : px;
+  return Math.min(Math.max(MIN_DOCK_WIDTH, Math.round(px)), max);
+}
+
+/** Clamp a bottom-dock height to ≤ 70% of the viewport height (#444). */
+export function clampBottomHeight(px: number): number {
+  const vh = typeof window !== 'undefined' ? window.innerHeight : Infinity;
+  const max = Number.isFinite(vh) ? Math.max(MIN_BOTTOM_HEIGHT, Math.floor(vh * 0.7)) : px;
+  return Math.min(Math.max(MIN_BOTTOM_HEIGHT, Math.round(px)), max);
+}
+
 function loadLayout(): LayoutState {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY);
@@ -117,8 +135,9 @@ function loadLayout(): LayoutState {
       const parsed = JSON.parse(raw);
       return {
         open: Array.isArray(parsed.open) ? parsed.open.filter((x: unknown) => typeof x === 'string') : [],
-        dockWidth: typeof parsed.dockWidth === 'number' ? parsed.dockWidth : DEFAULT_DOCK_WIDTH,
-        bottomHeight: typeof parsed.bottomHeight === 'number' ? parsed.bottomHeight : DEFAULT_BOTTOM_HEIGHT,
+        // Clamp persisted sizes against the *current* viewport (#444).
+        dockWidth: clampDockWidth(typeof parsed.dockWidth === 'number' ? parsed.dockWidth : DEFAULT_DOCK_WIDTH),
+        bottomHeight: clampBottomHeight(typeof parsed.bottomHeight === 'number' ? parsed.bottomHeight : DEFAULT_BOTTOM_HEIGHT),
       };
     }
   } catch {
@@ -173,15 +192,23 @@ class OpenStore {
   }
 
   setDockWidth(px: number): void {
-    const w = Math.max(MIN_DOCK_WIDTH, Math.round(px));
+    const w = clampDockWidth(px);
     if (w === this.state.dockWidth) return;
     this.set({ ...this.state, dockWidth: w });
   }
 
   setBottomHeight(px: number): void {
-    const h = Math.max(MIN_BOTTOM_HEIGHT, Math.round(px));
+    const h = clampBottomHeight(px);
     if (h === this.state.bottomHeight) return;
     this.set({ ...this.state, bottomHeight: h });
+  }
+
+  /** Re-clamp stored sizes after a viewport resize (#444). */
+  clampToViewport(): void {
+    const w = clampDockWidth(this.state.dockWidth);
+    const h = clampBottomHeight(this.state.bottomHeight);
+    if (w === this.state.dockWidth && h === this.state.bottomHeight) return;
+    this.set({ ...this.state, dockWidth: w, bottomHeight: h });
   }
 
   private set(next: LayoutState): void {
@@ -266,7 +293,11 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
   const [autoMobile, setAutoMobile] = React.useState<boolean>(readIsMobile);
   React.useEffect(() => {
     if (isMobileProp !== undefined) return; // parent controls it
-    const onResize = () => setAutoMobile(readIsMobile());
+    const onResize = () => {
+      setAutoMobile(readIsMobile());
+      // Keep persisted dock sizes inside the new viewport (#444).
+      openStore.clampToViewport();
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [isMobileProp]);
