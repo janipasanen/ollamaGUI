@@ -15,6 +15,7 @@ import { listWorkspaceDir, getActiveRoot, openWorkspace, removeRecentWorkspace, 
 import { pickDirectory } from '../services/platform';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import type { DirEntry } from '../services/fileTools';
+import { writeFile, createDir, movePath, deleteFile } from '../services/fileTools';
 
 export interface FileTreePanelProps {
   dark: boolean;
@@ -40,6 +41,7 @@ function TreeNode({
   expanded,
   toggle,
   onContext,
+  reloadNonce,
 }: {
   entry: DirEntry;
   depth: number;
@@ -49,6 +51,7 @@ function TreeNode({
   expanded: Set<string>;
   toggle: (path: string) => void;
   onContext: (entry: DirEntry, x: number, y: number) => void;
+  reloadNonce: number;
 }): React.ReactElement {
   const isExpanded = expanded.has(entry.path);
   const [children, setChildren] = useState<DirEntry[]>([]);
@@ -59,7 +62,8 @@ function TreeNode({
         .then(setChildren)
         .catch(() => setChildren([]));
     }
-  }, [entry.path, entry.is_dir, isExpanded]);
+    // reloadNonce forces a re-list after a filesystem mutation (#433).
+  }, [entry.path, entry.is_dir, isExpanded, reloadNonce]);
 
   return (
     <div data-testid={`file-tree-node-${entry.path.replace(/[^a-zA-Z0-9]/g, '-')}`}>
@@ -105,6 +109,7 @@ function TreeNode({
               expanded={expanded}
               toggle={toggle}
               onContext={onContext}
+              reloadNonce={reloadNonce}
             />
           ))}
         </div>
@@ -129,6 +134,8 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   // Right-click context menu on file-tree nodes (#384).
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: DirEntry } | null>(null);
+  // Bumped after a filesystem mutation to force every TreeNode to re-list (#433).
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const root = state.root;
 
@@ -146,6 +153,17 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  // Run a filesystem mutation, then force the tree to re-list (#433).
+  const afterMutation = React.useCallback(async (fn: () => Promise<void>) => {
+    try {
+      await fn();
+      setReloadNonce((n) => n + 1);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }, [refresh]);
 
   // Re-read workspace state when notified that the workspace changed (#380),
@@ -232,6 +250,7 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
               expanded={expanded}
               toggle={toggle}
               onContext={(ent, x, y) => setCtxMenu({ x, y, entry: ent })}
+              reloadNonce={reloadNonce}
             />
           ))}
         </div>
@@ -240,9 +259,47 @@ function FileTreePanel({ dark }: FileTreePanelProps): React.ReactElement {
       {ctxMenu && (() => {
         const ent = ctxMenu.entry;
         const rel = root && ent.path.startsWith(root) ? ent.path.slice(root.length).replace(/^\/+/, '') : ent.path;
+        // Directory to create new entries in: the entry itself if it's a dir,
+        // otherwise its parent directory.
+        const targetDir = ent.is_dir ? ent.path : ent.path.replace(/\/[^/]*$/, '');
         const items: ContextMenuItem[] = [];
         if (!ent.is_dir) {
           items.push({ label: 'Pin to chat', onSelect: () => onSelect(ent) });
+        }
+        // File operations (#433).
+        items.push({
+          label: 'New file…',
+          onSelect: () => {
+            const name = window.prompt('New file name:');
+            if (name) void afterMutation(() => writeFile(`${targetDir}/${name}`, ''));
+          },
+        });
+        items.push({
+          label: 'New folder…',
+          onSelect: () => {
+            const name = window.prompt('New folder name:');
+            if (name) void afterMutation(() => createDir(`${targetDir}/${name}`));
+          },
+        });
+        items.push({
+          label: 'Rename…',
+          onSelect: () => {
+            const name = window.prompt('Rename to:', ent.name);
+            if (name && name !== ent.name) {
+              const dir = ent.path.replace(/\/[^/]*$/, '');
+              void afterMutation(() => movePath(ent.path, `${dir}/${name}`));
+            }
+          },
+        });
+        if (!ent.is_dir) {
+          items.push({
+            label: 'Delete',
+            onSelect: () => {
+              if (window.confirm(`Delete "${ent.name}"? This cannot be undone.`)) {
+                void afterMutation(() => deleteFile(ent.path));
+              }
+            },
+          });
         }
         items.push({ label: 'Copy path', onSelect: () => navigator.clipboard.writeText(ent.path) });
         items.push({ label: 'Copy relative path', onSelect: () => navigator.clipboard.writeText(rel) });
