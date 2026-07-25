@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { parseRunOutput, registerDevTools, getTestCommand, getCheckCommand, makePostEditVerifyHook } from '../services/devTools';
+import { parseRunOutput, registerDevTools, getTestCommand, getCheckCommand, makePostEditVerifyHook, reviewDiffText } from '../services/devTools';
 import { toolRegistry, _cliMocks } from '../services/tools';
 import { setWorkspaceRoot, clearWorkspaceRoot, _mocks as fsMocks } from '../services/fileTools';
 
@@ -86,6 +86,54 @@ describe('run_tests / run_checks tools (#423/#424)', () => {
   it('defaults to the configured commands', () => {
     expect(getTestCommand()).toBeTruthy();
     expect(getCheckCommand()).toBeTruthy();
+  });
+});
+
+describe('reviewDiffText (#428)', () => {
+  const diff = [
+    'diff --git a/src/x.ts b/src/x.ts',
+    '--- a/src/x.ts',
+    '+++ b/src/x.ts',
+    '@@ -10,3 +10,6 @@',
+    ' context line',
+    '+  console.log("debug", x)',
+    '+  // TODO: fix this later',
+    '-  const removed = 1',
+    '+  const apiKey = "abcdef0123456789ABCDEF"',
+  ].join('\n');
+
+  it('flags added debug/TODO/secret lines but not removed lines', () => {
+    const f = reviewDiffText(diff);
+    const cats = f.map(x => x.category);
+    expect(cats).toContain('debug');
+    expect(cats).toContain('todo');
+    expect(cats).toContain('secret');
+    // Removed line ("const removed") must not be reviewed.
+    expect(f.every(x => !x.snippet.includes('removed'))).toBe(true);
+  });
+
+  it('assigns new-file line numbers from the hunk header', () => {
+    const f = reviewDiffText(diff);
+    const dbg = f.find(x => x.category === 'debug');
+    // context line is 10, console.log is the next added line → 11.
+    expect(dbg?.line).toBe(11);
+  });
+
+  it('flags focused tests and empty catch blocks', () => {
+    const d = '@@ -1 +1,2 @@\n+  it.only("x", () => {})\n+  try { f() } catch (e) {}';
+    const cats = reviewDiffText(d).map(x => x.category);
+    expect(cats).toContain('test');
+    expect(cats).toContain('error-handling');
+  });
+
+  it('returns nothing for a clean diff', () => {
+    expect(reviewDiffText('@@ -1 +1 @@\n+  const y = compute()')).toHaveLength(0);
+  });
+
+  it('registers the review_diff tool', () => {
+    registerDevTools();
+    expect(toolRegistry.getTool('review_diff')).toBeDefined();
+    expect(toolRegistry.getTool('review_diff')?.readOnly).toBe(true);
   });
 });
 

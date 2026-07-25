@@ -12,6 +12,7 @@
 
 import { toolRegistry, runCliOnce } from './tools';
 import { getWorkspaceRoot } from './fileTools';
+import { gitDiff } from './git';
 import type { PostToolUseHook } from './toolHooks';
 
 const TEST_CMD_KEY = 'ollama_gui_test_command';
@@ -118,7 +119,73 @@ export function makePostEditVerifyHook(isEnabled: () => boolean): PostToolUseHoo
   };
 }
 
+// ── Diff code-review (#428) ───────────────────────────────────────────────────
+
+export interface ReviewFinding {
+  line?: number;
+  category: string;
+  message: string;
+  snippet: string;
+}
+
+const REVIEW_RULES: Array<{ re: RegExp; category: string; message: string }> = [
+  { re: /console\.(log|debug|info)\s*\(/, category: 'debug', message: 'Leftover console debug statement' },
+  { re: /\bdebugger\b/, category: 'debug', message: 'Leftover debugger statement' },
+  { re: /\b(println!|dbg!|eprintln!)\s*\(/, category: 'debug', message: 'Leftover Rust debug print' },
+  { re: /\b(TODO|FIXME|XXX|HACK)\b/, category: 'todo', message: 'TODO/FIXME left in code' },
+  { re: /\.(only|skip)\s*\(|\b(fdescribe|fit)\s*\(/, category: 'test', message: 'Focused/skipped test (.only/.skip/fit)' },
+  { re: /catch\s*\([^)]*\)\s*\{\s*\}/, category: 'error-handling', message: 'Empty catch block swallows errors' },
+  { re: /(api[_-]?key|secret|token|password)\s*[:=]\s*['"][A-Za-z0-9_\-./+]{16,}['"]/i, category: 'secret', message: 'Possible hardcoded secret/credential' },
+];
+
+/**
+ * Review the ADDED lines of a unified diff for common issues (#428).
+ * Tracks new-file line numbers via hunk headers. Pure/testable.
+ */
+export function reviewDiffText(diff: string): ReviewFinding[] {
+  const findings: ReviewFinding[] = [];
+  let curLine = 0;
+  for (const raw of diff.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (hunk) { curLine = parseInt(hunk[1], 10); continue; }
+    if (raw.startsWith('+') && !raw.startsWith('+++')) {
+      const content = raw.slice(1);
+      for (const rule of REVIEW_RULES) {
+        if (rule.re.test(content)) {
+          findings.push({ line: curLine, category: rule.category, message: rule.message, snippet: content.trim().slice(0, 200) });
+        }
+      }
+      curLine++;
+    } else if (!raw.startsWith('-') && !raw.startsWith('\\')) {
+      curLine++; // context line advances the new-file counter; removed lines do not
+    }
+  }
+  return findings;
+}
+
 export function registerDevTools(): void {
+  toolRegistry.registerTool({
+    name: 'review_diff',
+    description:
+      'Review the current git working-tree diff (or a specific file) for common issues before committing: ' +
+      'leftover debug statements, TODO/FIXME, focused/skipped tests, empty catch blocks, and possible ' +
+      'hardcoded secrets. Returns structured findings with line numbers.',
+    readOnly: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Optional file to review; defaults to the whole working tree.' },
+      },
+    },
+    execute: async (params: Record<string, unknown>) => {
+      const root = getWorkspaceRoot();
+      if (!root) return { error: 'No workspace open — open a project folder first.' };
+      const d = await gitDiff(root, params.file as string | undefined, false);
+      const findings = reviewDiffText(d.diff || '');
+      return { count: findings.length, findings };
+    },
+  });
+
   toolRegistry.registerTool({
     name: 'run_tests',
     description:
