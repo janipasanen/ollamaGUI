@@ -89,6 +89,12 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   const [iframeKey, setIframeKey] = useState<number>(0);
   // Auto-reload: when on, a `loaded` bus event bumps the iframe key.
   const [autoReload, setAutoReload] = useState<boolean>(false);
+  // Iframe load progress (#451): true while the local surface is fetching.
+  const [iframeLoading, setIframeLoading] = useState<boolean>(false);
+  useEffect(() => {
+    // Any local navigation or iframe remount starts a fresh load.
+    if (isLocalhostUrl(navUrl)) setIframeLoading(true);
+  }, [navUrl, iframeKey]);
 
   // The placeholder host element the native webview is layered over.
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -403,14 +409,26 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
       {/* Surface: iframe (local) or native-webview host placeholder (external) */}
       <div className="flex-1 relative overflow-hidden">
         {isLocal ? (
-          <iframe
-            key={iframeKey}
-            data-testid="browser-iframe"
-            data-iframe-key={iframeKey}
-            src={navUrl}
-            title="preview"
-            className="w-full h-full border-0"
-          />
+          <>
+            {/* Thin progress strip while the local surface loads (#451). */}
+            {iframeLoading && (
+              <div
+                data-testid="browser-iframe-loading"
+                className="absolute top-0 left-0 right-0 h-0.5 bg-blue-500 animate-pulse z-10"
+                role="status"
+                aria-label="Page loading"
+              />
+            )}
+            <iframe
+              key={iframeKey}
+              data-testid="browser-iframe"
+              data-iframe-key={iframeKey}
+              src={navUrl}
+              title="preview"
+              onLoad={() => setIframeLoading(false)}
+              className="w-full h-full border-0"
+            />
+          </>
         ) : (
           <div
             id="browser-webview-host"

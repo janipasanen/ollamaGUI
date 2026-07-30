@@ -39,6 +39,9 @@ export default function CodeSearchPanel({ dark }: CodeSearchPanelProps) {
       if (!query.trim()) return;
       setLoading(true);
       setError(null);
+      // Clear stale hits so a slow search doesn't display the previous
+      // query's results as if they were current (#451).
+      setHits([]);
       try {
         const results = await searchFiles(query, {
           isRegex,
@@ -116,10 +119,13 @@ export default function CodeSearchPanel({ dark }: CodeSearchPanelProps) {
 
       <div className="flex-1 overflow-y-auto text-xs">
         {error && <p className="px-3 py-2 text-red-400">{error}</p>}
-        {!error && ran && hits.length === 0 && (
+        {loading && (
+          <p className={`px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Searching…</p>
+        )}
+        {!error && !loading && ran && hits.length === 0 && (
           <p className={`px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No matches.</p>
         )}
-        {!ran && !error && (
+        {!ran && !error && !loading && (
           <p className={`px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
             Search the workspace for text or a regex. Click a result to pin the file into chat.
           </p>

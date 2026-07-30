@@ -838,6 +838,9 @@ const App: React.FC = () => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   // Right-click context menu on sidebar session items (#381).
   const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  // Mobile header action menu (#445): the collapsed '⋯' used to only toggle the
+  // sidebar, stranding every panel/tool action at small widths.
+  const [mobileMenu, setMobileMenu] = useState<{ x: number; y: number } | null>(null);
   const [rawView, setRawView] = useState<Record<number, boolean>>({});
   const [collapsedMsg, setCollapsedMsg] = useState<Record<number, boolean>>({});
   const [copiedChat, setCopiedChat] = useState(false);
@@ -4425,7 +4428,9 @@ ${lines.join('\n')}`;
             Near-passthrough until a panel registers + opens. */}
         <PanelShell dark={dark}>
         {/* Header */}
-        <header className={`h-14 border-b flex items-center justify-between px-6 transition-colors duration-300 shrink-0 ${
+        {/* overflow-x-auto (#450): at narrow/moderate widths the toolbar used to
+            clip its controls with no way to reach them; now it scrolls. */}
+        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 md:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
             <div className="flex items-center gap-4">
@@ -4764,15 +4769,45 @@ ${lines.join('\n')}`;
                </>
              ) : (
                <button
-                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                 onClick={(e) => {
+                   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                   setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
+                 }}
                  className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
                  title="Menu"
+                 aria-label="Open menu"
+                 aria-haspopup="menu"
                >
                  ⋯
                </button>
              )}
            </div>
         </header>
+
+        {/* Mobile action menu (#445): panel toggles + tools that the collapsed
+            header hides at small widths. */}
+        {mobileMenu && (
+          <ContextMenu
+            x={mobileMenu.x}
+            y={mobileMenu.y}
+            dark={dark}
+            onClose={() => setMobileMenu(null)}
+            items={[
+              { label: isSidebarOpen ? 'Hide sidebar' : 'Show sidebar', onSelect: () => setIsSidebarOpen(!isSidebarOpen) },
+              { label: 'Command palette…', onSelect: () => setPaletteOpen(true) },
+              { label: 'Files panel', onSelect: () => togglePanel('files') },
+              { label: 'Code search panel', onSelect: () => togglePanel('code-search') },
+              { label: 'Git panel', onSelect: () => togglePanel('source-control') },
+              { label: 'Terminal panel', onSelect: () => togglePanel('terminal') },
+              { label: 'Browser panel', onSelect: () => togglePanel('browser') },
+              { label: 'Artifacts panel', onSelect: () => togglePanel('artifacts') },
+              { label: 'Checkpoints panel', onSelect: () => togglePanel('checkpoints') },
+              { label: 'Agent activity panel', onSelect: () => togglePanel('agent-activity') },
+              { label: 'Settings…', onSelect: () => setIsSettingsOpen(true) },
+              { label: 'Keyboard shortcuts', onSelect: () => setShowHelp(true) },
+            ]}
+          />
+        )}
 
         {/* Live plan checklist (#239) */}
         <PlanPanel plan={plan} dark={dark} onClear={clearPlan} />
@@ -4853,6 +4888,16 @@ ${lines.join('\n')}`;
                      : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
                }`}
                  onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
+                 // Keyboard path to the message menu (#452): focusable bubble;
+                 // Shift+F10 / the ContextMenu key opens it at the bubble.
+                 tabIndex={0}
+                 onKeyDown={(e) => {
+                   if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+                     e.preventDefault();
+                     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                     setContextMenu({ x: r.left + 16, y: r.top + 16, index: i });
+                   }
+                 }}
                >
                 <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
                   {msg.role}

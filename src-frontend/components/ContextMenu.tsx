@@ -38,12 +38,35 @@ export const ContextMenu: React.FC<{
     };
   }, [onClose]);
 
+  // Focus the first enabled item on open and support ArrowUp/Down/Home/End
+  // navigation between items (#452).
+  React.useEffect(() => {
+    const first = ref.current?.querySelector<HTMLButtonElement>('button:not([disabled])');
+    first?.focus();
+  }, []);
+
+  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? []);
+    if (buttons.length === 0) return;
+    e.preventDefault();
+    const active = document.activeElement as HTMLButtonElement | null;
+    const idx = active ? buttons.indexOf(active) : -1;
+    let next: number;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = buttons.length - 1;
+    else if (e.key === 'ArrowDown') next = idx < 0 || idx === buttons.length - 1 ? 0 : idx + 1;
+    else next = idx <= 0 ? buttons.length - 1 : idx - 1;
+    buttons[next].focus();
+  };
+
   return (
     <div
       ref={ref}
       role="menu"
       aria-label="Message actions"
       data-testid="message-context-menu"
+      onKeyDown={onMenuKeyDown}
       style={{ position: 'fixed', left: x, top: y, zIndex: 60 }}
       className={`min-w-[160px] py-1 rounded-lg border shadow-lg text-sm ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
     >
