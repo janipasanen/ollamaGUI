@@ -91,9 +91,18 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
   const [autoReload, setAutoReload] = useState<boolean>(false);
   // Iframe load progress (#451): true while the local surface is fetching.
   const [iframeLoading, setIframeLoading] = useState<boolean>(false);
+  // iframes don't reliably fire onError for a failed/blocked load (only some
+  // browsers do, and never for cross-origin frame-refusal), so a load that
+  // never completes is the only observable failure signal. Surface a
+  // "taking a while" hint after a timeout instead of spinning forever (#451).
+  const [iframeSlow, setIframeSlow] = useState<boolean>(false);
   useEffect(() => {
     // Any local navigation or iframe remount starts a fresh load.
-    if (isLocalhostUrl(navUrl)) setIframeLoading(true);
+    if (!isLocalhostUrl(navUrl)) return;
+    setIframeLoading(true);
+    setIframeSlow(false);
+    const id = setTimeout(() => setIframeSlow(true), 8000);
+    return () => clearTimeout(id);
   }, [navUrl, iframeKey]);
 
   // The placeholder host element the native webview is layered over.
@@ -418,6 +427,19 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
                 role="status"
                 aria-label="Page loading"
               />
+            )}
+            {/* Failed-load signal (#451): iframes don't reliably report load
+                failures, so a load that's still pending after 8s gets a hint. */}
+            {iframeLoading && iframeSlow && (
+              <div
+                data-testid="browser-iframe-slow"
+                role="status"
+                className={`absolute top-2 left-2 right-2 z-10 rounded-md px-3 py-1.5 text-xs shadow ${
+                  dark ? 'bg-amber-900/80 text-amber-200' : 'bg-amber-50 text-amber-800 border border-amber-300'
+                }`}
+              >
+                Still loading — the page may be unreachable. Check the URL, or that the dev server is running.
+              </div>
             )}
             <iframe
               key={iframeKey}

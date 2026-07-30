@@ -120,6 +120,34 @@ describe('BrowserPane (#71, #72)', () => {
     expect(before).not.toBe(after);
   });
 
+  it('shows a loading strip while the iframe loads, clears it on load (#451)', () => {
+    render(<BrowserPane dark={false} />);
+    navigateTo('http://localhost:5173');
+    expect(screen.getByTestId('browser-iframe-loading')).toBeInTheDocument();
+    fireEvent.load(screen.getByTestId('browser-iframe'));
+    expect(screen.queryByTestId('browser-iframe-loading')).not.toBeInTheDocument();
+  });
+
+  it('shows a "taking a while" hint if the iframe never loads (#451)', () => {
+    vi.useFakeTimers();
+    render(<BrowserPane dark={false} />);
+    navigateTo('http://localhost:5173');
+    expect(screen.queryByTestId('browser-iframe-slow')).not.toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(8000); });
+    expect(screen.getByTestId('browser-iframe-slow')).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('does not show the slow hint once the iframe loads before the timeout (#451)', () => {
+    vi.useFakeTimers();
+    render(<BrowserPane dark={false} />);
+    navigateTo('http://localhost:5173');
+    fireEvent.load(screen.getByTestId('browser-iframe'));
+    act(() => { vi.advanceTimersByTime(8000); });
+    expect(screen.queryByTestId('browser-iframe-slow')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   it('Back/Forward walk the navigation history (#436)', () => {
     render(<BrowserPane dark={false} />);
     const addr = () => (screen.getByLabelText('Address bar') as HTMLInputElement).value;
