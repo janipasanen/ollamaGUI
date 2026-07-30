@@ -46,7 +46,7 @@ futures = "0.3.32"
 # CDP automation engine for the AI browser (#73). tokio-runtime to match our
 # tokio; default features (incl. the bundled Chromium fetcher) are off.
 chromiumoxide = { version = "0.9", default-features = false }
-base64 = "0.22"
+base64 = "0.23"
 # Code search tools (#420): recursive traversal + regex line matching. Both are
 # already transitive deps, so promoting them to direct deps is essentially free.
 walkdir = "2"
