@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { toolRegistry, registerCliTool, cliAllowlist, toolCallName, toolCallArgs } from '../services/tools';
 
 // Mock the Tauri invoke API
@@ -7,18 +7,18 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 describe('CLI Tool', () => {
-  let mockInvoke: ReturnType<typeof vi.fn>;
-  let approvalCallback: ReturnType<typeof vi.fn>;
+  let mockInvoke: Mock<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>;
+  let approvalCallback: Mock<(command: string, cwd?: string) => Promise<boolean>>;
 
   beforeEach(async () => {
     const tauriCore = await import('@tauri-apps/api/core');
-    mockInvoke = tauriCore.invoke as ReturnType<typeof vi.fn>;
+    mockInvoke = tauriCore.invoke as unknown as typeof mockInvoke;
     mockInvoke.mockReset();
 
     // Clear the allowlist and re-register for each test
     cliAllowlist.clear();
     toolRegistry.unregisterTool('run_shell_command');
-    approvalCallback = vi.fn();
+    approvalCallback = vi.fn<(command: string, cwd?: string) => Promise<boolean>>();
     registerCliTool(approvalCallback);
   });
 

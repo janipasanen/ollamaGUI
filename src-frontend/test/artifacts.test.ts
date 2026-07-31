@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import {
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
   type Artifact,
@@ -103,13 +103,13 @@ describe('pickPrimaryArtifact', () => {
 // ── exportArtifact ────────────────────────────────────────────────────────────
 
 describe('exportArtifact', () => {
-  let clickSpy: ReturnType<typeof vi.fn>;
-  let revokeUrlSpy: ReturnType<typeof vi.fn>;
+  let clickSpy: Mock<() => void>;
+  let revokeUrlSpy: Mock<(url: string) => void>;
   let createElement_: typeof document.createElement;
 
   beforeEach(() => {
-    clickSpy = vi.fn();
-    revokeUrlSpy = vi.fn();
+    clickSpy = vi.fn<() => void>();
+    revokeUrlSpy = vi.fn<(url: string) => void>();
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fake');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(revokeUrlSpy);
     createElement_ = document.createElement.bind(document);
