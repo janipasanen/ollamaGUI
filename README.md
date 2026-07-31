@@ -13,22 +13,29 @@ all running on your machine.
 
 - **Chat** — streaming chat with any Ollama model; per-conversation model switching,
   temperature / top-p / top-k / max-tokens controls, structured (JSON-schema) output,
-  prompt library, and slash commands.
+  prompt library, slash commands, and a many-models mode to send one prompt to several
+  models side by side.
 - **Agentic tools** — a tool-calling loop with Plan / Ask / Auto autonomy levels,
   configurable max iterations, PreToolUse guardrails, read-only tool mode, inline diff
-  review, and checkpoints/rewind.
+  review, checkpoints/rewind, sub-agent orchestration (spawn isolated or parallel
+  sub-agents, plus a cloud-brain/local-worker delegation mode), a custom tools/functions
+  framework for user-defined actions, and in-app Python execution via Pyodide.
 - **MCP** — connect Model Context Protocol servers (stdio + HTTP), a connector catalog,
-  OAuth/PAT auth with secrets in the OS keychain, graceful shutdown, and auto-reconnect.
+  OAuth/PAT auth with secrets in the OS keychain, graceful shutdown, auto-reconnect, and
+  turning any OpenAPI 3.x spec into agent tools automatically.
 - **Workspace** — folder picker + file tree, read/write/edit files, an integrated
-  streaming terminal, `@`-mention file context, and a Git panel (status/diff/stage/commit).
+  streaming terminal, `@`-mention file context, a Git panel (status/diff/stage/commit),
+  and a workspace-wide code search panel.
 - **Knowledge & web** — RAG over local files and named knowledge collections (hybrid
   BM25 + vector search), web fetch/search, the `#` context command, and inline citations.
 - **AI browser** — a CDP-driven Chromium automation engine (navigate / snapshot the
-  accessibility tree / click / type / screenshot / assert) plus a native preview pane.
+  accessibility tree / click / type / screenshot / assert) plus a native preview pane, a
+  scenario recorder/replayer, and visual pixel-diff assertions between screenshots.
 - **Documents** — read/create/edit Office + ODF formats and PDFs (extract / create /
   merge / split), with an optional Pandoc/LibreOffice conversion tier.
 - **More** — image generation, voice (dictation, TTS, hands-free call mode), projects,
-  cross-session memory, conversation branching, and an artifacts/canvas panel.
+  cross-session memory, conversation branching, an artifacts/canvas panel, and an
+  MLX acceleration tier for local inference on Apple Silicon.
 
 ## Prerequisites
 
