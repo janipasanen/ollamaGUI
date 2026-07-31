@@ -225,6 +225,7 @@ export function registerBuiltInTools() {
   toolRegistry.registerTool({
     name: 'get_system_info',
     description: 'Get basic system information',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {},
@@ -241,6 +242,7 @@ export function registerBuiltInTools() {
   toolRegistry.registerTool({
     name: 'get_current_time',
     description: 'Get the current time in ISO format',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {},
@@ -255,6 +257,7 @@ export function registerBuiltInTools() {
   toolRegistry.registerTool({
     name: 'calculate',
     description: 'Perform a mathematical calculation',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {
@@ -281,6 +284,7 @@ export function registerBuiltInTools() {
   toolRegistry.registerTool({
     name: 'text_process',
     description: 'Process text (uppercase, lowercase, reverse, etc.)',
+    readOnly: true,
     parameters: {
       type: 'object',
       properties: {

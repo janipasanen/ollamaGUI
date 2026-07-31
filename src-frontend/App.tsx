@@ -878,6 +878,26 @@ const App: React.FC = () => {
   // steps before approving (Codex plan-edit parity).
   const [planEditDraft, setPlanEditDraft] = useState<string[] | null>(null);
 
+  // Shared tool-approval gate (#476): the same ask/plan-mode confirmation flow
+  // used by the top-level agentic run must also apply to sub-agents spawned
+  // via spawn_subagent/spawn_parallel_subagents -- otherwise a sub-agent can
+  // run mutating tools with no confirmation at all.
+  const createApprovalGate = () => (toolName: string, args: Record<string, unknown>) =>
+    new Promise<boolean>(resolve => {
+      if (sessionToolAllowlistRef.current.has(toolName)) {
+        resolve(true);
+        return;
+      }
+      if (isPlanMode()) {
+        if (planApprovedRef.current) { resolve(true); return; }
+        setAgentStatus('Waiting for plan approval');
+        setPendingPlanApproval({ toolName, resolve });
+        return;
+      }
+      setAgentStatus(`Waiting for approval: ${toolName}`);
+      setPendingToolApproval({ toolName, args, resolve });
+    });
+
   // Modal focus management (#447): focus-in, Tab trap, focus-restore for the
   // main overlays. Each ref is attached to its dialog element in the JSX.
   const settingsModalRef = useModalFocus<HTMLDivElement>(isSettingsOpen);
@@ -1220,6 +1240,7 @@ const App: React.FC = () => {
               maxIterations: 3,
               endpoint: url('/api/chat'),
               toolFilter,
+              onApprovalNeeded: createApprovalGate(),
               onAssistantMessage: (msg) => { result = msg; },
             });
             for await (const _m of gen) { /* consume */ }
@@ -1270,6 +1291,7 @@ const App: React.FC = () => {
                 maxIterations: 3,
                 endpoint: url('/api/chat'),
                 toolFilter,
+                onApprovalNeeded: createApprovalGate(),
                 onAssistantMessage: (msg) => { result = msg; },
               });
               for await (const _m of gen) { /* consume */ }
@@ -3448,27 +3470,8 @@ ${lines.join('\n')}`;
           },
          // Only filter when some built-in tool is disabled (#399); default = expose all.
           ...(disabledTools.size > 0 ? { toolFilter: getEnabledToolFilter(disabledTools) ?? undefined } : {}),
-          // Plan/ask autonomy gate (#88/#89/#189)
-          onApprovalNeeded: (toolName, args) =>
-            new Promise<boolean>(resolve => {
-              // Session auto-approve (#406): skip the modal for tools the user
-              // already allowed "for this session".
-              if (sessionToolAllowlistRef.current.has(toolName)) {
-                resolve(true);
-                return;
-              }
-              // Plan-mode gating (#408): in plan autonomy, the agent must get
-              // its published plan approved before executing any mutating
-              // tool. After approval, mutating tools auto-approve for the run.
-              if (isPlanMode()) {
-                if (planApprovedRef.current) { resolve(true); return; }
-                setAgentStatus('Waiting for plan approval');
-                setPendingPlanApproval({ toolName, resolve });
-                return;
-              }
-              setAgentStatus(`Waiting for approval: ${toolName}`);
-              setPendingToolApproval({ toolName, args, resolve });
-            }),
+          // Plan/ask autonomy gate (#88/#89/#189), shared with sub-agents (#476)
+          onApprovalNeeded: createApprovalGate(),
           onAssistantMessage: (message) => {
             setAgentStatus('Thinking…');
             setMessages(prev => {

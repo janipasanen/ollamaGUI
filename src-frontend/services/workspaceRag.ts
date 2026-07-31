@@ -154,7 +154,8 @@ export function registerWorkspaceRagTools(): void {
       toolRegistry.registerTool({
         name: 'index_workspace',
         description: 'Index all text source files in the current workspace for semantic search. Run before query_workspace.',
-        readOnly: true,
+        // Deletes and rebuilds the workspace RAG collection (#475) -- not read-only.
+        readOnly: false,
         parameters: {
           type: 'object',
           properties: {

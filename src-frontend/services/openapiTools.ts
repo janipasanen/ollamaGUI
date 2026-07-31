@@ -157,6 +157,9 @@ export function operationToToolDefinition(
   return {
     name,
     description: op.summary ?? op.description ?? `${method.toUpperCase()} ${path}`,
+    // GET/HEAD operations fetch data without side effects (#477); everything
+    // else (POST/PUT/PATCH/DELETE) may mutate remote state.
+    readOnly: method === 'get' || method === 'head',
     parameters: {
       type: 'object',
       properties,

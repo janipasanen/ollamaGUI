@@ -119,6 +119,7 @@ export function registerImageDiffTool(): void {
     toolRegistry.registerTool({
       name: 'diff_screenshots',
       description: 'Compare two base64 PNG screenshots pixel-by-pixel. Returns pass/fail, diffRatio (0–1), and a diff overlay data URL.',
+      readOnly: true,
       parameters: {
         type: 'object',
         properties: {
