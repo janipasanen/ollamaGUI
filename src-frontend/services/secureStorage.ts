@@ -27,11 +27,19 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-function fromBase64(b64: string): Uint8Array {
+function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+// crypto.getRandomValues(new Uint8Array(n)) types as Uint8Array<ArrayBufferLike>
+// under TS 7, which WebCrypto's BufferSource overloads no longer accept. Every
+// Uint8Array passed to subtle.* here is one we just allocated (never a view
+// into a SharedArrayBuffer or a larger buffer), so the cast is safe.
+function asBufferSource(bytes: Uint8Array): BufferSource {
+  return bytes as BufferSource;
 }
 
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
@@ -40,7 +48,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
     'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey'],
   );
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: asBufferSource(salt), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
     baseKey,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -62,7 +70,7 @@ export async function encryptString(plaintext: string, passphrase: string): Prom
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const key = await deriveKey(passphrase, salt);
   const ct = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: asBufferSource(iv) },
     key,
     new TextEncoder().encode(plaintext),
   );
@@ -76,7 +84,7 @@ export async function decryptString(payload: EncryptedPayload, passphrase: strin
   const iv = fromBase64(payload.iv);
   const key = await deriveKey(passphrase, salt);
   const pt = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: asBufferSource(iv) },
     key,
     fromBase64(payload.data),
   );
