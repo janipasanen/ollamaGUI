@@ -16,11 +16,11 @@ import os from 'node:os';
 // or a higher value in CI). `isolate` stays on so each file's module registry is
 // freed between files rather than accumulating.
 //
-// NOTE: this project is on vitest 2.x, whose pool config lives under
-// `poolOptions.forks.{maxForks,minForks}` (the flat top-level `maxWorkers` is a
-// vitest 4 rename). Keep this in sync with the installed major version.
+// vitest 4 flattened `poolOptions.forks.{maxForks,minForks}` (the 2.x shape) into
+// a single top-level `maxWorkers` (there is no minWorkers counterpart). Keep this
+// in sync if the installed major version changes again.
 const cpuCount = os.cpus()?.length ?? 4;
-const maxForks = Math.max(
+const maxWorkers = Math.max(
   1,
   Number(process.env.VITEST_MAX_FORKS ?? Math.min(4, Math.floor(cpuCount / 2))),
 );
@@ -34,11 +34,6 @@ export default defineConfig({
     // Keep vitest on the src-frontend suites; the Playwright specs live in e2e/.
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        maxForks,
-        minForks: 1,
-      },
-    },
+    maxWorkers,
   },
 });
