@@ -110,7 +110,7 @@ import {
   loadPrompts, addPrompt, removePrompt,
 } from './services/promptLibrary';
 import {
-  BrowserScenario, ScenarioResult,
+  BrowserScenario, ScenarioResult, StepAction,
   listScenarios, saveScenario, deleteScenario, generateScenarioId, runScenario,
 } from './services/scenario';
 import {
@@ -652,6 +652,8 @@ const App: React.FC = () => {
   const [voiceCallMuted, setVoiceCallMuted] = useState(false);
   /** Validation message for the custom-tool form (#516, #517). */
   const [customToolError, setCustomToolError] = useState<string | null>(null);
+  /** Inline "add step" draft for a browser scenario (#530). */
+  const [scenarioStepDraft, setScenarioStepDraft] = useState<{ id: string; action: StepAction; arg: string } | null>(null);
   // Initialise from storage during the first render (#509). Previously the
   // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
   // same pass — but that refreshModels closure was built on the first render,
@@ -7289,7 +7291,19 @@ ${lines.join('\n')}`;
                           const updated = [...openApiServers, cfg];
                           setOpenApiServers(updated);
                           saveOpenApiServers(updated);
-                          registerOpenApiServer(cfg).catch(() => {});
+                          // A failed spec fetch used to be swallowed while the
+                          // server stayed in the list with a green status dot, so a
+                          // broken server looked healthy and its tools silently never
+                          // appeared (#522).
+                          registerOpenApiServer(cfg).catch((e) => {
+                            showStatusBanner(`OpenAPI server "${cfg.name}": ${formatErrorLine(e)}`);
+                            const disabled = { ...cfg, enabled: false };
+                            setOpenApiServers(prev => {
+                              const next = prev.map(x => x.id === cfg.id ? disabled : x);
+                              saveOpenApiServers(next);
+                              return next;
+                            });
+                          });
                           setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
                           setShowAddOpenApi(false);
                         }}
@@ -8634,19 +8648,35 @@ ${lines.join('\n')}`;
                                 </span>
                               )}
                               <button
-                                disabled={isRunning}
+                                aria-label={`Add step to ${sc.name}`}
+                                title="Add a step"
+                                onClick={() => setScenarioStepDraft(d => d?.id === sc.id ? null : { id: sc.id, action: 'navigate', arg: '' })}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                              >+ step</button>
+                              <button
+                                disabled={isRunning || sc.steps.length === 0}
+                                title={sc.steps.length === 0 ? 'Add at least one step first' : 'Run scenario'}
                                 onClick={async () => {
                                   setRunningScenarioId(sc.id);
                                   try {
                                     const r = await runScenario(sc);
                                     setScenarioResults(prev => ({ ...prev, [sc.id]: r }));
                                   } catch (e) {
-                                    console.error('Scenario run error', e);
+                                    // A throw used to leave the PREVIOUS run's badge on
+                                    // screen, so a crashed run read as a passing run (#535).
+                                    setScenarioResults(prev => ({
+                                      ...prev,
+                                      [sc.id]: {
+                                        pass: false,
+                                        failedStepIndex: 0,
+                                        stepResults: [{ stepIndex: 0, pass: false, errorMessage: e instanceof Error ? e.message : String(e) }],
+                                      } as typeof prev[string],
+                                    }));
                                   } finally {
                                     setRunningScenarioId(null);
                                   }
                                 }}
-                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning ? 'opacity-50 cursor-wait' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning || sc.steps.length === 0 ? 'opacity-40 cursor-not-allowed' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
                               >{isRunning ? '…' : '▶ Run'}</button>
                               <button
                                 aria-label={`Delete scenario ${sc.name}`}
@@ -8658,6 +8688,59 @@ ${lines.join('\n')}`;
                               <p className={`text-[10px] mt-1 ${dark ? 'text-red-400' : 'text-red-600'}`}>
                                 {result.stepResults.find(s => !s.pass)?.errorMessage}
                               </p>
+                            )}
+                            {sc.steps.length > 0 && (
+                              <ol className={`mt-1 ml-3 list-decimal text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                                {sc.steps.map((st, si) => (
+                                  <li key={si} className="flex items-center gap-1">
+                                    <span className="font-mono flex-1 truncate">
+                                      {st.action}{st.args?.value ? ` "${st.args.value}"` : ''}{st.args?.selector ? ` @${st.args.selector}` : ''}{st.args?.url ? ` ${st.args.url}` : ''}
+                                    </span>
+                                    <button
+                                      aria-label={`Remove step ${si + 1} from ${sc.name}`}
+                                      onClick={() => {
+                                        const next = { ...sc, steps: sc.steps.filter((_, k) => k !== si) };
+                                        saveScenario(next); setScenarios(listScenarios());
+                                      }}
+                                      className="text-red-400 hover:text-red-300 px-1"
+                                    >✕</button>
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+                            {scenarioStepDraft?.id === sc.id && (
+                              <div className="flex gap-1 mt-1">
+                                <select
+                                  aria-label="Step action"
+                                  value={scenarioStepDraft.action}
+                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, action: e.target.value as StepAction }))}
+                                  className={`text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                                >
+                                  {(['navigate', 'click', 'type', 'wait_for', 'assert', 'visual_match'] as StepAction[]).map(a => (
+                                    <option key={a} value={a}>{a}</option>
+                                  ))}
+                                </select>
+                                <input
+                                  aria-label="Step argument"
+                                  value={scenarioStepDraft.arg}
+                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, arg: e.target.value }))}
+                                  placeholder={scenarioStepDraft.action === 'navigate' ? 'https://…' : scenarioStepDraft.action === 'type' ? 'text to type' : 'CSS selector'}
+                                  className={`flex-1 text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                                />
+                                <button
+                                  onClick={() => {
+                                    const d = scenarioStepDraft;
+                                    if (!d || !d.arg.trim()) return;
+                                    const args = d.action === 'navigate' ? { url: d.arg.trim() }
+                                      : d.action === 'type' ? { value: d.arg.trim() }
+                                      : { selector: d.arg.trim() };
+                                    const next = { ...sc, steps: [...sc.steps, { action: d.action, args }] };
+                                    saveScenario(next); setScenarios(listScenarios());
+                                    setScenarioStepDraft({ ...d, arg: '' });
+                                  }}
+                                  className="text-[10px] px-2 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                                >Add</button>
+                              </div>
                             )}
                           </div>
                         );
