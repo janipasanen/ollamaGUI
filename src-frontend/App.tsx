@@ -646,6 +646,10 @@ const App: React.FC = () => {
   // Structured output (Ollama `format`): JSON mode or a JSON Schema (#148).
   const [structuredOutput, setStructuredOutput] = useState<{ enabled: boolean; schema: string }>({ enabled: false, schema: '' });
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  /** Server id whose OAuth flow is currently running, if any (#503). */
+  const [authInFlight, setAuthInFlight] = useState<string | null>(null);
+  /** Mirrors the voice-call handle's mute flag so the button re-renders (#530). */
+  const [voiceCallMuted, setVoiceCallMuted] = useState(false);
   // Initialise from storage during the first render (#509). Previously the
   // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
   // same pass — but that refreshModels closure was built on the first render,
@@ -3419,7 +3423,15 @@ ${lines.join('\n')}`;
     let format: 'json' | object | undefined;
     if (structuredOutput.enabled) {
       const parsed = parseSchemaInput(structuredOutput.schema);
-      if (!parsed.ok) { setSchemaError(parsed.error ?? 'Invalid schema'); return; }
+      if (!parsed.ok) {
+        const msg = parsed.error ?? 'Invalid schema';
+        setSchemaError(msg);
+        // schemaError only renders next to the schema box inside Settings, so
+        // from the chat this return was completely silent: nothing sent, no
+        // error, no clue why (#501). Surface it where the user actually is.
+        showStatusBanner(`Structured output: ${msg} — fix it in Settings, or turn structured output off.`);
+        return;
+      }
       setSchemaError(null);
       format = parsed.schema ?? 'json';
     }
@@ -4796,6 +4808,7 @@ ${lines.join('\n')}`;
                          setVoiceCallActive(false);
                        } else {
                          setVoiceCallActive(true);
+                         setVoiceCallMuted(false);
                          setVoiceCallTranscript('');
                          setVoiceCallResponse('');
                          const handle = startVoiceCall(
@@ -6039,10 +6052,18 @@ ${lines.join('\n')}`;
             )}
             <div className="flex gap-4">
               <button
-                onClick={() => { voiceCallHandleRef.current?.mute ? (voiceCallHandleRef.current.muted ? voiceCallHandleRef.current.unmute() : voiceCallHandleRef.current.mute()) : null; }}
+                onClick={() => {
+                  // Mirror into state (#530): the label read voiceCallHandleRef
+                  // directly, and mutating a ref does not re-render — so the
+                  // button text never changed and clicking Mute looked inert.
+                  const h = voiceCallHandleRef.current;
+                  if (!h?.mute) return;
+                  if (h.muted) { h.unmute(); setVoiceCallMuted(false); }
+                  else { h.mute(); setVoiceCallMuted(true); }
+                }}
                 className="px-5 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-semibold"
               >
-                {voiceCallHandleRef.current?.muted ? 'Unmute' : 'Mute'}
+                {voiceCallMuted ? 'Unmute' : 'Mute'}
               </button>
               <button
                 onClick={() => { voiceCallHandleRef.current?.stop(); setVoiceCallActive(false); setVoiceCallState('idle'); }}
@@ -6340,7 +6361,16 @@ ${lines.join('\n')}`;
                    <div className="flex gap-2 mb-2">
                      <select
                        aria-label="Persona presets"
-                       onChange={(e) => { if (e.target.value) { updateSystemPrompt(e.target.value); e.target.value = ''; } }}
+                       onChange={(e) => {
+                         // "Custom (clear)" carries value="" and was swallowed by
+                         // a truthiness guard, so the option did nothing (#522).
+                         // Distinguish it from the disabled placeholder by index.
+                         const idx = e.target.selectedIndex;
+                         const isClear = e.target.options[idx]?.textContent === 'Custom (clear)';
+                         if (isClear) updateSystemPrompt('');
+                         else if (e.target.value) updateSystemPrompt(e.target.value);
+                         e.target.selectedIndex = 0;
+                       }}
                        className={`text-xs border rounded-lg px-2 py-1 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'}`}
                        defaultValue=""
                      >
@@ -7084,8 +7114,16 @@ ${lines.join('\n')}`;
                              </button>
                              {server.type === 'http' && (
                                <button
+                                 disabled={authInFlight === server.id}
                                  onClick={async () => {
+                                   // The browser round-trip can take minutes. Without an
+                                   // in-flight guard the button looked idle, so a second
+                                   // click started a SECOND flow — leaking a redirect
+                                   // listener and surfacing a stale timeout error long
+                                   // after the first attempt had succeeded (#503).
+                                   if (authInFlight) return;
                                    setMcpAuthError(null);
+                                   setAuthInFlight(server.id);
                                    try {
                                      await performOAuthFlow(server.id, server.url!);
                                      setMcpServers(prev =>
@@ -7093,6 +7131,8 @@ ${lines.join('\n')}`;
                                      );
                                    } catch (e) {
                                      setMcpAuthError(e instanceof Error ? e.message : 'Auth failed');
+                                   } finally {
+                                     setAuthInFlight(null);
                                    }
                                  }}
                                  className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
@@ -7102,18 +7142,32 @@ ${lines.join('\n')}`;
                                  }`}
                                  title={server.authenticated ? 'Authenticated' : 'Authenticate with OAuth'}
                                >
-                                 {server.authenticated ? '🔑 auth' : 'Auth'}
+                                 {authInFlight === server.id ? 'Authorising…' : server.authenticated ? '🔑 auth' : 'Auth'}
                                </button>
                              )}
                              <button
+                               aria-label={`Remove MCP server ${server.name}`}
+                               title={`Remove ${server.name}`}
                                onClick={async () => {
-                                 // Unregister tools and disconnect via bridge (#102)
-                                 const existing = mcpServers.find(s => s.id === server.id);
-                                 if (existing) {
-                                   unregisterMcpTools(server.id, getRegisteredToolNames(existing));
+                                 // This also purges the server's keychain secrets
+                                 // and OAuth tokens, so it must be confirmed, and a
+                                 // mid-way failure must not leave the row looking
+                                 // untouched with no explanation (#525).
+                                 if (!window.confirm(
+                                   `Remove MCP server "${server.name}"?\n\n` +
+                                   `Its tools are unregistered and any stored credentials ` +
+                                   `and OAuth tokens for it are deleted.`,
+                                 )) return;
+                                 try {
+                                   const existing = mcpServers.find(s => s.id === server.id);
+                                   if (existing) {
+                                     unregisterMcpTools(server.id, getRegisteredToolNames(existing));
+                                   }
+                                   await mcpServerManager.disconnectFromServer(server.id);
+                                   await mcpConfigStore.delete(server.id);
+                                 } catch (e) {
+                                   showStatusBanner(`Could not fully remove "${server.name}": ${formatErrorLine(e)}`);
                                  }
-                                 await mcpServerManager.disconnectFromServer(server.id);
-                                 await mcpConfigStore.delete(server.id);
                                  setMcpServers(mcpConfigStore.list());
                                }}
                                className="text-red-400 hover:text-red-300 text-xs px-1"
@@ -7655,8 +7709,14 @@ ${lines.join('\n')}`;
                         {modelfilePreview}
                       </div>
                     )}
-                    {modelfileProgress && (
-                      <p className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>{modelfileProgress}</p>
+                    {(modelfileError || modelfileProgress) && (
+                      <p role={modelfileError ? 'alert' : undefined} className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>
+                        {/* Render the error, not just the progress text (#528).
+                            The catch path clears modelfileProgress, so this
+                            paragraph used to go blank and every failure —
+                            including "Enter a model name" — was invisible. */}
+                        {modelfileError || modelfileProgress}
+                      </p>
                     )}
                     <div className="flex gap-1.5">
                       <button
@@ -8299,7 +8359,18 @@ ${lines.join('\n')}`;
                         <button
                           aria-label={`Delete secret ${r.key}`}
                           onClick={async () => {
-                            await secretDelete(r.service, r.key);
+                            // The value is masked and unrecoverable, so an
+                            // accidental click destroyed a credential the user
+                            // could not even read back (#523).
+                            if (!window.confirm(
+                              `Delete secret "${r.key}" from ${r.service}?\n\n` +
+                              `This removes it from the OS keychain and cannot be undone.`,
+                            )) return;
+                            try {
+                              await secretDelete(r.service, r.key);
+                            } catch (e) {
+                              showStatusBanner(`Could not delete secret: ${formatErrorLine(e)}`);
+                            }
                             setSecretKeys(secretListRefs());
                           }}
                           className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
