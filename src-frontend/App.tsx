@@ -1507,13 +1507,24 @@ const App: React.FC = () => {
     document.documentElement.style.fontSize = `${Math.round(16 * fontScale)}px`;
   }, [fontScale]);
 
-  // Reset the composer height when the input is cleared after sending (#259)
-  useEffect(() => {
-    if (input === '') {
-      const ta = document.getElementById('chat-input') as HTMLTextAreaElement | null;
-      if (ta) ta.style.height = 'auto';
-    }
-  }, [input]);
+  /**
+   * Re-measure the composer to fit its content, capped at the CSS max height.
+   *
+   * The measure step used to live only in the textarea's own onChange, so every
+   * programmatic write — prompt library, Alt+Up/Down history, dictation results,
+   * @-mention resolution, slash-command completion — left the box at its previous
+   * height. The common case was a 12-line prompt rendered in a one-line box that
+   * snapped open as soon as you typed a character, which reads as a glitch (#534).
+   */
+  const growComposer = (el?: HTMLTextAreaElement | null) => {
+    const ta = el ?? (document.getElementById('chat-input') as HTMLTextAreaElement | null);
+    if (!ta) return;
+    ta.style.height = 'auto';
+    if (ta.value !== '') ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  };
+
+  // Keyed on `input`, so it covers both typed and programmatic updates (#259, #534).
+  useEffect(() => { growComposer(); }, [input]);
 
   // Subscribe to the plan store so the checklist re-renders on update_plan (#239).
   useEffect(() => subscribePlan(setPlanState), []);
@@ -5645,6 +5656,40 @@ ${lines.join('\n')}`;
             </div>
           )}
 
+          {/* These chip strips were in-flow children of the composer ROW below,
+              which is a horizontal flex container — so they became siblings of
+              the textarea and squeezed it sideways instead of stacking above it
+              (#531/#538). They live in the surrounding column now. */}
+          <div className="max-w-3xl mx-auto">
+             {/* Pinned file context chips (#350) */}
+            {pinnedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-1" aria-label="Pinned files">
+                {pinnedFiles.map((f, i) => (
+                  <span key={f.path} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
+                    <span>📎 {f.path}</span>
+                    <button type="button" aria-label={`Drop pinned file ${f.path}`} title="Drop pinned file" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); const next = dropPinnedFile(pinnedFiles, f.path); setPinnedFiles(next); savePinnedFiles(next); }}>×</button>
+                  </span>
+                ))}
+                {pinnedFiles.length > 1 && (
+                  <button type="button" aria-label="Clear all pinned files" title="Clear all pinned files" className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-500 hover:bg-zinc-300'}`} onMouseDown={e => { e.preventDefault(); setPinnedFiles([]); savePinnedFiles([]); showStatusBanner('Cleared all pinned files'); }}>Clear all</button>
+                )}
+              </div>
+            )}
+
+             {/* Pending context chips from # commands (#184) */}
+             {pendingContextBlocks.length > 0 && (
+               <div className="flex flex-wrap gap-1 mb-1">
+                 {pendingContextBlocks.map((_, i) => (
+                   <span key={i} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
+                     <span>#context {i + 1}</span>
+                     <button type="button" aria-label="Remove context block" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); setPendingContextBlocks(prev => prev.filter((_, j) => j !== i)); }}>×</button>
+                   </span>
+                 ))}
+               </div>
+             )}
+
+          </div>
+
           <div className="max-w-3xl mx-auto flex gap-2 relative">
             {/* M5 Issue 20: Attach image button */}
              <button
@@ -5736,33 +5781,6 @@ ${lines.join('\n')}`;
                </div>
              )}
 
-             {/* Pinned file context chips (#350) */}
-            {pinnedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-1 mb-1" aria-label="Pinned files">
-                {pinnedFiles.map((f, i) => (
-                  <span key={f.path} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
-                    <span>📎 {f.path}</span>
-                    <button type="button" aria-label={`Drop pinned file ${f.path}`} title="Drop pinned file" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); const next = dropPinnedFile(pinnedFiles, f.path); setPinnedFiles(next); savePinnedFiles(next); }}>×</button>
-                  </span>
-                ))}
-                {pinnedFiles.length > 1 && (
-                  <button type="button" aria-label="Clear all pinned files" title="Clear all pinned files" className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-zinc-700 text-zinc-400 hover:bg-zinc-600' : 'bg-zinc-200 text-zinc-500 hover:bg-zinc-300'}`} onMouseDown={e => { e.preventDefault(); setPinnedFiles([]); savePinnedFiles([]); showStatusBanner('Cleared all pinned files'); }}>Clear all</button>
-                )}
-              </div>
-            )}
-
-             {/* Pending context chips from # commands (#184) */}
-             {pendingContextBlocks.length > 0 && (
-               <div className="flex flex-wrap gap-1 mb-1">
-                 {pendingContextBlocks.map((_, i) => (
-                   <span key={i} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-50 text-emerald-700'}`}>
-                     <span>#context {i + 1}</span>
-                     <button type="button" aria-label="Remove context block" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); setPendingContextBlocks(prev => prev.filter((_, j) => j !== i)); }}>×</button>
-                   </span>
-                 ))}
-               </div>
-             )}
-
              {/* Slash command autocomplete dropdown (#96) */}
              {commandSuggestions.length > 0 && (
                <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
@@ -5796,10 +5814,9 @@ ${lines.join('\n')}`;
                onChange={(e) => {
                  const val = e.target.value;
                  setInput(val);
-                 // Auto-grow the multi-line composer up to a max height (#259)
-                 const ta = e.target;
-                 ta.style.height = 'auto';
-                 ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+                 // Auto-grow the multi-line composer up to a max height (#259).
+                 // The effect keyed on `input` handles programmatic writes (#534).
+                 growComposer(e.target);
                  // Show slash command suggestions when input starts with /
                  if (val.startsWith('/')) {
                    const query = val.split(' ')[0];
@@ -5930,6 +5947,13 @@ ${lines.join('\n')}`;
                    }
                    historyNavIndexRef.current = idx;
                    setInput(hist[idx]);
+                   return;
+                 }
+                 // While an IME is composing (CJK, and some accent input), Enter
+                 // commits the candidate — it is not a send. Browsers report this
+                 // via isComposing / keyCode 229; without the guard the composer
+                 // sent a half-converted message and swallowed the commit (#519).
+                 if ((e.nativeEvent as KeyboardEvent).isComposing || (e.nativeEvent as KeyboardEvent).keyCode === 229) {
                    return;
                  }
                  if (e.key === 'Enter' && !e.shiftKey && !sendOnCtrlEnter) {
