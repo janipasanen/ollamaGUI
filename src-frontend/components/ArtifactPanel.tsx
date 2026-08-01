@@ -177,10 +177,23 @@ function ArtifactPanel({ artifact, dark }: ArtifactPanelProps): React.ReactEleme
   );
 }
 
+/**
+ * Last artifact handed to showArtifact(), kept at module scope (#504).
+ *
+ * The panel body only mounts while the panel is OPEN, so on the common path —
+ * panel closed, user clicks "Open in panel" — showArtifact() dispatched the
+ * event before any listener existed and the artifact was dropped, leaving the
+ * panel to open empty every time. Latching it here lets the body pick it up
+ * when it mounts, whichever order those two things happen in.
+ */
+let pendingArtifact: AnyArtifact | null = null;
+
 function ArtifactPanelRoot({ dark }: { dark: boolean }): React.ReactElement {
-  const [artifact, setArtifact] = useState<AnyArtifact | null>(null);
+  const [artifact, setArtifact] = useState<AnyArtifact | null>(pendingArtifact);
 
   useEffect(() => {
+    // Catch an artifact latched before this component existed.
+    if (pendingArtifact) setArtifact(pendingArtifact);
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { artifact: AnyArtifact } | undefined;
       if (detail?.artifact) setArtifact(detail.artifact);
@@ -203,8 +216,15 @@ function ArtifactPanelRoot({ dark }: { dark: boolean }): React.ReactElement {
 
 /** Show an artifact in the side dock. Opens the panel if it is closed. */
 export function showArtifact(artifact: AnyArtifact): void {
-  window.dispatchEvent(new CustomEvent('ollama-gui:show-artifact', { detail: { artifact } }));
+  // Latch first so a not-yet-mounted panel body still receives it (#504).
+  pendingArtifact = artifact;
   openPanel('artifacts');
+  window.dispatchEvent(new CustomEvent('ollama-gui:show-artifact', { detail: { artifact } }));
+}
+
+/** Test seam: clear the latched artifact between cases. */
+export function _resetPendingArtifact(): void {
+  pendingArtifact = null;
 }
 
 export default ArtifactPanel;

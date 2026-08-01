@@ -21,6 +21,36 @@ export const ContextMenu: React.FC<{
   dark?: boolean;
 }> = ({ x, y, items, onClose, dark }) => {
   const ref = React.useRef<HTMLDivElement>(null);
+  // Measured position, clamped/flipped to stay on screen (#506). Rendered
+  // hidden for the first paint so it is never briefly visible at the raw
+  // cursor point when that point is near the right/bottom edge.
+  const [pos, setPos] = React.useState<{ left: number; top: number } | null>(null);
+
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const place = () => {
+      const { offsetWidth: w, offsetHeight: h } = el;
+      const M = 8;
+      // Prefer opening down-right of the cursor; flip to the other side when
+      // there is not enough room, then clamp so it can never leave the viewport.
+      let left = x + w + M > window.innerWidth ? x - w : x;
+      let top = y + h + M > window.innerHeight ? y - h : y;
+      left = Math.max(M, Math.min(left, window.innerWidth - w - M));
+      top = Math.max(M, Math.min(top, window.innerHeight - h - M));
+      setPos({ left, top });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [x, y, items.length]);
+
+  // Return focus where it came from (#514). Without this the menu closes and
+  // focus lands on document.body, stranding keyboard users at the top of the page.
+  React.useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    return () => { previous?.focus?.(); };
+  }, []);
 
   React.useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -67,7 +97,13 @@ export const ContextMenu: React.FC<{
       aria-label="Message actions"
       data-testid="message-context-menu"
       onKeyDown={onMenuKeyDown}
-      style={{ position: 'fixed', left: x, top: y, zIndex: 60 }}
+      style={{
+        position: 'fixed',
+        left: pos?.left ?? x,
+        top: pos?.top ?? y,
+        visibility: pos ? 'visible' : 'hidden',
+        zIndex: 60,
+      }}
       className={`min-w-[160px] py-1 rounded-lg border shadow-lg text-sm ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
     >
       {items.map((item, idx) => (

@@ -162,6 +162,7 @@ import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } 
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
+import ToolbarActions from './components/ToolbarActions';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -554,6 +555,10 @@ const App: React.FC = () => {
 
   // Session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  // Mirror of currentSessionId that is correct *within* a render pass (#508).
+  // saveCurrentSession runs many times per streamed reply; the state value lags
+  // by a render, so it must read the ref instead.
+  const currentSessionIdRef = useRef<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   // Inline session rename (#52)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
@@ -640,7 +645,15 @@ const App: React.FC = () => {
   // Structured output (Ollama `format`): JSON mode or a JSON Schema (#148).
   const [structuredOutput, setStructuredOutput] = useState<{ enabled: boolean; schema: string }>({ enabled: false, schema: '' });
   const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
+  // Initialise from storage during the first render (#509). Previously the
+  // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
+  // same pass — but that refreshModels closure was built on the first render,
+  // where the URL was still the localhost default, so a saved remote host was
+  // queried at localhost and the app started "disconnected" with no models.
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(() => {
+    try { return localStorage.getItem('ollama_gui_base_url') || DEFAULT_BASE_URL; }
+    catch { return DEFAULT_BASE_URL; }
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   // Composed system-prompt preview overlay (#376).
@@ -919,7 +932,19 @@ const App: React.FC = () => {
   // Message queue: enqueue prompts while a reply streams; auto-send FIFO (#137).
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const messageQueueRef = useRef<string[]>([]);
+  // Next auto-send from the queue, dispatched from a fresh render (#507).
+  const [pendingQueuedMessage, setPendingQueuedMessage] = useState<string | null>(null);
   useEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
+  useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => {
+    if (pendingQueuedMessage === null || isLoading) return;
+    const text = pendingQueuedMessage;
+    setPendingQueuedMessage(null);
+    void sendMessage(text);
+    // sendMessage is intentionally excluded: it is re-created every render, and
+    // this effect must run with the binding from the render it fires in (#507).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingQueuedMessage, isLoading]);
 
   // Storage quota warning
   const [storageWarning, setStorageWarning] = useState(false);
@@ -1135,8 +1160,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     async function loadInitialData() {
-      const savedUrl = localStorage.getItem('ollama_gui_base_url');
-      if (savedUrl) setOllamaBaseUrl(savedUrl);
+      // Base URL is restored in the useState initialiser above (#509).
 
       const savedSortMode = localStorage.getItem('ollama_gui_sort_mode');
     if (savedSortMode === 'recent' || savedSortMode === 'name' || savedSortMode === 'messages') {
@@ -1591,10 +1615,23 @@ const App: React.FC = () => {
     // folders, not just the primary one, so the agent can work across them.
     const roots = projectRoots(project);
     if (roots.length > 0) {
-      void openWorkspaceRoots(roots);
-      // Git tools and AGENTS.md/CLAUDE.md are scoped to the primary root.
-      registerGitTools(roots[0]);
-      void loadProjectRules(roots[0]).then(setProjectRulesContent);
+      // set_workspace_roots rejects the whole list if ANY folder is missing
+      // (moved, renamed, unmounted volume). That rejection used to be
+      // unhandled: the sidebar showed the new project as active while the
+      // backend still pointed at the PREVIOUS project's folder, so the agent
+      // silently kept reading and editing the wrong repository (#502).
+      void openWorkspaceRoots(roots)
+        .then(() => {
+          registerGitTools(roots[0]);
+          return loadProjectRules(roots[0]).then(setProjectRulesContent);
+        })
+        .catch((err) => {
+          setProjectRulesContent(null);
+          showStatusBanner(
+            `Could not open "${project?.name ?? 'project'}" — ${formatErrorLine(err)}. ` +
+            `Check its folders in Settings → Projects.`,
+          );
+        });
     } else {
       setProjectRulesContent(null);
     }
@@ -2291,7 +2328,10 @@ const App: React.FC = () => {
   const saveCurrentSession = (currentMessages: Message[], bs?: BranchState) => {
     if (isTemporary) return; // temporary chats are never written to storage
     const activeBranchState = bs ?? branchState;
-    if (currentSessionId === null) {
+    // Read through a ref, not the render closure (#508). Streaming calls this on
+    // every token; setCurrentSessionId does not apply until the next render, so
+    // each call still saw null and minted ANOTHER session — one per token.
+    if (currentSessionIdRef.current === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
         title: generateTitle(currentMessages),
@@ -2303,10 +2343,11 @@ const App: React.FC = () => {
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
+      currentSessionIdRef.current = newSession.id;
       setCurrentSessionId(newSession.id);
       setSessions(storage.getSessions());
     } else {
-      const session = storage.getSessions().find(s => s.id === currentSessionId);
+      const session = storage.getSessions().find(s => s.id === currentSessionIdRef.current);
       if (session) {
         const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState });
         if (result.ok === false && result.error === 'quota') setStorageWarning(true);
@@ -3880,7 +3921,14 @@ ${lines.join('\n')}`;
         const [next, ...rest] = messageQueueRef.current;
         messageQueueRef.current = rest;
         setMessageQueue(rest);
-        setTimeout(() => { void sendMessage(next); }, 0);
+        // Hand off via state rather than calling sendMessage from this closure
+        // (#507). sendMessage is re-created every render and reads `messages`
+        // lexically; invoking it here ran turn 2 against the snapshot taken
+        // BEFORE turn 1's reply existed, so `setMessages([...messages, user])`
+        // silently dropped the previous exchange and saveCurrentSession then
+        // persisted the truncated transcript. The effect below fires it from a
+        // later render, where `messages` already includes turn 1.
+        setPendingQueuedMessage(next);
       }
     }
   };
@@ -4538,7 +4586,7 @@ ${lines.join('\n')}`;
         {/* Header */}
         {/* overflow-x-auto (#450): at narrow/moderate widths the toolbar used to
             clip its controls with no way to reach them; now it scrolls. */}
-        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 md:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
+        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 xl:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
             <div className="flex items-center gap-4">
@@ -4582,7 +4630,7 @@ ${lines.join('\n')}`;
                   }
                 }}
                 aria-label="Select AI model"
-                className={`text-sm border rounded-md px-2 py-1 min-w-[10rem] max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                className={`text-sm border rounded-md px-2 py-1 min-w-[8rem] max-w-[12rem] xl:max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
@@ -4726,7 +4774,7 @@ ${lines.join('\n')}`;
              {/* On mobile, show only essential buttons; others go in mobile menu */}
              {!isMobile ? (
                <>
-                 <div className={`text-xs font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
+                 <div className={`hidden xl:block text-xs font-mono shrink-0 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
                  <button
                    onClick={() => setIsSettingsOpen(prev => !prev)}
                    title="Settings (Ctrl+,)"
@@ -4798,84 +4846,71 @@ ${lines.join('\n')}`;
                      🖼
                    </button>
                  )}
-                 {/* File tree toggle (#85) */}
-                 <button
-                   onClick={() => togglePanel('files')}
-                   title={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
-                   aria-label={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
-                   aria-pressed={isPanelOpen('files')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('files') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   📁
-                 </button>
-                 {/* Browser preview toggle (#71) */}
-                 <button
-                   onClick={() => togglePanel('browser')}
-                   title="Toggle browser (Ctrl+B)"
-                   aria-label="Toggle browser preview"
-                   aria-pressed={isPanelOpen('browser')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('browser') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   🌐
-                 </button>
-                 {/* Terminal toggle (#87) */}
-                 <button
-                   onClick={() => togglePanel('terminal')}
-                   title={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
-                   aria-label={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
-                   aria-pressed={isPanelOpen('terminal')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('terminal') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   ▶
-                 </button>
-                 {/* New dock-panel toggles (M176): code search, source control, checkpoints, activity */}
-                 {([
-                   { id: 'code-search', icon: '🔎', label: 'Code Search' },
-                   { id: 'source-control', icon: '⑂', label: 'Source Control' },
-                   { id: 'checkpoints', icon: '🕰', label: 'Checkpoints' },
-                   { id: 'agent-activity', icon: '📡', label: 'Agent Activity' },
-                 ] as const).map(p => (
-                   <button
-                     key={p.id}
-                     onClick={() => togglePanel(p.id)}
-                     title={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label.toLowerCase()} panel`}
-                     aria-label={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label} panel`}
-                     aria-pressed={isPanelOpen(p.id)}
-                     className={`p-2 rounded-md transition-colors ${isPanelOpen(p.id) ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                   >
-                     {p.icon}
-                   </button>
-                 ))}
-                 <ConversationStatsButton
-                   stats={computeConversationStats(messages)}
+                 {/* Collapsible tail (#495): anything that does not fit moves
+                     into an overflow menu instead of scrolling off-screen. */}
+                 <ToolbarActions
                    dark={dark}
-                 />
-                 <button
-                   onClick={handleCopyMarkdown}
-                   title="Copy conversation as Markdown"
-                   aria-label="Copy conversation as Markdown"
-                   disabled={messages.length === 0}
-                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${copiedChat ? (dark ? 'text-green-400' : 'text-green-600') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
+                   items={[
+                     {
+                       id: 'files',
+                       icon: '📁',
+                       label: `${isPanelOpen('files') ? 'Close' : 'Open'} files panel`,
+                       active: isPanelOpen('files'),
+                       onSelect: () => togglePanel('files'),
+                     },
+                     {
+                       id: 'browser',
+                       icon: '🌐',
+                       label: 'Toggle browser preview',
+                       active: isPanelOpen('browser'),
+                       onSelect: () => togglePanel('browser'),
+                     },
+                     {
+                       id: 'terminal',
+                       icon: '▶',
+                       label: `${isPanelOpen('terminal') ? 'Close' : 'Open'} terminal panel`,
+                       active: isPanelOpen('terminal'),
+                       onSelect: () => togglePanel('terminal'),
+                     },
+                     ...([
+                       { id: 'code-search', icon: '🔎', label: 'Code Search' },
+                       { id: 'source-control', icon: '⑂', label: 'Source Control' },
+                       { id: 'checkpoints', icon: '🕰', label: 'Checkpoints' },
+                       { id: 'agent-activity', icon: '📡', label: 'Agent Activity' },
+                     ] as const).map(p => ({
+                       id: p.id,
+                       icon: p.icon,
+                       label: `${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label} panel`,
+                       active: isPanelOpen(p.id),
+                       onSelect: () => togglePanel(p.id),
+                     })),
+                     {
+                       id: 'copy-md',
+                       icon: copiedChat ? '✓' : '📋',
+                       label: 'Copy conversation as Markdown',
+                       disabled: messages.length === 0,
+                       onSelect: handleCopyMarkdown,
+                     },
+                     {
+                       id: 'export-md',
+                       icon: '⬇️',
+                       label: 'Export conversation as Markdown',
+                       disabled: messages.length === 0,
+                       onSelect: handleExportMarkdown,
+                     },
+                     {
+                       id: 'help',
+                       icon: '❓',
+                       label: 'Show keyboard shortcuts',
+                       onSelect: () => setShowHelp(prev => !prev),
+                     },
+                   ]}
                  >
-                   {copiedChat ? '✓' : '📋'}
-                 </button>
-                 <button
-                   onClick={handleExportMarkdown}
-                   title="Export conversation as Markdown"
-                   aria-label="Export conversation as Markdown"
-                   disabled={messages.length === 0}
-                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ⬇️
-                 </button>
-                 <button
-                   onClick={() => setShowHelp(prev => !prev)}
-                   title="Keyboard shortcuts (?)"
-                   aria-label="Show keyboard shortcuts"
-                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ❓
-                 </button>
+                   <ConversationStatsButton
+                     stats={computeConversationStats(messages)}
+                     dark={dark}
+                   />
+                 </ToolbarActions>
                </>
              ) : (
                <button
@@ -5581,7 +5616,7 @@ ${lines.join('\n')}`;
                    className={`px-3 py-3 rounded-xl transition-colors ${dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'}`}
                  >📋</button>
                  {showPromptPicker && (
-                   <div className={`absolute bottom-full mb-1 left-0 w-56 rounded-xl border shadow-lg overflow-hidden z-20 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                   <div className={`absolute bottom-full mb-1 left-0 w-56 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-20 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
                      {prompts.map(p => (
                        <button
                          key={p.id}
@@ -5597,7 +5632,7 @@ ${lines.join('\n')}`;
 
              {/* @-mention file autocomplete dropdown (#86/#183) */}
              {atSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
                  {atSuggestions.map((opt, idx) => (
                    <button
                      key={opt.path}
@@ -5619,7 +5654,7 @@ ${lines.join('\n')}`;
 
              {/* #-knowledge context dropdown (#119/#184) */}
              {hashSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
                  {hashSuggestions.map((opt, idx) => (
                    <button
                      key={opt.id ?? opt.url ?? opt.label}
@@ -5676,7 +5711,7 @@ ${lines.join('\n')}`;
 
              {/* Slash command autocomplete dropdown (#96) */}
              {commandSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
                  {commandSuggestions.map((cmd, idx) => (
                    <button
                      key={cmd.name}
@@ -5783,7 +5818,6 @@ ${lines.join('\n')}`;
                  // Tab-to-indent / Shift+Tab to outdent (#360) — TUI/Codex/Claude
                  // parity. Only when no autocomplete suggestions are open.
                  if (e.key === 'Tab' && atSuggestions.length === 0 && hashSuggestions.length === 0 && commandSuggestions.length === 0) {
-                   e.preventDefault();
                    const ta = e.currentTarget as HTMLTextAreaElement;
                    const start = ta.selectionStart ?? input.length;
                    const end = ta.selectionEnd ?? input.length;
@@ -5793,11 +5827,17 @@ ${lines.join('\n')}`;
                      const stripped = linePrefix.replace(/^ {1,2}/, '');
                      const removed = linePrefix.length - stripped.length;
                      if (removed > 0) {
+                       e.preventDefault();
                        const next = input.slice(0, lineStart) + stripped + input.slice(start);
                        setInput(next);
                        setTimeout(() => { ta.selectionStart = ta.selectionEnd = Math.max(lineStart, start - removed); }, 0);
                      }
+                     // Nothing to outdent: let the browser move focus (#496).
+                     // Tab-to-indent used to preventDefault unconditionally, so
+                     // neither Tab nor Shift+Tab could ever leave the composer —
+                     // a hard keyboard trap. Shift+Tab is now the way out.
                    } else {
+                     e.preventDefault();
                      const next = input.slice(0, start) + '  ' + input.slice(end);
                      setInput(next);
                      setTimeout(() => { ta.selectionStart = ta.selectionEnd = start + 2; }, 0);
@@ -7939,7 +7979,15 @@ ${lines.join('\n')}`;
                           min="5"
                           max="300"
                           value={Math.round(sttConfig.maxDurationMs / 1000)}
-                          onChange={e => { const cfg = { ...sttConfig, maxDurationMs: parseInt(e.target.value) * 1000 }; setSttConfig(cfg); saveSttConfig(cfg); }}
+                          onChange={e => {
+                            // An empty/non-numeric field used to persist NaN,
+                            // which permanently broke dictation (#500).
+                            const secs = parseInt(e.target.value, 10);
+                            if (!Number.isFinite(secs)) return;
+                            const clamped = Math.min(600, Math.max(1, secs));
+                            const cfg = { ...sttConfig, maxDurationMs: clamped * 1000 };
+                            setSttConfig(cfg); saveSttConfig(cfg);
+                          }}
                           className={`w-24 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                       </div>
