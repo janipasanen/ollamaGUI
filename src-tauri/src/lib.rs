@@ -744,7 +744,10 @@ struct MlxServer {
 lazy_static::lazy_static! {
     static ref MLX_SERVER: Arc<Mutex<Option<MlxServer>>> = Arc::new(Mutex::new(None));
     /// Current workspace root — all filesystem commands validate paths against this.
-    static ref WORKSPACE_ROOT: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    // Every folder the active project exposes (#492). roots[0] is the primary:
+    // relative paths resolve against it and single-root callers use it. A path is
+    // accepted when it lies inside ANY root, so a project can span several repos.
+    static ref WORKSPACE_ROOTS: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 }
 
 /// Find a usable python interpreter that can import mlx + mlx_lm.
@@ -1191,19 +1194,23 @@ struct FsDirEntry {
 /// Resolve `path` and verify it is inside the workspace root.
 /// Returns the canonical absolute path on success.
 fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
-    let root = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
-    let root = root.as_ref().ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
+    let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+    let primary = roots
+        .first()
+        .ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
     let candidate = PathBuf::from(path);
     // Resolve to absolute; the file doesn't have to exist yet for writes.
+    // Relative paths are interpreted against the primary root.
     let abs = if candidate.is_absolute() {
         candidate.clone()
     } else {
-        root.join(&candidate)
+        primary.join(&candidate)
     };
     // Normalize without requiring existence (for new files)
     let normalized = normalize_path(&abs);
-    if !normalized.starts_with(root) {
-        return Err(format!("Path '{}' is outside the workspace root.", path));
+    // A project may span several repositories (#492): accept any configured root.
+    if !roots.iter().any(|r| normalized.starts_with(r)) {
+        return Err(format!("Path '{}' is outside the workspace root(s).", path));
     }
     Ok(normalized)
 }
@@ -1224,14 +1231,35 @@ fn normalize_path(path: &PathBuf) -> PathBuf {
 
 #[tauri::command]
 fn set_workspace_root(path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    if !p.is_dir() {
-        return Err(format!("'{}' is not a directory or does not exist.", path));
+    set_workspace_roots(vec![path])
+}
+
+/// Replace the set of folders the agent may touch (#492). The first entry is
+/// the primary root (relative paths resolve against it). Every path must be an
+/// existing directory; an empty list clears the workspace.
+#[tauri::command]
+fn set_workspace_roots(paths: Vec<String>) -> Result<(), String> {
+    let mut canonical: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let p = PathBuf::from(path);
+        if !p.is_dir() {
+            return Err(format!("'{}' is not a directory or does not exist.", path));
+        }
+        let c = p.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.contains(&c) {
+            canonical.push(c);
+        }
     }
-    let canonical = p.canonicalize().map_err(|e| e.to_string())?;
-    let mut root = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
-    *root = Some(canonical);
+    let mut roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+    *roots = canonical;
     Ok(())
+}
+
+/// The folders currently exposed to the agent, primary first (#492).
+#[tauri::command]
+fn get_workspace_roots() -> Result<Vec<String>, String> {
+    let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+    Ok(roots.iter().map(|p| p.to_string_lossy().to_string()).collect())
 }
 
 /// Read a file, optionally a line range. `offset` is a 1-indexed start line and
@@ -1404,8 +1432,8 @@ async fn search_files(
     max_results: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
     let root = {
-        let guard = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
     };
     let max = max_results.unwrap_or(200).min(2000);
     let case_sensitive = case_sensitive.unwrap_or(false);
@@ -1462,8 +1490,8 @@ async fn search_files(
 #[tauri::command]
 async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<String>, String> {
     let root = {
-        let guard = WORKSPACE_ROOT.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
     };
     let max = max_results.unwrap_or(500).min(5000);
     tauri::async_runtime::spawn_blocking(move || {
@@ -2137,6 +2165,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             run_cli,
             probe_binary,
+            set_workspace_roots,
+            get_workspace_roots,
             get_system_memory,
             secret_set,
             secret_get,

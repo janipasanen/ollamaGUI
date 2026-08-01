@@ -93,7 +93,9 @@ describe('Per-message estimated token badge (#340)', () => {
     ]);
     const badges = await screen.findAllByLabelText(/Estimated tokens:/i, {}, { timeout: 3000 });
     expect(badges.length).toBeGreaterThanOrEqual(2);
-    expect(badges[0].textContent).toMatch(/≈\d+t/);
+    // Spelled-out unit, not a bare "t" — next to the timestamp that read as
+    // seconds (#486).
+    expect(badges[0].textContent).toMatch(/≈[\d.]+k? tokens/);
   });
 
   it('does not render a badge for empty messages', async () => {

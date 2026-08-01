@@ -166,9 +166,22 @@ export function registerCliTool(
     },
     execute: async (params: Record<string, any>) => {
       const command = params.command as string;
-      const cwd = params.cwd as string | undefined;
+      // Default to the open workspace so `gh issue list`, `git status`, `npm
+      // test` etc. target the user's project rather than the app's own working
+      // directory (#490). The model routinely omits cwd, and run_cli only calls
+      // current_dir() when one is supplied.
+      let cwd = params.cwd as string | undefined;
+      if (!cwd) {
+        try {
+          const { getWorkspaceRoot } = await import('./fileTools');
+          cwd = getWorkspaceRoot() ?? undefined;
+        } catch {
+          // fileTools unavailable — fall through with no cwd
+        }
+      }
 
       if (!cliAllowlist.has(command)) {
+        // Approve against the directory the command will actually run in.
         const approved = await onApprovalRequired(command, cwd);
         if (!approved) {
           return { error: 'Command denied by user.', exit_code: -1 };

@@ -22,8 +22,18 @@ export interface ChatSession {
 export interface Project {
   id: string;
   name: string;
-  /** Absolute path to the workspace root (may be empty string when not yet set). */
+  /**
+   * Absolute path to the primary workspace root (may be empty string when not
+   * yet set). Kept as the first entry of `workspaceRoots`; retained so projects
+   * saved before multi-folder support keep working unchanged (#492).
+   */
   workspaceRoot: string;
+  /**
+   * Every folder in this project, primary first (#492). A project may span
+   * several git repositories. Undefined on projects created before this field
+   * existed — use `projectRoots()` rather than reading it directly.
+   */
+  workspaceRoots?: string[];
   /** Project-scoped instructions prepended to the system prompt. */
   instructions: string;
   createdAt: number;

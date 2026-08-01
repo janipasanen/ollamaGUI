@@ -2,14 +2,20 @@
  * System prompt composition (#92, #93, #95).
  *
  * Stacks all context sources in a defined order before the base system prompt:
- *   1. Rules file content (AGENTS.md / CLAUDE.md from workspace root)
- *   2. Project-scoped instructions
- *   3. Persistent memory block
- *   4. Base system prompt
+ *   1. Workspace context (project name, working directory, git remote, CLIs)
+ *   2. Rules file content (AGENTS.md / CLAUDE.md from workspace root)
+ *   3. Project-scoped instructions
+ *   4. Persistent memory block
+ *   5. Base system prompt
+ *
+ * The workspace block goes first because it establishes *where* the model is
+ * before anything describes how to behave there (#489).
  */
 
 export interface SystemPromptOptions {
   systemPrompt: string;
+  /** Rendered workspace block from formatWorkspaceContext() (#489) */
+  workspaceBlock?: string;
   /** Contents of AGENTS.md / CLAUDE.md loaded from the workspace root (#93) */
   rulesFileContent?: string;
   /** Project.instructions for the active project (#92) */
@@ -21,6 +27,9 @@ export interface SystemPromptOptions {
 export function composeSystemPrompt(opts: SystemPromptOptions): string {
   const parts: string[] = [];
 
+  if (opts.workspaceBlock?.trim()) {
+    parts.push(opts.workspaceBlock.trim());
+  }
   if (opts.rulesFileContent?.trim()) {
     parts.push(`--- Project Rules ---\n${opts.rulesFileContent.trim()}\n---`);
   }

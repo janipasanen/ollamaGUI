@@ -7,7 +7,7 @@
  * commands are scoped to the chosen directory.
  */
 
-import { setWorkspaceRoot as fsSetRoot, clearWorkspaceRoot, getWorkspaceRoot, listDir } from './fileTools';
+import { setWorkspaceRoot as fsSetRoot, setWorkspaceRoots, clearWorkspaceRoot, getWorkspaceRoot, listDir } from './fileTools';
 import type { DirEntry } from './fileTools';
 
 export interface WorkspaceState {
@@ -74,4 +74,41 @@ export async function listWorkspaceDir(path?: string): Promise<DirEntry[]> {
   const root = getWorkspaceRoot();
   if (!root) throw new Error('No workspace open.');
   return listDir(path ?? root);
+}
+
+// ── Multi-folder projects (#492) ─────────────────────────────────────────────
+
+/**
+ * Every folder a project exposes, primary first, de-duplicated.
+ *
+ * Reads `workspaceRoots` when present and falls back to the legacy single
+ * `workspaceRoot`, so projects saved before multi-folder support keep working
+ * without a migration step. Always use this instead of reading either field.
+ */
+export function projectRoots(
+  project: { workspaceRoot?: string; workspaceRoots?: string[] } | null | undefined,
+): string[] {
+  if (!project) return [];
+  const list = project.workspaceRoots?.length
+    ? project.workspaceRoots
+    : (project.workspaceRoot ? [project.workspaceRoot] : []);
+  return Array.from(new Set(list.filter(r => !!r && r.trim())));
+}
+
+/**
+ * Point the backend at every folder of a project (#492).
+ *
+ * The first root stays the "active" one for UI and relative-path purposes, so
+ * the file tree and recent list behave as before; the remaining roots are
+ * additionally granted filesystem access so the agent can work across repos.
+ */
+export async function openWorkspaceRoots(roots: string[]): Promise<void> {
+  const cleaned = Array.from(new Set(roots.filter(r => !!r && r.trim())));
+  if (cleaned.length === 0) { closeWorkspace(); return; }
+
+  await setWorkspaceRoots(cleaned);
+  const state = loadWorkspaceState();
+  const recent = [cleaned[0], ...state.recentRoots.filter(r => r !== cleaned[0])].slice(0, MAX_RECENT);
+  saveWorkspaceState({ root: cleaned[0], recentRoots: recent });
+  notifyWorkspaceChanged();
 }

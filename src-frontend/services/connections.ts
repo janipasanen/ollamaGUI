@@ -90,8 +90,21 @@ export async function fetchOpenAiModels(conn: ModelConnection): Promise<Connecte
  */
 export async function fetchOllamaConnectionModels(conn: ModelConnection): Promise<ConnectedModel[]> {
   try {
-    const res = await fetch(`${conn.baseUrl.replace(/\/$/, '')}/api/tags`);
-    if (!res.ok) return [];
+    // Authenticated remotes — including ollama.com itself — reject an
+    // unauthenticated /api/tags with 401, which used to surface as an
+    // unexplained empty model list (#493).
+    const headers: Record<string, string> = {};
+    if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+    const res = await fetch(`${conn.baseUrl.replace(/\/$/, '')}/api/tags`, { headers });
+    if (!res.ok) {
+      console.warn(
+        `[connections] ${conn.name}: /api/tags returned ${res.status}` +
+        (res.status === 401 || res.status === 403
+          ? ' — this server needs an API token (set one on the connection).'
+          : ''),
+      );
+      return [];
+    }
     const data = await res.json() as { models?: any[] };
     return (data.models ?? []).map((m: any) => ({
       id: `${conn.id}/${m.name}`,

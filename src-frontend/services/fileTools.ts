@@ -32,6 +32,7 @@ async function tauriInvoke<T>(cmd: string, args: Record<string, unknown>): Promi
 }
 
 let _workspaceRoot: string | null = null;
+let _workspaceRoots: string[] = [];
 
 export function getWorkspaceRoot(): string | null {
   return _workspaceRoot;
@@ -41,11 +42,29 @@ export function getWorkspaceRoot(): string | null {
 export async function setWorkspaceRoot(path: string): Promise<void> {
   await tauriInvoke<void>('set_workspace_root', { path });
   _workspaceRoot = path;
+  _workspaceRoots = [path];
+}
+
+/**
+ * Expose several folders at once (#492). The first is the primary root that
+ * relative paths resolve against; every listed folder is granted access so a
+ * project can span multiple repositories.
+ */
+export async function setWorkspaceRoots(paths: string[]): Promise<void> {
+  await tauriInvoke<void>('set_workspace_roots', { paths });
+  _workspaceRoots = [...paths];
+  _workspaceRoot = paths[0] ?? null;
+}
+
+/** Every folder currently exposed, primary first (#492). */
+export function getWorkspaceRoots(): string[] {
+  return [..._workspaceRoots];
 }
 
 /** Clear the in-process workspace root (used by closeWorkspace for consistency, #380). */
 export function clearWorkspaceRoot(): void {
   _workspaceRoot = null;
+  _workspaceRoots = [];
 }
 
 export async function readFile(path: string, offset?: number, limit?: number): Promise<string> {

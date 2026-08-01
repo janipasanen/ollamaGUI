@@ -67,6 +67,7 @@ import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import WorkspaceChip from './components/WorkspaceChip';
+import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
 import NoWorkspaceHint from './components/NoWorkspaceHint';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
@@ -125,7 +126,7 @@ import {
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
 import { registerDevTools, makePostEditVerifyHook, isAutoVerifyEnabled, setAutoVerifyEnabled } from './services/devTools';
 import { registerCodeNavTools } from './services/codeNav';
-import { openWorkspace, getActiveRoot } from './services/workspace';
+import { openWorkspace, getActiveRoot, projectRoots, openWorkspaceRoots, closeWorkspace } from './services/workspace';
 
 import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit } from './services/git';
 import {
@@ -755,6 +756,8 @@ const App: React.FC = () => {
   // Remote Ollama quick-add state
   const [newRemoteOllamaUrl, setNewRemoteOllamaUrl] = useState('');
   const [newRemoteOllamaName, setNewRemoteOllamaName] = useState('');
+  // Optional bearer token for authenticated remote Ollama servers (#493).
+  const [newRemoteOllamaToken, setNewRemoteOllamaToken] = useState('');
 
   // Many-models conversation (#126)
   const [extraModels, setExtraModels] = useState<string[]>([]);
@@ -813,6 +816,10 @@ const App: React.FC = () => {
 
   // Project rules file content (#93/#190)
   const [projectRulesContent, setProjectRulesContent] = useState<string | null>(null);
+  // Workspace grounding for the system prompt (#489/#491): where the model is,
+  // which repo that maps to, and which repo CLIs it may actually invoke.
+  const [workspaceCtx, setWorkspaceCtx] = useState<WorkspaceContext | null>(null);
+  const [repoClis, setRepoClis] = useState<string[]>([]);
 
   // Diff review modal (#84/#185)
   const [pendingDiffEdit, setPendingDiffEdit] = useState<PendingEdit | null>(null);
@@ -1048,6 +1055,73 @@ const App: React.FC = () => {
     setNewCloudModel('');
     void refreshModels().catch(() => {});
   }, [newCloudModel, refreshModels]);
+
+  // Bind an ad-hoc folder back onto the active project (#488). Previously the
+  // wiring only ran project -> workspace, so a folder opened from the chip or
+  // files panel was forgotten on the next project switch and the two features
+  // felt unrelated. Reads storage directly so it never closes over stale state,
+  // and no-ops when the folder is already a root of the project (which is the
+  // case when this fires as a result of activating that project).
+  const activeProjectIdRef = useRef(activeProjectId);
+  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
+  useEffect(() => {
+    const onChange = () => {
+      const root = getActiveRoot();
+      const pid = activeProjectIdRef.current;
+      if (!root || !pid) return;
+      const current = storage.getProjects().find(p => p.id === pid);
+      if (!current) return;
+      const roots = projectRoots(current);
+      if (roots.includes(root)) return;
+      storage.saveProject({
+        ...current,
+        workspaceRoot: current.workspaceRoot || root,
+        workspaceRoots: [...roots, root],
+      });
+      setProjects(storage.getProjects());
+    };
+    window.addEventListener('ollama-gui:workspace-changed', onChange);
+    return () => window.removeEventListener('ollama-gui:workspace-changed', onChange);
+  }, []);
+
+  // Probe once for repo CLIs so we only ever advertise what is installed (#491).
+  useEffect(() => {
+    let cancelled = false;
+    detectRepoClis()
+      .then(clis => { if (!cancelled) setRepoClis(clis); })
+      .catch(() => { /* nothing detected — advertise nothing */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Keep the workspace block in sync with the open folder, the active project,
+  // and the detected CLIs (#489). Rebuilt on ollama-gui:workspace-changed so it
+  // tracks folders opened from any surface (chip, files panel, project switch).
+  useEffect(() => {
+    let cancelled = false;
+
+    const rebuild = async () => {
+      const root = getActiveRoot();
+      if (!root) { if (!cancelled) setWorkspaceCtx(null); return; }
+      const project = projects.find(p => p.id === activeProjectId);
+      // Show the path immediately; git details fill in when they resolve.
+      const base: WorkspaceContext = {
+        root,
+        projectName: project?.workspaceRoot === root ? project.name : undefined,
+        availableClis: repoClis,
+      };
+      if (!cancelled) setWorkspaceCtx(base);
+      const git = await detectGitInfo(root).catch(() => ({}));
+      if (!cancelled) setWorkspaceCtx({ ...base, ...git });
+    };
+
+    void rebuild();
+    const onChange = () => { void rebuild(); };
+    window.addEventListener('ollama-gui:workspace-changed', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('ollama-gui:workspace-changed', onChange);
+    };
+  }, [activeProjectId, projects, repoClis]);
 
   // Poll running models every 30s so the warm indicator stays current (#478).
   useEffect(() => {
@@ -1513,11 +1587,14 @@ const App: React.FC = () => {
   // Sync workspace root, git tools, project rules, and per-project model bindings when the active project changes (#83, #93, #103, #171, #190, #194).
   useEffect(() => {
     const project = projects.find(p => p.id === activeProjectId);
-    if (project?.workspaceRoot) {
-      void openWorkspace(project.workspaceRoot);
-      registerGitTools(project.workspaceRoot);
-      // Load AGENTS.md / CLAUDE.md for system-prompt injection (#93/#190)
-      void loadProjectRules(project.workspaceRoot).then(setProjectRulesContent);
+    // A project may span several repositories (#492) — expose all of its
+    // folders, not just the primary one, so the agent can work across them.
+    const roots = projectRoots(project);
+    if (roots.length > 0) {
+      void openWorkspaceRoots(roots);
+      // Git tools and AGENTS.md/CLAUDE.md are scoped to the primary root.
+      registerGitTools(roots[0]);
+      void loadProjectRules(roots[0]).then(setProjectRulesContent);
     } else {
       setProjectRulesContent(null);
     }
@@ -3333,6 +3410,7 @@ ${lines.join('\n')}`;
     const memBlock = composeMemoryBlock(activeProjectId ?? undefined);
     const composedSystem = composeSystemPrompt({
       systemPrompt: webSearchBlock ? `${webSearchBlock}\n\n${systemPrompt}` : systemPrompt,
+      workspaceBlock: formatWorkspaceContext(workspaceCtx) || undefined,
       rulesFileContent: projectRulesContent ?? undefined,
       projectInstructions: activeProject?.instructions,
       memoryBlock: memBlock || undefined,
@@ -6099,7 +6177,7 @@ ${lines.join('\n')}`;
                  <div>
                    <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Remote Ollama Servers</label>
                    <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     Add remote Ollama instances (e.g. a server on another machine). Their models appear under "Remote Ollama: name" in the model selector.
+                     Add remote Ollama instances (e.g. a server on another machine, or an authenticated cloud endpoint). Their models appear under "Remote Ollama: name" in the model selector. Use 🔑 to set an API token for servers that require one.
                    </p>
                    {/* Existing remote Ollama connections */}
                    {connections.filter(c => c.kind === 'ollama').length > 0 && (
@@ -6110,8 +6188,32 @@ ${lines.join('\n')}`;
                            <div key={conn.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 border ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
                              <div className="flex-1 min-w-0">
                                <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{conn.name}</div>
-                               <div className={`text-[10px] font-mono truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} · {modelCount} model{modelCount !== 1 ? 's' : ''}</div>
+                               <div className={`text-[10px] font-mono truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} · {modelCount} model{modelCount !== 1 ? 's' : ''}{conn.apiKey ? ' · 🔑 token set' : ''}</div>
                              </div>
+                             <button
+                               aria-label={`${conn.apiKey ? 'Change' : 'Set'} API token for ${conn.name}`}
+                               title={conn.apiKey ? 'Change API token' : 'Set API token'}
+                               onClick={async () => {
+                                 // Authenticated remotes (incl. ollama.com) need a bearer token (#493).
+                                 const entered = window.prompt(
+                                   `API token for "${conn.name}" (leave empty to remove):`,
+                                   conn.apiKey ?? '',
+                                 );
+                                 if (entered === null) return;
+                                 const token = entered.trim();
+                                 const updated = connections.map(c =>
+                                   c.id === conn.id ? { ...c, apiKey: token || undefined } : c);
+                                 saveConnections(updated);
+                                 setConnections(updated);
+                                 const changed = updated.find(c => c.id === conn.id)!;
+                                 const { fetchOllamaConnectionModels } = await import('./services/connections');
+                                 fetchOllamaConnectionModels(changed)
+                                   .then(newModels => setConnectedModels(prev =>
+                                     [...prev.filter(m => m.connectionId !== conn.id), ...newModels]))
+                                   .catch(() => {});
+                               }}
+                               className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                             >🔑</button>
                              <button
                                onClick={() => {
                                  const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
@@ -6152,16 +6254,29 @@ ${lines.join('\n')}`;
                        placeholder="URL (e.g. http://192.168.1.10:11434)"
                        className={`flex-1 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
                      />
+                     <input
+                       type="password"
+                       value={newRemoteOllamaToken}
+                       onChange={e => setNewRemoteOllamaToken(e.target.value)}
+                       placeholder="API token (optional)"
+                       aria-label="Remote Ollama API token"
+                       className={`w-40 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                     />
                      <button
                        onClick={async () => {
                          const rawUrl = newRemoteOllamaUrl.trim();
                          const name = newRemoteOllamaName.trim() || rawUrl;
                          if (!rawUrl) return;
-                         const conn = addConnection({ name, kind: 'ollama', baseUrl: rawUrl, enabled: true });
+                         const token = newRemoteOllamaToken.trim();
+                         const conn = addConnection({
+                           name, kind: 'ollama', baseUrl: rawUrl, enabled: true,
+                           ...(token ? { apiKey: token } : {}),
+                         });
                          const updated = loadConnections();
                          setConnections(updated);
                          setNewRemoteOllamaUrl('');
                          setNewRemoteOllamaName('');
+                         setNewRemoteOllamaToken('');
                          // Fetch models from the new remote server
                          const { fetchOllamaConnectionModels } = await import('./services/connections');
                          fetchOllamaConnectionModels(conn).then(newModels => {
@@ -7847,40 +7962,70 @@ ${lines.join('\n')}`;
                         <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{p.name}</span>
                         {activeProjectId === p.id && <span className="text-[10px] text-blue-400">active</span>}
                       </div>
-                      {/* Workspace folder picker (#83) */}
-                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Workspace folder</label>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className={`flex-1 text-xs truncate font-mono px-2 py-1 rounded border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-zinc-50 border-zinc-200 text-zinc-500'}`}>
-                          {p.workspaceRoot || 'No folder selected'}
-                        </span>
-                        <button
-                          onClick={async () => {
-                            const dir = await pickDirectory();
-                            if (dir) {
-                              const updated = { ...p, workspaceRoot: dir };
-                              storage.saveProject(updated);
-                              setProjects(storage.getProjects());
-                              if (activeProjectId === p.id) {
-                                void openWorkspace(dir);
-                                registerGitTools(dir);
-                              }
+                      {/* Workspace folders (#83, multi-folder #492) */}
+                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                        Workspace folders
+                      </label>
+                      <p className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        A project can span several repositories. The first folder is the primary one
+                        (relative paths and Git tools use it); all of them are readable by the AI.
+                      </p>
+                      {(() => {
+                        const roots = projectRoots(p);
+                        const persist = (next: string[]) => {
+                          const updated = { ...p, workspaceRoot: next[0] ?? '', workspaceRoots: next };
+                          storage.saveProject(updated);
+                          setProjects(storage.getProjects());
+                          if (activeProjectId === p.id) {
+                            if (next.length > 0) {
+                              void openWorkspaceRoots(next);
+                              registerGitTools(next[0]);
+                            } else {
+                              closeWorkspace();
                             }
-                          }}
-                          className={`shrink-0 text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                        >Choose…</button>
-                        {p.workspaceRoot && (
-                          <button
-                            aria-label="Clear workspace folder"
-                            onClick={() => {
-                              const updated = { ...p, workspaceRoot: '' };
-                              storage.saveProject(updated);
-                              setProjects(storage.getProjects());
-                            }}
-                            className="shrink-0 text-[10px] text-red-400 hover:text-red-300"
-                            title="Clear workspace folder"
-                          >✕</button>
-                        )}
-                      </div>
+                          }
+                        };
+                        return (
+                          <div className="mb-2">
+                            {roots.length === 0 && (
+                              <p className={`text-xs italic mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                                No folder selected
+                              </p>
+                            )}
+                            {roots.map((r, i) => (
+                              <div key={r} className="flex items-center gap-2 mb-1">
+                                <span
+                                  title={r}
+                                  className={`flex-1 text-xs truncate font-mono px-2 py-1 rounded border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-zinc-50 border-zinc-200 text-zinc-500'}`}
+                                >
+                                  {i === 0 && <span className="text-blue-400 not-italic">★ </span>}{r}
+                                </span>
+                                {i > 0 && (
+                                  <button
+                                    aria-label={`Make ${r} the primary folder`}
+                                    title="Make primary"
+                                    onClick={() => persist([r, ...roots.filter(x => x !== r)])}
+                                    className={`shrink-0 text-[10px] px-1 ${dark ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 hover:text-zinc-800'}`}
+                                  >★</button>
+                                )}
+                                <button
+                                  aria-label={`Remove folder ${r}`}
+                                  title="Remove folder"
+                                  onClick={() => persist(roots.filter(x => x !== r))}
+                                  className="shrink-0 text-[10px] text-red-400 hover:text-red-300"
+                                >✕</button>
+                              </div>
+                            ))}
+                            <button
+                              onClick={async () => {
+                                const dir = await pickDirectory();
+                                if (dir && !roots.includes(dir)) persist([...roots, dir]);
+                              }}
+                              className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                            >+ Add folder…</button>
+                          </div>
+                        );
+                      })()}
                       {/* Per-project model binding (#171) */}
                       <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Default model (optional)</label>
                       <select

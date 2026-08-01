@@ -7,8 +7,9 @@
  * visible at a glance and one click from anywhere in the app.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useWorkspacePicker } from './useWorkspacePicker';
+import { AnchoredMenu } from './AnchoredMenu';
 
 export interface WorkspaceChipProps {
   dark: boolean;
@@ -17,39 +18,23 @@ export interface WorkspaceChipProps {
 export const WorkspaceChip: React.FC<WorkspaceChipProps> = ({ dark }) => {
   const ws = useWorkspacePicker();
   const [menuOpen, setMenuOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  // Close on outside click / Escape.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
 
   const itemCls = `w-full text-left text-xs px-3 py-1.5 truncate transition-colors ${
     dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100'
   }`;
 
   return (
-    <div className="relative shrink-0" ref={wrapRef}>
+    <>
       <button
+        ref={btnRef}
         onClick={() => setMenuOpen(o => !o)}
         title={ws.root ?? 'No workspace folder open'}
         aria-label={ws.root ? `Workspace folder: ${ws.root}` : 'No workspace folder open'}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         data-testid="workspace-chip"
-        className={`flex items-center gap-1.5 text-sm border rounded-md px-2 py-1 max-w-[14rem] transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+        className={`shrink-0 flex items-center gap-1.5 text-sm border rounded-md px-2 py-1 max-w-[14rem] transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
           dark
             ? 'bg-zinc-800 border-zinc-700 text-zinc-100 hover:bg-zinc-700'
             : 'bg-zinc-100 border-zinc-300 text-zinc-900 hover:bg-zinc-200'
@@ -61,13 +46,15 @@ export const WorkspaceChip: React.FC<WorkspaceChipProps> = ({ dark }) => {
         </span>
       </button>
 
-      {menuOpen && (
-        <div
-          role="menu"
-          className={`absolute left-0 top-full mt-1 z-50 min-w-[16rem] max-w-[24rem] rounded-md border shadow-lg py-1 ${
-            dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'
-          }`}
-        >
+      <AnchoredMenu
+        anchorRef={btnRef}
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        dark={dark}
+        align="left"
+        ariaLabel="Workspace folder"
+        className="min-w-[16rem] max-w-[24rem]"
+      >
           <button
             role="menuitem"
             className={itemCls}
@@ -110,9 +97,8 @@ export const WorkspaceChip: React.FC<WorkspaceChipProps> = ({ dark }) => {
               </button>
             </>
           )}
-        </div>
-      )}
-    </div>
+      </AnchoredMenu>
+    </>
   );
 };
 
