@@ -182,8 +182,11 @@ docs/
 
 ## Configuration notes
 
-- **Ollama endpoint** — set in the app's Settings (defaults to `http://localhost:11434`);
-  cloud models route to `https://cloud.ollama.ai`. Both are whitelisted in the app CSP.
+- **Ollama endpoint** — set in the app's Settings (defaults to `http://localhost:11434`).
+- **Ollama Cloud** — run `ollama signin` once; your local Ollama then proxies cloud
+  models, so they use the same endpoint as local ones. Cloud models you already have
+  access to are detected automatically, and you can add any other by name under
+  Settings → Ollama Cloud Models.
 - **Secrets** (OAuth tokens, MCP credentials) are stored in the OS keychain
   (Keychain / Credential Manager / Secret Service), with an encrypted-file fallback.
 - **Optional engines** (LibreOffice, Chromium) are detected at runtime and never bundled;

@@ -158,7 +158,14 @@ export async function fetchOllamaChatStream(
   /** Optional request/stream timeout in ms (aborts via AbortSignal) (#224). */
   timeoutMs?: number,
 ): Promise<void> {
-  const apiEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : endpoint;
+  // Cloud models are proxied by the *local* daemon (#483). Since Ollama 0.28+
+  // the user runs `ollama signin` once and then uses a `-cloud`/`:cloud` tagged
+  // model against localhost exactly like a local one -- the daemon forwards the
+  // request and handles auth. Previously this bypassed the daemon and posted to
+  // a hardcoded `cloud.ollama.ai` host with no credentials, so every cloud chat
+  // failed and was then mis-reported as "Ollama is not running" (#484).
+  // `isCloudModel` still drives UI labelling, but must not change the target.
+  const apiEndpoint = endpoint;
   const cleaned = cleanGenerationOptions(options);
 
   // Combine the caller's AbortSignal with an optional timeout (#224).
@@ -315,17 +322,54 @@ export function clearVisionCache(): void {
   _visionCache.clear();
 }
 
-export async function fetchCloudModels(): Promise<ModelInfo[]> {
-  return [
-    { name: 'gemma4:31b-cloud', cloud: true },
-    { name: 'nemotron-3-ultra:cloud', cloud: true },
-    { name: 'gpt-oss:20b-cloud', cloud: true },
-    { name: 'gpt-oss:120b-cloud', cloud: true },
-    { name: 'ministral-3:14b-cloud', cloud: true },
-    { name: 'devstral-small-2:24b-cloud', cloud: true },
-    { name: 'devstral-2:123b-cloud', cloud: true },
-    { name: 'deepseek-v4-pro:cloud', cloud: true },
-  ];
+// ── Cloud models (#485) ──────────────────────────────────────────────────────
+
+const CUSTOM_CLOUD_MODELS_KEY = 'ollama_gui_custom_cloud_models';
+
+/**
+ * User-specified cloud model names, persisted locally.
+ *
+ * Ollama does not expose a public "list every cloud model" endpoint, and the
+ * catalogue changes faster than this app ships. Rather than hardcoding a list
+ * that goes stale (the previous behaviour — several baked-in names are no
+ * longer offered), let the user name any cloud model they have access to.
+ */
+export function loadCustomCloudModels(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOM_CLOUD_MODELS_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n: unknown): n is string => typeof n === 'string' && !!n.trim());
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomCloudModels(names: string[]): void {
+  const cleaned = Array.from(new Set(names.map(n => n.trim()).filter(Boolean)));
+  try { localStorage.setItem(CUSTOM_CLOUD_MODELS_KEY, JSON.stringify(cleaned)); } catch { /* quota */ }
+}
+
+/** Placeholder suggestions offered in the UI. Never the sole source (#485). */
+export const SUGGESTED_CLOUD_MODELS: string[] = [
+  'gpt-oss:20b-cloud',
+  'gpt-oss:120b-cloud',
+  'deepseek-v3.1:671b-cloud',
+  'qwen3-coder:480b-cloud',
+];
+
+/**
+ * Cloud models available to the user.
+ *
+ * Two real sources, replacing the old hardcoded array (#485):
+ *  1. Discovered — cloud models the signed-in local daemon already reports via
+ *     /api/tags (they carry a `-cloud` / `:cloud` suffix). Passing the local
+ *     models in avoids a second network round-trip.
+ *  2. User-specified — names the user added in Settings.
+ */
+export async function fetchCloudModels(localModels: ModelInfo[] = []): Promise<ModelInfo[]> {
+  const discovered = localModels.filter(m => isCloudModel(m.name)).map(m => m.name);
+  const names = Array.from(new Set([...discovered, ...loadCustomCloudModels()]));
+  return names.map(name => ({ name, cloud: true }));
 }
 
 /** A curated local model the user can download with one click. */

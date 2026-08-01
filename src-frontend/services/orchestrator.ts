@@ -20,7 +20,11 @@ export interface OrchestratorOptions {
   messages: Message[];
   /** Ollama base chat endpoint, e.g. http://localhost:11434/api/chat */
   ollamaEndpoint: string;
-  /** Cloud chat endpoint, e.g. https://cloud.ollama.ai/api/chat */
+  /**
+   * Chat endpoint used for the cloud brain model. Cloud models are proxied by
+   * the local daemon after `ollama signin` (#483), so in practice this is the
+   * same local endpoint as `ollamaEndpoint`.
+   */
   cloudEndpoint: string;
   /** When set + active, the worker runs on the local MLX server. */
   mlx?: { active: boolean; port: number };

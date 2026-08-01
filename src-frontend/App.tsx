@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -66,6 +66,8 @@ import { useModalFocus } from './components/useModalFocus';
 import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
+import WorkspaceChip from './components/WorkspaceChip';
+import NoWorkspaceHint from './components/NoWorkspaceHint';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
@@ -1007,14 +1009,22 @@ const App: React.FC = () => {
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
 
+  // User-specified Ollama Cloud model names (#485). The cloud catalogue changes
+  // faster than this app ships and Ollama exposes no "list all cloud models"
+  // endpoint, so anything the daemon doesn't already report is named here.
+  const [customCloudModels, setCustomCloudModels] = useState<string[]>(() => loadCustomCloudModels());
+  const [newCloudModel, setNewCloudModel] = useState('');
+
   const refreshModels = useCallback(async () => {
     const availableModels = await fetchOllamaModels(url('/api/tags'));
     setOllamaConnected(true);
-    const cloudModels = await fetchCloudModels();
-    const combined: ModelInfo[] = [
-      ...availableModels.map(m => ({ ...m, cloud: isCloudModel(m.name) })), // preserve size/quant
-      ...cloudModels,
-    ];
+    // Cloud models: discovered from the signed-in daemon's own tags + any the
+    // user added in Settings (#485). Dedupe so a discovered cloud model isn't
+    // listed twice when it also appears in the custom list.
+    const local = availableModels.map(m => ({ ...m, cloud: isCloudModel(m.name) })); // preserve size/quant
+    const cloudModels = (await fetchCloudModels(availableModels))
+      .filter(c => !local.some(m => m.name === c.name));
+    const combined: ModelInfo[] = [...local, ...cloudModels];
    setModels(combined);
    // Fetch extra connection models in parallel (#123)
    fetchAllConnectionModels(loadConnections()).then(setConnectedModels).catch(() => {});
@@ -1024,6 +1034,20 @@ const App: React.FC = () => {
       .catch(() => {});
    return combined;
  }, [ollamaBaseUrl]);
+
+  /** Add a user-specified cloud model name and refresh the selector (#485). */
+  const addCustomCloudModel = useCallback(() => {
+    const name = newCloudModel.trim();
+    if (!name) return;
+    setCustomCloudModels(prev => {
+      if (prev.includes(name)) return prev;
+      const next = [...prev, name];
+      saveCustomCloudModels(next);
+      return next;
+    });
+    setNewCloudModel('');
+    void refreshModels().catch(() => {});
+  }, [newCloudModel, refreshModels]);
 
   // Poll running models every 30s so the warm indicator stays current (#478).
   useEffect(() => {
@@ -2654,8 +2678,8 @@ const App: React.FC = () => {
                 const genMessages: Message[] = [
                   { role: 'user', content: `Write a concise conventional commit message (<=72 char subject, no body) for the following changes. Reply with ONLY the commit message, nothing else:\n\n${diff.slice(0, 8000)}` },
                 ];
-                const isCloudModel = models.some(m => m.name === model && m.cloud);
-                const commitEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+                // Cloud models are proxied by the local daemon (#483).
+                const commitEndpoint = url('/api/chat');
                 await fetchOllamaChatStream(model, genMessages, (chunk) => {
                   if (chunk.message?.content) message += chunk.message.content;
                 }, commitEndpoint, false, genOptions, undefined);
@@ -2732,8 +2756,8 @@ const App: React.FC = () => {
 Directory listing:
 ${fileList}` },
               ];
-              const isCloudModel = models.some(m => m.name === model && m.cloud);
-              const initEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+              // Cloud models are proxied by the local daemon (#483).
+              const initEndpoint = url('/api/chat');
               await fetchOllamaChatStream(model, initMessages, (chunk) => {
                 if (chunk.message?.content) generated += chunk.message.content;
               }, initEndpoint, false, genOptions, undefined);
@@ -2949,8 +2973,8 @@ ${block}`;
             ];
             let summary = '';
             try {
-              const isCloudModel = models.some(m => m.name === model && m.cloud);
-              const compactEndpoint = isCloudModel ? 'https://cloud.ollama.ai/api/chat' : url('/api/chat');
+              // Cloud models are proxied by the local daemon (#483).
+              const compactEndpoint = url('/api/chat');
               await fetchOllamaChatStream(model, summaryMessages, (chunk) => {
                 if (chunk.message?.content) summary += chunk.message.content;
               }, compactEndpoint, false, genOptions, undefined);
@@ -3349,20 +3373,23 @@ ${lines.join('\n')}`;
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
 
+    // Hoisted above the try so the catch can reference it too, and named
+    // distinctly so it does not shadow the module-level isCloudModel() (#484).
+    const usingCloudModel = models.some(m => m.name === activeModel && m.cloud);
+
     try {
-      const isCloudModel = models.some(m => m.name === activeModel && m.cloud);
       // Resolve the connected model + connection for remote routing.
       const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
       const selectedConnection = selectedConnectedModel
         ? connections.find(c => c.id === selectedConnectedModel.connectionId)
         : undefined;
-      // Pick the chat endpoint: cloud Ollama > remote Ollama connection > local Ollama.
-      const endpoint = isCloudModel
-        ? 'https://cloud.ollama.ai/api/chat'
-        : selectedConnection?.kind === 'ollama'
-          ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
-          : url('/api/chat');
-      const cloudEndpoint = 'https://cloud.ollama.ai/api/chat';
+      // Pick the chat endpoint: remote Ollama connection > local Ollama.
+      // Cloud models are NOT a separate host — the local daemon proxies them
+      // after `ollama signin` (#483), so they use the same endpoint as local.
+      const endpoint = selectedConnection?.kind === 'ollama'
+        ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+        : url('/api/chat');
+      const cloudEndpoint = url('/api/chat');
       const mlxActive = !!mlxAvailability && isMlxActive(mlxSettings, mlxAvailability);
 
       if (mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel) {
@@ -3541,7 +3568,7 @@ ${lines.join('\n')}`;
           onError: (error) => {
             setMessages(prev => [
               ...prev,
-              { role: 'assistant', content: formatErrorLine(error, 'ollama'), isError: true },
+              { role: 'assistant', content: formatErrorLine(error, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true },
             ]);
             setIsLoading(false);
             setAgentStatus(null);
@@ -3754,7 +3781,7 @@ ${lines.join('\n')}`;
             // Network/server failure — roll back partial message
             setMessages(prev => {
               const withoutPartial = prev.slice(0, -1);
-              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, 'ollama'), isError: true }] as Message[];
+              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true }] as Message[];
             });
           }
         }
@@ -3764,7 +3791,7 @@ ${lines.join('\n')}`;
     } catch (error) {
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', content: formatErrorLine(error, 'ollama'), isError: true },
+        { role: 'assistant', content: formatErrorLine(error, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true },
       ]);
       setIsLoading(false);
     } finally {
@@ -3923,16 +3950,16 @@ ${lines.join('\n')}`;
     saveCurrentSession(history);
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
-    const isCloudModel = models.some(m => m.name === model && m.cloud);
+    const usingCloudModel = models.some(m => m.name === model && m.cloud);
     const selectedConnectedModel = connectedModels.find(m => m.id === model);
     const selectedConnection = selectedConnectedModel
       ? connections.find(c => c.id === selectedConnectedModel.connectionId)
       : undefined;
-    const contEndpoint = isCloudModel
-      ? 'https://cloud.ollama.ai/api/chat'
-      : selectedConnection?.kind === 'ollama'
-        ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
-        : url('/api/chat');
+    // Cloud models are proxied by the local daemon (#483), so they share the
+    // same endpoint as local models.
+    const contEndpoint = selectedConnection?.kind === 'ollama'
+      ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+      : url('/api/chat');
     const ollamaModelName = selectedConnectedModel?.name ?? model;
     let continuedContent = '';
     let contGenStats: GenStats | undefined;
@@ -3969,7 +3996,7 @@ ${lines.join('\n')}`;
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n' + formatErrorLine(streamError, 'ollama'), isError: true, wasCancelled: false }] as Message[];
+            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n' + formatErrorLine(streamError, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true, wasCancelled: false }] as Message[];
           }
           return prev;
         });
@@ -4543,6 +4570,8 @@ ${lines.join('\n')}`;
                   );
                 })}
               </select>
+              {/* Always-visible workspace folder indicator + picker (#481) */}
+              <WorkspaceChip dark={dark} />
               {/* Star/favourite the current model (#339) */}
               <button
                 onClick={() => toggleStarModel(model)}
@@ -4921,7 +4950,7 @@ ${lines.join('\n')}`;
                       className="normal-case font-normal text-[10px] opacity-50"
                       title="Estimated tokens for this message"
                       aria-label={`Estimated tokens: ${estimateTokens(msg.content)}`}
-                    >≈{formatTokenCount(estimateTokens(msg.content))}t</span>
+                    >≈{formatTokenCount(estimateTokens(msg.content))} tokens</span>
                   )}
                 </div>
                 {/* Generation stats: speed, prompt→completion tokens, stop reason (#297, #391, #392) */}
@@ -5424,6 +5453,8 @@ ${lines.join('\n')}`;
             isDragOver ? (dark ? 'bg-blue-900/30 ring-2 ring-blue-500' : 'bg-blue-50 ring-2 ring-blue-400') : ''
           } ${dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'}`}
         >
+          {/* Agentic mode with no workspace folder open (#482) */}
+          <NoWorkspaceHint dark={dark} agentic={isAgenticMode} />
           {/* M5 Issue 20: Image thumbnails preview */}
           {attachedImages.length > 0 && (
             <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
@@ -6001,6 +6032,67 @@ ${lines.join('\n')}`;
                   >
                     Test connection
                    </button>
+                 </div>
+
+                 {/* Ollama Cloud models (#485) */}
+                 <div>
+                   <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Ollama Cloud Models</label>
+                   <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     Sign in once with <code>ollama signin</code>; cloud models are then served through your local Ollama. Models you already have access to are detected automatically — add any others by name here (e.g. <code>gpt-oss:120b-cloud</code>).
+                   </p>
+                   {customCloudModels.length > 0 && (
+                     <div className="space-y-1 mb-2">
+                       {customCloudModels.map(name => (
+                         <div key={name} className={`flex items-center gap-2 text-xs rounded-lg px-2 py-1 border ${dark ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-200 bg-zinc-50'}`}>
+                           <span className="flex-1 font-mono truncate">⛅ {name}</span>
+                           <button
+                             aria-label={`Remove cloud model ${name}`}
+                             onClick={() => {
+                               const next = customCloudModels.filter(n => n !== name);
+                               setCustomCloudModels(next);
+                               saveCustomCloudModels(next);
+                               void refreshModels().catch(() => {});
+                             }}
+                             className="shrink-0 text-red-400 hover:text-red-300"
+                           >✕</button>
+                         </div>
+                       ))}
+                     </div>
+                   )}
+                   <div className="flex items-center gap-2">
+                     <input
+                       type="text"
+                       value={newCloudModel}
+                       onChange={(e) => setNewCloudModel(e.target.value)}
+                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomCloudModel(); } }}
+                       placeholder="model-name:tag-cloud"
+                       aria-label="Cloud model name"
+                       className={`flex-1 border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${
+                         dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
+                       }`}
+                     />
+                     <button
+                       onClick={addCustomCloudModel}
+                       disabled={!newCloudModel.trim()}
+                       className="shrink-0 text-xs px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white transition-colors"
+                     >Add</button>
+                   </div>
+                   <div className="flex flex-wrap gap-1 mt-2">
+                     {SUGGESTED_CLOUD_MODELS.filter(s => !customCloudModels.includes(s)).map(s => (
+                       <button
+                         key={s}
+                         onClick={() => {
+                           const next = [...customCloudModels, s];
+                           setCustomCloudModels(next);
+                           saveCustomCloudModels(next);
+                           void refreshModels().catch(() => {});
+                         }}
+                         className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${
+                           dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'
+                         }`}
+                       >+ {s}</button>
+                     ))}
+                   </div>
                  </div>
 
                  {/* Remote Ollama servers — quick add/remove */}

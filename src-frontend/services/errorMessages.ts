@@ -24,7 +24,10 @@ function raw(err: unknown): string {
  * Map an error from any layer (fetch, Ollama API, Tauri command) to a friendly
  * title + actionable detail. `context` tunes the guidance (e.g. 'ollama', 'mcp').
  */
-export function formatError(err: unknown, context: 'ollama' | 'mcp' | 'cli' | 'generic' = 'generic'): FriendlyError {
+export function formatError(
+  err: unknown,
+  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' = 'generic',
+): FriendlyError {
   const msg = raw(err);
   const lower = msg.toLowerCase();
 
@@ -32,6 +35,16 @@ export function formatError(err: unknown, context: 'ollama' | 'mcp' | 'cli' | 'g
   if (lower.includes('failed to fetch') || lower.includes('networkerror') ||
       lower.includes('econnrefused') || lower.includes('connection refused') ||
       lower.includes('load failed')) {
+    // A failed *cloud* request must not tell the user their local daemon is
+    // down — it usually is running (#484). Cloud models are proxied by the
+    // local daemon, so the real causes are: not signed in, or the model name
+    // is no longer offered.
+    if (context === 'ollama-cloud') {
+      return {
+        title: 'Cannot reach Ollama Cloud',
+        detail: 'Sign in with `ollama signin`, then check the cloud model name is still available. Cloud models are routed through your local Ollama, so also confirm it is running.',
+      };
+    }
     if (context === 'ollama') {
       return {
         title: 'Cannot reach Ollama',
@@ -95,7 +108,10 @@ export function formatError(err: unknown, context: 'ollama' | 'mcp' | 'cli' | 'g
 }
 
 /** Convenience: a single-line string form, e.g. for inline chat error bubbles. */
-export function formatErrorLine(err: unknown, context: 'ollama' | 'mcp' | 'cli' | 'generic' = 'generic'): string {
+export function formatErrorLine(
+  err: unknown,
+  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' = 'generic',
+): string {
   const { title, detail } = formatError(err, context);
   return `${title} — ${detail}`;
 }
