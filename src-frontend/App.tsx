@@ -4378,7 +4378,11 @@ ${lines.join('\n')}`;
                 : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
             }`}
           >All</button>
+         {/* Rename/delete were onClick <span>s nested inside the filter button
+             (#513): invalid nesting and unreachable by keyboard. They are
+             sibling buttons inside this wrapper now. */}
          {folders.map(f => (
+          <span key={f.id} className="group/folder inline-flex items-center">
            <button
              key={f.id}
              onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
@@ -4399,9 +4403,22 @@ ${lines.join('\n')}`;
             }`}
           >
               🗂 {f.name}
-              <span onClick={(e) => { e.stopPropagation(); renameFolder(f.id); }} title="Rename folder" aria-label={`Rename folder: ${f.name}`} className="opacity-0 group-hover/folder:opacity-100 hover:text-blue-300">✏️</span>
-              <span onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }} className="opacity-0 group-hover/folder:opacity-100 hover:text-red-300">✕</span>
             </button>
+            <button
+              type="button"
+              onClick={() => renameFolder(f.id)}
+              title="Rename folder"
+              aria-label={`Rename folder: ${f.name}`}
+              className="text-[10px] px-0.5 rounded opacity-0 group-hover/folder:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-blue-500 hover:text-blue-300"
+            >✏️</button>
+            <button
+              type="button"
+              onClick={() => { if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }}
+              title="Delete folder"
+              aria-label={`Delete folder: ${f.name}`}
+              className="text-[10px] px-0.5 rounded opacity-0 group-hover/folder:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-blue-500 hover:text-red-300"
+            >✕</button>
+          </span>
           ))}
           <button onClick={createFolder} className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'}`}>+ folder</button>
           <button

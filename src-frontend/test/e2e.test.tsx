@@ -322,7 +322,11 @@ describe('End-to-End Tests', () => {
       }, { timeout: 3000 });
     });
 
-    it('should handle MCP connection errors', async () => {
+    // Drives the whole App through add-server -> connect -> error rendering, so
+    // it is the slowest case in this file. It lands around 3.3s on the Ubuntu
+    // runner but exceeded the 5s default on the slower Windows runner (measured
+    // 5154ms), failing the build on a timeout rather than an assertion.
+    it('should handle MCP connection errors', { timeout: 20_000 }, async () => {
       // Deterministically fail the MCP HTTP connect: the previous global fetch
       // mock returned {ok:true} for every URL, so the connect sometimes
       // "succeeded" (green) instead of erroring — making the test flaky and not
