@@ -34,13 +34,21 @@ describe('ConversationStatsButton (#262)', () => {
     expect(dialog).toHaveTextContent('Est. tokens');
   });
 
-  it('closes the dialog when the backdrop is clicked', () => {
+  // The popover is portaled and dismisses on an outside press (#487); it no
+  // longer paints a full-screen backdrop element to catch the click.
+  it('closes the dialog when clicking outside it', () => {
     render(<ConversationStatsButton stats={stats} dark={true} />);
     fireEvent.click(screen.getByRole('button', { name: 'Conversation statistics' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    const backdrop = document.querySelector('.fixed.inset-0');
-    expect(backdrop).not.toBeNull();
-    fireEvent.click(backdrop!);
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes the dialog on Escape', () => {
+    render(<ConversationStatsButton stats={stats} dark={true} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation statistics' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

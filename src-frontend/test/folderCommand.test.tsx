@@ -45,7 +45,9 @@ describe('/folder slash command (#288)', () => {
     expect(await screen.findByText('Moved conversation to folder "Work"')).toBeInTheDocument();
 
     // A "Work" folder chip now exists, and the session is filed under it.
-    const folderChip = screen.getByRole('button', { name: /Work/i });
+    // Query by title, not a loose /Work/i name: the header's workspace chip is
+    // also a button whose label contains "work" ("No workspace folder open").
+    const folderChip = screen.getByTitle(/^Folder: Work\b/);
     fireEvent.click(folderChip);
     await waitFor(() => expect(screen.getByRole('button', { name: /Load session: /i })).toBeInTheDocument());
   });

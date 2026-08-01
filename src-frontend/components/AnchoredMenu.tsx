@@ -23,6 +23,12 @@ export interface AnchoredMenuProps {
   align?: 'left' | 'right';
   className?: string;
   ariaLabel?: string;
+  /**
+   * ARIA role for the floating panel. Menus of actions keep the default;
+   * a panel of information (e.g. conversation statistics) should pass
+   * 'dialog' so assistive tech announces it correctly.
+   */
+  role?: 'menu' | 'dialog';
 }
 
 interface Pos { top: number; left: number }
@@ -32,6 +38,7 @@ const MARGIN = 8;
 
 export const AnchoredMenu: React.FC<AnchoredMenuProps> = ({
   anchorRef, open, onClose, dark, children, align = 'left', className = '', ariaLabel,
+  role = 'menu',
 }) => {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<Pos | null>(null);
@@ -97,7 +104,7 @@ export const AnchoredMenu: React.FC<AnchoredMenuProps> = ({
   return createPortal(
     <div
       ref={menuRef}
-      role="menu"
+      role={role}
       aria-label={ariaLabel}
       style={{
         position: 'fixed',

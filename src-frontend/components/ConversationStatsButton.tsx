@@ -51,6 +51,7 @@ export function ConversationStatsButton({ stats, dark }: Props) {
         onClose={() => setOpen(false)}
         dark={dark}
         align="right"
+        role="dialog"
         ariaLabel="Conversation statistics"
         className="w-56 p-3 text-xs"
       >
