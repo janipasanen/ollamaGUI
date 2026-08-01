@@ -650,6 +650,8 @@ const App: React.FC = () => {
   const [authInFlight, setAuthInFlight] = useState<string | null>(null);
   /** Mirrors the voice-call handle's mute flag so the button re-renders (#530). */
   const [voiceCallMuted, setVoiceCallMuted] = useState(false);
+  /** Validation message for the custom-tool form (#516, #517). */
+  const [customToolError, setCustomToolError] = useState<string | null>(null);
   // Initialise from storage during the first render (#509). Previously the
   // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
   // same pass — but that refreshModels closure was built on the first render,
@@ -987,6 +989,18 @@ const App: React.FC = () => {
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // Focus-in, Tab trap and focus-restore for the bulk-delete confirmation,
+  // which previously had none (#515). Declared here, after the state it reads.
+  const bulkDeleteModalRef = useModalFocus<HTMLDivElement>(confirmBulkDelete);
+  // Escape dismisses it, matching every other overlay in the app.
+  useEffect(() => {
+    if (!confirmBulkDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); setConfirmBulkDelete(false); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [confirmBulkDelete]);
   // Drag-and-drop folder assignment (#364)
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
 
@@ -5012,7 +5026,10 @@ ${lines.join('\n')}`;
           {/* Context limit warning (#319) */}
           {showContextWarning && (
             <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs mb-2 ${dark ? 'bg-amber-900/40 border border-amber-700/50 text-amber-300' : 'bg-amber-50 border border-amber-300 text-amber-800'}`}>
-              <span>⚠ Context window ${contextPct}% full — consider /compact or /ctx ${Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
+              {/* These were written as if inside a template literal, so the
+                  stray "$" rendered verbatim — and the suggested command came
+                  out as "/ctx $6144", which /ctx parses to NaN (#533). */}
+              <span>⚠ Context window {contextPct}% full — consider /compact or /ctx {Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
               <button onClick={() => setContextWarningDismissed(true)} aria-label="Dismiss context warning" className={`shrink-0 ${dark ? 'text-amber-400 hover:text-amber-200' : 'text-amber-600 hover:text-amber-400'}`}>✕</button>
             </div>
           )}
@@ -6094,7 +6111,7 @@ ${lines.join('\n')}`;
 
         {/* Settings Overlay */}
         {isSettingsOpen && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={settingsModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="settings-title" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -7388,11 +7405,41 @@ ${lines.join('\n')}`;
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                         <textarea placeholder="JS body — use params.x to access parameters. Must return/resolve a value." rows={3} value={newCustomTool.code} onChange={e => setNewCustomTool(v => ({ ...v, code: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        {customToolError && (
+                          <p role="alert" className="text-[10px] text-red-400">⚠️ {customToolError}</p>
+                        )}
                         <button onClick={() => {
-                          if (!newCustomTool.name.trim()) return;
+                          const name = newCustomTool.name.trim();
+                          // Previously: a blank name returned silently, a malformed
+                          // params JSON was swallowed by `catch {}` and saved the tool
+                          // with ZERO parameters (#516), and a duplicate name collided
+                          // on one registry key so deleting either killed both (#517).
+                          if (!name) { setCustomToolError('Enter a tool name.'); return; }
+                          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                            setCustomToolError('Tool names may contain only letters, digits and underscores, and cannot start with a digit.');
+                            return;
+                          }
+                          if (customTools.some(t => t.name === name)) {
+                            setCustomToolError(`A tool named "${name}" already exists — pick another name.`);
+                            return;
+                          }
                           let props: Record<string, { type: string; description: string }> = {};
-                          try { props = JSON.parse(newCustomTool.paramsJson); } catch {}
-                          addCustomTool({ name: newCustomTool.name.trim(), description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
+                          const raw = newCustomTool.paramsJson.trim();
+                          if (raw) {
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                                setCustomToolError('Parameters JSON must be an object, e.g. {"input":{"type":"string","description":"…"}}.');
+                                return;
+                              }
+                              props = parsed;
+                            } catch (e) {
+                              setCustomToolError(`Parameters JSON is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+                              return;
+                            }
+                          }
+                          setCustomToolError(null);
+                          addCustomTool({ name, description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
                           setCustomTools(loadCustomTools());
                           setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
                           setShowAddCustomTool(false);
@@ -8696,7 +8743,7 @@ ${lines.join('\n')}`;
 
         {/* Composed system-prompt preview (#376) */}
         {promptPreview && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={promptPreviewModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Composed system prompt preview" className={`border w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className={`flex items-center justify-between px-6 py-4 border-b shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
                 <h2 className="text-lg font-bold">Composed System Prompt</h2>
@@ -8720,7 +8767,7 @@ ${lines.join('\n')}`;
 
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={helpModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="help-title" className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -8861,6 +8908,8 @@ ${lines.join('\n')}`;
             onClick={() => setConfirmBulkDelete(false)}
           >
             <div
+              ref={bulkDeleteModalRef}
+              tabIndex={-1}
               className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}
               onClick={(e) => e.stopPropagation()}
             >
@@ -8900,7 +8949,7 @@ ${lines.join('\n')}`;
         />
         {/* CLI Command Approval Modal */}
         {pendingApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={cliApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Command approval required" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -8966,7 +9015,7 @@ ${lines.join('\n')}`;
 
         {/* Tool approval modal (#88/#89/#189) — shown in plan/ask autonomy mode */}
         {pendingToolApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={toolApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Agent tool-use approval" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
@@ -9012,7 +9061,7 @@ ${lines.join('\n')}`;
             unblocks the whole plan run; Deny blocks the tool and keeps the
             plan un-approved. */}
         {pendingPlanApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={planApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Approve plan to begin execution" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">

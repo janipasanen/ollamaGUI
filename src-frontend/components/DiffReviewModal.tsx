@@ -39,15 +39,27 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
   };
 
   const allAccepted = accepted.length > 0 && accepted.every(Boolean);
+  const [copyError, setCopyError] = React.useState(false);
 
   // Copy a unified-diff string to the clipboard (#370).
   const copyDiff = () => {
+    setCopyError(false);
     const diffText = edit.kind === 'write_file'
       ? `--- /dev/null\n+++ b/${edit.path}\n${after.split('\n').map(l => `+${l}`).join('\n')}`
       : `--- a/${edit.path}\n+++ b/${edit.path}\n${lines.map(l => `${l.kind === 'added' ? '+' : l.kind === 'removed' ? '-' : ' '}${l.text}`).join('\n')}`;
-    navigator.clipboard.writeText(diffText);
-    setCopiedDiff(true);
-    setTimeout(() => setCopiedDiff(false), 1500);
+    // Await the write before claiming success (#524). The tick used to appear
+    // unconditionally, so a denied clipboard permission still read as "copied",
+    // and the rejected promise surfaced as an unhandled rejection.
+    // Promise.resolve() wraps the call because writeText is not guaranteed to
+    // return a thenable everywhere (jsdom/test stubs return undefined), and a
+    // bare .then() on that throws.
+    void Promise.resolve(navigator.clipboard?.writeText(diffText)).then(
+      () => {
+        setCopiedDiff(true);
+        setTimeout(() => setCopiedDiff(false), 1500);
+      },
+      () => setCopyError(true),
+    );
   };
 
   // Keyboard shortcuts: Enter = Accept, Escape = Reject (#362).
@@ -78,7 +90,7 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
             <span className={`ml-2 text-xs font-mono ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{edit.path}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={copyDiff} aria-label="Copy diff to clipboard" title="Copy diff to clipboard" className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:text-blue-400' : 'text-zinc-500 hover:text-blue-600'}`}>{copiedDiff ? '✓ Copied' : '⧉ Copy diff'}</button>
+            <button onClick={copyDiff} aria-label="Copy diff to clipboard" title="Copy diff to clipboard" className={`text-xs px-2 py-1 rounded transition-colors ${dark ? 'text-zinc-400 hover:text-blue-400' : 'text-zinc-500 hover:text-blue-600'}`}>{copyError ? '✕ Copy failed' : copiedDiff ? '✓ Copied' : '⧉ Copy diff'}</button>
             <button onClick={() => resolve(false)} aria-label="Reject edit" className={`text-xs px-2 py-1 rounded ${dark ? 'text-zinc-400 hover:text-red-400' : 'text-zinc-500 hover:text-red-500'}`}>✕</button>
           </div>
         </div>
