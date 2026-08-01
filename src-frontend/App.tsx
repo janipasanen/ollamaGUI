@@ -1591,10 +1591,16 @@ const App: React.FC = () => {
     if (messages.length === 0) {
       const input = document.getElementById('chat-input');
       if (input) {
-        setTimeout(() => {
+        // Cleared on unmount: this timer had no cleanup, so it kept firing
+        // after the component went away. Surfaced as an uncaught
+        // "ReferenceError: document is not defined" when it landed after the
+        // jsdom environment was torn down, and would throw the same way after a
+        // real unmount.
+        const t = setTimeout(() => {
           const ae = document.activeElement;
           if (ae === null || ae === document.body) input.focus();
         }, 100);
+        return () => clearTimeout(t);
       }
     }
   }, [messages, isNearBottom]);
@@ -8563,28 +8569,37 @@ ${lines.join('\n')}`;
                   <div className="space-y-1 mb-3 max-h-52 overflow-y-auto">
                     {knowledgeCollections.map(col => (
                       <div key={col.id} className={`rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-                        <div className={`flex items-center gap-2 px-2 py-1.5 text-xs cursor-pointer select-none ${dark ? 'bg-zinc-800 hover:bg-zinc-700/50' : 'bg-white hover:bg-zinc-50'}`}
-                          onClick={() => {
-                            if (expandedCollection === col.id) {
-                              setExpandedCollection(null);
-                            } else {
-                              setExpandedCollection(col.id);
-                              if (!knowledgeFilesMap[col.id]) {
-                                void getFilesForCollection(col.id).then(files =>
-                                  setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }))
-                                );
+                        {/* The row was a plain <div onClick>: no role, no tabIndex
+                            and no key handler, so a keyboard user could never
+                            expand a collection and therefore could not add or
+                            remove any of its files (#512). It is a button now. */}
+                        <div className={`flex items-center gap-2 px-2 py-1.5 text-xs select-none ${dark ? 'bg-zinc-800 hover:bg-zinc-700/50' : 'bg-white hover:bg-zinc-50'}`}>
+                          <button
+                            type="button"
+                            aria-expanded={expandedCollection === col.id}
+                            aria-label={`${expandedCollection === col.id ? 'Collapse' : 'Expand'} collection ${col.name}`}
+                            onClick={() => {
+                              if (expandedCollection === col.id) {
+                                setExpandedCollection(null);
+                              } else {
+                                setExpandedCollection(col.id);
+                                if (!knowledgeFilesMap[col.id]) {
+                                  void getFilesForCollection(col.id).then(files =>
+                                    setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }))
+                                  );
+                                }
                               }
-                            }
-                          }}
-                        >
-                          <span className="opacity-50">{expandedCollection === col.id ? '▼' : '▶'}</span>
-                          <span className={`flex-1 font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{col.name}</span>
-                          <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
+                            }}
+                            className="flex-1 min-w-0 flex items-center gap-2 text-left focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                          >
+                            <span className="opacity-50">{expandedCollection === col.id ? '▼' : '▶'}</span>
+                            <span className={`flex-1 truncate font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{col.name}</span>
+                            <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
+                          </button>
                           <button
                             type="button"
                             aria-label={`Delete collection ${col.name}`}
-                            onClick={async e => {
-                              e.stopPropagation();
+                            onClick={async () => {
                               if (!confirm(`Delete collection "${col.name}" and all its files?`)) return;
                               await deleteCollection(col.id);
                               const updated = await listCollections();
