@@ -12,7 +12,7 @@ import {
 } from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
 import { agenticChatStream } from './services/agent';
-import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
+import { McpServerConfig, mcpConfigStore, refreshAuthFlags } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
 import {
   OpenApiServerConfig,
@@ -1130,6 +1130,28 @@ const App: React.FC = () => {
     };
     window.addEventListener('ollama-gui:workspace-changed', onChange);
     return () => window.removeEventListener('ollama-gui:workspace-changed', onChange);
+  }, []);
+
+  // Reconcile MCP auth badges against the token store (#521), so the badge
+  // reflects whether a usable token actually exists rather than transient state.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshAuthFlags(mcpConfigStore.list())
+      .then(list => {
+        if (cancelled) return;
+        // Merge ONLY the flag into current state. Replacing the array wholesale
+        // would resolve against a pre-await snapshot and silently drop any
+        // server the user added while the keychain reads were in flight — the
+        // same async-clobber this audit was fixing elsewhere.
+        setMcpServers(prev => prev.map(srv => {
+          const m = list.find(l => l.id === srv.id);
+          return m && m.authenticated !== srv.authenticated
+            ? { ...srv, authenticated: m.authenticated }
+            : srv;
+        }));
+      })
+      .catch(() => { /* keychain unavailable — keep whatever is persisted */ });
+    return () => { cancelled = true; };
   }, []);
 
   // Probe once for repo CLIs so we only ever advertise what is installed (#491).
@@ -7209,6 +7231,11 @@ ${lines.join('\n')}`;
                                    setAuthInFlight(server.id);
                                    try {
                                      await performOAuthFlow(server.id, server.url!);
+                                     // Persist it — this used to touch React state
+                                     // only, so any later setMcpServers(list()) reset
+                                     // every badge to unauthenticated (#521).
+                                     const authed = { ...server, authenticated: true };
+                                     await mcpConfigStore.save(authed);
                                      setMcpServers(prev =>
                                        prev.map(s => s.id === server.id ? { ...s, authenticated: true } : s)
                                      );
