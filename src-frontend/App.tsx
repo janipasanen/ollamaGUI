@@ -560,6 +560,8 @@ const App: React.FC = () => {
   // saveCurrentSession runs many times per streamed reply; the state value lags
   // by a render, so it must read the ref instead.
   const currentSessionIdRef = useRef<string | null>(null);
+  /** True once something has deliberately chosen the model (#533). */
+  const modelClaimedRef = useRef(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   // Inline session rename (#52)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
@@ -1485,7 +1487,11 @@ const App: React.FC = () => {
 
       try {
         const combined = await refreshModels();
-        if (combined.length > 0) setModel(combined[0].name);
+        // Only fall back to the first model if nothing has claimed one. The
+        // resume-on-startup effect restores session.model synchronously on
+        // mount, but this runs later (after the /api/tags round-trip) and used
+        // to overwrite it — so resuming a chat silently switched its model (#533).
+        if (combined.length > 0 && !modelClaimedRef.current) setModel(combined[0].name);
       } catch (e) {
         console.error('Failed to load models', e);
         setOllamaConnected(false);
@@ -2152,6 +2158,8 @@ const App: React.FC = () => {
 
   // Session management
   const loadSession = (session: ChatSession) => {
+    // Claim the model so the startup default cannot overwrite it (#533).
+    if (session.model) modelClaimedRef.current = true;
     const bs = session.branchState ?? migrateToBranchState(session.messages);
     setMessages(session.messages);
     trunkMessagesRef.current = session.messages;
@@ -6005,7 +6013,11 @@ ${lines.join('\n')}`;
                      const text = await recognize();
                      if (text) setInput(prev => prev ? `${prev} ${text}` : text);
                    } catch (e) {
+                     // The button just stopped pulsing and nothing was inserted,
+                     // so a denied microphone or a down Whisper server looked
+                     // identical to "you said nothing" (#526).
                      console.error('Speech recognition error', e);
+                     showStatusBanner(`Dictation failed: ${formatErrorLine(e)}`);
                    } finally {
                      setIsListening(false);
                    }
@@ -6739,7 +6751,12 @@ ${lines.join('\n')}`;
                                 <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{paramNames.length} param{paramNames.length === 1 ? '' : 's'}</span>
                               )}
                               {/* Per-tool enable/disable (Claude Code parity, #399) */}
-                              <span onClick={e => e.stopPropagation()} title={disabledTools.has(tool.name) ? 'Enable this tool' : 'Disable this tool'}>
+                              {/* preventDefault, not just stopPropagation (#536):
+                                  <summary>'s activation target is chosen while the
+                                  event path is built, before listeners run, so
+                                  stopping propagation does not stop the <details>
+                                  from toggling — only cancelling the event does. */}
+                              <span onClick={e => { e.preventDefault(); e.stopPropagation(); }} title={disabledTools.has(tool.name) ? 'Enable this tool' : 'Disable this tool'}>
                                 <Toggle dark={dark} label={`Toggle ${tool.name}`} checked={!disabledTools.has(tool.name)} onChange={() => { const next = setToolEnabled(tool.name, disabledTools.has(tool.name)); setDisabledTools(new Set(next)); }} />
                               </span>
                             </span>
@@ -7831,7 +7848,22 @@ ${lines.join('\n')}`;
                       <button
                         onClick={async () => {
                           if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          // "16k" used to parse to 16 and any non-numeric text
+                          // emitted `PARAMETER temperature NaN` into the Modelfile
+                          // (#520). Reject rather than silently mangling.
+                          const tempRaw = modelfileFields.temperature.trim();
+                          const ctxRaw = modelfileFields.numCtx.trim();
+                          const temperature = tempRaw ? Number(tempRaw) : undefined;
+                          const numCtx = ctxRaw ? Number(ctxRaw) : undefined;
+                          if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+                            setModelfileError('Temperature must be a number between 0 and 2.');
+                            return;
+                          }
+                          if (numCtx !== undefined && (!Number.isInteger(numCtx) || numCtx <= 0)) {
+                            setModelfileError('Context window (num_ctx) must be a positive whole number — e.g. 16384, not "16k".');
+                            return;
+                          }
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature, numCtx });
                           setIsCreatingModel(true);
                           setModelfileError('');
                           setModelfileProgress('Starting…');
@@ -8964,7 +8996,7 @@ ${lines.join('\n')}`;
           <div
             role="status"
             aria-live="polite"
-            className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm border ${
+            className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm border ${
               dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
             }`}
           >
