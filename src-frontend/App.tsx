@@ -163,6 +163,7 @@ import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText,
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 import ToolbarActions from './components/ToolbarActions';
+import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -1970,7 +1971,11 @@ const App: React.FC = () => {
         e.preventDefault();
         pendingPlanApproval.resolve(false);
         setPendingPlanApproval(null);
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter' && !shouldIgnoreEnterShortcut(document.activeElement)) {
+        // Only approve when the user is not typing and has not focused a
+        // button (#497). Previously any Enter approved the plan — including
+        // Enter pressed in the plan-edit textarea (silently discarding the
+        // edits) or with Deny focused (turning a denial into an approval).
         e.preventDefault();
         planApprovedRef.current = true;
         pendingPlanApproval.resolve(true);

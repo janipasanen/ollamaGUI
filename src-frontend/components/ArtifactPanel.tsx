@@ -188,12 +188,22 @@ function ArtifactPanel({ artifact, dark }: ArtifactPanelProps): React.ReactEleme
  */
 let pendingArtifact: AnyArtifact | null = null;
 
+/** Take the latched artifact, clearing it so it is delivered exactly once. */
+function consumePendingArtifact(): AnyArtifact | null {
+  const a = pendingArtifact;
+  pendingArtifact = null;
+  return a;
+}
+
 function ArtifactPanelRoot({ dark }: { dark: boolean }): React.ReactElement {
-  const [artifact, setArtifact] = useState<AnyArtifact | null>(pendingArtifact);
+  const [artifact, setArtifact] = useState<AnyArtifact | null>(() => consumePendingArtifact());
 
   useEffect(() => {
-    // Catch an artifact latched before this component existed.
-    if (pendingArtifact) setArtifact(pendingArtifact);
+    // Catch an artifact latched between this component's first render and its
+    // mount. Consumed, not held: leaving it set would make the panel resurrect
+    // a stale artifact on a much later open (and leaks between tests).
+    const latched = consumePendingArtifact();
+    if (latched) setArtifact(latched);
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { artifact: AnyArtifact } | undefined;
       if (detail?.artifact) setArtifact(detail.artifact);

@@ -53,21 +53,30 @@ export const DiffReviewBatchModal: React.FC<DiffReviewBatchModalProps> = ({ edit
         <div className="flex flex-1 min-h-0">
           {/* File list */}
           <div className={`w-48 shrink-0 overflow-y-auto border-r ${dark ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-200 bg-zinc-50'}`}>
+            {/* The accept/reject toggle used to be a <span role="switch"> nested
+                INSIDE the row button (#499): invalid nesting, not focusable, and
+                unreachable by keyboard — so a keyboard user could not choose
+                which files to accept. They are siblings now. */}
             {edits.map((e, i) => (
-              <button
+              <div
                 key={e.id}
-                onClick={() => setActiveIdx(i)}
-                className={`w-full text-left px-3 py-2 text-xs font-mono truncate flex items-center gap-2 ${i === activeIdx ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-200 text-zinc-900') : (dark ? 'text-zinc-400 hover:bg-zinc-800/60' : 'text-zinc-600 hover:bg-zinc-100')}`}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-mono ${i === activeIdx ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-200 text-zinc-900') : (dark ? 'text-zinc-400 hover:bg-zinc-800/60' : 'text-zinc-600 hover:bg-zinc-100')}`}
               >
-                <span
+                <button
+                  type="button"
                   role="switch"
                   aria-checked={accepted[i]}
                   aria-label={`${accepted[i] ? 'accept' : 'reject'} ${e.path}`}
-                  onClick={(ev) => { ev.stopPropagation(); setAccepted(prev => prev.map((a, k) => (k === i ? !a : a))); }}
-                  className={`shrink-0 w-3 h-3 rounded-full ${accepted[i] ? 'bg-emerald-500' : 'bg-zinc-500'}`}
+                  onClick={() => setAccepted(prev => prev.map((a, k) => (k === i ? !a : a)))}
+                  className={`shrink-0 w-3 h-3 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 ${accepted[i] ? 'bg-emerald-500' : 'bg-zinc-500'}`}
                 />
-                <span className="truncate">{e.path}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveIdx(i)}
+                  aria-current={i === activeIdx}
+                  className="flex-1 min-w-0 text-left truncate focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                >{e.path}</button>
+              </div>
             ))}
           </div>
 

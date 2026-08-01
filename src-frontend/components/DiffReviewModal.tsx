@@ -1,3 +1,4 @@
+import { shouldIgnoreEnterShortcut } from './keyboardScope';
 import React from 'react';
 import { diffLines, groupHunks, mergeHunks, type PendingEdit, type EditDecision } from '../services/diffReview';
 
@@ -53,9 +54,15 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const active = document.activeElement;
-      const isButton = active instanceof HTMLButtonElement;
       if (e.key === 'Escape') { e.preventDefault(); resolve(false); }
-      else if (e.key === 'Enter' && !isButton) { e.preventDefault(); resolve(true); }
+      // Only accept on Enter when the user is not typing elsewhere (#498).
+      // The chat composer is a <textarea> and keeps focus when this modal
+      // opens, so a plain Enter meant to send a message used to silently
+      // ACCEPT the file edit.
+      else if (e.key === 'Enter' && !shouldIgnoreEnterShortcut(active)) {
+        e.preventDefault();
+        resolve(true);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
