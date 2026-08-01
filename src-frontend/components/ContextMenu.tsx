@@ -30,6 +30,9 @@ export const ContextMenu: React.FC<{
     const el = ref.current;
     if (!el) return;
     const place = () => {
+      // Measured while parked at the origin, so the shrink-to-fit width is not
+      // capped by the cursor's distance from the right edge (which produced a
+      // wrapped, too-narrow box and a wrong clamp).
       const { offsetWidth: w, offsetHeight: h } = el;
       const M = 8;
       // Prefer opening down-right of the cursor; flip to the other side when
@@ -49,7 +52,17 @@ export const ContextMenu: React.FC<{
   // focus lands on document.body, stranding keyboard users at the top of the page.
   React.useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    return () => { previous?.focus?.(); };
+    const menu = ref.current;
+    return () => {
+      // Only reclaim focus if it is still inside the menu we are removing.
+      // Restoring unconditionally stole focus from whatever the chosen item
+      // opened: this cleanup is a passive-effect destroy, so it runs AFTER the
+      // autoFocus of a newly mounted field — the sidebar rename input was
+      // blurred the instant it appeared, firing commitRename() and closing it.
+      const active = document.activeElement;
+      const focusLeftWithMenu = !active || active === document.body || (menu?.contains(active) ?? false);
+      if (focusLeftWithMenu) previous?.focus?.();
+    };
   }, []);
 
   React.useEffect(() => {
@@ -71,9 +84,10 @@ export const ContextMenu: React.FC<{
   // Focus the first enabled item on open and support ArrowUp/Down/Home/End
   // navigation between items (#452).
   React.useEffect(() => {
+    if (!pos) return; // still parked off-screen; focus once placed
     const first = ref.current?.querySelector<HTMLButtonElement>('button:not([disabled])');
     first?.focus();
-  }, []);
+  }, [pos]);
 
   const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
@@ -99,9 +113,13 @@ export const ContextMenu: React.FC<{
       onKeyDown={onMenuKeyDown}
       style={{
         position: 'fixed',
-        left: pos?.left ?? x,
-        top: pos?.top ?? y,
-        visibility: pos ? 'visible' : 'hidden',
+        // Park it far off-screen for the measuring pass rather than using
+        // visibility:hidden — browsers refuse focus inside a hidden subtree, so
+        // the first-item autofocus silently no-opped and the arrow-key handler
+        // never received any keys. jsdom ignores CSS visibility, so no test
+        // could catch that.
+        left: pos ? pos.left : -9999,
+        top: pos ? pos.top : -9999,
         zIndex: 60,
       }}
       className={`min-w-[160px] py-1 rounded-lg border shadow-lg text-sm ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}

@@ -4683,7 +4683,7 @@ ${lines.join('\n')}`;
         {/* Header */}
         {/* overflow-x-auto (#450): at narrow/moderate widths the toolbar used to
             clip its controls with no way to reach them; now it scrolls. */}
-        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 xl:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
+        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 2xl:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
             <div className="flex items-center gap-4">
@@ -4727,7 +4727,7 @@ ${lines.join('\n')}`;
                   }
                 }}
                 aria-label="Select AI model"
-                className={`text-sm border rounded-md px-2 py-1 min-w-[8rem] max-w-[12rem] xl:max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                className={`text-sm border rounded-md px-2 py-1 min-w-[8rem] max-w-[12rem] 2xl:max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
                 }`}
               >
@@ -4871,7 +4871,7 @@ ${lines.join('\n')}`;
              {/* On mobile, show only essential buttons; others go in mobile menu */}
              {!isMobile ? (
                <>
-                 <div className={`hidden xl:block text-xs font-mono shrink-0 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
+                 <div className={`hidden 2xl:block text-xs font-mono shrink-0 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
                  <button
                    onClick={() => setIsSettingsOpen(prev => !prev)}
                    title="Settings (Ctrl+,)"

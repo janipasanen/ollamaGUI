@@ -1,3 +1,4 @@
+import { shouldIgnoreEnterShortcut } from './keyboardScope';
 import React from 'react';
 import { diffLines, type PendingEdit, type EditDecision } from '../services/diffReview';
 
@@ -33,9 +34,15 @@ export const DiffReviewBatchModal: React.FC<DiffReviewBatchModalProps> = ({ edit
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const isButton = document.activeElement instanceof HTMLButtonElement;
       if (e.key === 'Escape') { e.preventDefault(); rejectAll(); }
-      else if (e.key === 'Enter' && !isButton) { e.preventDefault(); apply(); }
+      // Same guard as the single-file modal (#498). This path was missed: the
+      // batch modal has NO focus management, so the chat composer keeps focus
+      // while it is open — pressing Enter to send a message applied every
+      // pending edit to disk unreviewed.
+      else if (e.key === 'Enter' && !shouldIgnoreEnterShortcut(document.activeElement)) {
+        e.preventDefault();
+        apply();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

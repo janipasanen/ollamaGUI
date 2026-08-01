@@ -44,6 +44,8 @@ export const ToolbarActions: React.FC<ToolbarActionsProps> = ({ items, dark, chi
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const moreRef = useRef<HTMLButtonElement | null>(null);
   const [visible, setVisible] = useState(items.length);
+  /** Header width at which each item index was folded away (#495 restore). */
+  const droppedAtRef = useRef<Record<number, number>>({});
   const [menuOpen, setMenuOpen] = useState(false);
 
   /**
@@ -62,17 +64,30 @@ export const ToolbarActions: React.FC<ToolbarActionsProps> = ({ items, dark, chi
     if (!el || !header) return;
 
     const overflow = header.scrollWidth - header.clientWidth;
+    const width = header.clientWidth;
+
     setVisible(prev => {
       if (overflow > 0) {
         const drop = Math.ceil(overflow / ITEM_W);
         // Reserve room for the ⋯ trigger the first time anything collapses.
         const reserve = prev === items.length ? 1 : 0;
-        return Math.max(0, Math.min(items.length, prev - drop - reserve));
+        const next = Math.max(0, Math.min(items.length, prev - drop - reserve));
+        // Remember how wide the header was when each item was dropped, so we
+        // know when there is genuinely room to put it back.
+        for (let i = next; i < prev; i++) droppedAtRef.current[i] = width;
+        return next;
       }
+      // Restoring cannot be driven from scrollWidth: it is defined to include
+      // the padding box, so `clientWidth - scrollWidth` is never positive and
+      // the old restore branch was unreachable — collapse was permanent for the
+      // session. A transient squeeze (the agent-status badge, a long model name,
+      // opening the sidebar) folded items forever.
       if (prev < items.length) {
-        const slack = header.clientWidth - header.scrollWidth;
-        const needed = prev + 1 === items.length ? ITEM_W - MORE_W : ITEM_W;
-        if (slack >= needed + 8) return prev + 1;
+        const droppedAt = droppedAtRef.current[prev];
+        if (droppedAt === undefined || width >= droppedAt + ITEM_W + 8) {
+          delete droppedAtRef.current[prev];
+          return prev + 1;
+        }
       }
       return prev;
     });
@@ -128,7 +143,7 @@ export const ToolbarActions: React.FC<ToolbarActionsProps> = ({ items, dark, chi
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             data-testid="toolbar-overflow"
-            className={btnCls(false)}
+            className={`${btnCls(false)} shrink-0`}
           >
             ⋯
           </button>
