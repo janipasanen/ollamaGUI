@@ -4849,12 +4849,12 @@ ${lines.join('\n')}`;
               <span
                 aria-label="Generation parameters"
                 title={`Temperature: ${genOptions.temperature ?? 'default'} · Context: ${genOptions.num_ctx ?? 4096} · Top-p: ${genOptions.top_p ?? 'default'} · Top-k: ${genOptions.top_k ?? 'default'} · Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict}`}
-                className={`text-xs px-2 py-0.5 rounded-full font-mono ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
+                className={`hidden lg:inline text-xs px-2 py-0.5 rounded-full font-mono shrink-0 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
               >
                 T:{genOptions.temperature ?? 'def'} · CTX:{genOptions.num_ctx ?? 4096}
               </span>
              </div>
-           <div className="flex items-center gap-3">
+           <div className="flex items-center gap-1.5 lg:gap-3">
              {/* Autonomy / approval-mode quick selector (#355) */}
              <div className={`flex items-center rounded-md overflow-hidden border shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-300'}`} role="group" aria-label="Autonomy level">
                {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(lv => (
@@ -4864,8 +4864,15 @@ ${lines.join('\n')}`;
                    aria-label={`Set autonomy: ${lv}`}
                    title={`Autonomy: ${lv}`}
                    onClick={() => { const s = { ...autonomySettings, level: lv }; setAutonomySettings(s); saveAutonomySettings(s); }}
-                   className={`px-2 py-1 text-xs capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
-                 >{lv}</button>
+                   className={`px-1.5 lg:px-2 py-1 text-[10px] lg:text-xs capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
+                 >
+                   {/* Tighter type on narrow windows rather than initials: this
+                       is a safety control, so it must stay both reachable and
+                       unambiguous. "ask" and "auto" share a first letter, so
+                       abbreviating to one character made two of the three
+                       options render identically (#540). */}
+                   {lv}
+                 </button>
                ))}
              </div>
              {/* On mobile, show only essential buttons; others go in mobile menu */}
