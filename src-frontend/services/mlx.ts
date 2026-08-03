@@ -243,3 +243,15 @@ export async function fetchMlxEmbeddings(
   const data = await response.json();
   return (data.data ?? []).map((d: any) => d.embedding as number[]);
 }
+
+/**
+ * True if a model name indicates MLX-capable weights (#544).
+ *
+ * Ollama surfaces these by tag (e.g. `qwen3.5:4b-mlx`, `gemma4:12b-mlx`), so
+ * the name is the only signal available from /api/tags. Callers must gate on
+ * real MLX availability before *recommending* these — the name alone says the
+ * weights are MLX-format, not that this machine can accelerate them.
+ */
+export function isMlxModelName(name: string): boolean {
+  return /(^|[-_:.])mlx([-_:.]|$)/i.test(name);
+}

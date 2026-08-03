@@ -10,14 +10,14 @@ describe('App Component', () => {
     expect(screen.getByPlaceholderText(/Message Ollama\.\.\./i)).toBeInTheDocument();
   });
 
-  it('toggles sidebar when menu button is clicked', () => {
+  it('toggles sidebar with Ctrl+\\', () => {
     render(<App />);
-    const menuButton = screen.getByRole('button', { name: /Toggle sidebar/i });
 
-    // Sidebar heading is visible initially
+    // Sidebar heading is visible initially — the rail is open by default on
+    // desktop and there is no hamburger to press any more (#545).
     expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
 
-    fireEvent.click(menuButton);
+    fireEvent.keyDown(window, { key: '\\', ctrlKey: true });
 
     // After collapse the sidebar container has w-0
     const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div.transition-all');
@@ -234,8 +234,8 @@ describe('App Component', () => {
 
       expect(screen.queryByRole('heading', { name: /Keyboard Shortcuts/i })).not.toBeInTheDocument();
 
-      const helpButton = screen.getByRole('button', { name: /Show keyboard shortcuts/i });
-      fireEvent.click(helpButton);
+      // The header no longer carries a help button (#546); "?" still opens it.
+      fireEvent.keyDown(window, { key: '?' });
 
       expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+K/i)).toBeInTheDocument();

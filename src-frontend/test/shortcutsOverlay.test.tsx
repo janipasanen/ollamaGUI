@@ -21,7 +21,7 @@ describe('Keyboard shortcuts overlay completeness (#266)', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Show keyboard shortcuts' }));
+    fireEvent.keyDown(window, { key: '?' });
 
     const heading = await screen.findByRole('heading', { name: 'Keyboard Shortcuts' });
     expect(heading).toBeInTheDocument();
@@ -44,7 +44,7 @@ describe('Keyboard shortcuts overlay completeness (#266)', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Show keyboard shortcuts' }));
+    fireEvent.keyDown(window, { key: '?' });
     const heading = await screen.findByRole('heading', { name: 'Keyboard Shortcuts' });
     const text = (heading.closest('div.rounded-2xl')!.textContent ?? '');
     expect(text).toContain('New Chat');

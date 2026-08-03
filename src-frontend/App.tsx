@@ -75,7 +75,7 @@ import { openSource } from './services/citations';
 import {
   MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
   checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
-  isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
+  isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream, isMlxModelName,
 } from './services/mlx';
 import { runCloudBrainLocalWorker } from './services/orchestrator';
 import { pickDirectory, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
@@ -163,6 +163,8 @@ import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText,
 import { computeConversationStats } from './services/conversationStats';
 import { ConversationStatsButton } from './components/ConversationStatsButton';
 import ToolbarActions from './components/ToolbarActions';
+import ProjectHeader from './components/ProjectHeader';
+import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
@@ -579,8 +581,8 @@ const App: React.FC = () => {
   // Projects (#92)
   const [projects, setProjects] = useState<Project[]>(() => storage.getProjects());
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [showAddProject, setShowAddProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
+  /** True while the native folder picker is open for a new project (#542). */
+  const [creatingProject, setCreatingProject] = useState(false);
 
   // Agent autonomy settings (#88, #89, #146)
   const [autonomySettings, setAutonomySettings] = useState<AgentAutonomySettings>(() => loadAutonomySettings());
@@ -1063,6 +1065,14 @@ const App: React.FC = () => {
   };
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
+
+  // Split local models so MLX-capable ones can be surfaced first (#544). The
+  // split only happens when this machine actually supports MLX; otherwise every
+  // local model stays in one undifferentiated group exactly as before.
+  const mlxUsable = !!mlxAvailability?.available;
+  const localModels = models.filter(m => !m.cloud);
+  const mlxModels = mlxUsable ? localModels.filter(m => isMlxModelName(m.name)) : [];
+  const otherLocalModels = mlxUsable ? localModels.filter(m => !isMlxModelName(m.name)) : localModels;
 
   // User-specified Ollama Cloud model names (#485). The cloud catalogue changes
   // faster than this app ships and Ollama exposes no "list all cloud models"
@@ -1756,6 +1766,49 @@ const App: React.FC = () => {
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
+  /**
+   * Project-first entry point (#542): pick a folder, and that IS the project.
+   *
+   * Previously `+` opened a name field and produced a project with no folder;
+   * binding one meant a trip to Settings -> Projects -> Choose…. Now the folder
+   * picker is the first and only step, the project is named from the folder,
+   * and it becomes active immediately — matching Codex/ChatGPT and Claude.
+   */
+  const createProjectFromFolder = useCallback(async () => {
+    if (creatingProject) return;
+    setCreatingProject(true);
+    try {
+      const dir = await pickDirectory();
+      if (!dir) return; // cancelled
+      const existing = storage.getProjects().find(p => projectRoots(p)[0] === dir);
+      if (existing) {
+        // Re-opening a folder already bound to a project just switches to it,
+        // rather than creating a confusing duplicate row.
+        setActiveProjectId(existing.id);
+        startNewChat(existing.id);
+        showStatusBanner(`Switched to "${existing.name}"`);
+        return;
+      }
+      const proj: Project = {
+        id: `proj_${Date.now()}`,
+        name: basename(dir),
+        workspaceRoot: dir,
+        workspaceRoots: [dir],
+        instructions: '',
+        createdAt: Date.now(),
+      };
+      storage.saveProject(proj);
+      setProjects(storage.getProjects());
+      setActiveProjectId(proj.id);
+      startNewChat(proj.id);
+    } catch (e) {
+      showStatusBanner(`Could not create project: ${formatErrorLine(e)}`);
+    } finally {
+      setCreatingProject(false);
+    }
+  }, [creatingProject, startNewChat]);
+
+
   // Start a temporary chat — messages live only in state, never persisted.
   const startTemporaryChat = useCallback(() => {
     setMessages([]);
@@ -2441,7 +2494,7 @@ const App: React.FC = () => {
 
   // Export the current conversation as a Markdown file (#256)
   const handleExportMarkdown = () => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) { showStatusBanner('Nothing to export — the conversation is empty'); return; }
     const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
     const md = chatToMarkdown(messages, { title });
     const blob = new Blob([md], { type: 'text/markdown' });
@@ -2469,7 +2522,7 @@ const App: React.FC = () => {
 
   // Copy the current conversation as Markdown to the clipboard (#261)
   const handleCopyMarkdown = async () => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) { showStatusBanner('Nothing to copy — the conversation is empty'); return; }
     const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
     const md = chatToMarkdown(messages, { title });
     try {
@@ -2477,7 +2530,9 @@ const App: React.FC = () => {
       setCopiedChat(true);
       setTimeout(() => setCopiedChat(false), 1500);
     } catch {
-      // Clipboard may be unavailable (permissions/old browsers) — no-op.
+      // Clipboard can be denied by permissions; silence left the user unsure
+      // whether the copy had worked (#547).
+      showStatusBanner('Could not copy — clipboard unavailable');
     }
   };
 
@@ -3566,6 +3621,20 @@ ${lines.join('\n')}`;
 
     const chatHistory = await applyFilterInlet(rawHistory);
 
+    // Claude-style project naming (#542): once the user says what they are
+    // actually doing, replace the folder-derived placeholder with that. Only
+    // while the name still looks auto-generated — a deliberate rename is never
+    // overwritten — and only on the first prompt of the project.
+    if (!continueMode && activeProjectId) {
+      const proj = storage.getProjects().find(p => p.id === activeProjectId);
+      if (proj && isAutoFolderName(proj.name, projectRoots(proj))) {
+        const derived = deriveProjectName(text);
+        if (derived && derived !== proj.name) {
+          storage.saveProject({ ...proj, name: derived });
+          setProjects(storage.getProjects());
+        }
+      }
+    }
     setMessages(continueMode ? messages.filter(stripMaxIter) : [...messages, userMessage]);
     if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
     setAttachedImages([]);
@@ -4244,6 +4313,10 @@ ${lines.join('\n')}`;
     { id: 'toggle-theme', label: 'Toggle Theme', hint: 'Ctrl+Shift+D', run: () => toggleTheme() },
     { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
     { id: 'toggle-artifacts', label: 'Toggle Artifacts Panel', hint: 'Ctrl+Shift+A', run: () => togglePanel('artifacts') },
+    // Reachable from the palette now that they no longer sit in the header (#546).
+    { id: 'copy-conversation', label: 'Copy Conversation as Markdown', run: () => { void handleCopyMarkdown(); } },
+    { id: 'export-conversation', label: 'Export Conversation as Markdown', run: () => handleExportMarkdown() },
+    { id: 'show-shortcuts', label: 'Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
     { id: 'toggle-code-search', label: 'Toggle Code Search Panel', run: () => togglePanel('code-search') },
     { id: 'toggle-source-control', label: 'Toggle Source Control Panel', run: () => togglePanel('source-control') },
     { id: 'toggle-checkpoints', label: 'Toggle Checkpoints Panel', run: () => togglePanel('checkpoints') },
@@ -4309,8 +4382,14 @@ ${lines.join('\n')}`;
         {/* Project switcher (#92) */}
         <div className={`mb-2 rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-300'}`}>
           <div className={`flex items-center justify-between px-3 py-1.5 text-xs font-semibold ${dark ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500'}`}>
-            <span>📁 Project</span>
-            <button onClick={() => setShowAddProject(v => !v)} className="hover:opacity-70">+</button>
+            <span>📁 Projects</span>
+            <button
+              onClick={() => { void createProjectFromFolder(); }}
+              disabled={creatingProject}
+              title="New project from a folder"
+              aria-label="New project from a folder"
+              className="hover:opacity-70 disabled:opacity-40 px-1"
+            >{creatingProject ? '…' : '+'}</button>
           </div>
           <button
             onClick={() => { setActiveProjectId(null); startNewChat(null); }}
@@ -4320,8 +4399,17 @@ ${lines.join('\n')}`;
             <div key={p.id} className="group/proj flex items-center">
               <button
                 onClick={() => { setActiveProjectId(p.id); startNewChat(p.id); }}
-                className={`flex-1 text-left px-3 py-1.5 text-xs transition-colors truncate ${activeProjectId === p.id ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100')}`}
-              >📂 {p.name}</button>
+                aria-current={activeProjectId === p.id}
+                title={projectRoots(p)[0] ?? 'No folder bound'}
+                className={`flex-1 min-w-0 text-left px-3 py-1.5 text-xs transition-colors ${activeProjectId === p.id ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100')}`}
+              >
+                <span className="block truncate">📂 {p.name}</span>
+                {projectRoots(p).length > 0 && (
+                  <span className={`block truncate text-[10px] font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    {folderLabel(projectRoots(p))}
+                  </span>
+                )}
+              </button>
               <button
                 onClick={() => {
                   if (confirm(`Delete project "${p.name}"?`)) {
@@ -4336,30 +4424,6 @@ ${lines.join('\n')}`;
               >✕</button>
             </div>
           ))}
-          {showAddProject && (
-            <div className={`p-2 border-t ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
-              <input
-                value={newProjectName}
-                onChange={e => setNewProjectName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && newProjectName.trim()) {
-                    const proj: Project = { id: `proj_${Date.now()}`, name: newProjectName.trim(), workspaceRoot: '', instructions: '', createdAt: Date.now() };
-                    storage.saveProject(proj);
-                    setProjects(storage.getProjects());
-                    setNewProjectName('');
-                    setShowAddProject(false);
-                    setActiveProjectId(proj.id);
-                  } else if (e.key === 'Escape') {
-                    setShowAddProject(false);
-                  }
-                }}
-                placeholder="Project name…"
-                autoFocus
-                className={`w-full text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400'}`}
-              />
-              <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Press Enter to create</p>
-            </div>
-          )}
         </div>
 
         {/* M5 Issue 18: Search */}
@@ -4687,14 +4751,20 @@ ${lines.join('\n')}`;
           dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
         } backdrop-blur-sm`}>
             <div className="flex items-center gap-4">
-             <button
+             {/* The rail is the primary navigation, so on desktop it simply
+                 stays open (#545) — hiding it behind a hamburger meant a fresh
+                 launch showed a chat box and nothing else. Below the mobile
+                 breakpoint the two genuinely cannot share the width, so the
+                 toggle survives there. Ctrl+\ and the command palette still
+                 reach it at any width for anyone who wants it collapsed. */}
+             {isMobile && <button
                onClick={() => setIsSidebarOpen(prev => !prev)}
                title="Toggle sidebar (Ctrl+\)"
                aria-label="Toggle sidebar"
                className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
              >
                ☰
-             </button>
+             </button>}
               {/* Ollama connection status indicator (#324) */}
               <span
                 aria-label="Ollama connection status"
@@ -4763,9 +4833,23 @@ ${lines.join('\n')}`;
                     ))}
                   </optgroup>
                 )}
-               {models.filter(m => !m.cloud).length > 0 && (
-                 <optgroup label="— Local Ollama —">
-                   {models.filter(m => !m.cloud).map((m) => (
+               {/* MLX-capable models first, grouped and bold, but ONLY when this
+                   machine can actually accelerate them (#544). Grouping is keyed
+                   off real MLX availability rather than the name, so a machine
+                   without MLX is never told to prefer models it cannot use; the
+                   name is what marks an individual model as MLX-capable. */}
+               {mlxModels.length > 0 && (
+                 <optgroup label="— MLX (recommended) —">
+                   {mlxModels.map((m) => (
+                     <option key={m.name} value={m.name} style={{ fontWeight: 700 }}>
+                       {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}
+                     </option>
+                   ))}
+                 </optgroup>
+               )}
+               {otherLocalModels.length > 0 && (
+                 <optgroup label={mlxModels.length > 0 ? '— Local Ollama (other) —' : '— Local Ollama —'}>
+                   {otherLocalModels.map((m) => (
                       <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
                    ))}
                  </optgroup>
@@ -4989,26 +5073,9 @@ ${lines.join('\n')}`;
                        active: isPanelOpen(p.id),
                        onSelect: () => togglePanel(p.id),
                      })),
-                     {
-                       id: 'copy-md',
-                       icon: copiedChat ? '✓' : '📋',
-                       label: 'Copy conversation as Markdown',
-                       disabled: messages.length === 0,
-                       onSelect: handleCopyMarkdown,
-                     },
-                     {
-                       id: 'export-md',
-                       icon: '⬇️',
-                       label: 'Export conversation as Markdown',
-                       disabled: messages.length === 0,
-                       onSelect: handleExportMarkdown,
-                     },
-                     {
-                       id: 'help',
-                       icon: '❓',
-                       label: 'Show keyboard shortcuts',
-                       onSelect: () => setShowHelp(prev => !prev),
-                     },
+                     // Copy / Export / Shortcuts are conversation-scoped, not
+                     // global chrome, so they live in the conversation menu and
+                     // the command palette rather than the top bar (#546).
                    ]}
                  >
                    <ConversationStatsButton
@@ -5044,6 +5111,9 @@ ${lines.join('\n')}`;
             onClose={() => setMobileMenu(null)}
             items={[
               { label: isSidebarOpen ? 'Hide sidebar' : 'Show sidebar', onSelect: () => setIsSidebarOpen(!isSidebarOpen) },
+              { label: 'Copy conversation as Markdown', disabled: messages.length === 0, onSelect: () => { void handleCopyMarkdown(); } },
+              { label: 'Export conversation as Markdown', disabled: messages.length === 0, onSelect: () => handleExportMarkdown() },
+              { label: 'Keyboard shortcuts', onSelect: () => setShowHelp(true) },
               { label: 'Command palette…', onSelect: () => setPaletteOpen(true) },
               { label: 'Files panel', onSelect: () => togglePanel('files') },
               { label: 'Code search panel', onSelect: () => togglePanel('code-search') },
@@ -5067,6 +5137,12 @@ ${lines.join('\n')}`;
             {statusBanner}
           </div>
         )}
+
+        {/* Ambient project context (#543): name + folder, always visible. */}
+        {(() => {
+          const active = projects.find(p => p.id === activeProjectId);
+          return <ProjectHeader name={active?.name ?? null} roots={projectRoots(active)} dark={dark} />;
+        })()}
 
         {/* Messages - Responsive: full width on mobile, padded on desktop.
             role="log" + aria-live announce streamed assistant replies to screen

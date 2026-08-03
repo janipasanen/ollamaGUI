@@ -33,7 +33,7 @@ describe('In-conversation search integration (#247)', () => {
 describe('Keyboard shortcuts overlay completeness (#248)', () => {
   it('lists all wired shortcuts including browser, files, terminal, and find', () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Show keyboard shortcuts/i }));
+    fireEvent.keyDown(window, { key: '?' });
     expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();
     expect(screen.getByText('Ctrl+K')).toBeInTheDocument();
     expect(screen.getByText('Ctrl+F')).toBeInTheDocument();

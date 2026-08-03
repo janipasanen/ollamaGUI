@@ -58,7 +58,7 @@ describe('Artifacts panel keyboard shortcut + help overlay (#372)', () => {
 
   it('help overlay lists Toggle Artifacts and Tab Indent', () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Show keyboard shortcuts/i }));
+    fireEvent.keyDown(window, { key: '?' });
     expect(screen.getByText('Toggle Artifacts')).toBeInTheDocument();
     expect(screen.getByText('Ctrl+Shift+A')).toBeInTheDocument();
     expect(screen.getByText('Tab Indent / Outdent')).toBeInTheDocument();
