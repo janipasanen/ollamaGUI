@@ -39,7 +39,6 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchAllConnectionModels, streamOpenAiChat,
 } from './services/connections';
-import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
 import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCost } from './services/tokenEstimate';
@@ -50,34 +49,19 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
-import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
+import { closeAllPanels } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
-import './components/BrowserPane';
-import './components/FileTreePanel';
-import './components/TerminalPanel';
-import { registerFileTreePanel } from './components/FileTreePanel';
-import { registerTerminalPanel } from './components/TerminalPanel';
-import { registerCodeSearchPanel } from './components/CodeSearchPanel';
-import { registerSourceControlPanel } from './components/SourceControlPanel';
-import { registerCheckpointPanel } from './components/CheckpointPanel';
-import { registerAgentActivityPanel } from './components/AgentActivityPanel';
 import { useModalFocus } from './components/useModalFocus';
 import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
-import WorkspaceChip from './components/WorkspaceChip';
 import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
 import NoWorkspaceHint from './components/NoWorkspaceHint';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
-import {
-  MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
-  checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
-  isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream, isMlxModelName,
-} from './services/mlx';
-import { runCloudBrainLocalWorker } from './services/orchestrator';
+import { MlxAvailability, checkMlxAvailable, isMlxModelName } from './services/mlx';
 import { pickDirectory, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
@@ -161,8 +145,6 @@ import { CommandPalette, type PaletteCommand } from './components/CommandPalette
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
-import { ConversationStatsButton } from './components/ConversationStatsButton';
-import ToolbarActions from './components/ToolbarActions';
 import ProjectHeader from './components/ProjectHeader';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
@@ -583,6 +565,10 @@ const App: React.FC = () => {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   /** True while the native folder picker is open for a new project (#542). */
   const [creatingProject, setCreatingProject] = useState(false);
+  // Project-first sidebar (#542): which projects are expanded, and whether the
+  // "+ New" project picker menu is open.
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
 
   // Agent autonomy settings (#88, #89, #146)
   const [autonomySettings, setAutonomySettings] = useState<AgentAutonomySettings>(() => loadAutonomySettings());
@@ -677,7 +663,7 @@ const App: React.FC = () => {
   const [chatSearchIndex, setChatSearchIndex] = useState(0);
   // Command palette (#251)
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   // Temporary/incognito chat: held in memory only, never persisted (#134).
   const [isTemporary, setIsTemporary] = useState(false);
@@ -785,9 +771,6 @@ const App: React.FC = () => {
   // Optional bearer token for authenticated remote Ollama servers (#493).
   const [newRemoteOllamaToken, setNewRemoteOllamaToken] = useState('');
 
-  // Many-models conversation (#126)
-  const [extraModels, setExtraModels] = useState<string[]>([]);
-  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
   // Image generation (#130)
   const [imageGenConfig, setImageGenConfig] = useState<ImageGenConfig>(() => loadImageGenConfig());
@@ -888,9 +871,9 @@ const App: React.FC = () => {
   const [voiceCallResponse, setVoiceCallResponse] = useState('');
   const voiceCallHandleRef = useRef<VoiceCallHandle | null>(null);
 
-  // MLX acceleration state (Apple Silicon)
+  // MLX acceleration (Apple Silicon): detection only — no settings. Active
+  // whenever the selected local model is an MLX model on a capable machine.
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
-  const [mlxSettings, setMlxSettings] = useState<MlxSettings>(DEFAULT_MLX_SETTINGS);
 
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1024,6 +1007,18 @@ const App: React.FC = () => {
       .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId),
     sortMode
   ), [sessions, searchQuery, folders, showArchived, folderFilter, tagFilter, activeProjectId, sortMode]);
+
+  // Sessions for the project-first sidebar (#542): search applies, archived
+  // hidden, most recent first. Grouped per project at render time.
+  const visibleSessions = React.useMemo(() => sortSessions(
+    searchSessions(sessions, searchQuery, folders).filter(s => !s.archived),
+    'recent',
+  ), [sessions, searchQuery, folders]);
+  const unscopedSessions = React.useMemo(
+    () => visibleSessions.filter(s => !s.projectId),
+    [visibleSessions],
+  );
+  const sessionsForProject = (projectId: string) => visibleSessions.filter(s => s.projectId === projectId);
 
   // Conversation token estimate, memoized so it only recomputes when the
   // messages or current draft change (#32, #62).
@@ -1279,16 +1274,11 @@ const App: React.FC = () => {
         }
       })();
 
-      // Load MLX settings + detect availability (graceful no-op if unavailable)
-      const loadedMlx = loadMlxSettings();
-      setMlxSettings(loadedMlx);
+      // Detect MLX availability (graceful no-op when unavailable). MLX has no
+      // enable/disable settings — it is active whenever the machine supports it
+      // and the selected local model is an MLX model (#544).
       try {
-        const avail = await checkMlxAvailable();
-        setMlxAvailability(avail);
-        // If MLX is available and full inference was previously enabled, start the server.
-        if (avail.available && loadedMlx.fullInference && loadedMlx.localModel) {
-          startMlxServer(loadedMlx.localModel, loadedMlx.serverPort).catch(() => {});
-        }
+        setMlxAvailability(await checkMlxAvailable());
       } catch {
         setMlxAvailability(null);
       }
@@ -1340,12 +1330,6 @@ const App: React.FC = () => {
       registerPlanTool();
       // Streaming terminal sessions (#87/#186) — run_terminal
       registerTerminalTool();
-      registerTerminalPanel();
-      registerFileTreePanel();
-      registerCodeSearchPanel(); // workspace grep UI (#431)
-      registerSourceControlPanel(); // git working-tree UI (#434)
-      registerCheckpointPanel(); // checkpoint browser / rewind UI (#435)
-      registerAgentActivityPanel(); // live tool-call timeline (#432)
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
       // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
@@ -1656,12 +1640,13 @@ const App: React.FC = () => {
     const handleResize = () => {
       const mobileBreakpoint = 768; // Typical tablet breakpoint
       const isMobileDevice = window.innerWidth < mobileBreakpoint;
-      setIsMobile(isMobileDevice);
-      
-      // On mobile devices, automatically collapse sidebar for more screen space
-      if (isMobileDevice) {
-        setIsSidebarOpen(false);
-      }
+      // Collapse the sidebar when entering mobile widths, and reopen it when
+      // returning to desktop — the rail is the primary navigation (#545).
+      setIsMobile(prev => {
+        if (isMobileDevice && !prev) setIsSidebarOpen(false);
+        else if (!isMobileDevice && prev) setIsSidebarOpen(true);
+        return isMobileDevice;
+      });
     };
 
     // Initial check
@@ -1713,13 +1698,6 @@ const App: React.FC = () => {
     }
     // Apply per-project model overrides if they are set (#171).
     if (project?.model) setModel(project.model);
-    if (project?.brainModel || project?.workerModel) {
-      setMlxSettings(prev => ({
-        ...prev,
-        ...(project.brainModel ? { brainModel: project.brainModel } : {}),
-        ...(project.workerModel ? { workerModel: project.workerModel } : {}),
-      }));
-    }
  }, [activeProjectId, projects]);
 
   // Wire file-tree clicks into the composer — pin the selected file into
@@ -1935,13 +1913,6 @@ const App: React.FC = () => {
         setChatSearchIndex(0);
         return;
       }
-      // File-tree panel toggle moved to Ctrl/Cmd+Shift+F (#248)
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-        if (isTyping) return;
-        e.preventDefault();
-        togglePanel('files');
-        return;
-      }
 
       if (isTyping) return;
 
@@ -1954,12 +1925,6 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
         e.preventDefault();
         setIsSidebarOpen(prev => !prev);
-      } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault();
-        togglePanel('browser'); // toggle browser preview via PanelShell (#71)
-      } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
-        e.preventDefault();
-        togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'End') {
         e.preventDefault();
         scrollToBottom(); // Ctrl/Cmd+End jumps to the latest message (#278)
@@ -1991,9 +1956,6 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         toggleZenMode(); // Zen/Focus mode (#309)
-      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        togglePanel('artifacts'); // Toggle artifacts panel (#372)
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         if (currentSessionId) {
@@ -2164,25 +2126,6 @@ const App: React.FC = () => {
     safeSetItem('ollama_gui_base_url', val);
   };
 
-  // Update MLX settings: enforce the toggle hierarchy, persist, and manage the
-  // MLX server lifecycle (start when full inference turns on, stop when off).
-  const updateMlxSettings = (patch: Partial<MlxSettings>) => {
-    setMlxSettings(prev => {
-      const next = saveMlxSettings(applyMlxHierarchy({ ...prev, ...patch }));
-      const available = mlxAvailability?.available ?? false;
-      if (available) {
-        const wasInference = prev.fullInference;
-        const modelChanged = prev.localModel !== next.localModel || prev.serverPort !== next.serverPort;
-        if (next.fullInference && (!wasInference || modelChanged) && next.localModel) {
-          startMlxServer(next.localModel, next.serverPort).catch(() => {});
-        } else if (!next.fullInference && wasInference) {
-          stopMlxServer().catch(() => {});
-        }
-      }
-      return next;
-    });
-  };
-
   // Model management
   // Pull a model. Pass an explicit name (e.g. from a suggested-model button),
   // otherwise pulls whatever is typed in the input box.
@@ -2256,6 +2199,21 @@ const App: React.FC = () => {
     prevMsgCountRef.current = session.messages.length;
     setUnreadCount(0);
     scrollToEndOnLoadRef.current = true;
+  };
+
+  // Open a session from the sidebar: adopt its project scope first so
+  // workspace roots / rules / per-project model follow the chat (#543).
+  const openSession = (session: ChatSession) => {
+    setActiveProjectId(session.projectId ?? null);
+    loadSession(session);
+  };
+
+  const toggleProjectExpanded = (id: string) => {
+    setExpandedProjects(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   // Opt-in: resume the most recent conversation on startup (#356).
@@ -3657,83 +3615,8 @@ ${lines.join('\n')}`;
       const endpoint = selectedConnection?.kind === 'ollama'
         ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
         : url('/api/chat');
-      const cloudEndpoint = url('/api/chat');
-      const mlxActive = !!mlxAvailability && isMlxActive(mlxSettings, mlxAvailability);
 
-      if (mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel) {
-        // Multi-agent: cloud model is the brain, local model is the worker.
-        let header = '';
-        let orchestratorReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
-        try {
-          await runCloudBrainLocalWorker({
-            brainModel: mlxSettings.brainModel,
-            workerModel: mlxSettings.workerModel,
-            messages: chatHistory,
-            ollamaEndpoint: url('/api/chat'),
-            cloudEndpoint,
-            mlx: { active: mlxActive, port: mlxSettings.serverPort },
-            signal: abortControllerRef.current?.signal,
-            onPhase: (_phase, label) => {
-              header = `_${label}…_\n\n`;
-              setMessages(prev => [...prev, { role: 'assistant', content: header, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[]);
-            },
-            onDelta: (_phase, fullText) => {
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.role === 'assistant') {
-                  return [...prev.slice(0, -1), { role: 'assistant', content: header + fullText, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[];
-                }
-                return prev;
-              });
-            },
-            onReasoning: (_phase, fullReasoning) => {
-              orchestratorReasoning = fullReasoning;
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.role === 'assistant') {
-                  return [...prev.slice(0, -1), { ...last, reasoning: orchestratorReasoning }] as Message[];
-                }
-                return prev;
-              });
-            },
-          });
-          setMessages(prev => { saveCurrentSession(prev); return prev; });
-        } catch (e) {
-          setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${e instanceof Error ? e.message : 'Orchestration failed'}` }] as Message[]);
-        }
-        setIsLoading(false);
-      } else if (mlxActive && !isAgenticMode) {
-        // Direct MLX inference (full inference backend).
-        let assistantContent = '';
-        let assistantReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
-        try {
-          await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta, reasoning) => {
-            if (reasoning) assistantReasoning += reasoning;
-            if (delta) assistantContent += delta;
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ts: last?.ts ?? Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
-              saveCurrentSession(updated);
-              return updated;
-            });
-          }, mlxSettings.serverPort, { signal: abortControllerRef.current?.signal });
-        } catch (streamError) {
-          if (abortControllerRef.current?.signal.aborted) {
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*' }] as Message[];
-              }
-              return prev;
-            });
-          } else {
-            setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : 'MLX stream failed'} (is the MLX model loaded?)` }] as Message[]);
-          }
-        }
-        setIsLoading(false);
-      } else if (isAgenticMode) {
+      if (isAgenticMode) {
         // Use agentic loop with tool calling
         let agenticReasoning = '';
         let agenticGenStats: GenStats | undefined;
@@ -3867,57 +3750,6 @@ ${lines.join('\n')}`;
             return prev;
           });
         }
-      } else if (extraModels.length > 0) {
-        // Many-models fan-out (#126)
-        const allModelIds = [model, ...extraModels];
-        const sameHost = hasSameHostConflict(allModelIds, ollamaBaseUrl, connectedModels, connections);
-        const groupIndex = messages.length; // user turn index after userMessage is added
-
-        // Initialize group with all pending replies
-        const initGroup: ModelGroup = {
-          userTurnIndex: groupIndex,
-          replies: allModelIds.map(mid => ({
-            modelId: mid,
-            label: connectedModels.find(m => m.id === mid)?.name ?? mid,
-            content: '',
-            state: 'pending' as const,
-          })),
-        };
-        setModelGroups(prev => [...prev, initGroup]);
-
-        if (sameHost) {
-          setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ Memory warning: multiple models share the same Ollama host — running sequentially to avoid OOM.` } as Message]);
-        }
-
-        await runManyModels(
-          allModelIds,
-          chatHistory,
-          (modelId, delta, state, error, reasoning) => {
-            setModelGroups(prev => prev.map((g, i) => {
-              if (i !== prev.length - 1) return g;
-              return {
-                ...g,
-                replies: g.replies.map(r => r.modelId !== modelId ? r : {
-                  ...r,
-                  content: state === 'streaming' ? r.content + delta : r.content,
-                  reasoning: state === 'streaming' && reasoning ? (r.reasoning ?? '') + reasoning : r.reasoning,
-                  state,
-                  error,
-                }),
-              };
-            }));
-          },
-          {
-            defaultBaseUrl: ollamaBaseUrl,
-            connectedModels,
-            connections,
-            genOptions,
-            signal: abortControllerRef.current?.signal,
-            streamOllama: fetchOllamaChatStream as any,
-            streamOpenAi: streamOpenAiChat as any,
-          }
-        );
-        setExtraModels([]);
       } else {
         // Route through OpenAI-compatible connection when model belongs to one (#123).
         // Remote Ollama connections use the resolved `endpoint` (already correct above).
@@ -4300,11 +4132,9 @@ ${lines.join('\n')}`;
   // Command palette actions (#251)
   const paletteCommands: PaletteCommand[] = [
     { id: 'new-chat', label: 'New Chat', hint: 'Ctrl+K', run: () => startNewChat() },
+    { id: 'temporary-chat', label: 'New Temporary Chat', run: () => startTemporaryChat() },
     { id: 'find', label: 'Find in Chat', hint: 'Ctrl+F', run: () => { setChatSearchOpen(true); setChatSearchIndex(0); } },
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+\\', run: () => setIsSidebarOpen(prev => !prev) },
-    { id: 'toggle-browser', label: 'Toggle Browser', hint: 'Ctrl+B', run: () => togglePanel('browser') },
-    { id: 'toggle-files', label: 'Toggle Files', hint: 'Ctrl+Shift+F', run: () => togglePanel('files') },
-    { id: 'toggle-terminal', label: 'Toggle Terminal', hint: 'Ctrl+T', run: () => togglePanel('terminal') },
     { id: 'open-settings', label: 'Open Settings', hint: 'Ctrl+,', run: () => setIsSettingsOpen(true) },
     { id: 'show-help', label: 'Show Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
     { id: 'autonomy-plan', label: 'Set Autonomy: Plan', run: () => { const s = { ...autonomySettings, level: 'plan' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
@@ -4312,15 +4142,10 @@ ${lines.join('\n')}`;
     { id: 'autonomy-auto', label: 'Set Autonomy: Auto', run: () => { const s = { ...autonomySettings, level: 'auto' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
     { id: 'toggle-theme', label: 'Toggle Theme', hint: 'Ctrl+Shift+D', run: () => toggleTheme() },
     { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
-    { id: 'toggle-artifacts', label: 'Toggle Artifacts Panel', hint: 'Ctrl+Shift+A', run: () => togglePanel('artifacts') },
-    // Reachable from the palette now that they no longer sit in the header (#546).
     { id: 'copy-conversation', label: 'Copy Conversation as Markdown', run: () => { void handleCopyMarkdown(); } },
     { id: 'export-conversation', label: 'Export Conversation as Markdown', run: () => handleExportMarkdown() },
-    { id: 'show-shortcuts', label: 'Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
-    { id: 'toggle-code-search', label: 'Toggle Code Search Panel', run: () => togglePanel('code-search') },
-    { id: 'toggle-source-control', label: 'Toggle Source Control Panel', run: () => togglePanel('source-control') },
-    { id: 'toggle-checkpoints', label: 'Toggle Checkpoints Panel', run: () => togglePanel('checkpoints') },
-    { id: 'toggle-agent-activity', label: 'Toggle Agent Activity Panel', run: () => togglePanel('agent-activity') },
+    { id: 'export-chats', label: 'Export All Chats (JSON)', run: () => handleExport() },
+    { id: 'import-chats', label: 'Import Chats (JSON)', run: () => importInputRef.current?.click() },
     { id: 'regenerate', label: 'Regenerate Last Reply', hint: 'Ctrl+R', run: () => regenerateLastResponse() },
     { id: 'copy-last-reply', label: 'Copy Last Reply', hint: 'Ctrl+Shift+C', run: () => {
       for (let j = messages.length - 1; j >= 0; j--) {
@@ -4345,85 +4170,116 @@ ${lines.join('\n')}`;
     { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); safeSetItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
   ];
 
+  // One sidebar chat row — used inside project groups and the unscoped list.
+  const renderSessionRow = (s: ChatSession) => (
+    <div
+      key={s.id}
+      onClick={() => openSession(s)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { openSession(s); return; }
+        // Arrow-key navigation between session rows (#329)
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          const list = e.currentTarget.parentElement;
+          if (!list) return;
+          const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]'));
+          const idx = rows.indexOf(e.currentTarget);
+          if (idx === -1) return;
+          const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+          rows[nextIdx]?.focus();
+        }
+      }}
+      onContextMenu={(e) => { e.preventDefault(); setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id }); }}
+      aria-label={`Load session: ${s.title}`}
+      className={`group px-2 py-1.5 rounded-md cursor-pointer transition-colors flex items-center ${
+        currentSessionId === s.id
+          ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900')
+          : (dark ? 'hover:bg-zinc-800/60 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600')
+      }`}
+    >
+      {renamingSessionId === s.id ? (
+        <input
+          autoFocus
+          value={renameDraft}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => setRenameDraft(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commitRename();
+            else if (e.key === 'Escape') cancelRename();
+          }}
+          onBlur={commitRename}
+          aria-label="Rename conversation"
+          className={`flex-1 text-xs px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+        />
+      ) : (
+        <span className="flex-1 min-w-0 truncate text-xs">{s.pinned ? '📌 ' : ''}{s.title}</span>
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }}
+        title="Delete"
+        aria-label={`Delete session: ${s.title}`}
+        className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 p-1 text-xs hover:text-red-400"
+      >✕</button>
+    </div>
+  );
+
   return (
     <CodeWordWrapContext.Provider value={{ wordWrap: codeWordWrap, toggle: toggleCodeWordWrap }}>
     <div className={`flex h-screen font-sans transition-colors duration-300 ${
-      dark ? 'bg-zinc-900 text-zinc-100' : 'bg-zinc-100 text-zinc-900'
+      dark ? 'bg-zinc-900 text-zinc-100' : 'bg-white text-zinc-900'
     }`}>
 
-      {/* Sidebar - Responsive: hidden on mobile by default, toggleable */}
+      {/* Sidebar — projects with their chat sessions nested beneath (Ollama-style) */}
       <div className={`transition-all duration-300 border-r flex flex-col absolute md:relative z-40 ${
-        (isSidebarOpen && !zenMode) ? 'w-64 p-4' : 'w-0 overflow-hidden p-0 border-none'
-      } ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'} ${
+        (isSidebarOpen && !zenMode) ? 'w-64 p-3' : 'w-0 overflow-hidden p-0 border-none'
+      } ${dark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'} ${
         isMobile && !isSidebarOpen ? 'hidden' : ''
       }`}>
-        <h1 className="text-xl font-bold mb-4">Ollama GUI</h1>
-
-             <button
-               onClick={() => startNewChat()}
-               aria-label="Start new chat"
-               className={`w-full py-2 px-4 rounded-lg transition-colors mb-2 text-sm font-semibold ${
-                 dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
-               }`}
-             >
-               + New Chat
-             </button>
-             <button
-               onClick={startTemporaryChat}
-               aria-label="Start temporary chat"
-               title="A scratch chat that is never saved to history"
-               className={`w-full py-1.5 px-4 rounded-lg transition-colors mb-3 text-xs border ${
-                 dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'
-               }`}
-             >
-               🕶 Temporary chat
-             </button>
-
-        {/* Project switcher (#92) */}
-        <div className={`mb-2 rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-300'}`}>
-          <div className={`flex items-center justify-between px-3 py-1.5 text-xs font-semibold ${dark ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500'}`}>
-            <span>📁 Projects</span>
-            <button
-              onClick={() => { void createProjectFromFolder(); }}
-              disabled={creatingProject}
-              title="New project from a folder"
-              aria-label="New project from a folder"
-              className="hover:opacity-70 disabled:opacity-40 px-1"
-            >{creatingProject ? '…' : '+'}</button>
-          </div>
+        {/* New chat — the user picks which project it belongs to (#542) */}
+        <div className="relative mb-2">
           <button
-            onClick={() => { setActiveProjectId(null); startNewChat(null); }}
-            className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${activeProjectId === null ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
-          >🌐 No project</button>
-          {projects.map(p => (
-            <div key={p.id} className="group/proj flex items-center">
+            onClick={() => {
+              if (projects.length === 0) { void createProjectFromFolder(); return; }
+              setNewMenuOpen(v => !v);
+            }}
+            aria-label="Start new chat"
+            aria-haspopup="menu"
+            aria-expanded={newMenuOpen}
+            className={`w-full py-2 px-4 rounded-lg transition-colors text-sm font-semibold ${
+              dark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900'
+            }`}
+          >
+            + New
+          </button>
+          {newMenuOpen && (
+            <div role="menu" aria-label="New chat in project" className={`absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-lg z-50 max-h-64 overflow-y-auto ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+              {projects.map(p => (
+                <button
+                  key={p.id}
+                  role="menuitem"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    setExpandedProjects(prev => new Set(prev).add(p.id));
+                    startNewChat(p.id);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-xs truncate ${dark ? 'hover:bg-zinc-700 text-zinc-200' : 'hover:bg-zinc-50 text-zinc-800'}`}
+                >📂 {p.name}</button>
+              ))}
               <button
-                onClick={() => { setActiveProjectId(p.id); startNewChat(p.id); }}
-                aria-current={activeProjectId === p.id}
-                title={projectRoots(p)[0] ?? 'No folder bound'}
-                className={`flex-1 min-w-0 text-left px-3 py-1.5 text-xs transition-colors ${activeProjectId === p.id ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100')}`}
-              >
-                <span className="block truncate">📂 {p.name}</span>
-                {projectRoots(p).length > 0 && (
-                  <span className={`block truncate text-[10px] font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    {folderLabel(projectRoots(p))}
-                  </span>
-                )}
-              </button>
+                role="menuitem"
+                onClick={() => { setNewMenuOpen(false); startNewChat(null); }}
+                className={`w-full text-left px-3 py-2 text-xs ${dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-50 text-zinc-500'}`}
+              >🌐 No project</button>
               <button
-                onClick={() => {
-                  if (confirm(`Delete project "${p.name}"?`)) {
-                    storage.deleteProject(p.id);
-                    setProjects(storage.getProjects());
-                    setSessions(storage.getSessions());
-                    if (activeProjectId === p.id) setActiveProjectId(null);
-                  }
-                }}
-                className="opacity-0 group-hover/proj:opacity-100 px-2 text-[10px] text-red-400 hover:text-red-300"
-                aria-label={`Delete project ${p.name}`}
-              >✕</button>
+                role="menuitem"
+                onClick={() => { setNewMenuOpen(false); void createProjectFromFolder(); }}
+                className={`w-full text-left px-3 py-2 text-xs border-t ${dark ? 'hover:bg-zinc-700 text-zinc-400 border-zinc-700' : 'hover:bg-zinc-50 text-zinc-500 border-zinc-200'}`}
+              >＋ New project from a folder…</button>
             </div>
-          ))}
+          )}
         </div>
 
         {/* M5 Issue 18: Search */}
@@ -4434,306 +4290,103 @@ ${lines.join('\n')}`;
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search conversations..."
-          className={`w-full text-xs border rounded-lg px-3 py-2 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-            dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-100 border-zinc-300 text-zinc-900 placeholder-zinc-400'
+          className={`w-full text-xs border rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-50 border-zinc-200 text-zinc-900 placeholder-zinc-400'
           }`}
         />
 
-        {/* Conversation-list sort selector (#327) */}
-        <div className="flex items-center gap-1 mb-2">
-          <span className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Sort:</span>
-          {(['recent', 'name', 'messages'] as const).map(m => (
+        {/* Projects — click a name to show its sessions; + starts a chat in it */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex items-center justify-between px-1 mb-1">
+            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Projects</span>
             <button
-              key={m}
-              onClick={() => { setSortMode(m); safeSetItem('ollama_gui_sort_mode', m); }}
-              aria-label={`Sort by ${m}`}
-              aria-pressed={sortMode === m}
-              className={`text-[10px] px-2 py-0.5 rounded-full border ${sortMode === m ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
-            >{m === 'recent' ? 'Recent' : m === 'name' ? 'Name' : 'Messages'}</button>
-          ))}
-        </div>
-
-        {/* Bulk selection toggle + action bar (#338) */}
-        <div className="flex items-center gap-1 mb-2 flex-wrap">
-          {bulkSelectMode ? (
-            <>
-              <span className={`text-[10px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{bulkSelectedIds.size} selected</span>
-              <button
-                onClick={bulkArchiveSelected}
-                disabled={bulkSelectedIds.size === 0}
-                aria-label="Bulk archive selected"
-                className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-600 text-white border-amber-600 disabled:opacity-50"
-              >🗄 Archive ({bulkSelectedIds.size})</button>
-              <button
-                onClick={bulkDeleteSelected}
-                disabled={bulkSelectedIds.size === 0}
-                aria-label="Bulk delete selected"
-                className="text-[10px] px-2 py-0.5 rounded-full border bg-red-600 text-white border-red-600 disabled:opacity-50"
-              >✕ Delete ({bulkSelectedIds.size})</button>
-              <button
-                onClick={exitBulkSelect}
-                aria-label="Exit bulk select mode"
-                className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
-              >Cancel</button>
-            </>
-          ) : (
-            <button
-              onClick={enterBulkSelect}
-              aria-label="Enter bulk select mode"
-              className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
-            >☑ Select</button>
+              onClick={() => { void createProjectFromFolder(); }}
+              disabled={creatingProject}
+              title="New project from a folder"
+              aria-label="New project from a folder"
+              className={`px-1.5 rounded hover:opacity-70 disabled:opacity-40 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}
+            >{creatingProject ? '…' : '+'}</button>
+          </div>
+          {projects.length === 0 && (
+            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No projects yet — click + to open a folder.</p>
           )}
-        </div>
-
-        {/* Folder chips + archived toggle (#133) */}
-        <div className="flex items-center flex-wrap gap-1 mb-2">
-          <button
-            onClick={() => { setFolderFilter(null); setShowArchived(false); }}
-            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId('__all__'); }}
-            onDragLeave={() => setDragOverFolderId(prev => prev === '__all__' ? null : prev)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOverFolderId(null);
-              const sessionId = e.dataTransfer.getData('text/session-id');
-              if (sessionId) { moveToFolder(sessionId, ''); showStatusBanner('Moved to All (unfiled)'); }
-            }}
-            title="All conversations — drag a chat here to unfile it"
-            className={`text-[10px] px-2 py-0.5 rounded-full border ${
-              dragOverFolderId === '__all__'
-                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
-                : folderFilter === null && !showArchived ? 'bg-blue-600 text-white border-blue-600'
-                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
-            }`}
-          >All</button>
-         {/* Rename/delete were onClick <span>s nested inside the filter button
-             (#513): invalid nesting and unreachable by keyboard. They are
-             sibling buttons inside this wrapper now. */}
-         {folders.map(f => (
-          <span key={f.id} className="group/folder inline-flex items-center">
-           <button
-             key={f.id}
-             onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
-            title={`Folder: ${f.name} (long-press the ✕ to delete — or drag a chat here)`}
-            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId(f.id); }}
-            onDragLeave={() => setDragOverFolderId(prev => prev === f.id ? null : prev)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOverFolderId(null);
-              const sessionId = e.dataTransfer.getData('text/session-id');
-              if (sessionId) { moveToFolder(sessionId, f.id); showStatusBanner(`Moved to "${f.name}"`); }
-            }}
-            className={`group/folder text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
-              dragOverFolderId === f.id
-                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
-                : folderFilter === f.id ? 'bg-blue-600 text-white border-blue-600'
-                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
-            }`}
-          >
-              🗂 {f.name}
-            </button>
-            <button
-              type="button"
-              onClick={() => renameFolder(f.id)}
-              title="Rename folder"
-              aria-label={`Rename folder: ${f.name}`}
-              className="text-[10px] px-0.5 rounded opacity-0 group-hover/folder:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-blue-500 hover:text-blue-300"
-            >✏️</button>
-            <button
-              type="button"
-              onClick={() => { if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }}
-              title="Delete folder"
-              aria-label={`Delete folder: ${f.name}`}
-              className="text-[10px] px-0.5 rounded opacity-0 group-hover/folder:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-blue-500 hover:text-red-300"
-            >✕</button>
-          </span>
-          ))}
-          <button onClick={createFolder} className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'}`}>+ folder</button>
-          <button
-            onClick={() => { setShowArchived(v => !v); setFolderFilter(null); }}
-            className={`text-[10px] px-2 py-0.5 rounded-full border ${showArchived ? 'bg-amber-600 text-white border-amber-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
-          >🗄 Archived</button>
-          {tagFilter && (
-            <button
-              className="text-[10px] px-2 py-0.5 rounded-full border bg-blue-600 text-white border-blue-600 inline-flex items-center gap-1"
-              onClick={() => setTagFilter(null)}
-            >🏷 {tagFilter} ✕</button>
-          )}
-        </div>
-
-        {/* Session list */}
-        <div className="flex-1 overflow-y-auto space-y-1">
-          <p className={`text-xs uppercase font-semibold mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-            {searchQuery ? `Results (${filteredSessions.length})` : showArchived ? 'Archived' : folderFilter ? folders.find(f => f.id === folderFilter)?.name : 'History'}
-          </p>
-          {filteredSessions.length === 0 && (
-            <div className={`text-sm italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-              {searchQuery ? 'No matches.' : showArchived ? 'No archived chats.' : 'No past conversations.'}
-            </div>
-          )}
-          {filteredSessions.map((s, idx) => {
-                   const prevS = filteredSessions[idx - 1];
-                   const showPinnedLabel = !!s.pinned && !(prevS?.pinned);
-                   const useDateGroups = sortMode === 'recent';
-                   const bucket = (!s.pinned && useDateGroups) ? conversationDateBucket(s.createdAt) : null;
-                   const prevBucket = (prevS && !prevS.pinned && useDateGroups) ? conversationDateBucket(prevS.createdAt) : null;
-                   const showBucketLabel = !!bucket && bucket !== prevBucket;
-                   return (
-                   <React.Fragment key={s.id}>
-                     {showPinnedLabel && (
-                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Pinned</p>
-                     )}
-                     {showBucketLabel && (
-                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{bucket}</p>
-                     )}
-                  <div
-                    onClick={() => bulkSelectMode ? toggleBulkSelected(s.id) : loadSession(s)}
-                    role="button"
-                    tabIndex={0}
-                    draggable={!bulkSelectMode && !renamingSessionId}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('text/session-id', s.id);
-                      e.dataTransfer.effectAllowed = 'move';
+          {projects.map(p => {
+            const expanded = expandedProjects.has(p.id);
+            const projSessions = sessionsForProject(p.id);
+            return (
+              <div key={p.id} className="mb-0.5">
+                <div className="group/proj flex items-center">
+                  <button
+                    onClick={() => { toggleProjectExpanded(p.id); setActiveProjectId(p.id); }}
+                    aria-expanded={expanded}
+                    aria-current={activeProjectId === p.id}
+                    aria-label={p.name}
+                    title={projectRoots(p)[0] ?? 'No folder bound'}
+                    className={`flex-1 min-w-0 text-left px-2 py-1.5 text-sm rounded-md transition-colors ${
+                      activeProjectId === p.id
+                        ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900')
+                        : (dark ? 'text-zinc-300 hover:bg-zinc-800/60' : 'text-zinc-700 hover:bg-zinc-100')
+                    }`}
+                  >
+                    <span className="block truncate">
+                      <span className={`inline-block w-3 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{expanded ? '▾' : '▸'}</span>
+                      {p.name}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setExpandedProjects(prev => new Set(prev).add(p.id));
+                      startNewChat(p.id);
                     }}
-                    onKeyDown={(e) => {
-                       if (e.key === 'Enter') { loadSession(s); return; }
-                       // Arrow-key navigation between session rows (#329)
-                       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                         e.preventDefault();
-                         const list = e.currentTarget.parentElement;
-                         if (!list) return;
-                         const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]'));
-                         const idx = rows.indexOf(e.currentTarget);
-                         if (idx === -1) return;
-                         const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
-                         rows[nextIdx]?.focus();
-                       }
-                     }}
-                     onContextMenu={(e) => { e.preventDefault(); setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id }); }}
-                     aria-label={`Load session: ${s.title}`}
-                     className={`group p-2 rounded-md cursor-pointer transition-colors ${
-                       currentSessionId === s.id
-                         ? (dark ? 'bg-zinc-700 text-white' : 'bg-zinc-300 text-zinc-900')
-                         : (dark ? 'hover:bg-zinc-700/50 text-zinc-300' : 'hover:bg-zinc-200 text-zinc-600')
-                     }`}
-                   >
-              <div className="flex items-center justify-between">
-                {bulkSelectMode && (
-                  <input
-                    type="checkbox"
-                    checked={bulkSelectedIds.has(s.id)}
-                    onChange={() => toggleBulkSelected(s.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select session: ${s.title}`}
-                    className="shrink-0 mr-1"
-                  />
-                )}
-                {renamingSessionId === s.id ? (
-                  <input
-                    autoFocus
-                    value={renameDraft}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') commitRename();
-                      else if (e.key === 'Escape') cancelRename();
+                    title={`New chat in ${p.name}`}
+                    aria-label={`New chat in project ${p.name}`}
+                    className={`opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1.5 text-sm ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
+                  >+</button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete project "${p.name}"?`)) {
+                        storage.deleteProject(p.id);
+                        setProjects(storage.getProjects());
+                        setSessions(storage.getSessions());
+                        if (activeProjectId === p.id) setActiveProjectId(null);
+                      }
                     }}
-                    onBlur={commitRename}
-                    aria-label="Rename conversation"
-                    className={`flex-1 text-sm px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                  />
-                ) : (
-                  <div className="flex-1 min-w-0">
-                    <span className="truncate text-sm block">{s.pinned ? '📌 ' : ''}{s.title}</span>
-                    <div className="flex items-center gap-1.5">
-                      {s.messages.length > 0 && (
-                        <span className={`text-[9px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{s.messages.length} {s.messages.length === 1 ? 'msg' : 'msgs'}</span>
-                      )}
-                      {/* Per-session model badge (#334) */}
-                      {s.model && (
-                        <span
-                          title={`Model: ${s.model}`}
-                          className={`text-[9px] truncate max-w-[8rem] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}
-                        >{s.model}</span>
-                      )}
-                    </div>
+                    className="opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1 text-[10px] text-red-400 hover:text-red-300"
+                    aria-label={`Delete project ${p.name}`}
+                  >✕</button>
+                </div>
+                {expanded && (
+                  <div className={`ml-2.5 pl-1.5 border-l ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
+                    {projSessions.length === 0 && (
+                      <p className={`text-xs italic px-2 py-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No chats yet.</p>
+                    )}
+                    {projSessions.map(s => renderSessionRow(s))}
                   </div>
                 )}
-                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  <button onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }} title="Rename" aria-label={`Rename session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">✏️</button>
-                  <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} aria-label={`${s.pinned ? 'Unpin' : 'Pin'} session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📌</button>
-                  <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" aria-label={`Add tag to session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">🏷</button>
-                  <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} aria-label={`${s.archived ? 'Unarchive' : 'Archive'} session: ${s.title}`} className="p-1 text-xs hover:text-amber-400">🗄</button>
-                  <button onClick={(e) => { e.stopPropagation(); duplicateSession(s.id); }} title="Duplicate" aria-label={`Duplicate session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📑</button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
-                </div>
               </div>
-              {/* tags + folder controls */}
-              {((s.tags && s.tags.length > 0) || folders.length > 0) && (
-                <div className="flex items-center flex-wrap gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
-                  {(s.tags ?? []).map(tag => (
-                    <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${tagFilter === tag ? 'bg-blue-600 text-white' : (dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600')}`}>
-                      <button onClick={() => setTagFilter(prev => prev === tag ? null : tag)} className="hover:underline" title={tagFilter === tag ? 'Clear tag filter' : 'Filter by tag'}>{tag}</button>
-                      <button aria-label={`Remove tag ${tag}`} onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
-                    </span>
-                  ))}
-                  {folders.length > 0 && (
-                    <select
-                      value={s.folderId ?? ''}
-                      onChange={(e) => moveToFolder(s.id, e.target.value)}
-                      className={`text-[9px] rounded border bg-transparent ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'} opacity-0 group-hover:opacity-100`}
-                    >
-                      <option value="">No folder</option>
-                      {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                    </select>
-                  )}
-                </div>
-              )}
-            </div>
-                   </React.Fragment>
-          );
+            );
           })}
+
+          {/* Sessions not bound to any project */}
+          {unscopedSessions.length > 0 && (
+            <>
+              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Chats</p>
+              {unscopedSessions.map(s => renderSessionRow(s))}
+            </>
+          )}
         </div>
 
         {/* Bottom actions */}
-        <div className={`mt-4 space-y-1 border-t pt-3 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-          {/* M5 Issue 19: Export / Import */}
-          <div className="flex gap-1">
-            <button
-              onClick={handleExport}
-              className={`flex-1 py-1.5 px-3 text-xs rounded-lg transition-all text-center ${
-                dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-              }`}
-            >
-              Export
-            </button>
-            <button
-              onClick={() => importInputRef.current?.click()}
-              className={`flex-1 py-1.5 px-3 text-xs rounded-lg transition-all text-center ${
-                dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-              }`}
-            >
-              Import
-            </button>
-            <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
-          </div>
-
-          <button
-            onClick={toggleTheme}
-            className={`w-full py-2 px-4 text-sm rounded-lg transition-all text-left flex items-center gap-2 ${
-              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-            }`}
-          >
-            {dark ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
+        <div className={`mt-2 border-t pt-2 ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
           <button
             onClick={() => setIsSettingsOpen(true)}
             className={`w-full py-2 px-4 text-sm rounded-lg transition-all text-left flex items-center gap-2 ${
-              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
+              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
             }`}
           >
             ⚙️ Settings
           </button>
+          <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
         </div>
       </div>
 
@@ -4741,364 +4394,60 @@ ${lines.join('\n')}`;
       <div className={`flex-1 flex flex-col relative overflow-hidden ${
         isMobile && isSidebarOpen && !zenMode ? 'ml-64' : ''
       }`}>
-        {/* Shared resizable layout shell — owns the chat+dock split (#70/#81).
-            Near-passthrough until a panel registers + opens. */}
-        <PanelShell dark={dark}>
-        {/* Header */}
-        {/* overflow-x-auto (#450): at narrow/moderate widths the toolbar used to
-            clip its controls with no way to reach them; now it scrolls. */}
-        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 2xl:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
-          dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
-        } backdrop-blur-sm`}>
-            <div className="flex items-center gap-4">
-             {/* The rail is the primary navigation, so on desktop it simply
-                 stays open (#545) — hiding it behind a hamburger meant a fresh
-                 launch showed a chat box and nothing else. Below the mobile
-                 breakpoint the two genuinely cannot share the width, so the
-                 toggle survives there. Ctrl+\ and the command palette still
-                 reach it at any width for anyone who wants it collapsed. */}
-             {isMobile && <button
-               onClick={() => setIsSidebarOpen(prev => !prev)}
-               title="Toggle sidebar (Ctrl+\)"
-               aria-label="Toggle sidebar"
-               className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-             >
-               ☰
-             </button>}
-              {/* Ollama connection status indicator (#324) */}
-              <span
-                aria-label="Ollama connection status"
-                title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
-                className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-                  ollamaConnected === null
-                    ? 'bg-zinc-400'
-                    : ollamaConnected
-                      ? 'bg-emerald-500'
-                      : 'bg-red-500'
-                }`}
-              />
-              <select
-                value={activePresetId ? `preset:${activePresetId}` : model}
-                title="● = model loaded in memory (warm). Use /running to list, /warm to load, /unload to free RAM."
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val.startsWith('preset:')) {
-                    const id = val.slice(7);
-                    const preset = presets.find(p => p.id === id);
-                    if (preset) {
-                      applyPreset(preset, { setModel, setSystemPrompt, setGenOptions });
-                      setActivePresetId(id);
-                      setActivePreset(id);
-                    }
-                  } else {
-                    setModel(val);
-                    setActivePresetId(null);
-                    clearActivePreset();
-                  }
-                }}
-                aria-label="Select AI model"
-                className={`text-sm border rounded-md px-2 py-1 min-w-[8rem] max-w-[12rem] 2xl:max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
-                }`}
-              >
-               {/* Empty-state placeholder (#438): without this the dropdown renders
-                   zero options and is a blank, unexplained control on fresh installs. */}
-               {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
-                 <option value="" disabled>
-                   {ollamaConnected === false
-                     ? 'No models — is Ollama running?'
-                     : 'No models — pull one (e.g. ollama pull llama3)'}
-                 </option>
-               )}
-               {starredModels.length > 0 && !activePresetId && (
-                 <optgroup label="— ★ Starred —">
-                   {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-               {recentModels.length > 0 && !activePresetId && (
-                 <optgroup label="— Recent —">
-                   {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-                {presets.length > 0 && (
-                  <optgroup label="— Presets —">
-                    {presets.map(p => (
-                      <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
-                        {p.icon ? `${p.icon} ` : ''}{p.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-               {/* MLX-capable models first, grouped and bold, but ONLY when this
-                   machine can actually accelerate them (#544). Grouping is keyed
-                   off real MLX availability rather than the name, so a machine
-                   without MLX is never told to prefer models it cannot use; the
-                   name is what marks an individual model as MLX-capable. */}
-               {mlxModels.length > 0 && (
-                 <optgroup label="— MLX (recommended) —">
-                   {mlxModels.map((m) => (
-                     <option key={m.name} value={m.name} style={{ fontWeight: 700 }}>
-                       {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}
-                     </option>
-                   ))}
-                 </optgroup>
-               )}
-               {otherLocalModels.length > 0 && (
-                 <optgroup label={mlxModels.length > 0 ? '— Local Ollama (other) —' : '— Local Ollama —'}>
-                   {otherLocalModels.map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-                {models.filter(m => m.cloud).length > 0 && (
-                  <optgroup label="— Cloud Ollama —">
-                    {models.filter(m => m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {/* Extra connection models grouped by connection (#123) */}
-                {connections.filter(c => c.enabled).map(conn => {
-                  const connModels = connectedModels.filter(m => m.connectionId === conn.id);
-                  if (!connModels.length) return null;
-                  const groupLabel = conn.kind === 'ollama'
-                    ? `— Remote Ollama: ${conn.name} —`
-                    : `— ${conn.name} —`;
-                  return (
-                    <optgroup key={conn.id} label={groupLabel}>
-                      {connModels.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-              </select>
-              {/* Always-visible workspace folder indicator + picker (#481) */}
-              <WorkspaceChip dark={dark} />
-              {/* Star/favourite the current model (#339) */}
-              <button
-                onClick={() => toggleStarModel(model)}
-                aria-label={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
-                aria-pressed={starredModels.includes(model)}
-                title={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
-                className={`p-1 rounded-md text-sm transition-colors ${starredModels.includes(model) ? 'text-amber-400' : (dark ? 'text-zinc-500 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-              >{starredModels.includes(model) ? '★' : '☆'}</button>
-              {models.find(m => m.name === model)?.cloud && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
-                  ⛅ Cloud
-                </span>
-              )}
-              {(() => {
-                const cm = connectedModels.find(m => m.id === model);
-                const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
-                if (!conn) return null;
-                return (
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
-                    title={conn.baseUrl}>
-                    {conn.kind === 'ollama' ? '🌐 Remote' : conn.name}
-                  </span>
-                );
-              })()}
-              {isAgenticMode && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
-                  🤖 Agent
-                </span>
-              )}
-              {isAgenticMode && isLoading && agentStatus && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  aria-label={`Agent status: ${agentStep ? `step ${agentStep.iteration} of ${agentStep.max}, ` : ''}${agentStatus}`}
-                  className={`text-xs px-2 py-0.5 rounded-full animate-pulse ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-200 text-zinc-700'}`}
-                >
-                  {agentStep && <span className="opacity-70 mr-1">Step {agentStep.iteration}/{agentStep.max}</span>}
-                  {agentStatus}
-                </span>
-              )}
-              {mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>
-                  🧠 Brain·Worker
-                </span>
-              )}
-              {mlxAvailability?.available && (mlxSettings.fullInference || mlxSettings.detectIndicate) && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>
-                  ⚡ MLX{mlxSettings.fullInference ? '' : ' detected'}
-                </span>
-              )}
-              {/* Generation parameters badge (#325) */}
-              <span
-                aria-label="Generation parameters"
-                title={`Temperature: ${genOptions.temperature ?? 'default'} · Context: ${genOptions.num_ctx ?? 4096} · Top-p: ${genOptions.top_p ?? 'default'} · Top-k: ${genOptions.top_k ?? 'default'} · Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict}`}
-                className={`hidden lg:inline text-xs px-2 py-0.5 rounded-full font-mono shrink-0 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
-              >
-                T:{genOptions.temperature ?? 'def'} · CTX:{genOptions.num_ctx ?? 4096}
-              </span>
-             </div>
-           <div className="flex items-center gap-1.5 lg:gap-3">
-             {/* Autonomy / approval-mode quick selector (#355) */}
-             <div className={`flex items-center rounded-md overflow-hidden border shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-300'}`} role="group" aria-label="Autonomy level">
-               {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(lv => (
-                 <button
-                   key={lv}
-                   aria-pressed={autonomySettings.level === lv}
-                   aria-label={`Set autonomy: ${lv}`}
-                   title={`Autonomy: ${lv}`}
-                   onClick={() => { const s = { ...autonomySettings, level: lv }; setAutonomySettings(s); saveAutonomySettings(s); }}
-                   className={`px-1.5 lg:px-2 py-1 text-[10px] lg:text-xs capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
-                 >
-                   {/* Tighter type on narrow windows rather than initials: this
-                       is a safety control, so it must stay both reachable and
-                       unambiguous. "ask" and "auto" share a first letter, so
-                       abbreviating to one character made two of the three
-                       options render identically (#540). */}
-                   {lv}
-                 </button>
-               ))}
-             </div>
-             {/* On mobile, show only essential buttons; others go in mobile menu */}
-             {!isMobile ? (
-               <>
-                 <div className={`hidden 2xl:block text-xs font-mono shrink-0 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
-                 <button
-                   onClick={() => setIsSettingsOpen(prev => !prev)}
-                   title="Settings (Ctrl+,)"
-                   aria-label="Open settings"
-                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ⚙️
-                 </button>
-                 {sttConfig.enabled && (
-                   <button
-                     onClick={() => {
-                       if (voiceCallActive) {
-                         voiceCallHandleRef.current?.stop();
-                         setVoiceCallActive(false);
-                       } else {
-                         setVoiceCallActive(true);
-                         setVoiceCallMuted(false);
-                         setVoiceCallTranscript('');
-                         setVoiceCallResponse('');
-                         const handle = startVoiceCall(
-                           {
-                             transcribeFn: (blob) => transcribeBlob(blob, sttConfig),
-                             speakFn: defaultSpeak,
-                             recordUtteranceFn: defaultRecordUtterance,
-                             chatFn: async (text, onChunk, signal) => {
-                               const history: import('./services/ollama').Message[] = [
-                                 { role: 'system', content: systemPrompt },
-                                 ...messages,
-                                 { role: 'user', content: text },
-                               ];
-                               let full = '';
-                               await import('./services/ollama').then(({ fetchOllamaChatStream }) =>
-                                 fetchOllamaChatStream(model, history, (chunk) => {
-                                   const delta = chunk.message?.content ?? '';
-                                   full += delta;
-                                   onChunk(delta);
-                                 }, url('/api/chat'), false, {}, signal)
-                               );
-                               setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: full }]);
-                               return full;
-                             },
-                           },
-                           {
-                             onStateChange: setVoiceCallState,
-                             onTranscript: setVoiceCallTranscript,
-                             onResponseChunk: (delta) => setVoiceCallResponse(prev => prev + delta),
-                             onResponseComplete: () => setVoiceCallResponse(''),
-                             onError: (e) => console.error('Voice call error', e),
-                           }
-                         );
-                         voiceCallHandleRef.current = handle;
-                       }
-                     }}
-                     title={voiceCallActive ? 'End voice call' : 'Start voice call'}
-                     aria-label={voiceCallActive ? 'End voice call' : 'Start voice call'}
-                     className={`p-2 rounded-md transition-colors ${voiceCallActive ? 'text-red-500 animate-pulse' : dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                   >
-                     📞
-                   </button>
-                 )}
-                 {/* Artifact canvas toggle (#99) */}
-                 {latestArtifact && (
-                   <button
-                     onClick={() => togglePanel('artifacts')}
-                     title={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     aria-label={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     aria-pressed={isPanelOpen('artifacts')}
-                     className={`p-2 rounded-md transition-colors ${isPanelOpen('artifacts') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                   >
-                     🖼
-                   </button>
-                 )}
-                 {/* Collapsible tail (#495): anything that does not fit moves
-                     into an overflow menu instead of scrolling off-screen. */}
-                 <ToolbarActions
-                   dark={dark}
-                   items={[
-                     {
-                       id: 'files',
-                       icon: '📁',
-                       label: `${isPanelOpen('files') ? 'Close' : 'Open'} files panel`,
-                       active: isPanelOpen('files'),
-                       onSelect: () => togglePanel('files'),
-                     },
-                     {
-                       id: 'browser',
-                       icon: '🌐',
-                       label: 'Toggle browser preview',
-                       active: isPanelOpen('browser'),
-                       onSelect: () => togglePanel('browser'),
-                     },
-                     {
-                       id: 'terminal',
-                       icon: '▶',
-                       label: `${isPanelOpen('terminal') ? 'Close' : 'Open'} terminal panel`,
-                       active: isPanelOpen('terminal'),
-                       onSelect: () => togglePanel('terminal'),
-                     },
-                     ...([
-                       { id: 'code-search', icon: '🔎', label: 'Code Search' },
-                       { id: 'source-control', icon: '⑂', label: 'Source Control' },
-                       { id: 'checkpoints', icon: '🕰', label: 'Checkpoints' },
-                       { id: 'agent-activity', icon: '📡', label: 'Agent Activity' },
-                     ] as const).map(p => ({
-                       id: p.id,
-                       icon: p.icon,
-                       label: `${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label} panel`,
-                       active: isPanelOpen(p.id),
-                       onSelect: () => togglePanel(p.id),
-                     })),
-                     // Copy / Export / Shortcuts are conversation-scoped, not
-                     // global chrome, so they live in the conversation menu and
-                     // the command palette rather than the top bar (#546).
-                   ]}
-                 >
-                   <ConversationStatsButton
-                     stats={computeConversationStats(messages)}
-                     dark={dark}
-                   />
-                 </ToolbarActions>
-               </>
-             ) : (
-               <button
-                 onClick={(e) => {
-                   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                   setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
-                 }}
-                 className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 title="Menu"
-                 aria-label="Open menu"
-                 aria-haspopup="menu"
-               >
-                 ⋯
-               </button>
-             )}
-           </div>
+        {/* Header — minimal, Ollama-style: no buttons on the right. */}
+        <header className={`h-12 border-b flex items-center gap-3 px-4 shrink-0 transition-colors duration-300 ${
+          dark ? 'border-zinc-800 bg-zinc-900' : 'border-zinc-200 bg-white'
+        }`}>
+          {isMobile && (
+            <button
+              onClick={() => setIsSidebarOpen(prev => !prev)}
+              title="Toggle sidebar (Ctrl+\\)"
+              aria-label="Toggle sidebar"
+              className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600'}`}
+            >
+              ☰
+            </button>
+          )}
+          {/* Ollama connection status indicator (#324) */}
+          <span
+            aria-label="Ollama connection status"
+            title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
+            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+              ollamaConnected === null
+                ? 'bg-zinc-400'
+                : ollamaConnected
+                  ? 'bg-emerald-500'
+                  : 'bg-red-500'
+            }`}
+          />
+          <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+            {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
+          </span>
+          {isAgenticMode && isLoading && agentStatus && (
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={`Agent status: ${agentStep ? `step ${agentStep.iteration} of ${agentStep.max}, ` : ''}${agentStatus}`}
+              className={`text-xs px-2 py-0.5 rounded-full animate-pulse shrink-0 ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-100 text-zinc-700'}`}
+            >
+              {agentStep && <span className="opacity-70 mr-1">Step {agentStep.iteration}/{agentStep.max}</span>}
+              {agentStatus}
+            </span>
+          )}
+          {isMobile && (
+            <button
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
+              }}
+              className={`ml-auto p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600'}`}
+              title="Menu"
+              aria-label="Open menu"
+              aria-haspopup="menu"
+            >
+              ⋯
+            </button>
+          )}
         </header>
 
         {/* Mobile action menu (#445): panel toggles + tools that the collapsed
@@ -5111,20 +4460,9 @@ ${lines.join('\n')}`;
             onClose={() => setMobileMenu(null)}
             items={[
               { label: isSidebarOpen ? 'Hide sidebar' : 'Show sidebar', onSelect: () => setIsSidebarOpen(!isSidebarOpen) },
-              { label: 'Copy conversation as Markdown', disabled: messages.length === 0, onSelect: () => { void handleCopyMarkdown(); } },
-              { label: 'Export conversation as Markdown', disabled: messages.length === 0, onSelect: () => handleExportMarkdown() },
-              { label: 'Keyboard shortcuts', onSelect: () => setShowHelp(true) },
               { label: 'Command palette…', onSelect: () => setPaletteOpen(true) },
-              { label: 'Files panel', onSelect: () => togglePanel('files') },
-              { label: 'Code search panel', onSelect: () => togglePanel('code-search') },
-              { label: 'Git panel', onSelect: () => togglePanel('source-control') },
-              { label: 'Terminal panel', onSelect: () => togglePanel('terminal') },
-              { label: 'Browser panel', onSelect: () => togglePanel('browser') },
-              { label: 'Artifacts panel', onSelect: () => togglePanel('artifacts') },
-              { label: 'Checkpoints panel', onSelect: () => togglePanel('checkpoints') },
-              { label: 'Agent activity panel', onSelect: () => togglePanel('agent-activity') },
-              { label: 'Settings…', onSelect: () => setIsSettingsOpen(true) },
               { label: 'Keyboard shortcuts', onSelect: () => setShowHelp(true) },
+              { label: 'Settings…', onSelect: () => setIsSettingsOpen(true) },
             ]}
           />
         )}
@@ -5209,12 +4547,12 @@ ${lines.join('\n')}`;
                 className={`flex flex-col gap-0.5 rounded-lg transition-shadow ${i === chatSearchCurrent ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
               >
                <div
-                 className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
+                 className={`group/msg ${
                  msg.role === 'user'
-                   ? 'bg-blue-600 text-white rounded-tr-none'
+                   ? `max-w-[85%] md:max-w-xl px-4 py-2.5 rounded-2xl ${dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900'}`
                    : msg.role === 'tool'
-                     ? (dark ? 'bg-zinc-700 text-zinc-100 rounded-tl-none border-l-2 border-blue-500' : 'bg-zinc-100 text-zinc-900 rounded-tl-none border-l-2 border-blue-500')
-                     : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
+                     ? `w-full md:max-w-3xl p-4 rounded-2xl border-l-2 border-blue-500 ${dark ? 'bg-zinc-800/60 text-zinc-100' : 'bg-zinc-50 text-zinc-900'}`
+                     : `w-full md:max-w-3xl px-1 py-2 ${dark ? 'text-zinc-100' : 'text-zinc-900'}`
                }`}
                  onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
                  // Keyboard path to the message menu (#452): focusable bubble;
@@ -5228,28 +4566,6 @@ ${lines.join('\n')}`;
                    }
                  }}
                >
-                <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
-                  {msg.role}
-                  {msg.role === 'tool' && <span className="text-blue-400">🔧</span>}
-                  {/* Per-message model label (#97) */}
-                  {msg.role === 'assistant' && msg.producedByModel && (
-                    <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
-                  )}
-                  {/* Per-message timestamp (#253/#260) */}
-                  {formatMessageTime(msg.ts, nowTick) && (
-                    <time className="normal-case font-normal text-[10px] opacity-60 ml-auto" title={msg.ts ? new Date(msg.ts).toLocaleString() : undefined}>
-                      {formatMessageTime(msg.ts, nowTick)}
-                    </time>
-                  )}
-                  {/* Per-message estimated token count (#340) */}
-                  {msg.content && msg.content.trim() && (
-                    <span
-                      className="normal-case font-normal text-[10px] opacity-50"
-                      title="Estimated tokens for this message"
-                      aria-label={`Estimated tokens: ${estimateTokens(msg.content)}`}
-                    >≈{formatTokenCount(estimateTokens(msg.content))} tokens</span>
-                  )}
-                </div>
                 {/* Generation stats: speed, prompt→completion tokens, stop reason (#297, #391, #392) */}
                 {msg.role === 'assistant' && msg.genStats && (
                   <div
@@ -5332,16 +4648,16 @@ ${lines.join('\n')}`;
                       }}
                       autoFocus
                       rows={3}
-                      className="w-full rounded-lg p-2 text-sm bg-white/20 text-white placeholder-white/50 resize-none focus:outline-none focus:ring-2 focus:ring-white/40"
+                      className={`w-full rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border ${dark ? 'bg-zinc-700 text-zinc-100 border-zinc-600' : 'bg-white text-zinc-900 border-zinc-300'}`}
                     />
                     <div className="flex gap-2">
                       <button
                         onClick={() => { setEditingIndex(null); if (msg.role === 'assistant') editAssistantMessage(i, editContent); else editMessage(i, editContent); }}
-                        className="text-xs px-3 py-1 rounded-lg bg-white/20 hover:bg-white/30 font-semibold"
+                        className="text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold"
                       >{msg.role === 'assistant' ? 'Save edit' : 'Send edit'}</button>
                       <button
                         onClick={() => setEditingIndex(null)}
-                        className="text-xs px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20"
+                        className={`text-xs px-3 py-1 rounded-lg ${dark ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-zinc-200 hover:bg-zinc-300'}`}
                       >Cancel</button>
                     </div>
                   </div>
@@ -5444,19 +4760,9 @@ ${lines.join('\n')}`;
                     className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-blue-900/50 text-blue-300 hover:bg-blue-800/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
                   >▶ Continue agent</button>
                 )}
-                {/* Thumbs feedback on completed assistant replies (#137) */}
+                {/* Message actions — minimal; everything else lives in the right-click menu (#378) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
-                  <div className="flex items-center gap-1 mt-1 flex-wrap">
-                    <button
-                      onClick={() => setMessageFeedback(i, 'up')}
-                      aria-label="Thumbs up"
-                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'up' ? 'text-green-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                    >👍</button>
-                    <button
-                      onClick={() => setMessageFeedback(i, 'down')}
-                      aria-label="Thumbs down"
-                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                    >👎</button>
+                  <div className="flex items-center gap-1 mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     {/* Copy message (#243) */}
                     <button
                       aria-label="Copy message"
@@ -5468,158 +4774,46 @@ ${lines.join('\n')}`;
                       }}
                       className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >{copiedMsgIdx === i ? '✓' : '⧉'}</button>
-                    {/* Copy message as Markdown (#268) */}
-                    <button
-                      aria-label="Copy message as Markdown"
-                      title="Copy message as Markdown"
-                      onClick={() => {
-                        navigator.clipboard.writeText(messageToMarkdown(msg));
-                        setCopiedMdMsgIdx(i);
-                        setTimeout(() => setCopiedMdMsgIdx(prev => (prev === i ? null : prev)), 1500);
-                      }}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{copiedMdMsgIdx === i ? '✓' : '⎘'}</button>
-                    {/* Copy message as plain text (#341) */}
-                    <button
-                      aria-label="Copy message as plain text"
-                      title="Copy message as plain text"
-                      onClick={() => {
-                        navigator.clipboard.writeText(messageToPlainText(msg));
-                        setCopiedPtMsgIdx(i);
-                        setTimeout(() => setCopiedPtMsgIdx(prev => (prev === i ? null : prev)), 1500);
-                      }}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{copiedPtMsgIdx === i ? '✓' : 'T'}</button>
-                    {/* Export individual message as Markdown (#304) */}
-                    <button
-                      aria-label="Download message as Markdown"
-                      title="Download message as Markdown"
-                      onClick={() => handleExportMessage(msg, i)}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >⬇</button>
-                    {/* Speak button — per-message TTS (#101) */}
-                    {isTtsAvailable() && (
-                      <button
-                        aria-label={speakingMsgId === `msg-${i}` ? 'Stop speaking' : 'Speak message'}
-                        onClick={() => {
-                          if (speakingMsgId === `msg-${i}`) {
-                            stopSpeaking();
-                            setSpeakingMsgId(null);
-                          } else {
-                            setSpeakingMsgId(`msg-${i}`);
-                            speak(msg.content, voiceSettings).then(() => setSpeakingMsgId(null)).catch(() => setSpeakingMsgId(null));
-                          }
-                        }}
-                        className={`text-xs px-1 rounded transition-colors ${speakingMsgId === `msg-${i}` ? 'text-blue-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                      >{speakingMsgId === `msg-${i}` ? '⏹' : '🔊'}</button>
-                    )}
                     {/* Regenerate button (#98) */}
                     {!isLoading && (
                       <button
                         onClick={() => regenerateMessage(i)}
                         aria-label="Regenerate response"
                         title="Regenerate (creates a branch)"
-                        className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                        className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                       >↺</button>
                     )}
-                    {/* Regenerate with a different model (#270) */}
-                    {!isLoading && models.length > 1 && (
-                      <div className="relative">
-                        <button
-                          onClick={() => setRegenMenuIdx(prev => prev === i ? null : i)}
-                          aria-label="Regenerate with a different model"
-                          title="Regenerate with a different model"
-                          className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                        >↺▾</button>
-                        {regenMenuIdx === i && (
-                          <>
-                            <div className="fixed inset-0 z-40" onClick={() => setRegenMenuIdx(null)} />
-                            <div
-                              role="listbox"
-                              aria-label="Regenerate with model"
-                              className={`absolute right-0 top-full z-50 mt-1 w-48 max-h-56 overflow-y-auto rounded-lg border py-1 text-xs shadow-lg ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                            >
-                              {models.map(m => (
-                                <button
-                                  key={m.name}
-                                  role="option"
-                                  aria-selected={m.name === model}
-                                  onClick={() => { setModel(m.name); regenerateMessage(i, m.name); setRegenMenuIdx(null); }}
-                                  className={`w-full text-left px-3 py-1.5 truncate ${m.name === model ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-blue-50 text-blue-700') : (dark ? 'hover:bg-zinc-700/60' : 'hover:bg-zinc-100')}`}
-                                >{m.name}</button>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {/* Action function buttons (#127) */}
-                    {getEnabledActions().map(action => (
-                      <button
-                        key={action.id}
-                        aria-label={`Action: ${action.name}`}
-                        onClick={async () => {
-                          try {
-                            const result = await runAction(action.id, msg);
-                            if (result) sendMessage(result);
-                          } catch (e) {
-                            showStatusBanner(`Action '${action.name}' failed: ${e instanceof Error ? e.message : String(e)}`);
-                          }
-                        }}
-                        className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                      >{action.name}</button>
-                    ))}
                     {/* Edit assistant reply in place (#281) */}
                     <button
                       onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
                       aria-label="Edit response"
                       title="Edit response"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >✏</button>
                     {/* Delete this message (#280) */}
                     <button
                       onClick={() => deleteMessage(i)}
                       aria-label="Delete response"
                       title="Delete response"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
                     >🗑</button>
-                    {/* Quote message into the composer (#284) */}
-                    <button
-                      onClick={() => quoteMessage(i)}
-                      aria-label="Quote response"
-                      title="Quote into composer"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >❝</button>
-                    {/* Toggle raw/rendered view (#290) */}
-                    <button
-                      onClick={() => setRawView(prev => ({ ...prev, [i]: !prev[i] }))}
-                      aria-label={rawView[i] ? 'Show rendered' : 'Show raw'}
-                      title={rawView[i] ? 'Show rendered' : 'Show raw'}
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{rawView[i] ? 'MD' : 'Raw'}</button>
                   </div>
                 )}
                 {/* Edit button on user messages (#98) */}
                 {msg.role === 'user' && !isLoading && editingIndex !== i && (
-                  <div className="flex justify-end mt-1 gap-1">
+                  <div className="flex justify-end mt-1 gap-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     <button
                       onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
                       aria-label="Edit message"
                       title="Edit (creates a branch)"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
+                      className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700' : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200'}`}
                     >✏ Edit</button>
                     <button
                       onClick={() => deleteMessage(i)}
                       aria-label="Delete message"
                       title="Delete message"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-red-500/30 text-white/70"
+                      className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400 hover:bg-zinc-700' : 'text-zinc-400 hover:text-red-600 hover:bg-zinc-200'}`}
                     >🗑 Delete</button>
-                    <button
-                      onClick={() => quoteMessage(i)}
-                      aria-label="Quote message"
-                      title="Quote into composer"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
-                    >❝ Quote</button>
                   </div>
                 )}
                </div>
@@ -5650,36 +4844,6 @@ ${lines.join('\n')}`;
               );
             })}
 
-          {/* Many-models reply groups (#126) */}
-          {modelGroups.map((group, gi) => (
-            <div key={`group-${gi}`} className="mb-4">
-              <div className="flex flex-wrap gap-2">
-                {group.replies.map((reply, ri) => (
-                  <div key={reply.modelId} className={`flex-1 min-w-[220px] rounded-xl border p-3 ${dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-white'}`}>
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-100 text-zinc-600'}`}>{reply.label}</span>
-                      {reply.state === 'streaming' && <span className="text-[9px] text-blue-400 animate-pulse">●</span>}
-                      {reply.state === 'error' && <span className="text-[9px] text-red-400">✗</span>}
-                      {reply.state === 'done' && group.chosenIndex === ri && <span className="text-[9px] text-green-400">✓ chosen</span>}
-                    </div>
-                    {reply.reasoning && <ReasoningBlock reasoning={reply.reasoning} dark={dark} />}
-                    <div className={`text-sm whitespace-pre-wrap ${reply.state === 'error' ? 'text-red-400' : ''}`}>
-                      {reply.state === 'error' ? reply.error : reply.content || <span className="opacity-30">Waiting…</span>}
-                    </div>
-                    {reply.state === 'done' && group.chosenIndex === undefined && (
-                      <button
-                        onClick={() => {
-                          setModelGroups(prev => prev.map((g, i) => i === gi ? { ...g, chosenIndex: ri } : g));
-                          setMessages(prev => [...prev, { role: 'assistant', content: reply.content } as Message]);
-                        }}
-                        className={`mt-2 text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                      >Continue with this</button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
 
           {/* Queued messages waiting for the current reply to finish (#137) */}
           {messageQueue.map((q, qi) => (
@@ -5746,9 +4910,9 @@ ${lines.join('\n')}`;
           onDrop={handleDrop}
           onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDragOver(false); }}
-          className={`p-4 md:p-6 pb-6 pt-2 shrink-0 rounded-xl transition-colors ${
+          className={`p-4 md:p-6 pb-4 pt-2 shrink-0 rounded-xl transition-colors ${
             isDragOver ? (dark ? 'bg-blue-900/30 ring-2 ring-blue-500' : 'bg-blue-50 ring-2 ring-blue-400') : ''
-          } ${dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'}`}
+          }`}
         >
           {/* Agentic mode with no workspace folder open (#482) */}
           <NoWorkspaceHint dark={dark} agentic={isAgenticMode} />
@@ -5823,30 +4987,6 @@ ${lines.join('\n')}`;
              </button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
 
-             {/* Prompt library button (#97) */}
-             {prompts.length > 0 && (
-               <div className="relative">
-                 <button
-                   type="button"
-                   title="Prompt library"
-                   aria-label="Open prompt library"
-                   onClick={() => setShowPromptPicker(p => !p)}
-                   className={`px-3 py-3 rounded-xl transition-colors ${dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'}`}
-                 >📋</button>
-                 {showPromptPicker && (
-                   <div className={`absolute bottom-full mb-1 left-0 w-56 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-20 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
-                     {prompts.map(p => (
-                       <button
-                         key={p.id}
-                         type="button"
-                         onMouseDown={(e) => { e.preventDefault(); setInput(p.body); setShowPromptPicker(false); }}
-                         className={`w-full text-left px-3 py-2 text-xs truncate ${dark ? 'hover:bg-zinc-700 text-zinc-200' : 'hover:bg-zinc-50 text-zinc-800'}`}
-                       >{p.name}</button>
-                     ))}
-                   </div>
-                 )}
-               </div>
-             )}
 
              {/* @-mention file autocomplete dropdown (#86/#183) */}
              {atSuggestions.length > 0 && (
@@ -6091,28 +5231,6 @@ ${lines.join('\n')}`;
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
              ></textarea>
-             {/* Many-models extra-model picker (#126) */}
-             {[...models, ...connectedModels].length > 1 && (
-               <select
-                 multiple
-                 aria-label="Compare with additional models"
-                 value={extraModels}
-                 onChange={e => setExtraModels(Array.from(e.target.selectedOptions, o => o.value))}
-                 title="Ctrl/Cmd+click to select 1-2 additional models for comparison"
-                 className={`hidden sm:block w-44 text-xs border rounded-xl px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-300 text-zinc-600'}`}
-                 style={{ height: '3rem' }}
-               >
-                 {models.filter(m => m.name !== model).map(m => (
-                   <option key={m.name} value={m.name}>{m.name}</option>
-                 ))}
-                 {connectedModels.filter(m => m.id !== model).map(m => (
-                   <option key={m.id} value={m.id}>{m.name}</option>
-                 ))}
-               </select>
-             )}
-             {extraModels.length > 0 && hasSameHostConflict([model, ...extraModels], ollamaBaseUrl, connectedModels, connections) && (
-               <span className={`text-[9px] shrink-0 ${dark ? 'text-amber-400' : 'text-amber-600'}`} title="These models share a local host and will run sequentially">⚠️ seq</span>
-             )}
              {isSpeechRecognitionAvailable() && (
                <button
                  type="button"
@@ -6192,26 +5310,127 @@ ${lines.join('\n')}`;
                </button>
              )}
           </div>
-          {/* Composer word/character/token counter (#301, #368) */}
-          {input.trim() && (
-            <div className={`text-right text-[10px] mt-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-              {input.trim().split(/\s+/).filter(Boolean).length} words · {input.length} chars · ~{estimateTokens(input)} tokens
+          {/* Model switcher — below the composer; local MLX models highlighted (#544) */}
+          <div className="max-w-3xl mx-auto flex items-center gap-2 mt-2">
+            <select
+              value={activePresetId ? `preset:${activePresetId}` : model}
+              title="● = model loaded in memory (warm). Use /running to list, /warm to load, /unload to free RAM."
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val.startsWith('preset:')) {
+                  const id = val.slice(7);
+                  const preset = presets.find(p => p.id === id);
+                  if (preset) {
+                    applyPreset(preset, { setModel, setSystemPrompt, setGenOptions });
+                    setActivePresetId(id);
+                    setActivePreset(id);
+                  }
+                } else {
+                  setModel(val);
+                  setActivePresetId(null);
+                  clearActivePreset();
+                }
+              }}
+              aria-label="Select AI model"
+              className={`text-xs border rounded-lg px-2 py-1.5 min-w-[8rem] max-w-[16rem] truncate focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
+              }`}
+            >
+              {/* Empty-state placeholder (#438) */}
+              {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
+                <option value="" disabled>
+                  {ollamaConnected === false
+                    ? 'No models — is Ollama running?'
+                    : 'No models — pull one (e.g. ollama pull llama3)'}
+                </option>
+              )}
+              {starredModels.length > 0 && !activePresetId && (
+                <optgroup label="— ★ Starred —">
+                  {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                    <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {recentModels.length > 0 && !activePresetId && (
+                <optgroup label="— Recent —">
+                  {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                    <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {presets.length > 0 && (
+                <optgroup label="— Presets —">
+                  {presets.map(p => (
+                    <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
+                      {p.icon ? `${p.icon} ` : ''}{p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {/* MLX-capable models first, grouped and bold, but ONLY when this
+                  machine can actually accelerate them (#544). */}
+              {mlxModels.length > 0 && (
+                <optgroup label="— MLX (recommended) —">
+                  {mlxModels.map((m) => (
+                    <option key={m.name} value={m.name} style={{ fontWeight: 700 }}>
+                      {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {otherLocalModels.length > 0 && (
+                <optgroup label={mlxModels.length > 0 ? '— Local Ollama (other) —' : '— Local Ollama —'}>
+                  {otherLocalModels.map((m) => (
+                    <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {models.filter(m => m.cloud).length > 0 && (
+                <optgroup label="— Cloud Ollama —">
+                  {models.filter(m => m.cloud).map((m) => (
+                    <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {/* Extra connection models grouped by connection (#123) */}
+              {connections.filter(c => c.enabled).map(conn => {
+                const connModels = connectedModels.filter(m => m.connectionId === conn.id);
+                if (!connModels.length) return null;
+                const groupLabel = conn.kind === 'ollama'
+                  ? `— Remote Ollama: ${conn.name} —`
+                  : `— ${conn.name} —`;
+                return (
+                  <optgroup key={conn.id} label={groupLabel}>
+                    {connModels.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+            {mlxUsable && isMlxModelName(model) && (
+              <span
+                title="MLX acceleration active — this model uses Apple-Silicon MLX weights"
+                className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
+              >⚡ MLX</span>
+            )}
+            {models.find(m => m.name === model)?.cloud && (
+              <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>⛅ Cloud</span>
+            )}
+            <div className={`ml-auto text-[10px] text-right ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
+              {(() => {
+                const cost = formatCost(conversationTokens);
+                return (
+                  <>
+                    <span title="Approximate token usage for this conversation (and current draft)">
+                      ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
+                    </span>
+                    {' · '}
+                    <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
+                  </>
+                );
+              })()}
             </div>
-          )}
-          <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-            {(() => {
-              const cost = formatCost(conversationTokens);
-              return (
-                <>
-                  <span title="Approximate token usage for this conversation (and current draft)">
-                    ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
-                  </span>
-                  {' · '}
-                  <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
-                </>
-              );
-            })()}
-            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · Cmd+F find · Cmd+P commands · ? for shortcuts
           </div>
 
         {/* Voice Call Overlay (#132) */}
@@ -6708,136 +5927,6 @@ ${lines.join('\n')}`;
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                      When enabled, the AI can use tools for advanced functionality
                    </p>
-                 </div>
-
-                 {/* MLX Acceleration (Apple Silicon) */}
-                 <div>
-                   <div className="flex items-center justify-between mb-2">
-                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>MLX Acceleration</label>
-                     <div className="flex items-center gap-1.5">
-                       <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                         mlxAvailability?.available
-                           ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700')
-                           : (dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500')
-                       }`}>
-                         {mlxAvailability === null ? 'checking…' : mlxAvailability.available ? `available${mlxAvailability.version ? ` · ${mlxAvailability.version}` : ''}` : 'unavailable'}
-                       </span>
-                       <button
-                         onClick={async () => {
-                           setMlxAvailability(null);
-                           try { setMlxAvailability(await checkMlxAvailable()); } catch { setMlxAvailability(null); }
-                         }}
-                         title="Re-check MLX availability"
-                         className={`text-[11px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100'}`}
-                       >↺</button>
-                     </div>
-                   </div>
-
-                   {mlxAvailability && !mlxAvailability.available ? (
-                     <p className={`text-[11px] rounded-lg border px-3 py-2 ${dark ? 'border-zinc-700 bg-zinc-900/50 text-zinc-500' : 'border-zinc-200 bg-zinc-50 text-zinc-500'}`}>
-                       {mlxAvailability.reason} MLX features are disabled.
-                     </p>
-                   ) : (
-                     <div className={`rounded-lg border p-3 space-y-3 ${dark ? 'border-zinc-700 bg-zinc-900/40' : 'border-zinc-200 bg-zinc-50'} ${!mlxAvailability?.available ? 'opacity-50' : ''}`}>
-                       {/* 1. Full inference backend (master) */}
-                       <div>
-                         <div className="flex items-center justify-between">
-                           <div className="min-w-0 pr-3">
-                             <div className="text-sm">Full inference backend</div>
-                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Route chat through the local MLX server. Enabling this also enables the options below.</div>
-                           </div>
-                           <Toggle dark={dark} label="Full inference backend"
-                             disabled={!mlxAvailability?.available}
-                             checked={mlxSettings.fullInference}
-                             onChange={() => updateMlxSettings({ fullInference: !mlxSettings.fullInference })} />
-                         </div>
-                         {mlxSettings.fullInference && (
-                           <div className="mt-2 flex gap-2">
-                             <input
-                               type="text"
-                               value={mlxSettings.localModel}
-                               onChange={(e) => updateMlxSettings({ localModel: e.target.value })}
-                               placeholder="mlx-community/Llama-3.2-3B-Instruct-4bit"
-                               className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                             />
-                             <input
-                               type="number"
-                               value={mlxSettings.serverPort}
-                               onChange={(e) => updateMlxSettings({ serverPort: Number(e.target.value) || 8080 })}
-                               className={`w-20 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                             />
-                           </div>
-                         )}
-                       </div>
-
-                       {/* 2. Accelerate embeddings / aux */}
-                       <div className="flex items-center justify-between">
-                         <div className="min-w-0 pr-3">
-                           <div className="text-sm">Accelerate embeddings / aux</div>
-                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Use MLX for embeddings (search, titles). Auto-enabled by full inference.</div>
-                         </div>
-                         <Toggle dark={dark} label="Accelerate embeddings"
-                           disabled={!mlxAvailability?.available || mlxSettings.fullInference}
-                           checked={mlxSettings.accelerateEmbeddings}
-                           onChange={() => updateMlxSettings({ accelerateEmbeddings: !mlxSettings.accelerateEmbeddings })} />
-                       </div>
-
-                       {/* 3. Detect + indicate (base opt-in) */}
-                       <div className="flex items-center justify-between">
-                         <div className="min-w-0 pr-3">
-                           <div className="text-sm">Detect &amp; indicate</div>
-                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Show the MLX accelerator indicator. Auto-enabled by the options above.</div>
-                         </div>
-                         <Toggle dark={dark} label="Detect and indicate"
-                           disabled={!mlxAvailability?.available || mlxSettings.accelerateEmbeddings || mlxSettings.fullInference}
-                           checked={mlxSettings.detectIndicate}
-                           onChange={() => updateMlxSettings({ detectIndicate: !mlxSettings.detectIndicate })} />
-                       </div>
-
-                       {/* 4. Cloud brain / local worker (multi-agent) */}
-                       <div className="pt-1 border-t border-dashed border-zinc-700/50">
-                         <div className="flex items-center justify-between pt-2">
-                           <div className="min-w-0 pr-3">
-                             <div className="text-sm">Cloud brain · local worker</div>
-                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Multi-agent: a cloud model plans, the local model executes.</div>
-                           </div>
-                           <Toggle dark={dark} label="Cloud brain local worker"
-                             disabled={!mlxAvailability?.available}
-                             checked={mlxSettings.cloudBrainLocalWorker}
-                             onChange={() => updateMlxSettings({ cloudBrainLocalWorker: !mlxSettings.cloudBrainLocalWorker })} />
-                         </div>
-                         {mlxSettings.cloudBrainLocalWorker && (
-                           <div className="mt-2 grid grid-cols-2 gap-2">
-                             <div>
-                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Brain (cloud)</div>
-                               <select
-                                 value={mlxSettings.brainModel}
-                                 onChange={(e) => updateMlxSettings({ brainModel: e.target.value })}
-                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                               >
-                                 <option value="">Select cloud model…</option>
-                                 {models.filter(m => m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                               </select>
-                             </div>
-                             <div>
-                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Worker (local)</div>
-                               <select
-                                 value={mlxSettings.workerModel}
-                                 onChange={(e) => updateMlxSettings({ workerModel: e.target.value })}
-                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                               >
-                                 <option value="">Select local model…</option>
-                                 {mlxSettings.fullInference && mlxSettings.localModel && (
-                                   <option value={mlxSettings.localModel}>{mlxSettings.localModel} (MLX)</option>
-                                 )}
-                                 {models.filter(m => !m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                               </select>
-                             </div>
-                           </div>
-                         )}
-                       </div>
-                     </div>
-                   )}
                  </div>
 
                  <div>
@@ -9045,10 +8134,6 @@ ${lines.join('\n')}`;
                   ['Command Palette', 'Ctrl+P'],
                   ['Find in Chat', 'Ctrl+F'],
                   ['Toggle Sidebar', 'Ctrl+\\'],
-                  ['Toggle Browser', 'Ctrl+B'],
-                  ['Toggle Files', 'Ctrl+Shift+F'],
-                  ['Toggle Terminal', 'Ctrl+T'],
-                  ['Toggle Artifacts', 'Ctrl+Shift+A'],
                   ['Open Settings', 'Ctrl+,'],
                   ['Regenerate Last Reply', 'Ctrl+R'],
                   ['Focus Composer', 'Ctrl+L'],
@@ -9466,7 +8551,6 @@ ${lines.join('\n')}`;
           return <ContextMenu x={sessionContextMenu.x} y={sessionContextMenu.y} items={items} onClose={() => setSessionContextMenu(null)} dark={dark} />;
         })()}
 
-        </PanelShell>
     </div>
 
 

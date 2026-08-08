@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MarkdownMessage } from '../App';
 import App from '../App';
 import { storage, type ChatSession } from '../services/storage';
@@ -51,15 +51,36 @@ describe('Markdown links open in the system browser (#354)', () => {
   });
 });
 
-// ── Autonomy quick-selector in the header (#355) ──────────────────────────────
+// ── Autonomy quick control (#355) ─────────────────────────────────────────────
+// The header quick-selector was removed in the UI simplification; the level is
+// now switched via the command palette ("Set Autonomy: …") or Settings → Agent
+// Safety. Both surfaces persist to the same localStorage key.
 
-describe('Autonomy quick-selector (#355)', () => {
-  it('switches level and persists to localStorage', () => {
+describe('Autonomy level switching (#355)', () => {
+  it('switches level via the command palette and persists to localStorage', async () => {
     render(<App />);
-    const autoBtn = screen.getByRole('button', { name: 'Set autonomy: auto' });
-    expect(autoBtn).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    const palette = await screen.findByRole('dialog', { name: 'Command palette' });
+    fireEvent.click(within(palette).getByRole('button', { name: 'Set Autonomy: Auto' }));
+
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('ollama_gui_agent_autonomy') ?? '{}');
+      expect(saved.level).toBe('auto');
+    });
+    // Running a command closes the palette.
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
+  });
+
+  it('switches level in Settings → Agent Safety with aria-pressed state', async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('⚙️ Settings'));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
+
+    const autoBtn = within(dialog).getByRole('button', { name: 'auto' });
+    expect(autoBtn).toHaveAttribute('aria-pressed', 'false'); // default level is 'ask'
     fireEvent.click(autoBtn);
     expect(autoBtn).toHaveAttribute('aria-pressed', 'true');
+
     const saved = JSON.parse(localStorage.getItem('ollama_gui_agent_autonomy') ?? '{}');
     expect(saved.level).toBe('auto');
   });

@@ -130,9 +130,9 @@ describe('/diff feeds the git diff into chat (#347)', () => {
 
     render(<App />);
 
-    // Activate the project so /diff has a workspace root.
-    const projBtn = await screen.findByText('📂 Repo');
-    fireEvent.click(projBtn);
+    // Activate the project so /diff has a workspace root. In the project-first
+    // sidebar, clicking the project row (aria-label = name) sets it active.
+    fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
 
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: '/diff' } });

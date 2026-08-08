@@ -89,8 +89,9 @@ describe('/add & /drop pinned file context (#350)', () => {
 
     render(<App />);
 
-    // Activate the project so /add has a workspace root.
-    fireEvent.click(await screen.findByText('📂 Repo'));
+    // Activate the project so /add has a workspace root. In the project-first
+    // sidebar, clicking the project row (aria-label = name) sets it active.
+    fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
 
     sendCommand('/add foo.txt');
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Pinned "foo\.txt"/), { timeout: 3000 });

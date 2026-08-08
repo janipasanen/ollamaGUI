@@ -31,18 +31,17 @@ describe('In-conversation search integration (#247)', () => {
 });
 
 describe('Keyboard shortcuts overlay completeness (#248)', () => {
-  it('lists all wired shortcuts including browser, files, terminal, and find', () => {
+  it('lists the wired shortcuts and omits the removed panel toggles', () => {
     render(<App />);
     fireEvent.keyDown(window, { key: '?' });
     expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();
     expect(screen.getByText('Ctrl+K')).toBeInTheDocument();
     expect(screen.getByText('Ctrl+F')).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+B')).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+Shift+F')).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+T')).toBeInTheDocument();
     expect(screen.getByText(/Find in Chat/i)).toBeInTheDocument();
-    expect(screen.getByText(/Toggle Browser/i)).toBeInTheDocument();
-    expect(screen.getByText(/Toggle Files/i)).toBeInTheDocument();
-    expect(screen.getByText(/Toggle Terminal/i)).toBeInTheDocument();
+    // Panel shortcuts died with the dock — the overlay must not advertise them.
+    expect(screen.queryByText('Ctrl+B')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Toggle Browser/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Toggle Files/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Toggle Terminal/i)).not.toBeInTheDocument();
   });
 });

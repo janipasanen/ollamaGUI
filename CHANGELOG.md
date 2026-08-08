@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### UI simplification — white minimal Ollama-style layout (#549)
+- **Look**: copies the official Ollama macOS app — white, minimal, light theme
+  by default (`DEFAULT_THEME.mode: 'light'`). Dark mode still available via
+  Settings → Appearance, the palette, or Ctrl+Shift+D.
+- **Project-first sidebar**: "+ New" opens a project picker (the user chooses
+  which project the chat belongs to); clicking a project name expands its chat
+  sessions nested beneath it; a hover "+" on each project row starts a chat in
+  that project; unscoped chats sit under a separate "Chats" group. Sort
+  selector, folder chips, tags, archived toggle, and bulk select are gone from
+  the rail (session power actions live in the right-click menu; export/import
+  moved to the command palette).
+- **Header**: reduced to a connection dot, the session title, and the agent
+  status pill. No buttons on the right. The right/bottom dock (files, browser,
+  terminal, artifacts, git, checkpoints, code search, agent activity panels) no
+  longer renders; panel keyboard shortcuts and palette entries were removed.
+- **One chat window**: the many-models side-by-side compare (#126) is removed,
+  including `services/manyModels.ts`, its send-path branch, and the picker.
+- **Model switcher below the composer** (#544): the model `<select>` moved from
+  the header to directly below the chat input; local MLX models stay grouped
+  first and bold, with an "⚡ MLX" badge shown while an MLX model is selected.
+- **Messages**: user turns render as quiet gray bubbles, assistant turns as
+  plain text on white; the per-message role/timestamp/token header row is gone;
+  hover actions trimmed to Copy / Regenerate / Edit / Delete (everything else
+  remains in the message right-click menu).
+- **MLX simplified**: the layered MLX settings (full inference / embeddings /
+  detect / cloud-brain-local-worker) and the separate `mlx_lm.server`
+  lifecycle are removed (`services/orchestrator.ts` deleted; `services/mlx.ts`
+  reduced to availability detection + `isMlxModelName`). MLX acceleration is
+  now implicit: selecting a local `-mlx` model on a capable machine is all it
+  takes — Ollama serves MLX weights natively.
+
 #### Platform: bring the feature line to `master`/`development` targeting newer macOS + Linux + Windows (#216)
 - **Branching model**: the full feature set (M29–M173) previously developed on
   the `macOS-10.15` branch is consolidated onto `master`, with ongoing work on a

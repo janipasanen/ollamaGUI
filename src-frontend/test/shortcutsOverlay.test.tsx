@@ -50,7 +50,7 @@ describe('Keyboard shortcuts overlay completeness (#266)', () => {
     expect(text).toContain('New Chat');
     expect(text).toContain('Command Palette');
     expect(text).toContain('Find in Chat');
-    expect(text).toContain('Toggle Terminal');
+    expect(text).not.toContain('Toggle Terminal'); // panel shortcuts removed with the dock
     expect(text).toContain('Open Settings');
   });
 });

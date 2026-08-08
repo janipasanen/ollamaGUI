@@ -45,9 +45,12 @@ describe('End-to-End Tests', () => {
     it('should render the main chat interface', () => {
       render(<App />);
 
-      expect(screen.getByText('Ollama GUI')).toBeInTheDocument();
+      // Minimal Ollama-style shell: composer + Send, "+ New" chat button and
+      // conversation search in the sidebar (the "Ollama GUI" h1 is gone).
       expect(screen.getByPlaceholderText('Message Ollama...')).toBeInTheDocument();
       expect(screen.getByText('Send')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Search conversations')).toBeInTheDocument();
     });
 
     it('should send and receive messages', async () => {
@@ -90,11 +93,18 @@ describe('End-to-End Tests', () => {
     });
 
     it('should create and switch between chat sessions', async () => {
+      // "+ New" now opens a project picker menu (when projects exist); choosing
+      // "No project" starts the fresh chat that the old "+ New Chat" button did.
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_e2e', name: 'e2e-proj', workspaceRoot: '', instructions: '', createdAt: 1 },
+      ]));
       render(<App />);
 
       const input = screen.getByPlaceholderText('Message Ollama...');
       fireEvent.change(input, { target: { value: 'First message' } });
-      fireEvent.click(screen.getByText('+ New Chat'));
+      fireEvent.click(screen.getByRole('button', { name: 'Start new chat' }));
+      const menu = await screen.findByRole('menu', { name: 'New chat in project' });
+      fireEvent.click(within(menu).getByRole('menuitem', { name: /No project/ }));
 
       expect(screen.queryByText('First message')).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText('Message Ollama...')).toHaveValue('');
@@ -243,11 +253,17 @@ describe('End-to-End Tests', () => {
 
       render(<App />);
 
-      const menuButton = screen.getByText('⋯');
-      fireEvent.click(menuButton);
+      // Sidebar starts collapsed on mobile (w-0 container).
+      const sidebar = document.querySelector('div.transition-all') as HTMLElement;
+      expect(sidebar.className).toContain('w-0');
 
-      // After clicking, sidebar should be visible (toggled open)
-      expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
+      // The ⋯ menu now opens an action menu; "Show sidebar" toggles it open.
+      fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Show sidebar' }));
+
+      await waitFor(() => {
+        expect((document.querySelector('div.transition-all') as HTMLElement).className).toContain('w-64');
+      });
     });
   });
 
@@ -283,13 +299,15 @@ describe('End-to-End Tests', () => {
       });
     });
 
-    it('renames a session inline (#52)', async () => {
+    it('renames a session inline via the right-click context menu (#52)', async () => {
       seedSession('s-ren', 'Old name');
       render(<App />);
-      const title = screen.getByText('Old name');
-      const row = title.closest('div')!.parentElement!;
-      fireEvent.click(within(row).getByTitle('Rename'));
-      const input = within(row).getByLabelText('Rename conversation') as HTMLInputElement;
+      // The hover Rename button is gone — Rename now lives in the row's
+      // right-click context menu, which opens the same inline rename input.
+      const row = screen.getByRole('button', { name: 'Load session: Old name' });
+      fireEvent.contextMenu(row);
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+      const input = await screen.findByLabelText('Rename conversation') as HTMLInputElement;
       fireEvent.change(input, { target: { value: 'New name' } });
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => {
@@ -383,9 +401,10 @@ describe('End-to-End Tests', () => {
     it('should have proper ARIA attributes', () => {
       render(<App />);
 
-      // The header settings button (gear icon, no text) has a title attribute
-      const headerSettingsBtn = screen.getByTitle('Settings (Ctrl+,)');
-      expect(headerSettingsBtn).toBeInTheDocument();
+      // The header has no buttons anymore; its connection dot carries an
+      // accessible label, as does the model switcher below the composer.
+      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
+      expect(screen.getByLabelText('Select AI model')).toBeInTheDocument();
     });
 
     it('composer input and Send button expose aria-labels (#33)', () => {
@@ -396,12 +415,16 @@ describe('End-to-End Tests', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
     });
 
-    it('sidebar session actions have descriptive aria-labels (#33)', () => {
+    it('sidebar session actions have descriptive aria-labels (#33)', async () => {
       storage.saveSession({ id: 'a11y', title: 'Accessible chat', messages: [], createdAt: Date.now(), model: 'llama3' });
       render(<App />);
-      // Icon-only buttons are labelled with the action + session title.
+      // The row itself and its only remaining icon-only hover button (✕) are
+      // labelled with the action + session title.
+      expect(screen.getByRole('button', { name: 'Load session: Accessible chat' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Delete session: Accessible chat/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Rename session: Accessible chat/i })).toBeInTheDocument();
+      // Rename moved to the right-click context menu (accessible menuitem).
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'Load session: Accessible chat' }));
+      expect(await screen.findByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
     });
   });
 });

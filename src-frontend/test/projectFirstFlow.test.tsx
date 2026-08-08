@@ -58,7 +58,8 @@ describe('Project-first flow (#542)', () => {
   it('shows the bound folder on the project row so the rail answers "which repo"', async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /New project from a folder/i }));
-    const row = await screen.findByRole('button', { name: /payments/i });
+    // Exact name: "New chat in project payments" / "Delete project payments" also match /payments/i.
+    const row = await screen.findByRole('button', { name: 'payments' });
     await waitFor(() => expect(row).toHaveAttribute('title', PICKED));
   });
 
@@ -78,7 +79,7 @@ describe('Project-first flow (#542)', () => {
     (platform.pickDirectory as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /New project from a folder/i }));
-    await waitFor(() => expect(screen.getByText(/📁 Projects/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Projects')).toBeInTheDocument());
     expect(storage.getProjects()).toHaveLength(0);
   });
 });

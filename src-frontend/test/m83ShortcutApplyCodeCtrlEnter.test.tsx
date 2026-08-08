@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 import { storage, type ChatSession, type Project } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
-import { isPanelOpen } from '../components/PanelShell';
 
 let origFetch: typeof global.fetch;
 
@@ -44,23 +43,15 @@ afterEach(() => {
   fileMocks.invoke = null;
 });
 
-// ── #372: Artifacts shortcut + help overlay ───────────────────────────────────
+// ── #372: help overlay ────────────────────────────────────────────────────────
+// The Ctrl+Shift+A artifacts-panel shortcut was removed with the UI rewrite
+// (no panels ever render from App), so its toggle test was deleted. The Tab
+// indent/outdent help entry survives.
 
-describe('Artifacts panel keyboard shortcut + help overlay (#372)', () => {
-  it('Ctrl+Shift+A toggles the artifacts panel', () => {
-    render(<App />);
-    expect(isPanelOpen('artifacts')).toBe(false);
-    fireEvent.keyDown(window, { key: 'A', shiftKey: true, ctrlKey: true });
-    expect(isPanelOpen('artifacts')).toBe(true);
-    fireEvent.keyDown(window, { key: 'A', shiftKey: true, ctrlKey: true });
-    expect(isPanelOpen('artifacts')).toBe(false);
-  });
-
-  it('help overlay lists Toggle Artifacts and Tab Indent', () => {
+describe('Help overlay lists Tab Indent (#372)', () => {
+  it('help overlay lists Tab Indent / Outdent', () => {
     render(<App />);
     fireEvent.keyDown(window, { key: '?' });
-    expect(screen.getByText('Toggle Artifacts')).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+Shift+A')).toBeInTheDocument();
     expect(screen.getByText('Tab Indent / Outdent')).toBeInTheDocument();
     expect(screen.getByText('Tab / Shift+Tab')).toBeInTheDocument();
   });
@@ -93,9 +84,10 @@ describe('Apply code block to file (#373)', () => {
     storage.saveSession(session);
 
     render(<App />);
-    // Activate the project first so the workspace root is set
-    fireEvent.click(await screen.findByText('📂 Repo'));
-    // Wait for the workspace to be set and sessions to filter
+    // Activate the project first so the workspace root is set. Project rows
+    // carry aria-label = project name; clicking also expands its sessions.
+    fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
+    // Wait for the workspace to be set and the nested session row to appear
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Load session: Code' })).toBeInTheDocument();
     }, { timeout: 3000 });

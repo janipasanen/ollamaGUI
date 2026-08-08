@@ -1,9 +1,11 @@
 /**
- * System prompt presets (#315), /pull command (#316),
- * and sidebar message counts (#317).
+ * System prompt presets (#315) and /pull command (#316).
+ * Sidebar message counts (#317) were removed with the project-first sidebar
+ * rewrite (per-session msg-count badges no longer exist), so their tests
+ * were deleted.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
 
 beforeEach(() => {
@@ -53,30 +55,5 @@ describe('/pull slash command (#316)', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/pull llama3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText(/Pulling llama3/, {}, { timeout: 3000 })).toBeInTheDocument();
-  });
-});
-
-describe('Sidebar message counts (#317)', () => {
-  it('shows message count next to sessions with messages', async () => {
-    const sessions = [
-      { id: 's1', title: 'Test chat', messages: [
-        { role: 'user', content: 'Hi' },
-        { role: 'assistant', content: 'Hello' },
-        { role: 'user', content: 'How are you?' },
-      ], model: 'llama3', createdAt: Date.now() },
-    ];
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
-    render(<App />);
-    await waitFor(() => expect(screen.getByText('3 msgs')).toBeInTheDocument(), { timeout: 3000 });
-  });
-
-  it('does not show count for empty sessions', async () => {
-    const sessions = [
-      { id: 's1', title: 'Empty chat', messages: [], model: 'llama3', createdAt: Date.now() },
-    ];
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
-    render(<App />);
-    await waitFor(() => expect(screen.getByText('Empty chat')).toBeInTheDocument(), { timeout: 3000 });
-    expect(screen.queryByText(/msgs/)).not.toBeInTheDocument();
   });
 });

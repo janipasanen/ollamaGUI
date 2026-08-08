@@ -16,7 +16,9 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('Raw/rendered toggle per assistant message (#290)', () => {
+// The per-message toggle button is gone; Show raw / Show rendered now live in
+// the message right-click context menu.
+describe('Raw/rendered toggle per assistant message (#290, via context menu)', () => {
   it('switches between rendered Markdown and raw text', async () => {
     global.fetch = vi.fn().mockImplementation(async (url: string) => {
       if (String(url).includes('/api/chat')) {
@@ -42,12 +44,15 @@ describe('Raw/rendered toggle per assistant message (#290)', () => {
     // Rendered: the literal asterisks are not present as a single text node.
     expect(screen.queryByText('**Hello** there')).not.toBeInTheDocument();
 
-    // Toggle to raw.
-    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+    // Toggle to raw via the message context menu.
+    fireEvent.contextMenu(screen.getByText('Hello'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Show raw' }));
     expect(screen.getByText('**Hello** there')).toBeInTheDocument();
 
-    // Toggle back to rendered.
-    fireEvent.click(screen.getByRole('button', { name: 'Show rendered' }));
+    // Reopen the menu: the item now reads "Show rendered"; toggle back.
+    fireEvent.contextMenu(screen.getByText('**Hello** there'));
+    expect(screen.queryByRole('menuitem', { name: 'Show raw' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Show rendered' }));
     expect(screen.queryByText('**Hello** there')).not.toBeInTheDocument();
   });
 });
