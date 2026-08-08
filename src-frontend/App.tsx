@@ -12,7 +12,7 @@ import {
 } from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
 import { agenticChatStream } from './services/agent';
-import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
+import { McpServerConfig, mcpConfigStore, refreshAuthFlags } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
 import {
   OpenApiServerConfig,
@@ -39,7 +39,6 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchAllConnectionModels, streamOpenAiChat,
 } from './services/connections';
-import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
 import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCost } from './services/tokenEstimate';
@@ -50,34 +49,19 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
-import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
+import { closeAllPanels } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
-import './components/BrowserPane';
-import './components/FileTreePanel';
-import './components/TerminalPanel';
-import { registerFileTreePanel } from './components/FileTreePanel';
-import { registerTerminalPanel } from './components/TerminalPanel';
-import { registerCodeSearchPanel } from './components/CodeSearchPanel';
-import { registerSourceControlPanel } from './components/SourceControlPanel';
-import { registerCheckpointPanel } from './components/CheckpointPanel';
-import { registerAgentActivityPanel } from './components/AgentActivityPanel';
 import { useModalFocus } from './components/useModalFocus';
 import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
-import WorkspaceChip from './components/WorkspaceChip';
 import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
 import NoWorkspaceHint from './components/NoWorkspaceHint';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
-import {
-  MlxAvailability, MlxSettings, DEFAULT_MLX_SETTINGS,
-  checkMlxAvailable, loadMlxSettings, saveMlxSettings, applyMlxHierarchy,
-  isMlxActive, startMlxServer, stopMlxServer, fetchMlxChatStream,
-} from './services/mlx';
-import { runCloudBrainLocalWorker } from './services/orchestrator';
+import { MlxAvailability, checkMlxAvailable, isMlxModelName } from './services/mlx';
 import { pickDirectory, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
@@ -110,7 +94,7 @@ import {
   loadPrompts, addPrompt, removePrompt,
 } from './services/promptLibrary';
 import {
-  BrowserScenario, ScenarioResult,
+  BrowserScenario, ScenarioResult, StepAction,
   listScenarios, saveScenario, deleteScenario, generateScenarioId, runScenario,
 } from './services/scenario';
 import {
@@ -161,7 +145,9 @@ import { CommandPalette, type PaletteCommand } from './components/CommandPalette
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
-import { ConversationStatsButton } from './components/ConversationStatsButton';
+import ProjectHeader from './components/ProjectHeader';
+import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
+import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
@@ -554,6 +540,12 @@ const App: React.FC = () => {
 
   // Session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  // Mirror of currentSessionId that is correct *within* a render pass (#508).
+  // saveCurrentSession runs many times per streamed reply; the state value lags
+  // by a render, so it must read the ref instead.
+  const currentSessionIdRef = useRef<string | null>(null);
+  /** True once something has deliberately chosen the model (#533). */
+  const modelClaimedRef = useRef(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   // Inline session rename (#52)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
@@ -571,8 +563,12 @@ const App: React.FC = () => {
   // Projects (#92)
   const [projects, setProjects] = useState<Project[]>(() => storage.getProjects());
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [showAddProject, setShowAddProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
+  /** True while the native folder picker is open for a new project (#542). */
+  const [creatingProject, setCreatingProject] = useState(false);
+  // Project-first sidebar (#542): which projects are expanded, and whether the
+  // "+ New" project picker menu is open.
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
 
   // Agent autonomy settings (#88, #89, #146)
   const [autonomySettings, setAutonomySettings] = useState<AgentAutonomySettings>(() => loadAutonomySettings());
@@ -640,7 +636,23 @@ const App: React.FC = () => {
   // Structured output (Ollama `format`): JSON mode or a JSON Schema (#148).
   const [structuredOutput, setStructuredOutput] = useState<{ enabled: boolean; schema: string }>({ enabled: false, schema: '' });
   const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL);
+  /** Server id whose OAuth flow is currently running, if any (#503). */
+  const [authInFlight, setAuthInFlight] = useState<string | null>(null);
+  /** Mirrors the voice-call handle's mute flag so the button re-renders (#530). */
+  const [voiceCallMuted, setVoiceCallMuted] = useState(false);
+  /** Validation message for the custom-tool form (#516, #517). */
+  const [customToolError, setCustomToolError] = useState<string | null>(null);
+  /** Inline "add step" draft for a browser scenario (#530). */
+  const [scenarioStepDraft, setScenarioStepDraft] = useState<{ id: string; action: StepAction; arg: string } | null>(null);
+  // Initialise from storage during the first render (#509). Previously the
+  // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
+  // same pass — but that refreshModels closure was built on the first render,
+  // where the URL was still the localhost default, so a saved remote host was
+  // queried at localhost and the app started "disconnected" with no models.
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(() => {
+    try { return localStorage.getItem('ollama_gui_base_url') || DEFAULT_BASE_URL; }
+    catch { return DEFAULT_BASE_URL; }
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   // Composed system-prompt preview overlay (#376).
@@ -651,7 +663,7 @@ const App: React.FC = () => {
   const [chatSearchIndex, setChatSearchIndex] = useState(0);
   // Command palette (#251)
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   // Temporary/incognito chat: held in memory only, never persisted (#134).
   const [isTemporary, setIsTemporary] = useState(false);
@@ -759,9 +771,6 @@ const App: React.FC = () => {
   // Optional bearer token for authenticated remote Ollama servers (#493).
   const [newRemoteOllamaToken, setNewRemoteOllamaToken] = useState('');
 
-  // Many-models conversation (#126)
-  const [extraModels, setExtraModels] = useState<string[]>([]);
-  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
   // Image generation (#130)
   const [imageGenConfig, setImageGenConfig] = useState<ImageGenConfig>(() => loadImageGenConfig());
@@ -862,9 +871,9 @@ const App: React.FC = () => {
   const [voiceCallResponse, setVoiceCallResponse] = useState('');
   const voiceCallHandleRef = useRef<VoiceCallHandle | null>(null);
 
-  // MLX acceleration state (Apple Silicon)
+  // MLX acceleration (Apple Silicon): detection only — no settings. Active
+  // whenever the selected local model is an MLX model on a capable machine.
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
-  const [mlxSettings, setMlxSettings] = useState<MlxSettings>(DEFAULT_MLX_SETTINGS);
 
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -919,7 +928,19 @@ const App: React.FC = () => {
   // Message queue: enqueue prompts while a reply streams; auto-send FIFO (#137).
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const messageQueueRef = useRef<string[]>([]);
+  // Next auto-send from the queue, dispatched from a fresh render (#507).
+  const [pendingQueuedMessage, setPendingQueuedMessage] = useState<string | null>(null);
   useEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
+  useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => {
+    if (pendingQueuedMessage === null || isLoading) return;
+    const text = pendingQueuedMessage;
+    setPendingQueuedMessage(null);
+    void sendMessage(text);
+    // sendMessage is intentionally excluded: it is re-created every render, and
+    // this effect must run with the binding from the render it fires in (#507).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingQueuedMessage, isLoading]);
 
   // Storage quota warning
   const [storageWarning, setStorageWarning] = useState(false);
@@ -957,6 +978,18 @@ const App: React.FC = () => {
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // Focus-in, Tab trap and focus-restore for the bulk-delete confirmation,
+  // which previously had none (#515). Declared here, after the state it reads.
+  const bulkDeleteModalRef = useModalFocus<HTMLDivElement>(confirmBulkDelete);
+  // Escape dismisses it, matching every other overlay in the app.
+  useEffect(() => {
+    if (!confirmBulkDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); setConfirmBulkDelete(false); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [confirmBulkDelete]);
   // Drag-and-drop folder assignment (#364)
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
 
@@ -974,6 +1007,18 @@ const App: React.FC = () => {
       .filter(s => activeProjectId === null ? !s.projectId : s.projectId === activeProjectId),
     sortMode
   ), [sessions, searchQuery, folders, showArchived, folderFilter, tagFilter, activeProjectId, sortMode]);
+
+  // Sessions for the project-first sidebar (#542): search applies, archived
+  // hidden, most recent first. Grouped per project at render time.
+  const visibleSessions = React.useMemo(() => sortSessions(
+    searchSessions(sessions, searchQuery, folders).filter(s => !s.archived),
+    'recent',
+  ), [sessions, searchQuery, folders]);
+  const unscopedSessions = React.useMemo(
+    () => visibleSessions.filter(s => !s.projectId),
+    [visibleSessions],
+  );
+  const sessionsForProject = (projectId: string) => visibleSessions.filter(s => s.projectId === projectId);
 
   // Conversation token estimate, memoized so it only recomputes when the
   // messages or current draft change (#32, #62).
@@ -1015,6 +1060,14 @@ const App: React.FC = () => {
   };
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
+
+  // Split local models so MLX-capable ones can be surfaced first (#544). The
+  // split only happens when this machine actually supports MLX; otherwise every
+  // local model stays in one undifferentiated group exactly as before.
+  const mlxUsable = !!mlxAvailability?.available;
+  const localModels = models.filter(m => !m.cloud);
+  const mlxModels = mlxUsable ? localModels.filter(m => isMlxModelName(m.name)) : [];
+  const otherLocalModels = mlxUsable ? localModels.filter(m => !isMlxModelName(m.name)) : localModels;
 
   // User-specified Ollama Cloud model names (#485). The cloud catalogue changes
   // faster than this app ships and Ollama exposes no "list all cloud models"
@@ -1084,6 +1137,28 @@ const App: React.FC = () => {
     return () => window.removeEventListener('ollama-gui:workspace-changed', onChange);
   }, []);
 
+  // Reconcile MCP auth badges against the token store (#521), so the badge
+  // reflects whether a usable token actually exists rather than transient state.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshAuthFlags(mcpConfigStore.list())
+      .then(list => {
+        if (cancelled) return;
+        // Merge ONLY the flag into current state. Replacing the array wholesale
+        // would resolve against a pre-await snapshot and silently drop any
+        // server the user added while the keychain reads were in flight — the
+        // same async-clobber this audit was fixing elsewhere.
+        setMcpServers(prev => prev.map(srv => {
+          const m = list.find(l => l.id === srv.id);
+          return m && m.authenticated !== srv.authenticated
+            ? { ...srv, authenticated: m.authenticated }
+            : srv;
+        }));
+      })
+      .catch(() => { /* keychain unavailable — keep whatever is persisted */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Probe once for repo CLIs so we only ever advertise what is installed (#491).
   useEffect(() => {
     let cancelled = false;
@@ -1135,8 +1210,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     async function loadInitialData() {
-      const savedUrl = localStorage.getItem('ollama_gui_base_url');
-      if (savedUrl) setOllamaBaseUrl(savedUrl);
+      // Base URL is restored in the useState initialiser above (#509).
 
       const savedSortMode = localStorage.getItem('ollama_gui_sort_mode');
     if (savedSortMode === 'recent' || savedSortMode === 'name' || savedSortMode === 'messages') {
@@ -1200,16 +1274,11 @@ const App: React.FC = () => {
         }
       })();
 
-      // Load MLX settings + detect availability (graceful no-op if unavailable)
-      const loadedMlx = loadMlxSettings();
-      setMlxSettings(loadedMlx);
+      // Detect MLX availability (graceful no-op when unavailable). MLX has no
+      // enable/disable settings — it is active whenever the machine supports it
+      // and the selected local model is an MLX model (#544).
       try {
-        const avail = await checkMlxAvailable();
-        setMlxAvailability(avail);
-        // If MLX is available and full inference was previously enabled, start the server.
-        if (avail.available && loadedMlx.fullInference && loadedMlx.localModel) {
-          startMlxServer(loadedMlx.localModel, loadedMlx.serverPort).catch(() => {});
-        }
+        setMlxAvailability(await checkMlxAvailable());
       } catch {
         setMlxAvailability(null);
       }
@@ -1261,12 +1330,6 @@ const App: React.FC = () => {
       registerPlanTool();
       // Streaming terminal sessions (#87/#186) — run_terminal
       registerTerminalTool();
-      registerTerminalPanel();
-      registerFileTreePanel();
-      registerCodeSearchPanel(); // workspace grep UI (#431)
-      registerSourceControlPanel(); // git working-tree UI (#434)
-      registerCheckpointPanel(); // checkpoint browser / rewind UI (#435)
-      registerAgentActivityPanel(); // live tool-call timeline (#432)
       // Visual screenshot diffing (#79/#187) — diff_screenshots
       registerImageDiffTool();
       // Workspace RAG tools (#94/#194) — index_workspace / query_workspace
@@ -1440,7 +1503,11 @@ const App: React.FC = () => {
 
       try {
         const combined = await refreshModels();
-        if (combined.length > 0) setModel(combined[0].name);
+        // Only fall back to the first model if nothing has claimed one. The
+        // resume-on-startup effect restores session.model synchronously on
+        // mount, but this runs later (after the /api/tags round-trip) and used
+        // to overwrite it — so resuming a chat silently switched its model (#533).
+        if (combined.length > 0 && !modelClaimedRef.current) setModel(combined[0].name);
       } catch (e) {
         console.error('Failed to load models', e);
         setOllamaConnected(false);
@@ -1462,13 +1529,24 @@ const App: React.FC = () => {
     document.documentElement.style.fontSize = `${Math.round(16 * fontScale)}px`;
   }, [fontScale]);
 
-  // Reset the composer height when the input is cleared after sending (#259)
-  useEffect(() => {
-    if (input === '') {
-      const ta = document.getElementById('chat-input') as HTMLTextAreaElement | null;
-      if (ta) ta.style.height = 'auto';
-    }
-  }, [input]);
+  /**
+   * Re-measure the composer to fit its content, capped at the CSS max height.
+   *
+   * The measure step used to live only in the textarea's own onChange, so every
+   * programmatic write — prompt library, Alt+Up/Down history, dictation results,
+   * @-mention resolution, slash-command completion — left the box at its previous
+   * height. The common case was a 12-line prompt rendered in a one-line box that
+   * snapped open as soon as you typed a character, which reads as a glitch (#534).
+   */
+  const growComposer = (el?: HTMLTextAreaElement | null) => {
+    const ta = el ?? (document.getElementById('chat-input') as HTMLTextAreaElement | null);
+    if (!ta) return;
+    ta.style.height = 'auto';
+    if (ta.value !== '') ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  };
+
+  // Keyed on `input`, so it covers both typed and programmatic updates (#259, #534).
+  useEffect(() => { growComposer(); }, [input]);
 
   // Subscribe to the plan store so the checklist re-renders on update_plan (#239).
   useEffect(() => subscribePlan(setPlanState), []);
@@ -1529,10 +1607,16 @@ const App: React.FC = () => {
     if (messages.length === 0) {
       const input = document.getElementById('chat-input');
       if (input) {
-        setTimeout(() => {
+        // Cleared on unmount: this timer had no cleanup, so it kept firing
+        // after the component went away. Surfaced as an uncaught
+        // "ReferenceError: document is not defined" when it landed after the
+        // jsdom environment was torn down, and would throw the same way after a
+        // real unmount.
+        const t = setTimeout(() => {
           const ae = document.activeElement;
           if (ae === null || ae === document.body) input.focus();
         }, 100);
+        return () => clearTimeout(t);
       }
     }
   }, [messages, isNearBottom]);
@@ -1556,12 +1640,13 @@ const App: React.FC = () => {
     const handleResize = () => {
       const mobileBreakpoint = 768; // Typical tablet breakpoint
       const isMobileDevice = window.innerWidth < mobileBreakpoint;
-      setIsMobile(isMobileDevice);
-      
-      // On mobile devices, automatically collapse sidebar for more screen space
-      if (isMobileDevice) {
-        setIsSidebarOpen(false);
-      }
+      // Collapse the sidebar when entering mobile widths, and reopen it when
+      // returning to desktop — the rail is the primary navigation (#545).
+      setIsMobile(prev => {
+        if (isMobileDevice && !prev) setIsSidebarOpen(false);
+        else if (!isMobileDevice && prev) setIsSidebarOpen(true);
+        return isMobileDevice;
+      });
     };
 
     // Initial check
@@ -1591,22 +1676,28 @@ const App: React.FC = () => {
     // folders, not just the primary one, so the agent can work across them.
     const roots = projectRoots(project);
     if (roots.length > 0) {
-      void openWorkspaceRoots(roots);
-      // Git tools and AGENTS.md/CLAUDE.md are scoped to the primary root.
-      registerGitTools(roots[0]);
-      void loadProjectRules(roots[0]).then(setProjectRulesContent);
+      // set_workspace_roots rejects the whole list if ANY folder is missing
+      // (moved, renamed, unmounted volume). That rejection used to be
+      // unhandled: the sidebar showed the new project as active while the
+      // backend still pointed at the PREVIOUS project's folder, so the agent
+      // silently kept reading and editing the wrong repository (#502).
+      void openWorkspaceRoots(roots)
+        .then(() => {
+          registerGitTools(roots[0]);
+          return loadProjectRules(roots[0]).then(setProjectRulesContent);
+        })
+        .catch((err) => {
+          setProjectRulesContent(null);
+          showStatusBanner(
+            `Could not open "${project?.name ?? 'project'}" — ${formatErrorLine(err)}. ` +
+            `Check its folders in Settings → Projects.`,
+          );
+        });
     } else {
       setProjectRulesContent(null);
     }
     // Apply per-project model overrides if they are set (#171).
     if (project?.model) setModel(project.model);
-    if (project?.brainModel || project?.workerModel) {
-      setMlxSettings(prev => ({
-        ...prev,
-        ...(project.brainModel ? { brainModel: project.brainModel } : {}),
-        ...(project.workerModel ? { workerModel: project.workerModel } : {}),
-      }));
-    }
  }, [activeProjectId, projects]);
 
   // Wire file-tree clicks into the composer — pin the selected file into
@@ -1652,6 +1743,49 @@ const App: React.FC = () => {
     savePinnedFiles([]);
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
+
+  /**
+   * Project-first entry point (#542): pick a folder, and that IS the project.
+   *
+   * Previously `+` opened a name field and produced a project with no folder;
+   * binding one meant a trip to Settings -> Projects -> Choose…. Now the folder
+   * picker is the first and only step, the project is named from the folder,
+   * and it becomes active immediately — matching Codex/ChatGPT and Claude.
+   */
+  const createProjectFromFolder = useCallback(async () => {
+    if (creatingProject) return;
+    setCreatingProject(true);
+    try {
+      const dir = await pickDirectory();
+      if (!dir) return; // cancelled
+      const existing = storage.getProjects().find(p => projectRoots(p)[0] === dir);
+      if (existing) {
+        // Re-opening a folder already bound to a project just switches to it,
+        // rather than creating a confusing duplicate row.
+        setActiveProjectId(existing.id);
+        startNewChat(existing.id);
+        showStatusBanner(`Switched to "${existing.name}"`);
+        return;
+      }
+      const proj: Project = {
+        id: `proj_${Date.now()}`,
+        name: basename(dir),
+        workspaceRoot: dir,
+        workspaceRoots: [dir],
+        instructions: '',
+        createdAt: Date.now(),
+      };
+      storage.saveProject(proj);
+      setProjects(storage.getProjects());
+      setActiveProjectId(proj.id);
+      startNewChat(proj.id);
+    } catch (e) {
+      showStatusBanner(`Could not create project: ${formatErrorLine(e)}`);
+    } finally {
+      setCreatingProject(false);
+    }
+  }, [creatingProject, startNewChat]);
+
 
   // Start a temporary chat — messages live only in state, never persisted.
   const startTemporaryChat = useCallback(() => {
@@ -1779,13 +1913,6 @@ const App: React.FC = () => {
         setChatSearchIndex(0);
         return;
       }
-      // File-tree panel toggle moved to Ctrl/Cmd+Shift+F (#248)
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-        if (isTyping) return;
-        e.preventDefault();
-        togglePanel('files');
-        return;
-      }
 
       if (isTyping) return;
 
@@ -1798,12 +1925,6 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
         e.preventDefault();
         setIsSidebarOpen(prev => !prev);
-      } else if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault();
-        togglePanel('browser'); // toggle browser preview via PanelShell (#71)
-      } else if ((e.metaKey || e.ctrlKey) && e.key === 't') {
-        e.preventDefault();
-        togglePanel('terminal'); // toggle terminal panel via PanelShell (#87)
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'End') {
         e.preventDefault();
         scrollToBottom(); // Ctrl/Cmd+End jumps to the latest message (#278)
@@ -1835,9 +1956,6 @@ const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         toggleZenMode(); // Zen/Focus mode (#309)
-      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        togglePanel('artifacts'); // Toggle artifacts panel (#372)
       } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         if (currentSessionId) {
@@ -1933,7 +2051,11 @@ const App: React.FC = () => {
         e.preventDefault();
         pendingPlanApproval.resolve(false);
         setPendingPlanApproval(null);
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter' && !shouldIgnoreEnterShortcut(document.activeElement)) {
+        // Only approve when the user is not typing and has not focused a
+        // button (#497). Previously any Enter approved the plan — including
+        // Enter pressed in the plan-edit textarea (silently discarding the
+        // edits) or with Deny focused (turning a denial into an approval).
         e.preventDefault();
         planApprovedRef.current = true;
         pendingPlanApproval.resolve(true);
@@ -2004,25 +2126,6 @@ const App: React.FC = () => {
     safeSetItem('ollama_gui_base_url', val);
   };
 
-  // Update MLX settings: enforce the toggle hierarchy, persist, and manage the
-  // MLX server lifecycle (start when full inference turns on, stop when off).
-  const updateMlxSettings = (patch: Partial<MlxSettings>) => {
-    setMlxSettings(prev => {
-      const next = saveMlxSettings(applyMlxHierarchy({ ...prev, ...patch }));
-      const available = mlxAvailability?.available ?? false;
-      if (available) {
-        const wasInference = prev.fullInference;
-        const modelChanged = prev.localModel !== next.localModel || prev.serverPort !== next.serverPort;
-        if (next.fullInference && (!wasInference || modelChanged) && next.localModel) {
-          startMlxServer(next.localModel, next.serverPort).catch(() => {});
-        } else if (!next.fullInference && wasInference) {
-          stopMlxServer().catch(() => {});
-        }
-      }
-      return next;
-    });
-  };
-
   // Model management
   // Pull a model. Pass an explicit name (e.g. from a suggested-model button),
   // otherwise pulls whatever is typed in the input box.
@@ -2079,6 +2182,8 @@ const App: React.FC = () => {
 
   // Session management
   const loadSession = (session: ChatSession) => {
+    // Claim the model so the startup default cannot overwrite it (#533).
+    if (session.model) modelClaimedRef.current = true;
     const bs = session.branchState ?? migrateToBranchState(session.messages);
     setMessages(session.messages);
     trunkMessagesRef.current = session.messages;
@@ -2094,6 +2199,21 @@ const App: React.FC = () => {
     prevMsgCountRef.current = session.messages.length;
     setUnreadCount(0);
     scrollToEndOnLoadRef.current = true;
+  };
+
+  // Open a session from the sidebar: adopt its project scope first so
+  // workspace roots / rules / per-project model follow the chat (#543).
+  const openSession = (session: ChatSession) => {
+    setActiveProjectId(session.projectId ?? null);
+    loadSession(session);
+  };
+
+  const toggleProjectExpanded = (id: string) => {
+    setExpandedProjects(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   // Opt-in: resume the most recent conversation on startup (#356).
@@ -2291,7 +2411,10 @@ const App: React.FC = () => {
   const saveCurrentSession = (currentMessages: Message[], bs?: BranchState) => {
     if (isTemporary) return; // temporary chats are never written to storage
     const activeBranchState = bs ?? branchState;
-    if (currentSessionId === null) {
+    // Read through a ref, not the render closure (#508). Streaming calls this on
+    // every token; setCurrentSessionId does not apply until the next render, so
+    // each call still saw null and minted ANOTHER session — one per token.
+    if (currentSessionIdRef.current === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
         title: generateTitle(currentMessages),
@@ -2303,10 +2426,11 @@ const App: React.FC = () => {
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
+      currentSessionIdRef.current = newSession.id;
       setCurrentSessionId(newSession.id);
       setSessions(storage.getSessions());
     } else {
-      const session = storage.getSessions().find(s => s.id === currentSessionId);
+      const session = storage.getSessions().find(s => s.id === currentSessionIdRef.current);
       if (session) {
         const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState });
         if (result.ok === false && result.error === 'quota') setStorageWarning(true);
@@ -2328,7 +2452,7 @@ const App: React.FC = () => {
 
   // Export the current conversation as a Markdown file (#256)
   const handleExportMarkdown = () => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) { showStatusBanner('Nothing to export — the conversation is empty'); return; }
     const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
     const md = chatToMarkdown(messages, { title });
     const blob = new Blob([md], { type: 'text/markdown' });
@@ -2356,7 +2480,7 @@ const App: React.FC = () => {
 
   // Copy the current conversation as Markdown to the clipboard (#261)
   const handleCopyMarkdown = async () => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) { showStatusBanner('Nothing to copy — the conversation is empty'); return; }
     const title = (currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : undefined) ?? 'Chat';
     const md = chatToMarkdown(messages, { title });
     try {
@@ -2364,7 +2488,9 @@ const App: React.FC = () => {
       setCopiedChat(true);
       setTimeout(() => setCopiedChat(false), 1500);
     } catch {
-      // Clipboard may be unavailable (permissions/old browsers) — no-op.
+      // Clipboard can be denied by permissions; silence left the user unsure
+      // whether the copy had worked (#547).
+      showStatusBanner('Could not copy — clipboard unavailable');
     }
   };
 
@@ -3373,7 +3499,15 @@ ${lines.join('\n')}`;
     let format: 'json' | object | undefined;
     if (structuredOutput.enabled) {
       const parsed = parseSchemaInput(structuredOutput.schema);
-      if (!parsed.ok) { setSchemaError(parsed.error ?? 'Invalid schema'); return; }
+      if (!parsed.ok) {
+        const msg = parsed.error ?? 'Invalid schema';
+        setSchemaError(msg);
+        // schemaError only renders next to the schema box inside Settings, so
+        // from the chat this return was completely silent: nothing sent, no
+        // error, no clue why (#501). Surface it where the user actually is.
+        showStatusBanner(`Structured output: ${msg} — fix it in Settings, or turn structured output off.`);
+        return;
+      }
       setSchemaError(null);
       format = parsed.schema ?? 'json';
     }
@@ -3445,6 +3579,20 @@ ${lines.join('\n')}`;
 
     const chatHistory = await applyFilterInlet(rawHistory);
 
+    // Claude-style project naming (#542): once the user says what they are
+    // actually doing, replace the folder-derived placeholder with that. Only
+    // while the name still looks auto-generated — a deliberate rename is never
+    // overwritten — and only on the first prompt of the project.
+    if (!continueMode && activeProjectId) {
+      const proj = storage.getProjects().find(p => p.id === activeProjectId);
+      if (proj && isAutoFolderName(proj.name, projectRoots(proj))) {
+        const derived = deriveProjectName(text);
+        if (derived && derived !== proj.name) {
+          storage.saveProject({ ...proj, name: derived });
+          setProjects(storage.getProjects());
+        }
+      }
+    }
     setMessages(continueMode ? messages.filter(stripMaxIter) : [...messages, userMessage]);
     if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
     setAttachedImages([]);
@@ -3467,83 +3615,8 @@ ${lines.join('\n')}`;
       const endpoint = selectedConnection?.kind === 'ollama'
         ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
         : url('/api/chat');
-      const cloudEndpoint = url('/api/chat');
-      const mlxActive = !!mlxAvailability && isMlxActive(mlxSettings, mlxAvailability);
 
-      if (mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel) {
-        // Multi-agent: cloud model is the brain, local model is the worker.
-        let header = '';
-        let orchestratorReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
-        try {
-          await runCloudBrainLocalWorker({
-            brainModel: mlxSettings.brainModel,
-            workerModel: mlxSettings.workerModel,
-            messages: chatHistory,
-            ollamaEndpoint: url('/api/chat'),
-            cloudEndpoint,
-            mlx: { active: mlxActive, port: mlxSettings.serverPort },
-            signal: abortControllerRef.current?.signal,
-            onPhase: (_phase, label) => {
-              header = `_${label}…_\n\n`;
-              setMessages(prev => [...prev, { role: 'assistant', content: header, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[]);
-            },
-            onDelta: (_phase, fullText) => {
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.role === 'assistant') {
-                  return [...prev.slice(0, -1), { role: 'assistant', content: header + fullText, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[];
-                }
-                return prev;
-              });
-            },
-            onReasoning: (_phase, fullReasoning) => {
-              orchestratorReasoning = fullReasoning;
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.role === 'assistant') {
-                  return [...prev.slice(0, -1), { ...last, reasoning: orchestratorReasoning }] as Message[];
-                }
-                return prev;
-              });
-            },
-          });
-          setMessages(prev => { saveCurrentSession(prev); return prev; });
-        } catch (e) {
-          setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${e instanceof Error ? e.message : 'Orchestration failed'}` }] as Message[]);
-        }
-        setIsLoading(false);
-      } else if (mlxActive && !isAgenticMode) {
-        // Direct MLX inference (full inference backend).
-        let assistantContent = '';
-        let assistantReasoning = '';
-        setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
-        try {
-          await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta, reasoning) => {
-            if (reasoning) assistantReasoning += reasoning;
-            if (delta) assistantContent += delta;
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              const updated = [...prev.slice(0, -1), { role: 'assistant', content: assistantContent, ts: last?.ts ?? Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) }] as Message[];
-              saveCurrentSession(updated);
-              return updated;
-            });
-          }, mlxSettings.serverPort, { signal: abortControllerRef.current?.signal });
-        } catch (streamError) {
-          if (abortControllerRef.current?.signal.aborted) {
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n*(generation cancelled)*' }] as Message[];
-              }
-              return prev;
-            });
-          } else {
-            setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : 'MLX stream failed'} (is the MLX model loaded?)` }] as Message[]);
-          }
-        }
-        setIsLoading(false);
-      } else if (isAgenticMode) {
+      if (isAgenticMode) {
         // Use agentic loop with tool calling
         let agenticReasoning = '';
         let agenticGenStats: GenStats | undefined;
@@ -3677,57 +3750,6 @@ ${lines.join('\n')}`;
             return prev;
           });
         }
-      } else if (extraModels.length > 0) {
-        // Many-models fan-out (#126)
-        const allModelIds = [model, ...extraModels];
-        const sameHost = hasSameHostConflict(allModelIds, ollamaBaseUrl, connectedModels, connections);
-        const groupIndex = messages.length; // user turn index after userMessage is added
-
-        // Initialize group with all pending replies
-        const initGroup: ModelGroup = {
-          userTurnIndex: groupIndex,
-          replies: allModelIds.map(mid => ({
-            modelId: mid,
-            label: connectedModels.find(m => m.id === mid)?.name ?? mid,
-            content: '',
-            state: 'pending' as const,
-          })),
-        };
-        setModelGroups(prev => [...prev, initGroup]);
-
-        if (sameHost) {
-          setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ Memory warning: multiple models share the same Ollama host — running sequentially to avoid OOM.` } as Message]);
-        }
-
-        await runManyModels(
-          allModelIds,
-          chatHistory,
-          (modelId, delta, state, error, reasoning) => {
-            setModelGroups(prev => prev.map((g, i) => {
-              if (i !== prev.length - 1) return g;
-              return {
-                ...g,
-                replies: g.replies.map(r => r.modelId !== modelId ? r : {
-                  ...r,
-                  content: state === 'streaming' ? r.content + delta : r.content,
-                  reasoning: state === 'streaming' && reasoning ? (r.reasoning ?? '') + reasoning : r.reasoning,
-                  state,
-                  error,
-                }),
-              };
-            }));
-          },
-          {
-            defaultBaseUrl: ollamaBaseUrl,
-            connectedModels,
-            connections,
-            genOptions,
-            signal: abortControllerRef.current?.signal,
-            streamOllama: fetchOllamaChatStream as any,
-            streamOpenAi: streamOpenAiChat as any,
-          }
-        );
-        setExtraModels([]);
       } else {
         // Route through OpenAI-compatible connection when model belongs to one (#123).
         // Remote Ollama connections use the resolved `endpoint` (already correct above).
@@ -3880,7 +3902,14 @@ ${lines.join('\n')}`;
         const [next, ...rest] = messageQueueRef.current;
         messageQueueRef.current = rest;
         setMessageQueue(rest);
-        setTimeout(() => { void sendMessage(next); }, 0);
+        // Hand off via state rather than calling sendMessage from this closure
+        // (#507). sendMessage is re-created every render and reads `messages`
+        // lexically; invoking it here ran turn 2 against the snapshot taken
+        // BEFORE turn 1's reply existed, so `setMessages([...messages, user])`
+        // silently dropped the previous exchange and saveCurrentSession then
+        // persisted the truncated transcript. The effect below fires it from a
+        // later render, where `messages` already includes turn 1.
+        setPendingQueuedMessage(next);
       }
     }
   };
@@ -4103,11 +4132,9 @@ ${lines.join('\n')}`;
   // Command palette actions (#251)
   const paletteCommands: PaletteCommand[] = [
     { id: 'new-chat', label: 'New Chat', hint: 'Ctrl+K', run: () => startNewChat() },
+    { id: 'temporary-chat', label: 'New Temporary Chat', run: () => startTemporaryChat() },
     { id: 'find', label: 'Find in Chat', hint: 'Ctrl+F', run: () => { setChatSearchOpen(true); setChatSearchIndex(0); } },
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+\\', run: () => setIsSidebarOpen(prev => !prev) },
-    { id: 'toggle-browser', label: 'Toggle Browser', hint: 'Ctrl+B', run: () => togglePanel('browser') },
-    { id: 'toggle-files', label: 'Toggle Files', hint: 'Ctrl+Shift+F', run: () => togglePanel('files') },
-    { id: 'toggle-terminal', label: 'Toggle Terminal', hint: 'Ctrl+T', run: () => togglePanel('terminal') },
     { id: 'open-settings', label: 'Open Settings', hint: 'Ctrl+,', run: () => setIsSettingsOpen(true) },
     { id: 'show-help', label: 'Show Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
     { id: 'autonomy-plan', label: 'Set Autonomy: Plan', run: () => { const s = { ...autonomySettings, level: 'plan' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
@@ -4115,11 +4142,10 @@ ${lines.join('\n')}`;
     { id: 'autonomy-auto', label: 'Set Autonomy: Auto', run: () => { const s = { ...autonomySettings, level: 'auto' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
     { id: 'toggle-theme', label: 'Toggle Theme', hint: 'Ctrl+Shift+D', run: () => toggleTheme() },
     { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
-    { id: 'toggle-artifacts', label: 'Toggle Artifacts Panel', hint: 'Ctrl+Shift+A', run: () => togglePanel('artifacts') },
-    { id: 'toggle-code-search', label: 'Toggle Code Search Panel', run: () => togglePanel('code-search') },
-    { id: 'toggle-source-control', label: 'Toggle Source Control Panel', run: () => togglePanel('source-control') },
-    { id: 'toggle-checkpoints', label: 'Toggle Checkpoints Panel', run: () => togglePanel('checkpoints') },
-    { id: 'toggle-agent-activity', label: 'Toggle Agent Activity Panel', run: () => togglePanel('agent-activity') },
+    { id: 'copy-conversation', label: 'Copy Conversation as Markdown', run: () => { void handleCopyMarkdown(); } },
+    { id: 'export-conversation', label: 'Export Conversation as Markdown', run: () => handleExportMarkdown() },
+    { id: 'export-chats', label: 'Export All Chats (JSON)', run: () => handleExport() },
+    { id: 'import-chats', label: 'Import Chats (JSON)', run: () => importInputRef.current?.click() },
     { id: 'regenerate', label: 'Regenerate Last Reply', hint: 'Ctrl+R', run: () => regenerateLastResponse() },
     { id: 'copy-last-reply', label: 'Copy Last Reply', hint: 'Ctrl+Shift+C', run: () => {
       for (let j = messages.length - 1; j >= 0; j--) {
@@ -4144,92 +4170,114 @@ ${lines.join('\n')}`;
     { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); safeSetItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
   ];
 
+  // One sidebar chat row — used inside project groups and the unscoped list.
+  const renderSessionRow = (s: ChatSession) => (
+    <div
+      key={s.id}
+      onClick={() => openSession(s)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { openSession(s); return; }
+        // Arrow-key navigation between session rows (#329)
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          const list = e.currentTarget.parentElement;
+          if (!list) return;
+          const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]'));
+          const idx = rows.indexOf(e.currentTarget);
+          if (idx === -1) return;
+          const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+          rows[nextIdx]?.focus();
+        }
+      }}
+      onContextMenu={(e) => { e.preventDefault(); setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id }); }}
+      aria-label={`Load session: ${s.title}`}
+      className={`group px-2 py-1.5 rounded-md cursor-pointer transition-colors flex items-center ${
+        currentSessionId === s.id
+          ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900')
+          : (dark ? 'hover:bg-zinc-800/60 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600')
+      }`}
+    >
+      {renamingSessionId === s.id ? (
+        <input
+          autoFocus
+          value={renameDraft}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => setRenameDraft(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commitRename();
+            else if (e.key === 'Escape') cancelRename();
+          }}
+          onBlur={commitRename}
+          aria-label="Rename conversation"
+          className={`flex-1 text-xs px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+        />
+      ) : (
+        <span className="flex-1 min-w-0 truncate text-xs">{s.pinned ? '📌 ' : ''}{s.title}</span>
+      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }}
+        title="Delete"
+        aria-label={`Delete session: ${s.title}`}
+        className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 p-1 text-xs hover:text-red-400"
+      >✕</button>
+    </div>
+  );
+
   return (
     <CodeWordWrapContext.Provider value={{ wordWrap: codeWordWrap, toggle: toggleCodeWordWrap }}>
     <div className={`flex h-screen font-sans transition-colors duration-300 ${
-      dark ? 'bg-zinc-900 text-zinc-100' : 'bg-zinc-100 text-zinc-900'
+      dark ? 'bg-zinc-900 text-zinc-100' : 'bg-white text-zinc-900'
     }`}>
 
-      {/* Sidebar - Responsive: hidden on mobile by default, toggleable */}
+      {/* Sidebar — projects with their chat sessions nested beneath (Ollama-style) */}
       <div className={`transition-all duration-300 border-r flex flex-col absolute md:relative z-40 ${
-        (isSidebarOpen && !zenMode) ? 'w-64 p-4' : 'w-0 overflow-hidden p-0 border-none'
-      } ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'} ${
+        (isSidebarOpen && !zenMode) ? 'w-64 p-3' : 'w-0 overflow-hidden p-0 border-none'
+      } ${dark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'} ${
         isMobile && !isSidebarOpen ? 'hidden' : ''
       }`}>
-        <h1 className="text-xl font-bold mb-4">Ollama GUI</h1>
-
-             <button
-               onClick={() => startNewChat()}
-               aria-label="Start new chat"
-               className={`w-full py-2 px-4 rounded-lg transition-colors mb-2 text-sm font-semibold ${
-                 dark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100' : 'bg-zinc-200 hover:bg-zinc-300 text-zinc-900'
-               }`}
-             >
-               + New Chat
-             </button>
-             <button
-               onClick={startTemporaryChat}
-               aria-label="Start temporary chat"
-               title="A scratch chat that is never saved to history"
-               className={`w-full py-1.5 px-4 rounded-lg transition-colors mb-3 text-xs border ${
-                 dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'
-               }`}
-             >
-               🕶 Temporary chat
-             </button>
-
-        {/* Project switcher (#92) */}
-        <div className={`mb-2 rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-300'}`}>
-          <div className={`flex items-center justify-between px-3 py-1.5 text-xs font-semibold ${dark ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500'}`}>
-            <span>📁 Project</span>
-            <button onClick={() => setShowAddProject(v => !v)} className="hover:opacity-70">+</button>
-          </div>
+        {/* New chat — the user picks which project it belongs to (#542) */}
+        <div className="relative mb-2">
           <button
-            onClick={() => { setActiveProjectId(null); startNewChat(null); }}
-            className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${activeProjectId === null ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
-          >🌐 No project</button>
-          {projects.map(p => (
-            <div key={p.id} className="group/proj flex items-center">
+            onClick={() => {
+              if (projects.length === 0) { void createProjectFromFolder(); return; }
+              setNewMenuOpen(v => !v);
+            }}
+            aria-label="Start new chat"
+            aria-haspopup="menu"
+            aria-expanded={newMenuOpen}
+            className={`w-full py-2 px-4 rounded-lg transition-colors text-sm font-semibold ${
+              dark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900'
+            }`}
+          >
+            + New
+          </button>
+          {newMenuOpen && (
+            <div role="menu" aria-label="New chat in project" className={`absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-lg z-50 max-h-64 overflow-y-auto ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+              {projects.map(p => (
+                <button
+                  key={p.id}
+                  role="menuitem"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    setExpandedProjects(prev => new Set(prev).add(p.id));
+                    startNewChat(p.id);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-xs truncate ${dark ? 'hover:bg-zinc-700 text-zinc-200' : 'hover:bg-zinc-50 text-zinc-800'}`}
+                >📂 {p.name}</button>
+              ))}
               <button
-                onClick={() => { setActiveProjectId(p.id); startNewChat(p.id); }}
-                className={`flex-1 text-left px-3 py-1.5 text-xs transition-colors truncate ${activeProjectId === p.id ? (dark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'text-zinc-300 hover:bg-zinc-700' : 'text-zinc-700 hover:bg-zinc-100')}`}
-              >📂 {p.name}</button>
+                role="menuitem"
+                onClick={() => { setNewMenuOpen(false); startNewChat(null); }}
+                className={`w-full text-left px-3 py-2 text-xs ${dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-50 text-zinc-500'}`}
+              >🌐 No project</button>
               <button
-                onClick={() => {
-                  if (confirm(`Delete project "${p.name}"?`)) {
-                    storage.deleteProject(p.id);
-                    setProjects(storage.getProjects());
-                    setSessions(storage.getSessions());
-                    if (activeProjectId === p.id) setActiveProjectId(null);
-                  }
-                }}
-                className="opacity-0 group-hover/proj:opacity-100 px-2 text-[10px] text-red-400 hover:text-red-300"
-                aria-label={`Delete project ${p.name}`}
-              >✕</button>
-            </div>
-          ))}
-          {showAddProject && (
-            <div className={`p-2 border-t ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
-              <input
-                value={newProjectName}
-                onChange={e => setNewProjectName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && newProjectName.trim()) {
-                    const proj: Project = { id: `proj_${Date.now()}`, name: newProjectName.trim(), workspaceRoot: '', instructions: '', createdAt: Date.now() };
-                    storage.saveProject(proj);
-                    setProjects(storage.getProjects());
-                    setNewProjectName('');
-                    setShowAddProject(false);
-                    setActiveProjectId(proj.id);
-                  } else if (e.key === 'Escape') {
-                    setShowAddProject(false);
-                  }
-                }}
-                placeholder="Project name…"
-                autoFocus
-                className={`w-full text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400'}`}
-              />
-              <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Press Enter to create</p>
+                role="menuitem"
+                onClick={() => { setNewMenuOpen(false); void createProjectFromFolder(); }}
+                className={`w-full text-left px-3 py-2 text-xs border-t ${dark ? 'hover:bg-zinc-700 text-zinc-400 border-zinc-700' : 'hover:bg-zinc-50 text-zinc-500 border-zinc-200'}`}
+              >＋ New project from a folder…</button>
             </div>
           )}
         </div>
@@ -4242,289 +4290,103 @@ ${lines.join('\n')}`;
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search conversations..."
-          className={`w-full text-xs border rounded-lg px-3 py-2 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-            dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-100 border-zinc-300 text-zinc-900 placeholder-zinc-400'
+          className={`w-full text-xs border rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-50 border-zinc-200 text-zinc-900 placeholder-zinc-400'
           }`}
         />
 
-        {/* Conversation-list sort selector (#327) */}
-        <div className="flex items-center gap-1 mb-2">
-          <span className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Sort:</span>
-          {(['recent', 'name', 'messages'] as const).map(m => (
+        {/* Projects — click a name to show its sessions; + starts a chat in it */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex items-center justify-between px-1 mb-1">
+            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Projects</span>
             <button
-              key={m}
-              onClick={() => { setSortMode(m); safeSetItem('ollama_gui_sort_mode', m); }}
-              aria-label={`Sort by ${m}`}
-              aria-pressed={sortMode === m}
-              className={`text-[10px] px-2 py-0.5 rounded-full border ${sortMode === m ? 'bg-blue-600 text-white border-blue-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
-            >{m === 'recent' ? 'Recent' : m === 'name' ? 'Name' : 'Messages'}</button>
-          ))}
-        </div>
-
-        {/* Bulk selection toggle + action bar (#338) */}
-        <div className="flex items-center gap-1 mb-2 flex-wrap">
-          {bulkSelectMode ? (
-            <>
-              <span className={`text-[10px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{bulkSelectedIds.size} selected</span>
-              <button
-                onClick={bulkArchiveSelected}
-                disabled={bulkSelectedIds.size === 0}
-                aria-label="Bulk archive selected"
-                className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-600 text-white border-amber-600 disabled:opacity-50"
-              >🗄 Archive ({bulkSelectedIds.size})</button>
-              <button
-                onClick={bulkDeleteSelected}
-                disabled={bulkSelectedIds.size === 0}
-                aria-label="Bulk delete selected"
-                className="text-[10px] px-2 py-0.5 rounded-full border bg-red-600 text-white border-red-600 disabled:opacity-50"
-              >✕ Delete ({bulkSelectedIds.size})</button>
-              <button
-                onClick={exitBulkSelect}
-                aria-label="Exit bulk select mode"
-                className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
-              >Cancel</button>
-            </>
-          ) : (
-            <button
-              onClick={enterBulkSelect}
-              aria-label="Enter bulk select mode"
-              className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'}`}
-            >☑ Select</button>
+              onClick={() => { void createProjectFromFolder(); }}
+              disabled={creatingProject}
+              title="New project from a folder"
+              aria-label="New project from a folder"
+              className={`px-1.5 rounded hover:opacity-70 disabled:opacity-40 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}
+            >{creatingProject ? '…' : '+'}</button>
+          </div>
+          {projects.length === 0 && (
+            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No projects yet — click + to open a folder.</p>
           )}
-        </div>
-
-        {/* Folder chips + archived toggle (#133) */}
-        <div className="flex items-center flex-wrap gap-1 mb-2">
-          <button
-            onClick={() => { setFolderFilter(null); setShowArchived(false); }}
-            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId('__all__'); }}
-            onDragLeave={() => setDragOverFolderId(prev => prev === '__all__' ? null : prev)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOverFolderId(null);
-              const sessionId = e.dataTransfer.getData('text/session-id');
-              if (sessionId) { moveToFolder(sessionId, ''); showStatusBanner('Moved to All (unfiled)'); }
-            }}
-            title="All conversations — drag a chat here to unfile it"
-            className={`text-[10px] px-2 py-0.5 rounded-full border ${
-              dragOverFolderId === '__all__'
-                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
-                : folderFilter === null && !showArchived ? 'bg-blue-600 text-white border-blue-600'
-                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
-            }`}
-          >All</button>
-         {folders.map(f => (
-           <button
-             key={f.id}
-             onClick={() => { setFolderFilter(f.id); setShowArchived(false); }}
-            title={`Folder: ${f.name} (long-press the ✕ to delete — or drag a chat here)`}
-            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverFolderId(f.id); }}
-            onDragLeave={() => setDragOverFolderId(prev => prev === f.id ? null : prev)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOverFolderId(null);
-              const sessionId = e.dataTransfer.getData('text/session-id');
-              if (sessionId) { moveToFolder(sessionId, f.id); showStatusBanner(`Moved to "${f.name}"`); }
-            }}
-            className={`group/folder text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
-              dragOverFolderId === f.id
-                ? 'ring-2 ring-blue-400 bg-blue-600 text-white border-blue-600'
-                : folderFilter === f.id ? 'bg-blue-600 text-white border-blue-600'
-                : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')
-            }`}
-          >
-              🗂 {f.name}
-              <span onClick={(e) => { e.stopPropagation(); renameFolder(f.id); }} title="Rename folder" aria-label={`Rename folder: ${f.name}`} className="opacity-0 group-hover/folder:opacity-100 hover:text-blue-300">✏️</span>
-              <span onClick={(e) => { e.stopPropagation(); if (confirm(`Delete folder "${f.name}"? Chats stay, just ungrouped.`)) removeFolder(f.id); }} className="opacity-0 group-hover/folder:opacity-100 hover:text-red-300">✕</span>
-            </button>
-          ))}
-          <button onClick={createFolder} className={`text-[10px] px-2 py-0.5 rounded-full border ${dark ? 'border-zinc-700 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-200'}`}>+ folder</button>
-          <button
-            onClick={() => { setShowArchived(v => !v); setFolderFilter(null); }}
-            className={`text-[10px] px-2 py-0.5 rounded-full border ${showArchived ? 'bg-amber-600 text-white border-amber-600' : (dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}
-          >🗄 Archived</button>
-          {tagFilter && (
-            <button
-              className="text-[10px] px-2 py-0.5 rounded-full border bg-blue-600 text-white border-blue-600 inline-flex items-center gap-1"
-              onClick={() => setTagFilter(null)}
-            >🏷 {tagFilter} ✕</button>
-          )}
-        </div>
-
-        {/* Session list */}
-        <div className="flex-1 overflow-y-auto space-y-1">
-          <p className={`text-xs uppercase font-semibold mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-            {searchQuery ? `Results (${filteredSessions.length})` : showArchived ? 'Archived' : folderFilter ? folders.find(f => f.id === folderFilter)?.name : 'History'}
-          </p>
-          {filteredSessions.length === 0 && (
-            <div className={`text-sm italic ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-              {searchQuery ? 'No matches.' : showArchived ? 'No archived chats.' : 'No past conversations.'}
-            </div>
-          )}
-          {filteredSessions.map((s, idx) => {
-                   const prevS = filteredSessions[idx - 1];
-                   const showPinnedLabel = !!s.pinned && !(prevS?.pinned);
-                   const useDateGroups = sortMode === 'recent';
-                   const bucket = (!s.pinned && useDateGroups) ? conversationDateBucket(s.createdAt) : null;
-                   const prevBucket = (prevS && !prevS.pinned && useDateGroups) ? conversationDateBucket(prevS.createdAt) : null;
-                   const showBucketLabel = !!bucket && bucket !== prevBucket;
-                   return (
-                   <React.Fragment key={s.id}>
-                     {showPinnedLabel && (
-                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Pinned</p>
-                     )}
-                     {showBucketLabel && (
-                       <p className={`text-xs uppercase font-semibold mt-2 mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{bucket}</p>
-                     )}
-                  <div
-                    onClick={() => bulkSelectMode ? toggleBulkSelected(s.id) : loadSession(s)}
-                    role="button"
-                    tabIndex={0}
-                    draggable={!bulkSelectMode && !renamingSessionId}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('text/session-id', s.id);
-                      e.dataTransfer.effectAllowed = 'move';
+          {projects.map(p => {
+            const expanded = expandedProjects.has(p.id);
+            const projSessions = sessionsForProject(p.id);
+            return (
+              <div key={p.id} className="mb-0.5">
+                <div className="group/proj flex items-center">
+                  <button
+                    onClick={() => { toggleProjectExpanded(p.id); setActiveProjectId(p.id); }}
+                    aria-expanded={expanded}
+                    aria-current={activeProjectId === p.id}
+                    aria-label={p.name}
+                    title={projectRoots(p)[0] ?? 'No folder bound'}
+                    className={`flex-1 min-w-0 text-left px-2 py-1.5 text-sm rounded-md transition-colors ${
+                      activeProjectId === p.id
+                        ? (dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900')
+                        : (dark ? 'text-zinc-300 hover:bg-zinc-800/60' : 'text-zinc-700 hover:bg-zinc-100')
+                    }`}
+                  >
+                    <span className="block truncate">
+                      <span className={`inline-block w-3 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{expanded ? '▾' : '▸'}</span>
+                      {p.name}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setExpandedProjects(prev => new Set(prev).add(p.id));
+                      startNewChat(p.id);
                     }}
-                    onKeyDown={(e) => {
-                       if (e.key === 'Enter') { loadSession(s); return; }
-                       // Arrow-key navigation between session rows (#329)
-                       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                         e.preventDefault();
-                         const list = e.currentTarget.parentElement;
-                         if (!list) return;
-                         const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]'));
-                         const idx = rows.indexOf(e.currentTarget);
-                         if (idx === -1) return;
-                         const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
-                         rows[nextIdx]?.focus();
-                       }
-                     }}
-                     onContextMenu={(e) => { e.preventDefault(); setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id }); }}
-                     aria-label={`Load session: ${s.title}`}
-                     className={`group p-2 rounded-md cursor-pointer transition-colors ${
-                       currentSessionId === s.id
-                         ? (dark ? 'bg-zinc-700 text-white' : 'bg-zinc-300 text-zinc-900')
-                         : (dark ? 'hover:bg-zinc-700/50 text-zinc-300' : 'hover:bg-zinc-200 text-zinc-600')
-                     }`}
-                   >
-              <div className="flex items-center justify-between">
-                {bulkSelectMode && (
-                  <input
-                    type="checkbox"
-                    checked={bulkSelectedIds.has(s.id)}
-                    onChange={() => toggleBulkSelected(s.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Select session: ${s.title}`}
-                    className="shrink-0 mr-1"
-                  />
-                )}
-                {renamingSessionId === s.id ? (
-                  <input
-                    autoFocus
-                    value={renameDraft}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') commitRename();
-                      else if (e.key === 'Escape') cancelRename();
+                    title={`New chat in ${p.name}`}
+                    aria-label={`New chat in project ${p.name}`}
+                    className={`opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1.5 text-sm ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
+                  >+</button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete project "${p.name}"?`)) {
+                        storage.deleteProject(p.id);
+                        setProjects(storage.getProjects());
+                        setSessions(storage.getSessions());
+                        if (activeProjectId === p.id) setActiveProjectId(null);
+                      }
                     }}
-                    onBlur={commitRename}
-                    aria-label="Rename conversation"
-                    className={`flex-1 text-sm px-1 py-0.5 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                  />
-                ) : (
-                  <div className="flex-1 min-w-0">
-                    <span className="truncate text-sm block">{s.pinned ? '📌 ' : ''}{s.title}</span>
-                    <div className="flex items-center gap-1.5">
-                      {s.messages.length > 0 && (
-                        <span className={`text-[9px] ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{s.messages.length} {s.messages.length === 1 ? 'msg' : 'msgs'}</span>
-                      )}
-                      {/* Per-session model badge (#334) */}
-                      {s.model && (
-                        <span
-                          title={`Model: ${s.model}`}
-                          className={`text-[9px] truncate max-w-[8rem] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}
-                        >{s.model}</span>
-                      )}
-                    </div>
+                    className="opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1 text-[10px] text-red-400 hover:text-red-300"
+                    aria-label={`Delete project ${p.name}`}
+                  >✕</button>
+                </div>
+                {expanded && (
+                  <div className={`ml-2.5 pl-1.5 border-l ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
+                    {projSessions.length === 0 && (
+                      <p className={`text-xs italic px-2 py-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No chats yet.</p>
+                    )}
+                    {projSessions.map(s => renderSessionRow(s))}
                   </div>
                 )}
-                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  <button onClick={(e) => { e.stopPropagation(); startRename(s.id, s.title); }} title="Rename" aria-label={`Rename session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">✏️</button>
-                  <button onClick={(e) => { e.stopPropagation(); togglePin(s.id); }} title={s.pinned ? 'Unpin' : 'Pin'} aria-label={`${s.pinned ? 'Unpin' : 'Pin'} session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📌</button>
-                  <button onClick={(e) => { e.stopPropagation(); addTagToSession(s.id); }} title="Add tag" aria-label={`Add tag to session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">🏷</button>
-                  <button onClick={(e) => { e.stopPropagation(); toggleArchive(s.id); }} title={s.archived ? 'Unarchive' : 'Archive'} aria-label={`${s.archived ? 'Unarchive' : 'Archive'} session: ${s.title}`} className="p-1 text-xs hover:text-amber-400">🗄</button>
-                  <button onClick={(e) => { e.stopPropagation(); duplicateSession(s.id); }} title="Duplicate" aria-label={`Duplicate session: ${s.title}`} className="p-1 text-xs hover:text-blue-400">📑</button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id, s.title); }} title="Delete" aria-label={`Delete session: ${s.title}`} className="p-1 text-xs hover:text-red-400">✕</button>
-                </div>
               </div>
-              {/* tags + folder controls */}
-              {((s.tags && s.tags.length > 0) || folders.length > 0) && (
-                <div className="flex items-center flex-wrap gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
-                  {(s.tags ?? []).map(tag => (
-                    <span key={tag} className={`text-[9px] px-1 rounded inline-flex items-center gap-0.5 ${tagFilter === tag ? 'bg-blue-600 text-white' : (dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-200 text-zinc-600')}`}>
-                      <button onClick={() => setTagFilter(prev => prev === tag ? null : tag)} className="hover:underline" title={tagFilter === tag ? 'Clear tag filter' : 'Filter by tag'}>{tag}</button>
-                      <button aria-label={`Remove tag ${tag}`} onClick={() => removeTagFromSession(s.id, tag)} className="hover:text-red-400">×</button>
-                    </span>
-                  ))}
-                  {folders.length > 0 && (
-                    <select
-                      value={s.folderId ?? ''}
-                      onChange={(e) => moveToFolder(s.id, e.target.value)}
-                      className={`text-[9px] rounded border bg-transparent ${dark ? 'border-zinc-700 text-zinc-400' : 'border-zinc-300 text-zinc-500'} opacity-0 group-hover:opacity-100`}
-                    >
-                      <option value="">No folder</option>
-                      {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                    </select>
-                  )}
-                </div>
-              )}
-            </div>
-                   </React.Fragment>
-          );
+            );
           })}
+
+          {/* Sessions not bound to any project */}
+          {unscopedSessions.length > 0 && (
+            <>
+              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Chats</p>
+              {unscopedSessions.map(s => renderSessionRow(s))}
+            </>
+          )}
         </div>
 
         {/* Bottom actions */}
-        <div className={`mt-4 space-y-1 border-t pt-3 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-          {/* M5 Issue 19: Export / Import */}
-          <div className="flex gap-1">
-            <button
-              onClick={handleExport}
-              className={`flex-1 py-1.5 px-3 text-xs rounded-lg transition-all text-center ${
-                dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-              }`}
-            >
-              Export
-            </button>
-            <button
-              onClick={() => importInputRef.current?.click()}
-              className={`flex-1 py-1.5 px-3 text-xs rounded-lg transition-all text-center ${
-                dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-              }`}
-            >
-              Import
-            </button>
-            <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
-          </div>
-
-          <button
-            onClick={toggleTheme}
-            className={`w-full py-2 px-4 text-sm rounded-lg transition-all text-left flex items-center gap-2 ${
-              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
-            }`}
-          >
-            {dark ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
+        <div className={`mt-2 border-t pt-2 ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
           <button
             onClick={() => setIsSettingsOpen(true)}
             className={`w-full py-2 px-4 text-sm rounded-lg transition-all text-left flex items-center gap-2 ${
-              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
+              dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
             }`}
           >
             ⚙️ Settings
           </button>
+          <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
         </div>
       </div>
 
@@ -4532,366 +4394,60 @@ ${lines.join('\n')}`;
       <div className={`flex-1 flex flex-col relative overflow-hidden ${
         isMobile && isSidebarOpen && !zenMode ? 'ml-64' : ''
       }`}>
-        {/* Shared resizable layout shell — owns the chat+dock split (#70/#81).
-            Near-passthrough until a panel registers + opens. */}
-        <PanelShell dark={dark}>
-        {/* Header */}
-        {/* overflow-x-auto (#450): at narrow/moderate widths the toolbar used to
-            clip its controls with no way to reach them; now it scrolls. */}
-        <header className={`h-14 border-b flex items-center justify-between gap-2 px-3 md:px-6 overflow-x-auto transition-colors duration-300 shrink-0 ${
-          dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-300 bg-white/50'
-        } backdrop-blur-sm`}>
-            <div className="flex items-center gap-4">
-             <button
-               onClick={() => setIsSidebarOpen(prev => !prev)}
-               title="Toggle sidebar (Ctrl+\)"
-               aria-label="Toggle sidebar"
-               className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-             >
-               ☰
-             </button>
-              {/* Ollama connection status indicator (#324) */}
-              <span
-                aria-label="Ollama connection status"
-                title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
-                className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-                  ollamaConnected === null
-                    ? 'bg-zinc-400'
-                    : ollamaConnected
-                      ? 'bg-emerald-500'
-                      : 'bg-red-500'
-                }`}
-              />
-              <select
-                value={activePresetId ? `preset:${activePresetId}` : model}
-                title="● = model loaded in memory (warm). Use /running to list, /warm to load, /unload to free RAM."
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val.startsWith('preset:')) {
-                    const id = val.slice(7);
-                    const preset = presets.find(p => p.id === id);
-                    if (preset) {
-                      applyPreset(preset, { setModel, setSystemPrompt, setGenOptions });
-                      setActivePresetId(id);
-                      setActivePreset(id);
-                    }
-                  } else {
-                    setModel(val);
-                    setActivePresetId(null);
-                    clearActivePreset();
-                  }
-                }}
-                aria-label="Select AI model"
-                className={`text-sm border rounded-md px-2 py-1 min-w-[10rem] max-w-[22rem] focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'
-                }`}
-              >
-               {/* Empty-state placeholder (#438): without this the dropdown renders
-                   zero options and is a blank, unexplained control on fresh installs. */}
-               {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
-                 <option value="" disabled>
-                   {ollamaConnected === false
-                     ? 'No models — is Ollama running?'
-                     : 'No models — pull one (e.g. ollama pull llama3)'}
-                 </option>
-               )}
-               {starredModels.length > 0 && !activePresetId && (
-                 <optgroup label="— ★ Starred —">
-                   {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-               {recentModels.length > 0 && !activePresetId && (
-                 <optgroup label="— Recent —">
-                   {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
-                      <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-                {presets.length > 0 && (
-                  <optgroup label="— Presets —">
-                    {presets.map(p => (
-                      <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
-                        {p.icon ? `${p.icon} ` : ''}{p.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-               {models.filter(m => !m.cloud).length > 0 && (
-                 <optgroup label="— Local Ollama —">
-                   {models.filter(m => !m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
-                   ))}
-                 </optgroup>
-               )}
-                {models.filter(m => m.cloud).length > 0 && (
-                  <optgroup label="— Cloud Ollama —">
-                    {models.filter(m => m.cloud).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {/* Extra connection models grouped by connection (#123) */}
-                {connections.filter(c => c.enabled).map(conn => {
-                  const connModels = connectedModels.filter(m => m.connectionId === conn.id);
-                  if (!connModels.length) return null;
-                  const groupLabel = conn.kind === 'ollama'
-                    ? `— Remote Ollama: ${conn.name} —`
-                    : `— ${conn.name} —`;
-                  return (
-                    <optgroup key={conn.id} label={groupLabel}>
-                      {connModels.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-              </select>
-              {/* Always-visible workspace folder indicator + picker (#481) */}
-              <WorkspaceChip dark={dark} />
-              {/* Star/favourite the current model (#339) */}
-              <button
-                onClick={() => toggleStarModel(model)}
-                aria-label={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
-                aria-pressed={starredModels.includes(model)}
-                title={starredModels.includes(model) ? 'Unstar model' : 'Star model'}
-                className={`p-1 rounded-md text-sm transition-colors ${starredModels.includes(model) ? 'text-amber-400' : (dark ? 'text-zinc-500 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-              >{starredModels.includes(model) ? '★' : '☆'}</button>
-              {models.find(m => m.name === model)?.cloud && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>
-                  ⛅ Cloud
-                </span>
-              )}
-              {(() => {
-                const cm = connectedModels.find(m => m.id === model);
-                const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
-                if (!conn) return null;
-                return (
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
-                    title={conn.baseUrl}>
-                    {conn.kind === 'ollama' ? '🌐 Remote' : conn.name}
-                  </span>
-                );
-              })()}
-              {isAgenticMode && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
-                  🤖 Agent
-                </span>
-              )}
-              {isAgenticMode && isLoading && agentStatus && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  aria-label={`Agent status: ${agentStep ? `step ${agentStep.iteration} of ${agentStep.max}, ` : ''}${agentStatus}`}
-                  className={`text-xs px-2 py-0.5 rounded-full animate-pulse ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-200 text-zinc-700'}`}
-                >
-                  {agentStep && <span className="opacity-70 mr-1">Step {agentStep.iteration}/{agentStep.max}</span>}
-                  {agentStatus}
-                </span>
-              )}
-              {mlxAvailability?.available && mlxSettings.cloudBrainLocalWorker && mlxSettings.brainModel && mlxSettings.workerModel && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}>
-                  🧠 Brain·Worker
-                </span>
-              )}
-              {mlxAvailability?.available && (mlxSettings.fullInference || mlxSettings.detectIndicate) && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>
-                  ⚡ MLX{mlxSettings.fullInference ? '' : ' detected'}
-                </span>
-              )}
-              {/* Generation parameters badge (#325) */}
-              <span
-                aria-label="Generation parameters"
-                title={`Temperature: ${genOptions.temperature ?? 'default'} · Context: ${genOptions.num_ctx ?? 4096} · Top-p: ${genOptions.top_p ?? 'default'} · Top-k: ${genOptions.top_k ?? 'default'} · Max tokens: ${genOptions.num_predict === undefined ? 'unlimited' : genOptions.num_predict}`}
-                className={`text-xs px-2 py-0.5 rounded-full font-mono ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-600'}`}
-              >
-                T:{genOptions.temperature ?? 'def'} · CTX:{genOptions.num_ctx ?? 4096}
-              </span>
-             </div>
-           <div className="flex items-center gap-3">
-             {/* Autonomy / approval-mode quick selector (#355) */}
-             <div className={`flex items-center rounded-md overflow-hidden border shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-300'}`} role="group" aria-label="Autonomy level">
-               {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(lv => (
-                 <button
-                   key={lv}
-                   aria-pressed={autonomySettings.level === lv}
-                   aria-label={`Set autonomy: ${lv}`}
-                   title={`Autonomy: ${lv}`}
-                   onClick={() => { const s = { ...autonomySettings, level: lv }; setAutonomySettings(s); saveAutonomySettings(s); }}
-                   className={`px-2 py-1 text-xs capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-700' : 'text-zinc-600 hover:bg-zinc-100')}`}
-                 >{lv}</button>
-               ))}
-             </div>
-             {/* On mobile, show only essential buttons; others go in mobile menu */}
-             {!isMobile ? (
-               <>
-                 <div className={`text-xs font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{ollamaBaseUrl}</div>
-                 <button
-                   onClick={() => setIsSettingsOpen(prev => !prev)}
-                   title="Settings (Ctrl+,)"
-                   aria-label="Open settings"
-                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ⚙️
-                 </button>
-                 {sttConfig.enabled && (
-                   <button
-                     onClick={() => {
-                       if (voiceCallActive) {
-                         voiceCallHandleRef.current?.stop();
-                         setVoiceCallActive(false);
-                       } else {
-                         setVoiceCallActive(true);
-                         setVoiceCallTranscript('');
-                         setVoiceCallResponse('');
-                         const handle = startVoiceCall(
-                           {
-                             transcribeFn: (blob) => transcribeBlob(blob, sttConfig),
-                             speakFn: defaultSpeak,
-                             recordUtteranceFn: defaultRecordUtterance,
-                             chatFn: async (text, onChunk, signal) => {
-                               const history: import('./services/ollama').Message[] = [
-                                 { role: 'system', content: systemPrompt },
-                                 ...messages,
-                                 { role: 'user', content: text },
-                               ];
-                               let full = '';
-                               await import('./services/ollama').then(({ fetchOllamaChatStream }) =>
-                                 fetchOllamaChatStream(model, history, (chunk) => {
-                                   const delta = chunk.message?.content ?? '';
-                                   full += delta;
-                                   onChunk(delta);
-                                 }, url('/api/chat'), false, {}, signal)
-                               );
-                               setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: full }]);
-                               return full;
-                             },
-                           },
-                           {
-                             onStateChange: setVoiceCallState,
-                             onTranscript: setVoiceCallTranscript,
-                             onResponseChunk: (delta) => setVoiceCallResponse(prev => prev + delta),
-                             onResponseComplete: () => setVoiceCallResponse(''),
-                             onError: (e) => console.error('Voice call error', e),
-                           }
-                         );
-                         voiceCallHandleRef.current = handle;
-                       }
-                     }}
-                     title={voiceCallActive ? 'End voice call' : 'Start voice call'}
-                     aria-label={voiceCallActive ? 'End voice call' : 'Start voice call'}
-                     className={`p-2 rounded-md transition-colors ${voiceCallActive ? 'text-red-500 animate-pulse' : dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                   >
-                     📞
-                   </button>
-                 )}
-                 {/* Artifact canvas toggle (#99) */}
-                 {latestArtifact && (
-                   <button
-                     onClick={() => togglePanel('artifacts')}
-                     title={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     aria-label={isPanelOpen('artifacts') ? 'Close artifacts panel' : 'Open artifacts panel'}
-                     aria-pressed={isPanelOpen('artifacts')}
-                     className={`p-2 rounded-md transition-colors ${isPanelOpen('artifacts') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                   >
-                     🖼
-                   </button>
-                 )}
-                 {/* File tree toggle (#85) */}
-                 <button
-                   onClick={() => togglePanel('files')}
-                   title={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
-                   aria-label={isPanelOpen('files') ? 'Close files panel' : 'Open files panel'}
-                   aria-pressed={isPanelOpen('files')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('files') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   📁
-                 </button>
-                 {/* Browser preview toggle (#71) */}
-                 <button
-                   onClick={() => togglePanel('browser')}
-                   title="Toggle browser (Ctrl+B)"
-                   aria-label="Toggle browser preview"
-                   aria-pressed={isPanelOpen('browser')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('browser') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   🌐
-                 </button>
-                 {/* Terminal toggle (#87) */}
-                 <button
-                   onClick={() => togglePanel('terminal')}
-                   title={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
-                   aria-label={isPanelOpen('terminal') ? 'Close terminal panel' : 'Open terminal panel'}
-                   aria-pressed={isPanelOpen('terminal')}
-                   className={`p-2 rounded-md transition-colors ${isPanelOpen('terminal') ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   ▶
-                 </button>
-                 {/* New dock-panel toggles (M176): code search, source control, checkpoints, activity */}
-                 {([
-                   { id: 'code-search', icon: '🔎', label: 'Code Search' },
-                   { id: 'source-control', icon: '⑂', label: 'Source Control' },
-                   { id: 'checkpoints', icon: '🕰', label: 'Checkpoints' },
-                   { id: 'agent-activity', icon: '📡', label: 'Agent Activity' },
-                 ] as const).map(p => (
-                   <button
-                     key={p.id}
-                     onClick={() => togglePanel(p.id)}
-                     title={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label.toLowerCase()} panel`}
-                     aria-label={`${isPanelOpen(p.id) ? 'Close' : 'Open'} ${p.label} panel`}
-                     aria-pressed={isPanelOpen(p.id)}
-                     className={`p-2 rounded-md transition-colors ${isPanelOpen(p.id) ? (dark ? 'bg-blue-800 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                   >
-                     {p.icon}
-                   </button>
-                 ))}
-                 <ConversationStatsButton
-                   stats={computeConversationStats(messages)}
-                   dark={dark}
-                 />
-                 <button
-                   onClick={handleCopyMarkdown}
-                   title="Copy conversation as Markdown"
-                   aria-label="Copy conversation as Markdown"
-                   disabled={messages.length === 0}
-                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${copiedChat ? (dark ? 'text-green-400' : 'text-green-600') : (dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600')}`}
-                 >
-                   {copiedChat ? '✓' : '📋'}
-                 </button>
-                 <button
-                   onClick={handleExportMarkdown}
-                   title="Export conversation as Markdown"
-                   aria-label="Export conversation as Markdown"
-                   disabled={messages.length === 0}
-                   className={`p-2 rounded-md transition-colors disabled:opacity-40 ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ⬇️
-                 </button>
-                 <button
-                   onClick={() => setShowHelp(prev => !prev)}
-                   title="Keyboard shortcuts (?)"
-                   aria-label="Show keyboard shortcuts"
-                   className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 >
-                   ❓
-                 </button>
-               </>
-             ) : (
-               <button
-                 onClick={(e) => {
-                   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                   setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
-                 }}
-                 className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'}`}
-                 title="Menu"
-                 aria-label="Open menu"
-                 aria-haspopup="menu"
-               >
-                 ⋯
-               </button>
-             )}
-           </div>
+        {/* Header — minimal, Ollama-style: no buttons on the right. */}
+        <header className={`h-12 border-b flex items-center gap-3 px-4 shrink-0 transition-colors duration-300 ${
+          dark ? 'border-zinc-800 bg-zinc-900' : 'border-zinc-200 bg-white'
+        }`}>
+          {isMobile && (
+            <button
+              onClick={() => setIsSidebarOpen(prev => !prev)}
+              title="Toggle sidebar (Ctrl+\\)"
+              aria-label="Toggle sidebar"
+              className={`p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600'}`}
+            >
+              ☰
+            </button>
+          )}
+          {/* Ollama connection status indicator (#324) */}
+          <span
+            aria-label="Ollama connection status"
+            title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
+            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+              ollamaConnected === null
+                ? 'bg-zinc-400'
+                : ollamaConnected
+                  ? 'bg-emerald-500'
+                  : 'bg-red-500'
+            }`}
+          />
+          <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+            {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
+          </span>
+          {isAgenticMode && isLoading && agentStatus && (
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={`Agent status: ${agentStep ? `step ${agentStep.iteration} of ${agentStep.max}, ` : ''}${agentStatus}`}
+              className={`text-xs px-2 py-0.5 rounded-full animate-pulse shrink-0 ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-100 text-zinc-700'}`}
+            >
+              {agentStep && <span className="opacity-70 mr-1">Step {agentStep.iteration}/{agentStep.max}</span>}
+              {agentStatus}
+            </span>
+          )}
+          {isMobile && (
+            <button
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
+              }}
+              className={`ml-auto p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600'}`}
+              title="Menu"
+              aria-label="Open menu"
+              aria-haspopup="menu"
+            >
+              ⋯
+            </button>
+          )}
         </header>
 
         {/* Mobile action menu (#445): panel toggles + tools that the collapsed
@@ -4905,16 +4461,8 @@ ${lines.join('\n')}`;
             items={[
               { label: isSidebarOpen ? 'Hide sidebar' : 'Show sidebar', onSelect: () => setIsSidebarOpen(!isSidebarOpen) },
               { label: 'Command palette…', onSelect: () => setPaletteOpen(true) },
-              { label: 'Files panel', onSelect: () => togglePanel('files') },
-              { label: 'Code search panel', onSelect: () => togglePanel('code-search') },
-              { label: 'Git panel', onSelect: () => togglePanel('source-control') },
-              { label: 'Terminal panel', onSelect: () => togglePanel('terminal') },
-              { label: 'Browser panel', onSelect: () => togglePanel('browser') },
-              { label: 'Artifacts panel', onSelect: () => togglePanel('artifacts') },
-              { label: 'Checkpoints panel', onSelect: () => togglePanel('checkpoints') },
-              { label: 'Agent activity panel', onSelect: () => togglePanel('agent-activity') },
-              { label: 'Settings…', onSelect: () => setIsSettingsOpen(true) },
               { label: 'Keyboard shortcuts', onSelect: () => setShowHelp(true) },
+              { label: 'Settings…', onSelect: () => setIsSettingsOpen(true) },
             ]}
           />
         )}
@@ -4927,6 +4475,12 @@ ${lines.join('\n')}`;
             {statusBanner}
           </div>
         )}
+
+        {/* Ambient project context (#543): name + folder, always visible. */}
+        {(() => {
+          const active = projects.find(p => p.id === activeProjectId);
+          return <ProjectHeader name={active?.name ?? null} roots={projectRoots(active)} dark={dark} />;
+        })()}
 
         {/* Messages - Responsive: full width on mobile, padded on desktop.
             role="log" + aria-live announce streamed assistant replies to screen
@@ -4942,7 +4496,10 @@ ${lines.join('\n')}`;
           {/* Context limit warning (#319) */}
           {showContextWarning && (
             <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs mb-2 ${dark ? 'bg-amber-900/40 border border-amber-700/50 text-amber-300' : 'bg-amber-50 border border-amber-300 text-amber-800'}`}>
-              <span>⚠ Context window ${contextPct}% full — consider /compact or /ctx ${Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
+              {/* These were written as if inside a template literal, so the
+                  stray "$" rendered verbatim — and the suggested command came
+                  out as "/ctx $6144", which /ctx parses to NaN (#533). */}
+              <span>⚠ Context window {contextPct}% full — consider /compact or /ctx {Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
               <button onClick={() => setContextWarningDismissed(true)} aria-label="Dismiss context warning" className={`shrink-0 ${dark ? 'text-amber-400 hover:text-amber-200' : 'text-amber-600 hover:text-amber-400'}`}>✕</button>
             </div>
           )}
@@ -4990,12 +4547,12 @@ ${lines.join('\n')}`;
                 className={`flex flex-col gap-0.5 rounded-lg transition-shadow ${i === chatSearchCurrent ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
               >
                <div
-                 className={`group/msg w-full md:max-w-3xl p-4 rounded-2xl ${
+                 className={`group/msg ${
                  msg.role === 'user'
-                   ? 'bg-blue-600 text-white rounded-tr-none'
+                   ? `max-w-[85%] md:max-w-xl px-4 py-2.5 rounded-2xl ${dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900'}`
                    : msg.role === 'tool'
-                     ? (dark ? 'bg-zinc-700 text-zinc-100 rounded-tl-none border-l-2 border-blue-500' : 'bg-zinc-100 text-zinc-900 rounded-tl-none border-l-2 border-blue-500')
-                     : (dark ? 'bg-zinc-800 text-zinc-100 rounded-tl-none' : 'bg-zinc-200 text-zinc-900 rounded-tl-none')
+                     ? `w-full md:max-w-3xl p-4 rounded-2xl border-l-2 border-blue-500 ${dark ? 'bg-zinc-800/60 text-zinc-100' : 'bg-zinc-50 text-zinc-900'}`
+                     : `w-full md:max-w-3xl px-1 py-2 ${dark ? 'text-zinc-100' : 'text-zinc-900'}`
                }`}
                  onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
                  // Keyboard path to the message menu (#452): focusable bubble;
@@ -5009,28 +4566,6 @@ ${lines.join('\n')}`;
                    }
                  }}
                >
-                <div className="text-xs font-bold mb-2 opacity-50 uppercase flex items-center gap-1">
-                  {msg.role}
-                  {msg.role === 'tool' && <span className="text-blue-400">🔧</span>}
-                  {/* Per-message model label (#97) */}
-                  {msg.role === 'assistant' && msg.producedByModel && (
-                    <span className="normal-case font-normal text-[10px] opacity-70 ml-1">{msg.producedByModel}</span>
-                  )}
-                  {/* Per-message timestamp (#253/#260) */}
-                  {formatMessageTime(msg.ts, nowTick) && (
-                    <time className="normal-case font-normal text-[10px] opacity-60 ml-auto" title={msg.ts ? new Date(msg.ts).toLocaleString() : undefined}>
-                      {formatMessageTime(msg.ts, nowTick)}
-                    </time>
-                  )}
-                  {/* Per-message estimated token count (#340) */}
-                  {msg.content && msg.content.trim() && (
-                    <span
-                      className="normal-case font-normal text-[10px] opacity-50"
-                      title="Estimated tokens for this message"
-                      aria-label={`Estimated tokens: ${estimateTokens(msg.content)}`}
-                    >≈{formatTokenCount(estimateTokens(msg.content))} tokens</span>
-                  )}
-                </div>
                 {/* Generation stats: speed, prompt→completion tokens, stop reason (#297, #391, #392) */}
                 {msg.role === 'assistant' && msg.genStats && (
                   <div
@@ -5113,16 +4648,16 @@ ${lines.join('\n')}`;
                       }}
                       autoFocus
                       rows={3}
-                      className="w-full rounded-lg p-2 text-sm bg-white/20 text-white placeholder-white/50 resize-none focus:outline-none focus:ring-2 focus:ring-white/40"
+                      className={`w-full rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border ${dark ? 'bg-zinc-700 text-zinc-100 border-zinc-600' : 'bg-white text-zinc-900 border-zinc-300'}`}
                     />
                     <div className="flex gap-2">
                       <button
                         onClick={() => { setEditingIndex(null); if (msg.role === 'assistant') editAssistantMessage(i, editContent); else editMessage(i, editContent); }}
-                        className="text-xs px-3 py-1 rounded-lg bg-white/20 hover:bg-white/30 font-semibold"
+                        className="text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold"
                       >{msg.role === 'assistant' ? 'Save edit' : 'Send edit'}</button>
                       <button
                         onClick={() => setEditingIndex(null)}
-                        className="text-xs px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20"
+                        className={`text-xs px-3 py-1 rounded-lg ${dark ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-zinc-200 hover:bg-zinc-300'}`}
                       >Cancel</button>
                     </div>
                   </div>
@@ -5225,19 +4760,9 @@ ${lines.join('\n')}`;
                     className={`text-xs px-2 py-0.5 mt-1 rounded transition-colors ${dark ? 'bg-blue-900/50 text-blue-300 hover:bg-blue-800/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
                   >▶ Continue agent</button>
                 )}
-                {/* Thumbs feedback on completed assistant replies (#137) */}
+                {/* Message actions — minimal; everything else lives in the right-click menu (#378) */}
                 {msg.role === 'assistant' && msg.content !== '' && !(isLoading && i === messages.length - 1) && (
-                  <div className="flex items-center gap-1 mt-1 flex-wrap">
-                    <button
-                      onClick={() => setMessageFeedback(i, 'up')}
-                      aria-label="Thumbs up"
-                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'up' ? 'text-green-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                    >👍</button>
-                    <button
-                      onClick={() => setMessageFeedback(i, 'down')}
-                      aria-label="Thumbs down"
-                      className={`text-xs px-1 rounded transition-colors ${msg.feedback?.thumbs === 'down' ? 'text-red-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                    >👎</button>
+                  <div className="flex items-center gap-1 mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     {/* Copy message (#243) */}
                     <button
                       aria-label="Copy message"
@@ -5249,158 +4774,46 @@ ${lines.join('\n')}`;
                       }}
                       className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >{copiedMsgIdx === i ? '✓' : '⧉'}</button>
-                    {/* Copy message as Markdown (#268) */}
-                    <button
-                      aria-label="Copy message as Markdown"
-                      title="Copy message as Markdown"
-                      onClick={() => {
-                        navigator.clipboard.writeText(messageToMarkdown(msg));
-                        setCopiedMdMsgIdx(i);
-                        setTimeout(() => setCopiedMdMsgIdx(prev => (prev === i ? null : prev)), 1500);
-                      }}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{copiedMdMsgIdx === i ? '✓' : '⎘'}</button>
-                    {/* Copy message as plain text (#341) */}
-                    <button
-                      aria-label="Copy message as plain text"
-                      title="Copy message as plain text"
-                      onClick={() => {
-                        navigator.clipboard.writeText(messageToPlainText(msg));
-                        setCopiedPtMsgIdx(i);
-                        setTimeout(() => setCopiedPtMsgIdx(prev => (prev === i ? null : prev)), 1500);
-                      }}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{copiedPtMsgIdx === i ? '✓' : 'T'}</button>
-                    {/* Export individual message as Markdown (#304) */}
-                    <button
-                      aria-label="Download message as Markdown"
-                      title="Download message as Markdown"
-                      onClick={() => handleExportMessage(msg, i)}
-                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >⬇</button>
-                    {/* Speak button — per-message TTS (#101) */}
-                    {isTtsAvailable() && (
-                      <button
-                        aria-label={speakingMsgId === `msg-${i}` ? 'Stop speaking' : 'Speak message'}
-                        onClick={() => {
-                          if (speakingMsgId === `msg-${i}`) {
-                            stopSpeaking();
-                            setSpeakingMsgId(null);
-                          } else {
-                            setSpeakingMsgId(`msg-${i}`);
-                            speak(msg.content, voiceSettings).then(() => setSpeakingMsgId(null)).catch(() => setSpeakingMsgId(null));
-                          }
-                        }}
-                        className={`text-xs px-1 rounded transition-colors ${speakingMsgId === `msg-${i}` ? 'text-blue-400' : (dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700')}`}
-                      >{speakingMsgId === `msg-${i}` ? '⏹' : '🔊'}</button>
-                    )}
                     {/* Regenerate button (#98) */}
                     {!isLoading && (
                       <button
                         onClick={() => regenerateMessage(i)}
                         aria-label="Regenerate response"
                         title="Regenerate (creates a branch)"
-                        className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                        className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                       >↺</button>
                     )}
-                    {/* Regenerate with a different model (#270) */}
-                    {!isLoading && models.length > 1 && (
-                      <div className="relative">
-                        <button
-                          onClick={() => setRegenMenuIdx(prev => prev === i ? null : i)}
-                          aria-label="Regenerate with a different model"
-                          title="Regenerate with a different model"
-                          className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                        >↺▾</button>
-                        {regenMenuIdx === i && (
-                          <>
-                            <div className="fixed inset-0 z-40" onClick={() => setRegenMenuIdx(null)} />
-                            <div
-                              role="listbox"
-                              aria-label="Regenerate with model"
-                              className={`absolute right-0 top-full z-50 mt-1 w-48 max-h-56 overflow-y-auto rounded-lg border py-1 text-xs shadow-lg ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                            >
-                              {models.map(m => (
-                                <button
-                                  key={m.name}
-                                  role="option"
-                                  aria-selected={m.name === model}
-                                  onClick={() => { setModel(m.name); regenerateMessage(i, m.name); setRegenMenuIdx(null); }}
-                                  className={`w-full text-left px-3 py-1.5 truncate ${m.name === model ? (dark ? 'bg-zinc-700 text-zinc-100' : 'bg-blue-50 text-blue-700') : (dark ? 'hover:bg-zinc-700/60' : 'hover:bg-zinc-100')}`}
-                                >{m.name}</button>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {/* Action function buttons (#127) */}
-                    {getEnabledActions().map(action => (
-                      <button
-                        key={action.id}
-                        aria-label={`Action: ${action.name}`}
-                        onClick={async () => {
-                          try {
-                            const result = await runAction(action.id, msg);
-                            if (result) sendMessage(result);
-                          } catch (e) {
-                            showStatusBanner(`Action '${action.name}' failed: ${e instanceof Error ? e.message : String(e)}`);
-                          }
-                        }}
-                        className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                      >{action.name}</button>
-                    ))}
                     {/* Edit assistant reply in place (#281) */}
                     <button
                       onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
                       aria-label="Edit response"
                       title="Edit response"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
                     >✏</button>
                     {/* Delete this message (#280) */}
                     <button
                       onClick={() => deleteMessage(i)}
                       aria-label="Delete response"
                       title="Delete response"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
+                      className={`text-xs px-1 rounded transition-colors ${dark ? 'text-zinc-600 hover:text-red-400' : 'text-zinc-400 hover:text-red-600'}`}
                     >🗑</button>
-                    {/* Quote message into the composer (#284) */}
-                    <button
-                      onClick={() => quoteMessage(i)}
-                      aria-label="Quote response"
-                      title="Quote into composer"
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >❝</button>
-                    {/* Toggle raw/rendered view (#290) */}
-                    <button
-                      onClick={() => setRawView(prev => ({ ...prev, [i]: !prev[i] }))}
-                      aria-label={rawView[i] ? 'Show rendered' : 'Show raw'}
-                      title={rawView[i] ? 'Show rendered' : 'Show raw'}
-                      className={`text-xs px-1 rounded transition-colors opacity-0 group-hover/msg:opacity-100 ${dark ? 'text-zinc-600 hover:text-zinc-300' : 'text-zinc-400 hover:text-zinc-700'}`}
-                    >{rawView[i] ? 'MD' : 'Raw'}</button>
                   </div>
                 )}
                 {/* Edit button on user messages (#98) */}
                 {msg.role === 'user' && !isLoading && editingIndex !== i && (
-                  <div className="flex justify-end mt-1 gap-1">
+                  <div className="flex justify-end mt-1 gap-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     <button
                       onClick={() => { setEditingIndex(i); setEditContent(msg.content); }}
                       aria-label="Edit message"
                       title="Edit (creates a branch)"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
+                      className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700' : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200'}`}
                     >✏ Edit</button>
                     <button
                       onClick={() => deleteMessage(i)}
                       aria-label="Delete message"
                       title="Delete message"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-red-500/30 text-white/70"
+                      className={`text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400 hover:bg-zinc-700' : 'text-zinc-400 hover:text-red-600 hover:bg-zinc-200'}`}
                     >🗑 Delete</button>
-                    <button
-                      onClick={() => quoteMessage(i)}
-                      aria-label="Quote message"
-                      title="Quote into composer"
-                      className="text-xs px-1.5 py-0.5 rounded opacity-0 group-hover/msg:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/70"
-                    >❝ Quote</button>
                   </div>
                 )}
                </div>
@@ -5431,36 +4844,6 @@ ${lines.join('\n')}`;
               );
             })}
 
-          {/* Many-models reply groups (#126) */}
-          {modelGroups.map((group, gi) => (
-            <div key={`group-${gi}`} className="mb-4">
-              <div className="flex flex-wrap gap-2">
-                {group.replies.map((reply, ri) => (
-                  <div key={reply.modelId} className={`flex-1 min-w-[220px] rounded-xl border p-3 ${dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-white'}`}>
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${dark ? 'bg-zinc-700 text-zinc-300' : 'bg-zinc-100 text-zinc-600'}`}>{reply.label}</span>
-                      {reply.state === 'streaming' && <span className="text-[9px] text-blue-400 animate-pulse">●</span>}
-                      {reply.state === 'error' && <span className="text-[9px] text-red-400">✗</span>}
-                      {reply.state === 'done' && group.chosenIndex === ri && <span className="text-[9px] text-green-400">✓ chosen</span>}
-                    </div>
-                    {reply.reasoning && <ReasoningBlock reasoning={reply.reasoning} dark={dark} />}
-                    <div className={`text-sm whitespace-pre-wrap ${reply.state === 'error' ? 'text-red-400' : ''}`}>
-                      {reply.state === 'error' ? reply.error : reply.content || <span className="opacity-30">Waiting…</span>}
-                    </div>
-                    {reply.state === 'done' && group.chosenIndex === undefined && (
-                      <button
-                        onClick={() => {
-                          setModelGroups(prev => prev.map((g, i) => i === gi ? { ...g, chosenIndex: ri } : g));
-                          setMessages(prev => [...prev, { role: 'assistant', content: reply.content } as Message]);
-                        }}
-                        className={`mt-2 text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                      >Continue with this</button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
 
           {/* Queued messages waiting for the current reply to finish (#137) */}
           {messageQueue.map((q, qi) => (
@@ -5527,9 +4910,9 @@ ${lines.join('\n')}`;
           onDrop={handleDrop}
           onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setIsDragOver(false); }}
-          className={`p-4 md:p-6 pb-6 pt-2 shrink-0 rounded-xl transition-colors ${
+          className={`p-4 md:p-6 pb-4 pt-2 shrink-0 rounded-xl transition-colors ${
             isDragOver ? (dark ? 'bg-blue-900/30 ring-2 ring-blue-500' : 'bg-blue-50 ring-2 ring-blue-400') : ''
-          } ${dark ? 'bg-gradient-to-t from-zinc-900 via-zinc-900/80 to-transparent' : 'bg-gradient-to-t from-zinc-100 via-zinc-100/80 to-transparent'}`}
+          }`}
         >
           {/* Agentic mode with no workspace folder open (#482) */}
           <NoWorkspaceHint dark={dark} agentic={isAgenticMode} />
@@ -5556,97 +4939,11 @@ ${lines.join('\n')}`;
             </div>
           )}
 
-          <div className="max-w-3xl mx-auto flex gap-2 relative">
-            {/* M5 Issue 20: Attach image button */}
-             <button
-               onClick={() => fileInputRef.current?.click()}
-               title="Attach image"
-               aria-label="Attach image"
-               className={`px-3 py-3 rounded-xl transition-colors ${
-                 dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
-               }`}
-             >
-               📎
-             </button>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
-
-             {/* Prompt library button (#97) */}
-             {prompts.length > 0 && (
-               <div className="relative">
-                 <button
-                   type="button"
-                   title="Prompt library"
-                   aria-label="Open prompt library"
-                   onClick={() => setShowPromptPicker(p => !p)}
-                   className={`px-3 py-3 rounded-xl transition-colors ${dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'}`}
-                 >📋</button>
-                 {showPromptPicker && (
-                   <div className={`absolute bottom-full mb-1 left-0 w-56 rounded-xl border shadow-lg overflow-hidden z-20 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
-                     {prompts.map(p => (
-                       <button
-                         key={p.id}
-                         type="button"
-                         onMouseDown={(e) => { e.preventDefault(); setInput(p.body); setShowPromptPicker(false); }}
-                         className={`w-full text-left px-3 py-2 text-xs truncate ${dark ? 'hover:bg-zinc-700 text-zinc-200' : 'hover:bg-zinc-50 text-zinc-800'}`}
-                       >{p.name}</button>
-                     ))}
-                   </div>
-                 )}
-               </div>
-             )}
-
-             {/* @-mention file autocomplete dropdown (#86/#183) */}
-             {atSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
-                 {atSuggestions.map((opt, idx) => (
-                   <button
-                     key={opt.path}
-                     type="button"
-                     onMouseDown={(e) => {
-                       e.preventDefault();
-                       void resolveAtMention(input, opt.path, opt.label).then(resolved => { setInput(resolved); setAtSuggestions([]); });
-                     }}
-                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
-                       idx === atSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
-                     }`}
-                   >
-                     <span className={`${dark ? 'text-amber-400' : 'text-amber-600'}`}>{opt.kind === 'dir' ? '📁' : '📄'}</span>
-                     <span className={`font-mono text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
-                   </button>
-                 ))}
-               </div>
-             )}
-
-             {/* #-knowledge context dropdown (#119/#184) */}
-             {hashSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
-                 {hashSuggestions.map((opt, idx) => (
-                   <button
-                     key={opt.id ?? opt.url ?? opt.label}
-                     type="button"
-                     onMouseDown={(e) => {
-                       e.preventDefault();
-                       const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
-                       const stripped = input.replace(/#\S*$/, '').trim();
-                       void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
-                         const block = buildContextBlock(sources);
-                         if (block) setPendingContextBlocks(prev => [...prev, block]);
-                       });
-                       setInput(stripped);
-                       setHashSuggestions([]);
-                     }}
-                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
-                       idx === hashSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
-                     }`}
-                   >
-                     <span className={`font-semibold ${dark ? 'text-emerald-400' : 'text-emerald-600'}`}>#</span>
-                     <span className={`text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
-                     {opt.sublabel && <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{opt.sublabel}</span>}
-                   </button>
-                 ))}
-               </div>
-             )}
-
+          {/* These chip strips were in-flow children of the composer ROW below,
+              which is a horizontal flex container — so they became siblings of
+              the textarea and squeezed it sideways instead of stacking above it
+              (#531/#538). They live in the surrounding column now. */}
+          <div className="max-w-3xl mx-auto">
              {/* Pinned file context chips (#350) */}
             {pinnedFiles.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1" aria-label="Pinned files">
@@ -5674,9 +4971,78 @@ ${lines.join('\n')}`;
                </div>
              )}
 
+          </div>
+
+          <div className="max-w-3xl mx-auto flex gap-2 relative">
+            {/* M5 Issue 20: Attach image button */}
+             <button
+               onClick={() => fileInputRef.current?.click()}
+               title="Attach image"
+               aria-label="Attach image"
+               className={`px-3 py-3 rounded-xl transition-colors ${
+                 dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
+               }`}
+             >
+               📎
+             </button>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageAttach} />
+
+
+             {/* @-mention file autocomplete dropdown (#86/#183) */}
+             {atSuggestions.length > 0 && (
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                 {atSuggestions.map((opt, idx) => (
+                   <button
+                     key={opt.path}
+                     type="button"
+                     onMouseDown={(e) => {
+                       e.preventDefault();
+                       void resolveAtMention(input, opt.path, opt.label).then(resolved => { setInput(resolved); setAtSuggestions([]); });
+                     }}
+                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
+                       idx === atSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
+                     }`}
+                   >
+                     <span className={`${dark ? 'text-amber-400' : 'text-amber-600'}`}>{opt.kind === 'dir' ? '📁' : '📄'}</span>
+                     <span className={`font-mono text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
+                   </button>
+                 ))}
+               </div>
+             )}
+
+             {/* #-knowledge context dropdown (#119/#184) */}
+             {hashSuggestions.length > 0 && (
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                 {hashSuggestions.map((opt, idx) => (
+                   <button
+                     key={opt.id ?? opt.url ?? opt.label}
+                     type="button"
+                     onMouseDown={(e) => {
+                       e.preventDefault();
+                       const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
+                       const stripped = input.replace(/#\S*$/, '').trim();
+                       void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
+                         const block = buildContextBlock(sources);
+                         if (block) setPendingContextBlocks(prev => [...prev, block]);
+                       });
+                       setInput(stripped);
+                       setHashSuggestions([]);
+                     }}
+                     className={`w-full text-left px-3 py-2 text-sm flex gap-2 items-baseline ${
+                       idx === hashSelected ? (dark ? 'bg-zinc-700' : 'bg-blue-50') : (dark ? 'hover:bg-zinc-700/50' : 'hover:bg-zinc-50')
+                     }`}
+                   >
+                     <span className={`font-semibold ${dark ? 'text-emerald-400' : 'text-emerald-600'}`}>#</span>
+                     <span className={`text-xs ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{opt.label}</span>
+                     {opt.sublabel && <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{opt.sublabel}</span>}
+                   </button>
+                 ))}
+               </div>
+             )}
+
              {/* Slash command autocomplete dropdown (#96) */}
              {commandSuggestions.length > 0 && (
-               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+               <div className={`absolute bottom-full mb-1 left-0 right-0 rounded-xl border shadow-lg overflow-hidden overflow-y-auto max-h-[min(50vh,20rem)] overscroll-contain z-10 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
                  {commandSuggestions.map((cmd, idx) => (
                    <button
                      key={cmd.name}
@@ -5707,10 +5073,9 @@ ${lines.join('\n')}`;
                onChange={(e) => {
                  const val = e.target.value;
                  setInput(val);
-                 // Auto-grow the multi-line composer up to a max height (#259)
-                 const ta = e.target;
-                 ta.style.height = 'auto';
-                 ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+                 // Auto-grow the multi-line composer up to a max height (#259).
+                 // The effect keyed on `input` handles programmatic writes (#534).
+                 growComposer(e.target);
                  // Show slash command suggestions when input starts with /
                  if (val.startsWith('/')) {
                    const query = val.split(' ')[0];
@@ -5783,7 +5148,6 @@ ${lines.join('\n')}`;
                  // Tab-to-indent / Shift+Tab to outdent (#360) — TUI/Codex/Claude
                  // parity. Only when no autocomplete suggestions are open.
                  if (e.key === 'Tab' && atSuggestions.length === 0 && hashSuggestions.length === 0 && commandSuggestions.length === 0) {
-                   e.preventDefault();
                    const ta = e.currentTarget as HTMLTextAreaElement;
                    const start = ta.selectionStart ?? input.length;
                    const end = ta.selectionEnd ?? input.length;
@@ -5793,11 +5157,17 @@ ${lines.join('\n')}`;
                      const stripped = linePrefix.replace(/^ {1,2}/, '');
                      const removed = linePrefix.length - stripped.length;
                      if (removed > 0) {
+                       e.preventDefault();
                        const next = input.slice(0, lineStart) + stripped + input.slice(start);
                        setInput(next);
                        setTimeout(() => { ta.selectionStart = ta.selectionEnd = Math.max(lineStart, start - removed); }, 0);
                      }
+                     // Nothing to outdent: let the browser move focus (#496).
+                     // Tab-to-indent used to preventDefault unconditionally, so
+                     // neither Tab nor Shift+Tab could ever leave the composer —
+                     // a hard keyboard trap. Shift+Tab is now the way out.
                    } else {
+                     e.preventDefault();
                      const next = input.slice(0, start) + '  ' + input.slice(end);
                      setInput(next);
                      setTimeout(() => { ta.selectionStart = ta.selectionEnd = start + 2; }, 0);
@@ -5838,6 +5208,13 @@ ${lines.join('\n')}`;
                    setInput(hist[idx]);
                    return;
                  }
+                 // While an IME is composing (CJK, and some accent input), Enter
+                 // commits the candidate — it is not a send. Browsers report this
+                 // via isComposing / keyCode 229; without the guard the composer
+                 // sent a half-converted message and swallowed the commit (#519).
+                 if ((e.nativeEvent as KeyboardEvent).isComposing || (e.nativeEvent as KeyboardEvent).keyCode === 229) {
+                   return;
+                 }
                  if (e.key === 'Enter' && !e.shiftKey && !sendOnCtrlEnter) {
                    e.preventDefault();
                    setCommandSuggestions([]);
@@ -5854,28 +5231,6 @@ ${lines.join('\n')}`;
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
              ></textarea>
-             {/* Many-models extra-model picker (#126) */}
-             {[...models, ...connectedModels].length > 1 && (
-               <select
-                 multiple
-                 aria-label="Compare with additional models"
-                 value={extraModels}
-                 onChange={e => setExtraModels(Array.from(e.target.selectedOptions, o => o.value))}
-                 title="Ctrl/Cmd+click to select 1-2 additional models for comparison"
-                 className={`hidden sm:block w-44 text-xs border rounded-xl px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-300 text-zinc-600'}`}
-                 style={{ height: '3rem' }}
-               >
-                 {models.filter(m => m.name !== model).map(m => (
-                   <option key={m.name} value={m.name}>{m.name}</option>
-                 ))}
-                 {connectedModels.filter(m => m.id !== model).map(m => (
-                   <option key={m.id} value={m.id}>{m.name}</option>
-                 ))}
-               </select>
-             )}
-             {extraModels.length > 0 && hasSameHostConflict([model, ...extraModels], ollamaBaseUrl, connectedModels, connections) && (
-               <span className={`text-[9px] shrink-0 ${dark ? 'text-amber-400' : 'text-amber-600'}`} title="These models share a local host and will run sequentially">⚠️ seq</span>
-             )}
              {isSpeechRecognitionAvailable() && (
                <button
                  type="button"
@@ -5887,7 +5242,11 @@ ${lines.join('\n')}`;
                      const text = await recognize();
                      if (text) setInput(prev => prev ? `${prev} ${text}` : text);
                    } catch (e) {
+                     // The button just stopped pulsing and nothing was inserted,
+                     // so a denied microphone or a down Whisper server looked
+                     // identical to "you said nothing" (#526).
                      console.error('Speech recognition error', e);
+                     showStatusBanner(`Dictation failed: ${formatErrorLine(e)}`);
                    } finally {
                      setIsListening(false);
                    }
@@ -5951,26 +5310,127 @@ ${lines.join('\n')}`;
                </button>
              )}
           </div>
-          {/* Composer word/character/token counter (#301, #368) */}
-          {input.trim() && (
-            <div className={`text-right text-[10px] mt-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-              {input.trim().split(/\s+/).filter(Boolean).length} words · {input.length} chars · ~{estimateTokens(input)} tokens
+          {/* Model switcher — below the composer; local MLX models highlighted (#544) */}
+          <div className="max-w-3xl mx-auto flex items-center gap-2 mt-2">
+            <select
+              value={activePresetId ? `preset:${activePresetId}` : model}
+              title="● = model loaded in memory (warm). Use /running to list, /warm to load, /unload to free RAM."
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val.startsWith('preset:')) {
+                  const id = val.slice(7);
+                  const preset = presets.find(p => p.id === id);
+                  if (preset) {
+                    applyPreset(preset, { setModel, setSystemPrompt, setGenOptions });
+                    setActivePresetId(id);
+                    setActivePreset(id);
+                  }
+                } else {
+                  setModel(val);
+                  setActivePresetId(null);
+                  clearActivePreset();
+                }
+              }}
+              aria-label="Select AI model"
+              className={`text-xs border rounded-lg px-2 py-1.5 min-w-[8rem] max-w-[16rem] truncate focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
+              }`}
+            >
+              {/* Empty-state placeholder (#438) */}
+              {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
+                <option value="" disabled>
+                  {ollamaConnected === false
+                    ? 'No models — is Ollama running?'
+                    : 'No models — pull one (e.g. ollama pull llama3)'}
+                </option>
+              )}
+              {starredModels.length > 0 && !activePresetId && (
+                <optgroup label="— ★ Starred —">
+                  {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                    <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {recentModels.length > 0 && !activePresetId && (
+                <optgroup label="— Recent —">
+                  {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
+                    <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {presets.length > 0 && (
+                <optgroup label="— Presets —">
+                  {presets.map(p => (
+                    <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
+                      {p.icon ? `${p.icon} ` : ''}{p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {/* MLX-capable models first, grouped and bold, but ONLY when this
+                  machine can actually accelerate them (#544). */}
+              {mlxModels.length > 0 && (
+                <optgroup label="— MLX (recommended) —">
+                  {mlxModels.map((m) => (
+                    <option key={m.name} value={m.name} style={{ fontWeight: 700 }}>
+                      {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {otherLocalModels.length > 0 && (
+                <optgroup label={mlxModels.length > 0 ? '— Local Ollama (other) —' : '— Local Ollama —'}>
+                  {otherLocalModels.map((m) => (
+                    <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {models.filter(m => m.cloud).length > 0 && (
+                <optgroup label="— Cloud Ollama —">
+                  {models.filter(m => m.cloud).map((m) => (
+                    <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {/* Extra connection models grouped by connection (#123) */}
+              {connections.filter(c => c.enabled).map(conn => {
+                const connModels = connectedModels.filter(m => m.connectionId === conn.id);
+                if (!connModels.length) return null;
+                const groupLabel = conn.kind === 'ollama'
+                  ? `— Remote Ollama: ${conn.name} —`
+                  : `— ${conn.name} —`;
+                return (
+                  <optgroup key={conn.id} label={groupLabel}>
+                    {connModels.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+            {mlxUsable && isMlxModelName(model) && (
+              <span
+                title="MLX acceleration active — this model uses Apple-Silicon MLX weights"
+                className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
+              >⚡ MLX</span>
+            )}
+            {models.find(m => m.name === model)?.cloud && (
+              <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>⛅ Cloud</span>
+            )}
+            <div className={`ml-auto text-[10px] text-right ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
+              {(() => {
+                const cost = formatCost(conversationTokens);
+                return (
+                  <>
+                    <span title="Approximate token usage for this conversation (and current draft)">
+                      ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
+                    </span>
+                    {' · '}
+                    <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
+                  </>
+                );
+              })()}
             </div>
-          )}
-          <div className={`text-center text-[10px] mt-2 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
-            {(() => {
-              const cost = formatCost(conversationTokens);
-              return (
-                <>
-                  <span title="Approximate token usage for this conversation (and current draft)">
-                    ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
-                  </span>
-                  {' · '}
-                  <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
-                </>
-              );
-            })()}
-            {' · '}Ollama GUI — Built for speed and privacy. · Cmd+K new chat · Cmd+F find · Cmd+P commands · ? for shortcuts
           </div>
 
         {/* Voice Call Overlay (#132) */}
@@ -5994,10 +5454,18 @@ ${lines.join('\n')}`;
             )}
             <div className="flex gap-4">
               <button
-                onClick={() => { voiceCallHandleRef.current?.mute ? (voiceCallHandleRef.current.muted ? voiceCallHandleRef.current.unmute() : voiceCallHandleRef.current.mute()) : null; }}
+                onClick={() => {
+                  // Mirror into state (#530): the label read voiceCallHandleRef
+                  // directly, and mutating a ref does not re-render — so the
+                  // button text never changed and clicking Mute looked inert.
+                  const h = voiceCallHandleRef.current;
+                  if (!h?.mute) return;
+                  if (h.muted) { h.unmute(); setVoiceCallMuted(false); }
+                  else { h.mute(); setVoiceCallMuted(true); }
+                }}
                 className="px-5 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-semibold"
               >
-                {voiceCallHandleRef.current?.muted ? 'Unmute' : 'Mute'}
+                {voiceCallMuted ? 'Unmute' : 'Mute'}
               </button>
               <button
                 onClick={() => { voiceCallHandleRef.current?.stop(); setVoiceCallActive(false); setVoiceCallState('idle'); }}
@@ -6011,7 +5479,7 @@ ${lines.join('\n')}`;
 
         {/* Settings Overlay */}
         {isSettingsOpen && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={settingsModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="settings-title" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -6295,7 +5763,16 @@ ${lines.join('\n')}`;
                    <div className="flex gap-2 mb-2">
                      <select
                        aria-label="Persona presets"
-                       onChange={(e) => { if (e.target.value) { updateSystemPrompt(e.target.value); e.target.value = ''; } }}
+                       onChange={(e) => {
+                         // "Custom (clear)" carries value="" and was swallowed by
+                         // a truthiness guard, so the option did nothing (#522).
+                         // Distinguish it from the disabled placeholder by index.
+                         const idx = e.target.selectedIndex;
+                         const isClear = e.target.options[idx]?.textContent === 'Custom (clear)';
+                         if (isClear) updateSystemPrompt('');
+                         else if (e.target.value) updateSystemPrompt(e.target.value);
+                         e.target.selectedIndex = 0;
+                       }}
                        className={`text-xs border rounded-lg px-2 py-1 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-600'}`}
                        defaultValue=""
                      >
@@ -6452,136 +5929,6 @@ ${lines.join('\n')}`;
                    </p>
                  </div>
 
-                 {/* MLX Acceleration (Apple Silicon) */}
-                 <div>
-                   <div className="flex items-center justify-between mb-2">
-                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>MLX Acceleration</label>
-                     <div className="flex items-center gap-1.5">
-                       <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                         mlxAvailability?.available
-                           ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700')
-                           : (dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500')
-                       }`}>
-                         {mlxAvailability === null ? 'checking…' : mlxAvailability.available ? `available${mlxAvailability.version ? ` · ${mlxAvailability.version}` : ''}` : 'unavailable'}
-                       </span>
-                       <button
-                         onClick={async () => {
-                           setMlxAvailability(null);
-                           try { setMlxAvailability(await checkMlxAvailable()); } catch { setMlxAvailability(null); }
-                         }}
-                         title="Re-check MLX availability"
-                         className={`text-[11px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100'}`}
-                       >↺</button>
-                     </div>
-                   </div>
-
-                   {mlxAvailability && !mlxAvailability.available ? (
-                     <p className={`text-[11px] rounded-lg border px-3 py-2 ${dark ? 'border-zinc-700 bg-zinc-900/50 text-zinc-500' : 'border-zinc-200 bg-zinc-50 text-zinc-500'}`}>
-                       {mlxAvailability.reason} MLX features are disabled.
-                     </p>
-                   ) : (
-                     <div className={`rounded-lg border p-3 space-y-3 ${dark ? 'border-zinc-700 bg-zinc-900/40' : 'border-zinc-200 bg-zinc-50'} ${!mlxAvailability?.available ? 'opacity-50' : ''}`}>
-                       {/* 1. Full inference backend (master) */}
-                       <div>
-                         <div className="flex items-center justify-between">
-                           <div className="min-w-0 pr-3">
-                             <div className="text-sm">Full inference backend</div>
-                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Route chat through the local MLX server. Enabling this also enables the options below.</div>
-                           </div>
-                           <Toggle dark={dark} label="Full inference backend"
-                             disabled={!mlxAvailability?.available}
-                             checked={mlxSettings.fullInference}
-                             onChange={() => updateMlxSettings({ fullInference: !mlxSettings.fullInference })} />
-                         </div>
-                         {mlxSettings.fullInference && (
-                           <div className="mt-2 flex gap-2">
-                             <input
-                               type="text"
-                               value={mlxSettings.localModel}
-                               onChange={(e) => updateMlxSettings({ localModel: e.target.value })}
-                               placeholder="mlx-community/Llama-3.2-3B-Instruct-4bit"
-                               className={`flex-1 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                             />
-                             <input
-                               type="number"
-                               value={mlxSettings.serverPort}
-                               onChange={(e) => updateMlxSettings({ serverPort: Number(e.target.value) || 8080 })}
-                               className={`w-20 border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                             />
-                           </div>
-                         )}
-                       </div>
-
-                       {/* 2. Accelerate embeddings / aux */}
-                       <div className="flex items-center justify-between">
-                         <div className="min-w-0 pr-3">
-                           <div className="text-sm">Accelerate embeddings / aux</div>
-                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Use MLX for embeddings (search, titles). Auto-enabled by full inference.</div>
-                         </div>
-                         <Toggle dark={dark} label="Accelerate embeddings"
-                           disabled={!mlxAvailability?.available || mlxSettings.fullInference}
-                           checked={mlxSettings.accelerateEmbeddings}
-                           onChange={() => updateMlxSettings({ accelerateEmbeddings: !mlxSettings.accelerateEmbeddings })} />
-                       </div>
-
-                       {/* 3. Detect + indicate (base opt-in) */}
-                       <div className="flex items-center justify-between">
-                         <div className="min-w-0 pr-3">
-                           <div className="text-sm">Detect &amp; indicate</div>
-                           <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Show the MLX accelerator indicator. Auto-enabled by the options above.</div>
-                         </div>
-                         <Toggle dark={dark} label="Detect and indicate"
-                           disabled={!mlxAvailability?.available || mlxSettings.accelerateEmbeddings || mlxSettings.fullInference}
-                           checked={mlxSettings.detectIndicate}
-                           onChange={() => updateMlxSettings({ detectIndicate: !mlxSettings.detectIndicate })} />
-                       </div>
-
-                       {/* 4. Cloud brain / local worker (multi-agent) */}
-                       <div className="pt-1 border-t border-dashed border-zinc-700/50">
-                         <div className="flex items-center justify-between pt-2">
-                           <div className="min-w-0 pr-3">
-                             <div className="text-sm">Cloud brain · local worker</div>
-                             <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Multi-agent: a cloud model plans, the local model executes.</div>
-                           </div>
-                           <Toggle dark={dark} label="Cloud brain local worker"
-                             disabled={!mlxAvailability?.available}
-                             checked={mlxSettings.cloudBrainLocalWorker}
-                             onChange={() => updateMlxSettings({ cloudBrainLocalWorker: !mlxSettings.cloudBrainLocalWorker })} />
-                         </div>
-                         {mlxSettings.cloudBrainLocalWorker && (
-                           <div className="mt-2 grid grid-cols-2 gap-2">
-                             <div>
-                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Brain (cloud)</div>
-                               <select
-                                 value={mlxSettings.brainModel}
-                                 onChange={(e) => updateMlxSettings({ brainModel: e.target.value })}
-                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                               >
-                                 <option value="">Select cloud model…</option>
-                                 {models.filter(m => m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                               </select>
-                             </div>
-                             <div>
-                               <div className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Worker (local)</div>
-                               <select
-                                 value={mlxSettings.workerModel}
-                                 onChange={(e) => updateMlxSettings({ workerModel: e.target.value })}
-                                 className={`w-full border rounded px-2 py-1.5 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                               >
-                                 <option value="">Select local model…</option>
-                                 {mlxSettings.fullInference && mlxSettings.localModel && (
-                                   <option value={mlxSettings.localModel}>{mlxSettings.localModel} (MLX)</option>
-                                 )}
-                                 {models.filter(m => !m.cloud).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                               </select>
-                             </div>
-                           </div>
-                         )}
-                       </div>
-                     </div>
-                   )}
-                 </div>
-
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Available Tools ({toolRegistry.getAllTools().length})</label>
                    <div className={`rounded-lg border divide-y overflow-hidden max-h-48 overflow-y-auto ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
@@ -6604,7 +5951,12 @@ ${lines.join('\n')}`;
                                 <span className={dark ? 'text-zinc-500' : 'text-zinc-400'}>{paramNames.length} param{paramNames.length === 1 ? '' : 's'}</span>
                               )}
                               {/* Per-tool enable/disable (Claude Code parity, #399) */}
-                              <span onClick={e => e.stopPropagation()} title={disabledTools.has(tool.name) ? 'Enable this tool' : 'Disable this tool'}>
+                              {/* preventDefault, not just stopPropagation (#536):
+                                  <summary>'s activation target is chosen while the
+                                  event path is built, before listeners run, so
+                                  stopping propagation does not stop the <details>
+                                  from toggling — only cancelling the event does. */}
+                              <span onClick={e => { e.preventDefault(); e.stopPropagation(); }} title={disabledTools.has(tool.name) ? 'Enable this tool' : 'Disable this tool'}>
                                 <Toggle dark={dark} label={`Toggle ${tool.name}`} checked={!disabledTools.has(tool.name)} onChange={() => { const next = setToolEnabled(tool.name, disabledTools.has(tool.name)); setDisabledTools(new Set(next)); }} />
                               </span>
                             </span>
@@ -7039,15 +6391,30 @@ ${lines.join('\n')}`;
                              </button>
                              {server.type === 'http' && (
                                <button
+                                 disabled={authInFlight === server.id}
                                  onClick={async () => {
+                                   // The browser round-trip can take minutes. Without an
+                                   // in-flight guard the button looked idle, so a second
+                                   // click started a SECOND flow — leaking a redirect
+                                   // listener and surfacing a stale timeout error long
+                                   // after the first attempt had succeeded (#503).
+                                   if (authInFlight) return;
                                    setMcpAuthError(null);
+                                   setAuthInFlight(server.id);
                                    try {
                                      await performOAuthFlow(server.id, server.url!);
+                                     // Persist it — this used to touch React state
+                                     // only, so any later setMcpServers(list()) reset
+                                     // every badge to unauthenticated (#521).
+                                     const authed = { ...server, authenticated: true };
+                                     await mcpConfigStore.save(authed);
                                      setMcpServers(prev =>
                                        prev.map(s => s.id === server.id ? { ...s, authenticated: true } : s)
                                      );
                                    } catch (e) {
                                      setMcpAuthError(e instanceof Error ? e.message : 'Auth failed');
+                                   } finally {
+                                     setAuthInFlight(null);
                                    }
                                  }}
                                  className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
@@ -7057,18 +6424,32 @@ ${lines.join('\n')}`;
                                  }`}
                                  title={server.authenticated ? 'Authenticated' : 'Authenticate with OAuth'}
                                >
-                                 {server.authenticated ? '🔑 auth' : 'Auth'}
+                                 {authInFlight === server.id ? 'Authorising…' : server.authenticated ? '🔑 auth' : 'Auth'}
                                </button>
                              )}
                              <button
+                               aria-label={`Remove MCP server ${server.name}`}
+                               title={`Remove ${server.name}`}
                                onClick={async () => {
-                                 // Unregister tools and disconnect via bridge (#102)
-                                 const existing = mcpServers.find(s => s.id === server.id);
-                                 if (existing) {
-                                   unregisterMcpTools(server.id, getRegisteredToolNames(existing));
+                                 // This also purges the server's keychain secrets
+                                 // and OAuth tokens, so it must be confirmed, and a
+                                 // mid-way failure must not leave the row looking
+                                 // untouched with no explanation (#525).
+                                 if (!window.confirm(
+                                   `Remove MCP server "${server.name}"?\n\n` +
+                                   `Its tools are unregistered and any stored credentials ` +
+                                   `and OAuth tokens for it are deleted.`,
+                                 )) return;
+                                 try {
+                                   const existing = mcpServers.find(s => s.id === server.id);
+                                   if (existing) {
+                                     unregisterMcpTools(server.id, getRegisteredToolNames(existing));
+                                   }
+                                   await mcpServerManager.disconnectFromServer(server.id);
+                                   await mcpConfigStore.delete(server.id);
+                                 } catch (e) {
+                                   showStatusBanner(`Could not fully remove "${server.name}": ${formatErrorLine(e)}`);
                                  }
-                                 await mcpServerManager.disconnectFromServer(server.id);
-                                 await mcpConfigStore.delete(server.id);
                                  setMcpServers(mcpConfigStore.list());
                                }}
                                className="text-red-400 hover:text-red-300 text-xs px-1"
@@ -7156,7 +6537,19 @@ ${lines.join('\n')}`;
                           const updated = [...openApiServers, cfg];
                           setOpenApiServers(updated);
                           saveOpenApiServers(updated);
-                          registerOpenApiServer(cfg).catch(() => {});
+                          // A failed spec fetch used to be swallowed while the
+                          // server stayed in the list with a green status dot, so a
+                          // broken server looked healthy and its tools silently never
+                          // appeared (#522).
+                          registerOpenApiServer(cfg).catch((e) => {
+                            showStatusBanner(`OpenAPI server "${cfg.name}": ${formatErrorLine(e)}`);
+                            const disabled = { ...cfg, enabled: false };
+                            setOpenApiServers(prev => {
+                              const next = prev.map(x => x.id === cfg.id ? disabled : x);
+                              saveOpenApiServers(next);
+                              return next;
+                            });
+                          });
                           setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
                           setShowAddOpenApi(false);
                         }}
@@ -7272,11 +6665,41 @@ ${lines.join('\n')}`;
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                         <textarea placeholder="JS body — use params.x to access parameters. Must return/resolve a value." rows={3} value={newCustomTool.code} onChange={e => setNewCustomTool(v => ({ ...v, code: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        {customToolError && (
+                          <p role="alert" className="text-[10px] text-red-400">⚠️ {customToolError}</p>
+                        )}
                         <button onClick={() => {
-                          if (!newCustomTool.name.trim()) return;
+                          const name = newCustomTool.name.trim();
+                          // Previously: a blank name returned silently, a malformed
+                          // params JSON was swallowed by `catch {}` and saved the tool
+                          // with ZERO parameters (#516), and a duplicate name collided
+                          // on one registry key so deleting either killed both (#517).
+                          if (!name) { setCustomToolError('Enter a tool name.'); return; }
+                          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                            setCustomToolError('Tool names may contain only letters, digits and underscores, and cannot start with a digit.');
+                            return;
+                          }
+                          if (customTools.some(t => t.name === name)) {
+                            setCustomToolError(`A tool named "${name}" already exists — pick another name.`);
+                            return;
+                          }
                           let props: Record<string, { type: string; description: string }> = {};
-                          try { props = JSON.parse(newCustomTool.paramsJson); } catch {}
-                          addCustomTool({ name: newCustomTool.name.trim(), description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
+                          const raw = newCustomTool.paramsJson.trim();
+                          if (raw) {
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                                setCustomToolError('Parameters JSON must be an object, e.g. {"input":{"type":"string","description":"…"}}.');
+                                return;
+                              }
+                              props = parsed;
+                            } catch (e) {
+                              setCustomToolError(`Parameters JSON is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+                              return;
+                            }
+                          }
+                          setCustomToolError(null);
+                          addCustomTool({ name, description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
                           setCustomTools(loadCustomTools());
                           setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
                           setShowAddCustomTool(false);
@@ -7610,8 +7033,14 @@ ${lines.join('\n')}`;
                         {modelfilePreview}
                       </div>
                     )}
-                    {modelfileProgress && (
-                      <p className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>{modelfileProgress}</p>
+                    {(modelfileError || modelfileProgress) && (
+                      <p role={modelfileError ? 'alert' : undefined} className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>
+                        {/* Render the error, not just the progress text (#528).
+                            The catch path clears modelfileProgress, so this
+                            paragraph used to go blank and every failure —
+                            including "Enter a model name" — was invisible. */}
+                        {modelfileError || modelfileProgress}
+                      </p>
                     )}
                     <div className="flex gap-1.5">
                       <button
@@ -7624,7 +7053,22 @@ ${lines.join('\n')}`;
                       <button
                         onClick={async () => {
                           if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          // "16k" used to parse to 16 and any non-numeric text
+                          // emitted `PARAMETER temperature NaN` into the Modelfile
+                          // (#520). Reject rather than silently mangling.
+                          const tempRaw = modelfileFields.temperature.trim();
+                          const ctxRaw = modelfileFields.numCtx.trim();
+                          const temperature = tempRaw ? Number(tempRaw) : undefined;
+                          const numCtx = ctxRaw ? Number(ctxRaw) : undefined;
+                          if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+                            setModelfileError('Temperature must be a number between 0 and 2.');
+                            return;
+                          }
+                          if (numCtx !== undefined && (!Number.isInteger(numCtx) || numCtx <= 0)) {
+                            setModelfileError('Context window (num_ctx) must be a positive whole number — e.g. 16384, not "16k".');
+                            return;
+                          }
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature, numCtx });
                           setIsCreatingModel(true);
                           setModelfileError('');
                           setModelfileProgress('Starting…');
@@ -7939,7 +7383,15 @@ ${lines.join('\n')}`;
                           min="5"
                           max="300"
                           value={Math.round(sttConfig.maxDurationMs / 1000)}
-                          onChange={e => { const cfg = { ...sttConfig, maxDurationMs: parseInt(e.target.value) * 1000 }; setSttConfig(cfg); saveSttConfig(cfg); }}
+                          onChange={e => {
+                            // An empty/non-numeric field used to persist NaN,
+                            // which permanently broke dictation (#500).
+                            const secs = parseInt(e.target.value, 10);
+                            if (!Number.isFinite(secs)) return;
+                            const clamped = Math.min(600, Math.max(1, secs));
+                            const cfg = { ...sttConfig, maxDurationMs: clamped * 1000 };
+                            setSttConfig(cfg); saveSttConfig(cfg);
+                          }}
                           className={`w-24 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                       </div>
@@ -8246,7 +7698,18 @@ ${lines.join('\n')}`;
                         <button
                           aria-label={`Delete secret ${r.key}`}
                           onClick={async () => {
-                            await secretDelete(r.service, r.key);
+                            // The value is masked and unrecoverable, so an
+                            // accidental click destroyed a credential the user
+                            // could not even read back (#523).
+                            if (!window.confirm(
+                              `Delete secret "${r.key}" from ${r.service}?\n\n` +
+                              `This removes it from the OS keychain and cannot be undone.`,
+                            )) return;
+                            try {
+                              await secretDelete(r.service, r.key);
+                            } catch (e) {
+                              showStatusBanner(`Could not delete secret: ${formatErrorLine(e)}`);
+                            }
                             setSecretKeys(secretListRefs());
                           }}
                           className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
@@ -8305,28 +7768,37 @@ ${lines.join('\n')}`;
                   <div className="space-y-1 mb-3 max-h-52 overflow-y-auto">
                     {knowledgeCollections.map(col => (
                       <div key={col.id} className={`rounded-lg border overflow-hidden ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
-                        <div className={`flex items-center gap-2 px-2 py-1.5 text-xs cursor-pointer select-none ${dark ? 'bg-zinc-800 hover:bg-zinc-700/50' : 'bg-white hover:bg-zinc-50'}`}
-                          onClick={() => {
-                            if (expandedCollection === col.id) {
-                              setExpandedCollection(null);
-                            } else {
-                              setExpandedCollection(col.id);
-                              if (!knowledgeFilesMap[col.id]) {
-                                void getFilesForCollection(col.id).then(files =>
-                                  setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }))
-                                );
+                        {/* The row was a plain <div onClick>: no role, no tabIndex
+                            and no key handler, so a keyboard user could never
+                            expand a collection and therefore could not add or
+                            remove any of its files (#512). It is a button now. */}
+                        <div className={`flex items-center gap-2 px-2 py-1.5 text-xs select-none ${dark ? 'bg-zinc-800 hover:bg-zinc-700/50' : 'bg-white hover:bg-zinc-50'}`}>
+                          <button
+                            type="button"
+                            aria-expanded={expandedCollection === col.id}
+                            aria-label={`${expandedCollection === col.id ? 'Collapse' : 'Expand'} collection ${col.name}`}
+                            onClick={() => {
+                              if (expandedCollection === col.id) {
+                                setExpandedCollection(null);
+                              } else {
+                                setExpandedCollection(col.id);
+                                if (!knowledgeFilesMap[col.id]) {
+                                  void getFilesForCollection(col.id).then(files =>
+                                    setKnowledgeFilesMap(prev => ({ ...prev, [col.id]: files }))
+                                  );
+                                }
                               }
-                            }
-                          }}
-                        >
-                          <span className="opacity-50">{expandedCollection === col.id ? '▼' : '▶'}</span>
-                          <span className={`flex-1 font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{col.name}</span>
-                          <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
+                            }}
+                            className="flex-1 min-w-0 flex items-center gap-2 text-left focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                          >
+                            <span className="opacity-50">{expandedCollection === col.id ? '▼' : '▶'}</span>
+                            <span className={`flex-1 truncate font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{col.name}</span>
+                            <span className={`opacity-50 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{new Date(col.updatedAt).toLocaleDateString()}</span>
+                          </button>
                           <button
                             type="button"
                             aria-label={`Delete collection ${col.name}`}
-                            onClick={async e => {
-                              e.stopPropagation();
+                            onClick={async () => {
                               if (!confirm(`Delete collection "${col.name}" and all its files?`)) return;
                               await deleteCollection(col.id);
                               const updated = await listCollections();
@@ -8446,19 +7918,35 @@ ${lines.join('\n')}`;
                                 </span>
                               )}
                               <button
-                                disabled={isRunning}
+                                aria-label={`Add step to ${sc.name}`}
+                                title="Add a step"
+                                onClick={() => setScenarioStepDraft(d => d?.id === sc.id ? null : { id: sc.id, action: 'navigate', arg: '' })}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                              >+ step</button>
+                              <button
+                                disabled={isRunning || sc.steps.length === 0}
+                                title={sc.steps.length === 0 ? 'Add at least one step first' : 'Run scenario'}
                                 onClick={async () => {
                                   setRunningScenarioId(sc.id);
                                   try {
                                     const r = await runScenario(sc);
                                     setScenarioResults(prev => ({ ...prev, [sc.id]: r }));
                                   } catch (e) {
-                                    console.error('Scenario run error', e);
+                                    // A throw used to leave the PREVIOUS run's badge on
+                                    // screen, so a crashed run read as a passing run (#535).
+                                    setScenarioResults(prev => ({
+                                      ...prev,
+                                      [sc.id]: {
+                                        pass: false,
+                                        failedStepIndex: 0,
+                                        stepResults: [{ stepIndex: 0, pass: false, errorMessage: e instanceof Error ? e.message : String(e) }],
+                                      } as typeof prev[string],
+                                    }));
                                   } finally {
                                     setRunningScenarioId(null);
                                   }
                                 }}
-                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning ? 'opacity-50 cursor-wait' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
+                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning || sc.steps.length === 0 ? 'opacity-40 cursor-not-allowed' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
                               >{isRunning ? '…' : '▶ Run'}</button>
                               <button
                                 aria-label={`Delete scenario ${sc.name}`}
@@ -8470,6 +7958,59 @@ ${lines.join('\n')}`;
                               <p className={`text-[10px] mt-1 ${dark ? 'text-red-400' : 'text-red-600'}`}>
                                 {result.stepResults.find(s => !s.pass)?.errorMessage}
                               </p>
+                            )}
+                            {sc.steps.length > 0 && (
+                              <ol className={`mt-1 ml-3 list-decimal text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                                {sc.steps.map((st, si) => (
+                                  <li key={si} className="flex items-center gap-1">
+                                    <span className="font-mono flex-1 truncate">
+                                      {st.action}{st.args?.value ? ` "${st.args.value}"` : ''}{st.args?.selector ? ` @${st.args.selector}` : ''}{st.args?.url ? ` ${st.args.url}` : ''}
+                                    </span>
+                                    <button
+                                      aria-label={`Remove step ${si + 1} from ${sc.name}`}
+                                      onClick={() => {
+                                        const next = { ...sc, steps: sc.steps.filter((_, k) => k !== si) };
+                                        saveScenario(next); setScenarios(listScenarios());
+                                      }}
+                                      className="text-red-400 hover:text-red-300 px-1"
+                                    >✕</button>
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+                            {scenarioStepDraft?.id === sc.id && (
+                              <div className="flex gap-1 mt-1">
+                                <select
+                                  aria-label="Step action"
+                                  value={scenarioStepDraft.action}
+                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, action: e.target.value as StepAction }))}
+                                  className={`text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                                >
+                                  {(['navigate', 'click', 'type', 'wait_for', 'assert', 'visual_match'] as StepAction[]).map(a => (
+                                    <option key={a} value={a}>{a}</option>
+                                  ))}
+                                </select>
+                                <input
+                                  aria-label="Step argument"
+                                  value={scenarioStepDraft.arg}
+                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, arg: e.target.value }))}
+                                  placeholder={scenarioStepDraft.action === 'navigate' ? 'https://…' : scenarioStepDraft.action === 'type' ? 'text to type' : 'CSS selector'}
+                                  className={`flex-1 text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
+                                />
+                                <button
+                                  onClick={() => {
+                                    const d = scenarioStepDraft;
+                                    if (!d || !d.arg.trim()) return;
+                                    const args = d.action === 'navigate' ? { url: d.arg.trim() }
+                                      : d.action === 'type' ? { value: d.arg.trim() }
+                                      : { selector: d.arg.trim() };
+                                    const next = { ...sc, steps: [...sc.steps, { action: d.action, args }] };
+                                    saveScenario(next); setScenarios(listScenarios());
+                                    setScenarioStepDraft({ ...d, arg: '' });
+                                  }}
+                                  className="text-[10px] px-2 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                                >Add</button>
+                              </div>
                             )}
                           </div>
                         );
@@ -8555,7 +8096,7 @@ ${lines.join('\n')}`;
 
         {/* Composed system-prompt preview (#376) */}
         {promptPreview && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={promptPreviewModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Composed system prompt preview" className={`border w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className={`flex items-center justify-between px-6 py-4 border-b shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
                 <h2 className="text-lg font-bold">Composed System Prompt</h2>
@@ -8579,7 +8120,7 @@ ${lines.join('\n')}`;
 
         {/* Help Overlay (keyboard shortcuts) */}
         {showHelp && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={helpModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="help-title" className={`border w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -8593,10 +8134,6 @@ ${lines.join('\n')}`;
                   ['Command Palette', 'Ctrl+P'],
                   ['Find in Chat', 'Ctrl+F'],
                   ['Toggle Sidebar', 'Ctrl+\\'],
-                  ['Toggle Browser', 'Ctrl+B'],
-                  ['Toggle Files', 'Ctrl+Shift+F'],
-                  ['Toggle Terminal', 'Ctrl+T'],
-                  ['Toggle Artifacts', 'Ctrl+Shift+A'],
                   ['Open Settings', 'Ctrl+,'],
                   ['Regenerate Last Reply', 'Ctrl+R'],
                   ['Focus Composer', 'Ctrl+L'],
@@ -8669,7 +8206,7 @@ ${lines.join('\n')}`;
           <div
             role="status"
             aria-live="polite"
-            className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm border ${
+            className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm border ${
               dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
             }`}
           >
@@ -8720,6 +8257,8 @@ ${lines.join('\n')}`;
             onClick={() => setConfirmBulkDelete(false)}
           >
             <div
+              ref={bulkDeleteModalRef}
+              tabIndex={-1}
               className={`border rounded-2xl p-6 shadow-2xl w-full max-w-sm mx-4 ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}
               onClick={(e) => e.stopPropagation()}
             >
@@ -8759,7 +8298,7 @@ ${lines.join('\n')}`;
         />
         {/* CLI Command Approval Modal */}
         {pendingApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={cliApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Command approval required" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${
               dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'
             }`}>
@@ -8825,7 +8364,7 @@ ${lines.join('\n')}`;
 
         {/* Tool approval modal (#88/#89/#189) — shown in plan/ask autonomy mode */}
         {pendingToolApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={toolApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Agent tool-use approval" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
@@ -8871,7 +8410,7 @@ ${lines.join('\n')}`;
             unblocks the whole plan run; Deny blocks the tool and keeps the
             plan un-approved. */}
         {pendingPlanApproval && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div ref={planApprovalModalRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Approve plan to begin execution" className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-300'}`}>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
@@ -9012,7 +8551,6 @@ ${lines.join('\n')}`;
           return <ContextMenu x={sessionContextMenu.x} y={sessionContextMenu.y} items={items} onClose={() => setSessionContextMenu(null)} dark={dark} />;
         })()}
 
-        </PanelShell>
     </div>
 
 

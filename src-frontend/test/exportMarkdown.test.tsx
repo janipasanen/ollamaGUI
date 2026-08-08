@@ -48,8 +48,9 @@ describe('Per-conversation Markdown export (#256)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
 
-    const exportBtn = screen.getByRole('button', { name: 'Export conversation as Markdown' });
-    fireEvent.click(exportBtn);
+    // Reached via the command palette now that it is no longer header chrome (#546).
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    fireEvent.click(screen.getByText('Export Conversation as Markdown'));
 
     expect(captured.length).toBeGreaterThanOrEqual(1);
     const mdBlob = captured[captured.length - 1];
@@ -66,9 +67,14 @@ describe('Per-conversation Markdown export (#256)', () => {
     expect(text).toContain('Hello there');
   });
 
-  it('the export button is disabled when there are no messages', () => {
+  it('exports nothing when there are no messages', () => {
+    const spy = vi.fn(() => 'blob:none');
+    URL.createObjectURL = spy as unknown as typeof URL.createObjectURL;
     render(<App />);
-    const exportBtn = screen.getByRole('button', { name: 'Export conversation as Markdown' });
-    expect(exportBtn).toBeDisabled();
+    // The header button is gone (#546); invoking the palette entry with an
+    // empty conversation must be a no-op rather than exporting a blank file.
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    fireEvent.click(screen.getByText('Export Conversation as Markdown'));
+    expect(spy).not.toHaveBeenCalled();
   });
 });

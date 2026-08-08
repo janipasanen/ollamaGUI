@@ -49,41 +49,9 @@ describe('Ollama connection status indicator (#324)', () => {
   });
 });
 
-// ── #325 Generation parameters badge in header ───────────────────────────────
-
-describe('Generation parameters badge (#325)', () => {
-  it('renders the badge with default temperature and context', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    const badge = await screen.findByLabelText('Generation parameters');
-    expect(badge.textContent).toContain('T:def');
-    expect(badge.textContent).toContain('CTX:4096');
-  });
-
-  it('updates the badge after /temp sets a value', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    await screen.findByLabelText('Generation parameters');
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/temp 0.3' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => {
-      const badge = screen.getByLabelText('Generation parameters');
-      expect(badge.textContent).toContain('T:0.3');
-    });
-  });
-
-  it('updates the badge after /ctx sets a value', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    await screen.findByLabelText('Generation parameters');
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/ctx 16384' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => {
-      const badge = screen.getByLabelText('Generation parameters');
-      expect(badge.textContent).toContain('CTX:16384');
-    });
-  });
-});
+// #325 (generation-parameters badge in the header) was removed with the header
+// toolbar in the UI simplification — no badge surface exists anymore. The
+// effective /temp and /ctx values are still asserted via /params below.
 
 // ── #326 /params slash command ───────────────────────────────────────────────
 

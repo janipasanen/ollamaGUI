@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import App from '../App';
-import { storage, type ChatSession, type Project, type Folder } from '../services/storage';
+import { storage, type Project } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { _mocks as gitMocks } from '../services/git';
 import { _cliMocks } from '../services/tools';
@@ -69,7 +69,9 @@ describe('File-tree click pins a file into context (#363)', () => {
     };
 
     render(<App />);
-    await act(async () => { fireEvent.click(await screen.findByText('📂 Repo')); });
+    // Project rows carry aria-label = project name; clicking sets it active
+    // (which syncs the workspace root).
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Repo' })); });
 
     // Dispatch the same event FileTreePanel would dispatch on file click.
     await act(async () => {
@@ -89,7 +91,7 @@ describe('File-tree click pins a file into context (#363)', () => {
   it('ignores directory entries', async () => {
     seedProject('/ws/repo');
     render(<App />);
-    await act(async () => { fireEvent.click(await screen.findByText('📂 Repo')); });
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Repo' })); });
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('ollama-gui:select-file', {
@@ -102,58 +104,9 @@ describe('File-tree click pins a file into context (#363)', () => {
   });
 });
 
-// ── #364: Sidebar drag-and-drop to move conversations into folders ────────────
-
-describe('Sidebar drag-and-drop into folders (#364)', () => {
-  it('dragging a session onto a folder chip moves it', async () => {
-    const folder: Folder = { id: 'f_work', name: 'Work', order: 0 };
-    storage.saveFolder(folder);
-    const session: ChatSession = {
-      id: 's1', title: 'My Chat', createdAt: 1, model: 'llama3', messages: [],
-    };
-    storage.saveSession(session);
-
-    render(<App />);
-    const sessionRow = await screen.findByRole('button', { name: 'Load session: My Chat' });
-    const folderChip = screen.getByTitle(/Folder: Work/);
-
-    // Simulate HTML5 drag-and-drop with a mock DataTransfer.
-    const dt = { setData: vi.fn(), getData: vi.fn(() => 's1'), effectAllowed: 'move', dropEffect: 'move' };
-    fireEvent.dragStart(sessionRow, { dataTransfer: dt });
-    fireEvent.dragOver(folderChip, { dataTransfer: dt });
-    fireEvent.drop(folderChip, { dataTransfer: dt });
-
-    await waitFor(() => {
-      const updated = storage.getSessions().find(s => s.id === session.id);
-      expect(updated?.folderId).toBe('f_work');
-    });
-  });
-
-  it('dragging onto the All chip unfiles the session', async () => {
-    const folder: Folder = { id: 'f_work', name: 'Work', order: 0 };
-    storage.saveFolder(folder);
-    const session: ChatSession = {
-      id: 's2', title: 'Filed Chat', createdAt: 2, model: 'llama3', messages: [], folderId: 'f_work',
-    };
-    storage.saveSession(session);
-
-    render(<App />);
-    // Switch to the Work folder so the session is visible
-    fireEvent.click(screen.getByTitle(/Folder: Work/));
-    const sessionRow = await screen.findByRole('button', { name: 'Load session: Filed Chat' });
-    const allChip = screen.getByTitle(/All conversations/);
-
-    const dt2 = { setData: vi.fn(), getData: vi.fn(() => 's2'), effectAllowed: 'move', dropEffect: 'move' };
-    fireEvent.dragStart(sessionRow, { dataTransfer: dt2 });
-    fireEvent.dragOver(allChip, { dataTransfer: dt2 });
-    fireEvent.drop(allChip, { dataTransfer: dt2 });
-
-    await waitFor(() => {
-      const updated = storage.getSessions().find(s => s.id === session.id);
-      expect(updated?.folderId).toBeUndefined();
-    });
-  });
-});
+// #364 (sidebar drag-and-drop into folder chips) was removed with the UI
+// rewrite: folder chips, the "+ folder" button, and per-row folder selects no
+// longer exist on any surface, so those tests were deleted.
 
 // ── #365: /init generates AGENTS.md ───────────────────────────────────────────
 
@@ -174,7 +127,7 @@ describe('/init generates an AGENTS.md file (#365)', () => {
     fileMocks.invoke = writeSpy as any;
 
     render(<App />);
-    await act(async () => { fireEvent.click(await screen.findByText('📂 Repo')); });
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Repo' })); });
 
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: '/init' } });

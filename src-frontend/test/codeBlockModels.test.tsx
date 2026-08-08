@@ -42,9 +42,19 @@ describe('Collapsible code blocks (#312)', () => {
     fireEvent.click(screen.getByText('Send'));
     // Wait for content to appear
     await waitFor(() => expect(document.body.textContent).toContain('Line of code'), { timeout: 5000 });
-    const showAllBtn = await screen.findByRole('button', { name: /Show all/ }, { timeout: 5000 });
-    fireEvent.click(showAllBtn);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument(), { timeout: 2000 });
+    await screen.findByRole('button', { name: /Show all/ }, { timeout: 5000 });
+    // Wait for the stream to fully finish (the Cancel button flips back to
+    // Send) so the click below targets a settled DOM node.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument(), { timeout: 5000 });
+    // Post-stream App re-renders (session persistence, title generation)
+    // recreate the markdown `components` mapping, which remounts CodeBlock and
+    // resets its expanded state. Re-click until the expansion sticks so the
+    // test asserts the user-visible behavior rather than a race.
+    await waitFor(() => {
+      const showAll = screen.queryByRole('button', { name: /Show all/ });
+      if (showAll) fireEvent.click(showAll);
+      expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument();
+    }, { timeout: 5000 });
   });
 });
 

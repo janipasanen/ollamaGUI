@@ -18,38 +18,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Tag filter (#306)', () => {
-  it('filters sessions by tag when a tag is clicked', async () => {
-    const sessions = [
-      { id: 's1', title: 'Work chat', messages: [{ role: 'user', content: 'Hi' }], model: 'llama3', createdAt: Date.now() - 2000, tags: ['work'] },
-      { id: 's2', title: 'Personal chat', messages: [{ role: 'user', content: 'Hello' }], model: 'llama3', createdAt: Date.now() - 1000, tags: ['personal'] },
-    ];
+// The sidebar tag chips + filter chip were removed in the Ollama-style
+// rewrite; filtering by tag now happens through sidebar search, which
+// matches tags (services/storage searchSessions). Titles deliberately do
+// not contain the tag words so only the tag can match.
+describe('Tag filter via sidebar search (#306)', () => {
+  const sessions = [
+    { id: 's1', title: 'Alpha chat', messages: [{ role: 'user', content: 'Hi' }], model: 'llama3', createdAt: Date.now() - 2000, tags: ['work'] },
+    { id: 's2', title: 'Beta chat', messages: [{ role: 'user', content: 'Yo' }], model: 'llama3', createdAt: Date.now() - 1000, tags: ['personal'] },
+  ];
+
+  it('filters sessions by tag when the tag is typed into search', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Work chat')).toBeInTheDocument(), { timeout: 3000 });
-    // Click the 'work' tag button
-    const tagBtn = screen.getByText('work');
-    fireEvent.click(tagBtn);
-    // The tag filter chip should appear
-    expect(await screen.findByText(/work.*✕/)).toBeInTheDocument();
-    // Only 'Work chat' should be visible, not 'Personal chat'
-    expect(screen.getByText('Work chat')).toBeInTheDocument();
-    expect(screen.queryByText('Personal chat')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load session: Alpha chat' })).toBeInTheDocument(), { timeout: 3000 });
+    fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'work' } });
+    // Only the session tagged 'work' remains visible.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load session: Beta chat' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Load session: Alpha chat' })).toBeInTheDocument();
   });
 
-  it('clears the tag filter when the chip is clicked', async () => {
-    const sessions = [
-      { id: 's1', title: 'Work chat', messages: [{ role: 'user', content: 'Hi' }], model: 'llama3', createdAt: Date.now() - 2000, tags: ['work'] },
-      { id: 's2', title: 'Personal chat', messages: [{ role: 'user', content: 'Hello' }], model: 'llama3', createdAt: Date.now() - 1000, tags: ['personal'] },
-    ];
+  it('clearing the search restores all sessions', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify(sessions));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('work')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByText('work'));
-    const chip = await screen.findByText(/work.*✕/);
-    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load session: Alpha chat' })).toBeInTheDocument(), { timeout: 3000 });
+    const search = screen.getByLabelText('Search conversations');
+    fireEvent.change(search, { target: { value: 'personal' } });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load session: Alpha chat' })).not.toBeInTheDocument());
+    fireEvent.change(search, { target: { value: '' } });
     // Both sessions should be visible again
-    await waitFor(() => expect(screen.getByText('Personal chat')).toBeInTheDocument(), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load session: Alpha chat' })).toBeInTheDocument(), { timeout: 2000 });
+    expect(screen.getByRole('button', { name: 'Load session: Beta chat' })).toBeInTheDocument();
   });
 });
 

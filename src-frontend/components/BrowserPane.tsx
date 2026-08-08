@@ -196,6 +196,11 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
     }
   }, [openNativePreview]);
 
+  // The native preview is a separate OS-level child webview, not DOM — closing
+  // the panel unmounts this component but left the webview floating on top of
+  // the app with no way to dismiss it (#510). Tear it down on unmount.
+  useEffect(() => () => { void closePreview().catch(() => {}); }, []);
+
   // -------------------------------------------------------------------------
   // Bus subscriptions
   // -------------------------------------------------------------------------

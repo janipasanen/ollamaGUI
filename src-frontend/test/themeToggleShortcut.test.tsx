@@ -17,19 +17,19 @@ afterEach(() => {
 });
 
 describe('Toggle theme via Ctrl/Cmd+Shift+D (#275)', () => {
-  it('toggles dark mode to light mode', async () => {
+  it('toggles light mode to dark mode', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
     const { container } = render(<App />);
     const root = container.querySelector('.h-screen') as HTMLElement;
-    expect(root.className).toContain('bg-zinc-900'); // starts dark
+    expect(root.className).toContain('bg-white'); // starts light (new default)
 
     (document.activeElement as HTMLElement | null)?.blur?.();
     fireEvent.keyDown(window, { key: 'd', ctrlKey: true, shiftKey: true });
 
     await waitFor(() => {
-      expect(root.className).toContain('bg-zinc-100'); // now light
+      expect(root.className).toContain('bg-zinc-900'); // now dark
     });
-    expect(root.className).not.toContain('bg-zinc-900');
+    expect(root.className).not.toContain('bg-white');
   });
 });

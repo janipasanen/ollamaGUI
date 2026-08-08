@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 import { storage, type ChatSession } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
-import { _mocks as fileTreeMocks } from '../components/FileTreePanel';
+import FileTreePanel, { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 import { openWorkspace, closeWorkspace } from '../services/workspace';
 
 let origFetch: typeof global.fetch;
@@ -138,6 +138,9 @@ describe('/save and /load conversation snapshots (#386)', () => {
 });
 
 // ── #384: File-tree right-click context menu ──────────────────────────────────
+// The dock is gone from the new UI (App never mounts panels), but the file-tree
+// context menu lives in FileTreePanel and "Pin to chat" still reaches App via
+// the ollama-gui:select-file event — mount App and the panel side by side.
 
 describe('File-tree right-click context menu (#384)', () => {
   it('offers Pin to chat, Copy path and Copy relative path; Pin to chat pins the file', async () => {
@@ -157,7 +160,7 @@ describe('File-tree right-click context menu (#384)', () => {
     };
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /files panel/i }));
+    render(<FileTreePanel dark={false} />);
     await waitFor(() => expect(screen.getByText('main.ts')).toBeInTheDocument(), { timeout: 8000 });
 
     // Right-click the file node -> context menu with the three file actions.

@@ -1,6 +1,7 @@
 /**
- * Next/prev conversation shortcut (#300), composer word/char counter (#301),
- * and /cost slash command (#302).
+ * Next/prev conversation shortcut (#300) and /cost slash command (#302).
+ * The composer word/char counter (#301) was removed in the minimal-UI rewrite
+ * (no replacement surface), so its tests are gone.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -23,20 +24,6 @@ describe('/cost slash command (#302)', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/cost' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText(/Tokens:.*Context:.*%/)).toBeInTheDocument();
-  });
-});
-
-describe('Composer word/character counter (#301)', () => {
-  it('shows word and char count when typing', () => {
-    render(<App />);
-    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
-    fireEvent.change(composer, { target: { value: 'hello world foo' } });
-    expect(screen.getByText(/3 words · 15 chars/)).toBeInTheDocument();
-  });
-
-  it('does not show the counter when the composer is empty', () => {
-    render(<App />);
-    expect(screen.queryByText(/words · .* chars/)).not.toBeInTheDocument();
   });
 });
 

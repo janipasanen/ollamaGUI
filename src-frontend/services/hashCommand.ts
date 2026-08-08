@@ -55,6 +55,9 @@ export function hashQuery(input: string): string {
 
 // ── Autocomplete ──────────────────────────────────────────────────────────────
 
+/** Upper bound on rendered autocomplete rows, mirroring getAtOptions (#505). */
+const MAX_AUTOCOMPLETE_OPTIONS = 20;
+
 export async function getAutocompleteOptions(query: string): Promise<AutocompleteOption[]> {
   const opts: AutocompleteOption[] = [];
 
@@ -81,6 +84,15 @@ export async function getAutocompleteOptions(query: string): Promise<Autocomplet
     opts.push({ kind: 'url', label: 'Reference URL…', sublabel: 'Paste a link' });
   }
 
+  // Cap the list the way getAtOptions does (#505). This emits one option per
+  // collection plus one per file across every collection, so a user with a few
+  // dozen indexed files produced a list thousands of pixels tall. Keep the URL
+  // option, which is always meaningful, rather than letting it fall off the end.
+  if (opts.length > MAX_AUTOCOMPLETE_OPTIONS) {
+    const urlOpt = opts[opts.length - 1].kind === 'url' ? opts.pop() : undefined;
+    const trimmed = opts.slice(0, MAX_AUTOCOMPLETE_OPTIONS - (urlOpt ? 1 : 0));
+    return urlOpt ? [...trimmed, urlOpt] : trimmed;
+  }
   return opts;
 }
 

@@ -48,7 +48,9 @@ describe('Copy conversation as Markdown to clipboard (#261)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy conversation as Markdown' }));
+    // Reached via the command palette now that it is no longer header chrome (#546).
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    fireEvent.click(screen.getByText('Copy Conversation as Markdown'));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain('## User');
@@ -57,9 +59,15 @@ describe('Copy conversation as Markdown to clipboard (#261)', () => {
     expect(copied).toContain('Hello there');
   });
 
-  it('the copy button is disabled when there are no messages', () => {
+  it('copies nothing when the conversation is empty', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, writable: true, configurable: true });
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
     render(<App />);
-    expect(screen.getByRole('button', { name: 'Copy conversation as Markdown' })).toBeDisabled();
+    // The header button is gone (#546); the palette entry is the desktop route.
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    fireEvent.click(screen.getByText('Copy Conversation as Markdown'));
+    await waitFor(() => expect(screen.getByText(/Nothing to copy/i)).toBeInTheDocument());
+    expect(writeText).not.toHaveBeenCalled();
   });
 });

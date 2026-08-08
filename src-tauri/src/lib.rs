@@ -1431,9 +1431,13 @@ async fn search_files(
     include_glob: Option<String>,
     max_results: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    let root = {
+    // Walk EVERY configured root, not just the primary (#541). A project may
+    // span several repositories; searching only roots[0] made symbols in the
+    // others look nonexistent even though read_file on the same path worked.
+    let roots = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        if guard.is_empty() { return Err("No workspace root set.".to_string()); }
+        guard.clone()
     };
     let max = max_results.unwrap_or(200).min(2000);
     let case_sensitive = case_sensitive.unwrap_or(false);
@@ -1451,31 +1455,43 @@ async fn search_files(
             _ => None,
         };
         let mut hits: Vec<SearchHit> = Vec::new();
-        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
-        });
-        for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
-            let rel = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            if let Some(ref inc) = include {
-                if !inc.is_match(&rel) { continue; }
-            }
-            let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
-            for (idx, line) in content.lines().enumerate() {
-                if matcher.is_match(line) {
-                    hits.push(SearchHit {
-                        file: rel.clone(),
-                        line: (idx as u32) + 1,
-                        text: line.chars().take(400).collect(),
-                    });
-                    if hits.len() >= max { return Ok(hits); }
+        // The cap applies across the combined walk, not per root.
+        for (root_idx, root) in roots.iter().enumerate() {
+            let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+                !(e.file_type().is_dir()
+                    && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            });
+            for entry in walker {
+                let entry = match entry { Ok(e) => e, Err(_) => continue };
+                if !entry.file_type().is_file() { continue; }
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Some(ref inc) = include {
+                    if !inc.is_match(&rel) { continue; }
+                }
+                // Primary root keeps workspace-relative paths (unchanged for
+                // single-root projects); secondary roots report ABSOLUTE paths,
+                // which resolve_workspace_path also accepts — so every hit can
+                // be fed straight back into read_file regardless of its repo.
+                let reported = if root_idx == 0 {
+                    rel
+                } else {
+                    entry.path().to_string_lossy().replace('\\', "/")
+                };
+                let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
+                for (idx, line) in content.lines().enumerate() {
+                    if matcher.is_match(line) {
+                        hits.push(SearchHit {
+                            file: reported.clone(),
+                            line: (idx as u32) + 1,
+                            text: line.chars().take(400).collect(),
+                        });
+                        if hits.len() >= max { return Ok(hits); }
+                    }
                 }
             }
         }
@@ -1489,30 +1505,41 @@ async fn search_files(
 /// file paths, capped at `max_results`.
 #[tauri::command]
 async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<String>, String> {
-    let root = {
+    // Every configured root, not just the primary (#541) — see search_files.
+    let roots = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        if guard.is_empty() { return Err("No workspace root set.".to_string()); }
+        guard.clone()
     };
     let max = max_results.unwrap_or(500).min(5000);
     tauri::async_runtime::spawn_blocking(move || {
         let re = regex::Regex::new(&glob_to_regex(&pattern)).map_err(|e| format!("Invalid glob: {e}"))?;
         let mut out: Vec<String> = Vec::new();
-        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
-        });
-        for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
-            let rel = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            if re.is_match(&rel) {
-                out.push(rel);
-                if out.len() >= max { break; }
+        'roots: for (root_idx, root) in roots.iter().enumerate() {
+            let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+                !(e.file_type().is_dir()
+                    && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            });
+            for entry in walker {
+                let entry = match entry { Ok(e) => e, Err(_) => continue };
+                if !entry.file_type().is_file() { continue; }
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                // The glob is matched against the root-relative path in every
+                // repo, so `src/**/*.ts` means the same thing in each; only the
+                // REPORTED path differs (absolute for secondary roots).
+                if re.is_match(&rel) {
+                    out.push(if root_idx == 0 {
+                        rel
+                    } else {
+                        entry.path().to_string_lossy().replace('\\', "/")
+                    });
+                    if out.len() >= max { break 'roots; }
+                }
             }
         }
         out.sort();

@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import App from '../App';
 import { storage, type ChatSession } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
-import { _mocks as fileTreeMocks } from '../components/FileTreePanel';
+import FileTreePanel, { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 import { openWorkspace, closeWorkspace, getActiveRoot } from '../services/workspace';
 
 let origFetch: typeof global.fetch;
@@ -80,6 +80,8 @@ describe('/cwd slash command (#379)', () => {
 });
 
 // ── #380: FileTreePanel reflects workspace changes via custom event ───────────
+// The dock is gone from the new UI (App never mounts panels), but the panel
+// component itself still owns the workspace-changed sync — mount it directly.
 
 describe('FileTreePanel workspace sync (#380)', () => {
   it('refreshes the tree when the workspace-changed event fires', async () => {
@@ -91,9 +93,7 @@ describe('FileTreePanel workspace sync (#380)', () => {
 
     await openWorkspace('/ws/alpha');
 
-    render(<App />);
-    const filesBtn = await screen.findByRole('button', { name: /files panel/i });
-    fireEvent.click(filesBtn);
+    render(<FileTreePanel dark={false} />);
 
     await waitFor(() => expect(screen.getByText('alpha.txt')).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.queryByText('beta.txt')).not.toBeInTheDocument();
