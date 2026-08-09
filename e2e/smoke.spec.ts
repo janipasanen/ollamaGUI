@@ -7,13 +7,16 @@ import { test, expect } from '@playwright/test';
 test.describe('App smoke', () => {
   test('renders the chat UI and header', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: /Ollama GUI/i })).toBeVisible();
+    // Minimal Ollama-style UI (#549): no app-title heading and no header
+    // buttons — the sidebar "+ New" button and the composer are the anchors.
+    await expect(page.getByRole('button', { name: 'Start new chat' })).toBeVisible();
     await expect(page.getByPlaceholder(/Message Ollama/i)).toBeVisible();
   });
 
   test('opens and closes the settings overlay', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Open settings' }).click();
+    // Settings moved from the header to the sidebar footer (#549).
+    await page.getByRole('button', { name: '⚙️ Settings' }).click();
     await expect(page.getByRole('heading', { name: /^Settings$/i })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: /^Settings$/i })).toBeHidden();

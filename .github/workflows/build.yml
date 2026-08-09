@@ -9,6 +9,10 @@ on:
 jobs:
   build:
     strategy:
+      # One OS hiccup (e.g. a timing-flaky UI test on a slow Windows runner)
+      # used to cancel the other two builds mid-compile, turning a single
+      # flake into a triple-red run. Let each OS finish and report honestly.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
