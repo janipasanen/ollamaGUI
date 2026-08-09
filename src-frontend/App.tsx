@@ -61,7 +61,7 @@ import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
 import { MlxAvailability, checkMlxAvailable, isMlxModelName } from './services/mlx';
-import { pickDirectory, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
+import { pickDirectory, pickDirectories, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 import {
@@ -459,6 +459,18 @@ export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggl
 // Mirrors agentic GUIs (Codex/Claude) that collapse tool output behind a
 // summary showing the tool name + running/success/error state.
 const TOOL_ERROR_RE = /^(error|tool blocked)/i;
+
+/**
+ * The one argument a human cares about in a tool call (#549 rank 14):
+ * the path, command, or query — not the raw JSON envelope.
+ */
+function humanizeToolArgs(toolCall: any): string {
+  let args: any = toolCall?.function?.arguments ?? toolCall?.arguments ?? {};
+  if (typeof args === 'string') { try { args = JSON.parse(args); } catch { return args.slice(0, 80); } }
+  const top = args.path ?? args.file_path ?? args.command ?? args.query ?? args.pattern ?? args.url ?? args.task ?? '';
+  const text = typeof top === 'string' ? top : JSON.stringify(top ?? '');
+  return text.length > 80 ? `${text.slice(0, 77)}…` : text;
+}
 export const ToolResultBlock: React.FC<{ name?: string; content: string; dark: boolean }> = ({ name, content, dark }) => {
   const isError = TOOL_ERROR_RE.test(content.trim());
   const lineCount = content.split('\n').length;
@@ -1864,15 +1876,20 @@ const App: React.FC = () => {
     if (creatingProject) return;
     setCreatingProject(true);
     try {
-      const dir = await pickDirectory();
-      if (!dir) {
+      // Multi-select (#549 rank 12): the journey says "folder(s)" — one
+      // dialog can bind them all; the first folder names the project.
+      const dirs = await pickDirectories();
+      if (!dirs || dirs.length === 0) {
         // Cancel and a broken picker both return null — say SOMETHING either
         // way; a silent dead click on the primary CTA reads as a broken app
         // (#549 audit rank 6).
         showStatusBanner('No folder selected');
         return;
       }
-      const existing = storage.getProjects().find(p => projectRoots(p)[0] === dir);
+      const dir = dirs[0];
+      // Dedup against ALL roots (#549 rank 12): re-picking a secondary folder
+      // used to create a shadow project instead of switching to its owner.
+      const existing = storage.getProjects().find(p => projectRoots(p).includes(dir));
       if (existing) {
         // Re-opening a folder already bound to a project just switches to it,
         // rather than creating a confusing duplicate row.
@@ -1885,7 +1902,7 @@ const App: React.FC = () => {
         id: `proj_${Date.now()}`,
         name: basename(dir),
         workspaceRoot: dir,
-        workspaceRoots: [dir],
+        workspaceRoots: dirs,
         instructions: '',
         createdAt: Date.now(),
       };
@@ -4855,15 +4872,15 @@ ${lines.join('\n')}`;
                   </div>
                 )}
 
-                {/* Tool call rendering */}
+                {/* Tool call rendering (#549 rank 14): one quiet step row per
+                    call — the humanized top argument instead of raw JSON. */}
                 {msg.tool_calls && msg.tool_calls.length > 0 && (
-                  <div className="mb-2 p-2 rounded bg-blue-900/20 border border-blue-500/30">
-                    <div className="text-xs font-mono text-blue-300 mb-1">Tool Call</div>
+                  <div className="mb-1">
                     {msg.tool_calls.map((toolCall: any, idx: number) => (
-                      <div key={idx} className="text-xs font-mono">
-                        <span className="text-yellow-300">{toolCallName(toolCall)}</span>(
-                        <span className="text-green-300">{typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : JSON.stringify(toolCall.function?.arguments ?? toolCall.arguments ?? {})}</span>
-                        )
+                      <div key={idx} className={`text-xs flex items-baseline gap-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                        <span aria-hidden="true">→</span>
+                        <span className="font-mono">{toolCallName(toolCall)}</span>
+                        <span className={`truncate font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{humanizeToolArgs(toolCall)}</span>
                       </div>
                     ))}
                   </div>
@@ -4922,8 +4939,26 @@ ${lines.join('\n')}`;
                         </div>
                       )
                       : msg.role === 'tool'
-                        ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
+                        ? (
+                          // Collapsed step row (#549 rank 14): a 30-call run
+                          // used to be 60+ full-height bubbles of raw output.
+                          <details className="group/step">
+                            <summary className={`cursor-pointer list-none text-xs flex items-baseline gap-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                              <span aria-hidden="true">{TOOL_ERROR_RE.test(msg.content) ? '✗' : '✓'}</span>
+                              <span className="font-mono">{msg.name}</span>
+                              <span className={dark ? 'text-zinc-600' : 'text-zinc-400'}>
+                                {TOOL_ERROR_RE.test(msg.content) ? 'failed — click to inspect' : `${msg.content.length.toLocaleString()} chars — click to inspect`}
+                              </span>
+                            </summary>
+                            <div className="mt-1">
+                              <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
+                            </div>
+                          </details>
+                        )
                         : (() => {
+                            // The step row above already names the tool — the
+                            // "Calling tool: X" filler text is duplication.
+                            if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0 && msg.content.startsWith('Calling tool:')) return null;
                             const body = rawView[i] && msg.role === 'assistant'
                               ? <div className="whitespace-pre-wrap text-sm">{chatSearchOpen && chatSearchQuery ? highlightChildren(msg.content, chatSearchQuery) : msg.content}</div>
                               : <MarkdownMessage content={msg.content} dark={dark} onToggleTask={(t, c) => toggleTaskInMessage(i, t, c)} highlightQuery={chatSearchOpen ? chatSearchQuery : undefined} onApplyCode={projects.find(p => p.id === activeProjectId)?.workspaceRoot ? (codeVal: string, langVal: string) => {
@@ -7672,111 +7707,6 @@ ${lines.join('\n')}`;
 
               </div>
 
-                {/* Projects (#92) */}
-                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Projects ({projects.length})</label>
-                  {projects.length === 0 && <p className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No projects. Create one from the sidebar.</p>}
-                  {projects.map(p => (
-                    <div key={p.id} className={`mb-3 rounded-lg p-3 border ${dark ? 'border-zinc-700 bg-zinc-800' : 'border-zinc-200 bg-white'}`}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className={`text-sm font-medium ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{p.name}</span>
-                        {activeProjectId === p.id && <span className="text-[10px] text-blue-400">active</span>}
-                      </div>
-                      {/* Workspace folders (#83, multi-folder #492) */}
-                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>
-                        Workspace folders
-                      </label>
-                      <p className={`text-[10px] mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                        A project can span several repositories. The first folder is the primary one
-                        (relative paths and Git tools use it); all of them are readable by the AI.
-                      </p>
-                      {(() => {
-                        const roots = projectRoots(p);
-                        const persist = (next: string[]) => {
-                          const updated = { ...p, workspaceRoot: next[0] ?? '', workspaceRoots: next };
-                          storage.saveProject(updated);
-                          setProjects(storage.getProjects());
-                          if (activeProjectId === p.id) {
-                            if (next.length > 0) {
-                              void openWorkspaceRoots(next);
-                              registerGitTools(next[0]);
-                            } else {
-                              closeWorkspace();
-                            }
-                          }
-                        };
-                        return (
-                          <div className="mb-2">
-                            {roots.length === 0 && (
-                              <p className={`text-xs italic mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                                No folder selected
-                              </p>
-                            )}
-                            {roots.map((r, i) => (
-                              <div key={r} className="flex items-center gap-2 mb-1">
-                                <span
-                                  title={r}
-                                  className={`flex-1 text-xs truncate font-mono px-2 py-1 rounded border ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-zinc-50 border-zinc-200 text-zinc-500'}`}
-                                >
-                                  {i === 0 && <span className="text-blue-400 not-italic">★ </span>}{r}
-                                </span>
-                                {i > 0 && (
-                                  <button
-                                    aria-label={`Make ${r} the primary folder`}
-                                    title="Make primary"
-                                    onClick={() => persist([r, ...roots.filter(x => x !== r)])}
-                                    className={`shrink-0 text-[10px] px-1 ${dark ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 hover:text-zinc-800'}`}
-                                  >★</button>
-                                )}
-                                <button
-                                  aria-label={`Remove folder ${r}`}
-                                  title="Remove folder"
-                                  onClick={() => persist(roots.filter(x => x !== r))}
-                                  className="shrink-0 text-[10px] text-red-400 hover:text-red-300"
-                                >✕</button>
-                              </div>
-                            ))}
-                            <button
-                              onClick={async () => {
-                                const dir = await pickDirectory();
-                                if (dir && !roots.includes(dir)) persist([...roots, dir]);
-                              }}
-                              className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                            >+ Add folder…</button>
-                          </div>
-                        );
-                      })()}
-                      {/* Per-project model binding (#171) */}
-                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Default model (optional)</label>
-                      <select
-                        value={p.model ?? ''}
-                        onChange={e => {
-                          const updated = { ...p, model: e.target.value || undefined };
-                          storage.saveProject(updated);
-                          setProjects(storage.getProjects());
-                          if (activeProjectId === p.id && updated.model) setModel(updated.model);
-                        }}
-                        className={`w-full text-xs px-2 py-1.5 rounded border mb-2 focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                      >
-                        <option value="">— inherit global model —</option>
-                        {models.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                      </select>
-                      <label className={`block text-xs mb-1 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Instructions (prepended to system prompt)</label>
-                      <textarea
-                        value={p.instructions}
-                        onChange={e => {
-                          const updated = { ...p, instructions: e.target.value };
-                          storage.saveProject(updated);
-                          setProjects(storage.getProjects());
-                        }}
-                        rows={3}
-                        placeholder="e.g. Always respond in TypeScript. Prefer functional patterns."
-                        className={`w-full text-xs px-2 py-1.5 rounded border resize-none focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                      />
-                    </div>
-                  ))}
-                </div>
-
 
                 {/* Memory (#95) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
@@ -8724,8 +8654,54 @@ ${lines.join('\n')}`;
           const proj = projects.find(p => p.id === projectContextMenu.projectId);
           if (!proj) { setProjectContextMenu(null); return null; }
           const items: ContextMenuItem[] = [
-            { label: 'Rename', onSelect: () => { setRenamingProjectId(proj.id); setProjectRenameDraft(proj.name); } },
             { label: 'New chat', onSelect: () => { setExpandedProjects(prev => new Set(prev).add(proj.id)); startNewChat(proj.id); } },
+            { label: 'Rename', onSelect: () => { setRenamingProjectId(proj.id); setProjectRenameDraft(proj.name); } },
+            // Project config lives ON the project now (#549 rank 12) — the
+            // Settings Projects section is gone.
+            { label: 'Add folder…', onSelect: () => {
+              void pickDirectory().then(dir => {
+                if (!dir) { showStatusBanner('No folder selected'); return; }
+                const roots = projectRoots(proj);
+                if (roots.includes(dir)) { showStatusBanner('That folder is already part of this project'); return; }
+                const next = [...roots, dir];
+                storage.saveProject({ ...proj, workspaceRoot: next[0], workspaceRoots: next });
+                setProjects(storage.getProjects());
+                if (activeProjectId === proj.id) {
+                  void openWorkspaceRoots(next);
+                  registerGitTools(next[0]);
+                }
+                showStatusBanner(`Added folder to "${proj.name}"`);
+              });
+            } },
+            ...(projectRoots(proj).length > 1 ? [{
+              label: 'Remove folder…',
+              onSelect: () => {
+                const roots = projectRoots(proj);
+                const pick = window.prompt(
+                  `Remove which folder from "${proj.name}"? (the first is primary and stays)\n` +
+                  roots.map((r, i) => `${i + 1}. ${r}`).join('\n'),
+                  String(roots.length),
+                );
+                const idx = pick ? parseInt(pick, 10) - 1 : -1;
+                if (idx === 0) { showStatusBanner('The primary folder cannot be removed'); return; }
+                if (idx < 1 || idx >= roots.length) return;
+                const next = roots.filter((_, i) => i !== idx);
+                storage.saveProject({ ...proj, workspaceRoot: next[0], workspaceRoots: next });
+                setProjects(storage.getProjects());
+                if (activeProjectId === proj.id) { void openWorkspaceRoots(next); registerGitTools(next[0]); }
+              },
+            }] : []),
+            { label: 'Instructions…', onSelect: () => {
+              const next = window.prompt(`Instructions for "${proj.name}" (prepended to the system prompt):`, proj.instructions ?? '');
+              if (next === null) return;
+              storage.saveProject({ ...proj, instructions: next });
+              setProjects(storage.getProjects());
+            } },
+            { label: proj.model === model ? 'Default model: current ✓' : `Set default model: ${model}`, onSelect: () => {
+              storage.saveProject({ ...proj, model });
+              setProjects(storage.getProjects());
+              showStatusBanner(`"${proj.name}" now defaults to ${model}`);
+            } },
             { label: 'Delete', onSelect: () => deleteProject(proj.id, proj.name) },
           ];
           return <ContextMenu x={projectContextMenu.x} y={projectContextMenu.y} items={items} onClose={() => setProjectContextMenu(null)} dark={dark} />;

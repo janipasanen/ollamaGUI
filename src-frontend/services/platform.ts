@@ -38,6 +38,22 @@ export async function pickDirectory(): Promise<string | null> {
   }
 }
 
+/**
+ * Open a native directory picker allowing MULTIPLE folders (#549 rank 12) —
+ * the journey says "specify folder(s)", so one dialog can bind them all.
+ * Returns the chosen paths, or null if cancelled/unavailable.
+ */
+export async function pickDirectories(): Promise<string[] | null> {
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const result = await open({ directory: true, multiple: true });
+    if (Array.isArray(result)) return result.filter((r): r is string => typeof r === 'string');
+    return typeof result === 'string' ? [result] : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Detect total/available system memory. Returns null outside Tauri (hides the fit indicator). */
 export async function getSystemMemory(): Promise<{ total_bytes: number; available_bytes: number; apple_silicon: boolean } | null> {
   try {

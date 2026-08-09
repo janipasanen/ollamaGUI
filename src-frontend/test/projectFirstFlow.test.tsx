@@ -7,7 +7,7 @@ const PICKED = '/Users/me/repos/payments';
 
 vi.mock('../services/platform', async (orig) => {
   const actual = await (orig() as Promise<Record<string, unknown>>);
-  return { ...actual, pickDirectory: vi.fn(async () => PICKED), probeBinary: vi.fn(async () => false) };
+  return { ...actual, pickDirectory: vi.fn(async () => PICKED), pickDirectories: vi.fn(async () => [PICKED]), probeBinary: vi.fn(async () => false) };
 });
 
 // The workspace root is pushed to Rust; stub the IPC for jsdom.
@@ -76,7 +76,8 @@ describe('Project-first flow (#542)', () => {
 
   it('does not create a project when the picker is cancelled', async () => {
     const platform = await import('../services/platform');
-    (platform.pickDirectory as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    // Project creation uses the multi-folder picker now (#549 rank 12).
+    (platform.pickDirectories as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /New project from a folder/i }));
     await waitFor(() => expect(screen.getByText('Projects')).toBeInTheDocument());

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### Project management on the project & a readable agent transcript (#549 audit ranks 12, 14)
+- **Folders live on the project now**: creating a project accepts multiple
+  folders in one OS dialog; the project row's right-click menu gained
+  Add folder…, Remove folder…, Instructions…, and Set default model; adding
+  or removing folders on the active project re-syncs the workspace + git
+  tools immediately. The Settings "Projects" section is deleted — project
+  config happens where the project is.
+- **Step-row transcript**: tool calls render as one quiet "→ name argument"
+  line (humanized top argument instead of raw JSON) and each tool result is
+  a collapsed "✓ name — click to inspect" row, so a 30-call run reads as a
+  step list instead of 60 full-height bubbles. Failed steps show ✗.
+
 #### Run trust, model steering & endurance (#549 audit ranks 9, 11, 13)
 - **End-of-run summary**: a finished agentic run appends a quiet ✅ card —
   duration, steps, files edited, commits, check verdict — built from data the
