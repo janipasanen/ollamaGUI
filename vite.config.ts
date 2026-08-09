@@ -35,5 +35,10 @@ export default defineConfig({
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     pool: 'forks',
     maxWorkers,
+    // CI-only retries (parity with playwright.config.ts `retries: 2`): the
+    // jsdom UI suites are timing-sensitive and windows-latest under load
+    // keeps flaking a DIFFERENT file each run — a real regression still fails
+    // three times deterministically, so the gate stays honest.
+    retry: process.env.CI ? 2 : 0,
   },
 });
