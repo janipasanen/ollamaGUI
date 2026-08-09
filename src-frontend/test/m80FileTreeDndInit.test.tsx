@@ -129,7 +129,9 @@ describe('/init generates an AGENTS.md file (#365)', () => {
     render(<App />);
     await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Repo' })); });
 
-    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+    // With a bound folder, agentic mode is on and the placeholder changes, so
+    // query the composer by its stable aria-label instead.
+    const composer = screen.getByLabelText('Type your message here') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: '/init' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
@@ -146,7 +148,7 @@ describe('/init generates an AGENTS.md file (#365)', () => {
 
   it('refuses with no workspace', async () => {
     render(<App />);
-    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+    const composer = screen.getByLabelText('Type your message here') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: '/init' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/No workspace open/));

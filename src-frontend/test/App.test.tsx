@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
@@ -281,25 +281,33 @@ describe('App Component', () => {
       global.innerWidth = 1024;
     });
 
+    afterEach(() => {
+      localStorage.removeItem('ollama_gui_projects');
+      localStorage.removeItem('ollama_gui_active_project');
+    });
+
     // The header panel-toggle buttons (browser/terminal/files/…) were removed
     // with the docked panels themselves, so their aria-pressed test is gone.
 
-    it('agentic-mode switch exposes role=switch and aria-checked', () => {
-      render(<App />);
-      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-      const sw = screen.getByRole('switch', { name: 'Toggle tool calling' });
-      expect(sw).toHaveAttribute('aria-checked', 'false');
-    });
+    // The Settings "Agentic Mode" toggle was deleted — agentic mode is now
+    // derived from the active project having a bound folder, so the
+    // role=switch/aria-checked test for it is gone.
 
     it('autonomy level buttons expose aria-pressed for the active level', () => {
+      // Agentic mode is derived: bind a project folder and activate it, which
+      // renders the Plan/Ask/Auto control next to the model select below the
+      // composer (it is no longer in Settings).
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+      ]));
+      localStorage.setItem('ollama_gui_active_project', 'proj_t');
       render(<App />);
-      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByRole('group', { name: 'Autonomy level' })).toBeInTheDocument();
       // Default autonomy level is 'ask' (#88).
-      const askBtn = screen.getAllByRole('button').find(b => b.textContent === 'ask');
-      expect(askBtn).toBeTruthy();
-      expect(askBtn!.getAttribute('aria-pressed')).toBe('true');
-      const planBtn = screen.getAllByRole('button').find(b => b.textContent === 'plan');
-      expect(planBtn!.getAttribute('aria-pressed')).toBe('false');
+      const askBtn = screen.getByRole('button', { name: 'Set autonomy: ask' });
+      expect(askBtn.getAttribute('aria-pressed')).toBe('true');
+      const planBtn = screen.getByRole('button', { name: 'Set autonomy: plan' });
+      expect(planBtn.getAttribute('aria-pressed')).toBe('false');
     });
   });
 

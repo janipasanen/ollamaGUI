@@ -25,20 +25,32 @@ function streamOnce(text: string) {
 
 beforeEach(() => {
   localStorage.clear();
-  // ask level + smartApprove off → mutating tools prompt.
+  // ask level → mutating tools prompt (read-only tools never prompt).
   localStorage.setItem('ollama_gui_agent_autonomy', JSON.stringify({
-    level: 'ask', maxIterations: 20, readOnly: false, smartApprove: false,
+    level: 'ask', maxIterations: 20, readOnly: false,
   }));
+  // Agentic mode is derived: an active project with a bound folder turns tools on.
+  localStorage.setItem('ollama_gui_projects', JSON.stringify([
+    { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+  ]));
+  localStorage.setItem('ollama_gui_active_project', 'proj_t');
+  // The agentic toolFilter (#549 rank 3) sends only core + MCP + custom tool
+  // names; anything else is blocked at execution time. Listing mutate_tool as
+  // a custom tool puts its (bare) name in the filter — the executable stub is
+  // registered directly on the registry below.
+  localStorage.setItem('custom_tools', JSON.stringify([
+    { id: 'ct_mutate', name: 'mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} }, code: 'return { ok: true };', enabled: true },
+  ]));
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   toolRegistry.registerTool({
-    name: 'mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} },
+    name: 'custom__mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} },
     execute: async () => ({ ok: true }),
   });
 });
 
 afterEach(() => {
-  toolRegistry.unregisterTool('mutate_tool');
+  toolRegistry.unregisterTool('custom__mutate_tool');
 });
 
 describe('Tool approval "Allow for session" (#406)', () => {
@@ -48,20 +60,17 @@ describe('Tool approval "Allow for session" (#406)', () => {
       const u = String(url);
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
-        if (chatCalls === 1) return streamOnce(toolCallLine('mutate_tool'));
-        if (chatCalls === 2) return streamOnce(toolCallLine('mutate_tool'));
+        if (chatCalls === 1) return streamOnce(toolCallLine('custom__mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCallLine('custom__mutate_tool'));
         return streamOnce(finalLine('all done'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    // Enable agentic (tool-calling) mode.
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     // First tool call → approval modal appears (with the Allow-for-session
@@ -93,18 +102,16 @@ describe('Tool approval keyboard shortcuts (#407)', () => {
       const u = String(url);
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
-        if (chatCalls === 1) return streamOnce(toolCallLine('mutate_tool'));
+        if (chatCalls === 1) return streamOnce(toolCallLine('custom__mutate_tool'));
         return streamOnce(finalLine('denied and done'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
@@ -127,19 +134,17 @@ describe('Tool approval keyboard shortcuts (#407)', () => {
       const u = String(url);
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
-        if (chatCalls === 1) return streamOnce(toolCallLine('mutate_tool'));
-        if (chatCalls === 2) return streamOnce(toolCallLine('mutate_tool'));
+        if (chatCalls === 1) return streamOnce(toolCallLine('custom__mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCallLine('custom__mutate_tool'));
         return streamOnce(finalLine('a-key done'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {

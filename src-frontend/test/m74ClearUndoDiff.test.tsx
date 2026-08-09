@@ -134,7 +134,9 @@ describe('/diff feeds the git diff into chat (#347)', () => {
     // sidebar, clicking the project row (aria-label = name) sets it active.
     fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
 
-    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+    // A bound project folder derives agentic mode, which changes the composer
+    // placeholder — query by the mode-independent aria-label instead.
+    const composer = screen.getByLabelText('Type your message here') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: '/diff' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 

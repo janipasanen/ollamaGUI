@@ -108,7 +108,7 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     expect(result).toMatchObject({ error: 'Command denied by user.' });
   });
 
-  it('A always-approves and adds the command to the allowlist', async () => {
+  it('A always-approves and adds the command binary to the allowlist', async () => {
     render(<App />);
     await waitFor(() => expect(toolRegistry.getTool('run_shell_command')).toBeDefined(), { timeout: 3000 });
     const promise = toolRegistry.getTool('run_shell_command')!.execute({ command: 'echo always-test' });
@@ -122,6 +122,8 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     }, { timeout: 3000 });
     const result = await promise;
     expect(result).toMatchObject({ exit_code: 0 });
-    expect(cliAllowlist.has('echo always-test')).toBe(true);
+    // "Always allow" is binary-level now: it allowlists the first token
+    // ('echo'), not the full command string.
+    expect(cliAllowlist.has('echo')).toBe(true);
   });
 });

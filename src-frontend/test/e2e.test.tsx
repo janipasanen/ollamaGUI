@@ -133,22 +133,37 @@ describe('End-to-End Tests', () => {
       expect(systemPromptInput).toHaveValue('New system prompt');
     });
 
-    it('should toggle agentic mode', async () => {
+    it('derives agentic mode from the active project folder (toggle removed)', async () => {
+      // Agentic mode is no longer a Settings toggle — it is ON exactly when
+      // the active project has a bound folder. Seed one before render.
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+      ]));
+      localStorage.setItem('ollama_gui_active_project', 'proj_t');
       render(<App />);
+
+      // Agentic mode is active: the composer switches to the goal placeholder
+      // (query by the stable aria-label, which is the same in both modes)…
+      const input = screen.getByLabelText('Type your message here');
+      expect(input).toHaveAttribute('placeholder', 'Describe the goal for this session…');
+      // …and the Plan/Ask/Auto autonomy control renders next to the model
+      // select below the composer (it moved out of Settings).
+      expect(screen.getByRole('group', { name: 'Autonomy level' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Set autonomy: auto' })).toBeInTheDocument();
+
+      // The old Settings toggle and its section are gone.
       fireEvent.click(screen.getByText('⚙️ Settings'));
-
-      // The toggle button is next to the "Enable tool calling" label
-      const toggleSection = screen.getByText('Enable tool calling').closest('div')!;
-      // The agentic toggle is an accessible switch (role=switch) (#234).
-      const toggleButton = within(toggleSection).getByRole('switch');
-      fireEvent.click(toggleButton);
-
-      expect(screen.getByText('Enabled')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Toggle tool calling')).not.toBeInTheDocument();
+      expect(screen.queryByText('Enable tool calling')).not.toBeInTheDocument();
     });
   });
 
   describe('MCP Server Management', () => {
-    it('should add and manage MCP servers', async () => {
+    // These four MCP tests drive the full App + Settings overlay, which lands
+    // around 4s each in isolation on the slower externals-drive Mac runner and
+    // exceeds the 5s default when the whole file runs — same slow-runner
+    // pattern as the MCP connection-errors test below (#426).
+    it('should add and manage MCP servers', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -171,7 +186,7 @@ describe('End-to-End Tests', () => {
       });
     });
 
-    it('catalog: selecting a connector variant pre-fills the add form (#108)', async () => {
+    it('catalog: selecting a connector variant pre-fills the add form (#108)', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -186,7 +201,7 @@ describe('End-to-End Tests', () => {
       expect(screen.getByDisplayValue('GITHUB_PERSONAL_ACCESS_TOKEN')).toBeInTheDocument();
     });
 
-    it('catalog: selecting the archived Postgres variant shows a security warning (#108)', async () => {
+    it('catalog: selecting the archived Postgres variant shows a security warning (#108)', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
       fireEvent.click(screen.getByText(/📚 Catalog/));
@@ -195,7 +210,7 @@ describe('End-to-End Tests', () => {
       expect(screen.getByText(/SQL-injection|deprecated|read-only/i)).toBeInTheDocument();
     });
 
-    it('should connect to MCP servers', async () => {
+    it('should connect to MCP servers', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 

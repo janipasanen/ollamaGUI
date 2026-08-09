@@ -52,9 +52,19 @@ describe('Markdown links open in the system browser (#354)', () => {
 });
 
 // ── Autonomy quick control (#355) ─────────────────────────────────────────────
-// The header quick-selector was removed in the UI simplification; the level is
-// now switched via the command palette ("Set Autonomy: …") or Settings → Agent
-// Safety. Both surfaces persist to the same localStorage key.
+// The Settings → Agent Safety section was removed; the level is now switched
+// via the command palette ("Set Autonomy: …") or the Plan/Ask/Auto segmented
+// control that renders next to the model select below the composer while
+// agentic mode is active. Both surfaces persist to the same localStorage key.
+
+/** Bind a folder to the active project so agentic mode (and the autonomy
+ *  control) is on. Must run BEFORE render(<App />). */
+function enableAgenticMode() {
+  localStorage.setItem('ollama_gui_projects', JSON.stringify([
+    { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+  ]));
+  localStorage.setItem('ollama_gui_active_project', 'proj_t');
+}
 
 describe('Autonomy level switching (#355)', () => {
   it('switches level via the command palette and persists to localStorage', async () => {
@@ -71,18 +81,24 @@ describe('Autonomy level switching (#355)', () => {
     expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
   });
 
-  it('switches level in Settings → Agent Safety with aria-pressed state', async () => {
+  it('switches level via the segmented control below the composer with aria-pressed state', async () => {
+    enableAgenticMode();
     render(<App />);
-    fireEvent.click(screen.getByText('⚙️ Settings'));
-    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
 
-    const autoBtn = within(dialog).getByRole('button', { name: 'auto' });
+    const group = await screen.findByRole('group', { name: 'Autonomy level' });
+    const autoBtn = within(group).getByRole('button', { name: 'Set autonomy: auto' });
     expect(autoBtn).toHaveAttribute('aria-pressed', 'false'); // default level is 'ask'
     fireEvent.click(autoBtn);
     expect(autoBtn).toHaveAttribute('aria-pressed', 'true');
 
     const saved = JSON.parse(localStorage.getItem('ollama_gui_agent_autonomy') ?? '{}');
     expect(saved.level).toBe('auto');
+  });
+
+  it('hides the segmented control when no project folder is bound (agentic mode off)', async () => {
+    render(<App />);
+    await screen.findByLabelText('Type your message here');
+    expect(screen.queryByRole('group', { name: 'Autonomy level' })).not.toBeInTheDocument();
   });
 });
 

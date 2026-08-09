@@ -23,7 +23,10 @@ afterEach(() => {
 });
 
 function sendCommand(cmd: string) {
-  const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+  // The placeholder differs between plain chat and agentic mode (a project
+  // with a bound folder derives agentic mode), so query the composer by its
+  // mode-independent aria-label.
+  const composer = screen.getByLabelText('Type your message here') as HTMLTextAreaElement;
   fireEvent.change(composer, { target: { value: cmd } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 }

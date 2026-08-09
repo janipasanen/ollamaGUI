@@ -54,7 +54,9 @@ describe('Notification permission toggle (#310)', () => {
     await waitFor(() => {
       expect(localStorage.getItem('ollama_gui_notify_complete')).toBe('true');
     }, { timeout: 2000 });
-  });
+    // Overall budget: the two inner waits alone can brush the 5s default on
+    // this machine (slow external-drive runner precedent, see e2e.test.tsx).
+  }, 15000);
 });
 
 describe('/delete slash command (#311)', () => {

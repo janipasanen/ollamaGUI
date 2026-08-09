@@ -100,7 +100,12 @@ describe('/run feeds shell output into chat (#353)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Ran "echo hello" — exit 0/), { timeout: 3000 });
-    expect(await screen.findByText(/Output of/, { selector: 'p' })).toBeInTheDocument();
+    // Re-query inside waitFor: the streamed assistant reply re-renders the
+    // message list, which can detach a node grabbed by an earlier findByText
+    // before the assertion runs.
+    await waitFor(() => {
+      expect(screen.getByText(/Output of/, { selector: 'p' })).toBeInTheDocument();
+    }, { timeout: 3000 });
   });
 
   it('refuses with no command', async () => {

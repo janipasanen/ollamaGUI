@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
-import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS } from './services/ollama';
+import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -10,7 +10,7 @@ import {
 import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
-import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
+import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce, commandBinary, CORE_AGENT_TOOLS } from './services/tools';
 import { agenticChatStream } from './services/agent';
 import { McpServerConfig, mcpConfigStore, refreshAuthFlags } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
@@ -27,7 +27,7 @@ import {
   addFunctionDef, updateFunctionDef, removeFunctionDef,
   applyFilterInlet, applyFilterOutlet,
   getEnabledActions, runAction,
-  STARTER_EXAMPLES,
+  STARTER_EXAMPLES, toolNameFor,
 } from './services/customTools';
 import {
   ModelPreset,
@@ -57,7 +57,6 @@ import { pushActivity } from './services/agentActivity';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
-import NoWorkspaceHint from './components/NoWorkspaceHint';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
@@ -108,7 +107,7 @@ import {
   detectArtifacts, pickPrimaryArtifact, exportArtifact,
 } from './services/artifacts';
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
-import { registerDevTools, makePostEditVerifyHook, isAutoVerifyEnabled, setAutoVerifyEnabled } from './services/devTools';
+import { registerDevTools, makePostEditVerifyHook, isAutoVerifyEnabled } from './services/devTools';
 import { registerCodeNavTools } from './services/codeNav';
 import { openWorkspace, getActiveRoot, projectRoots, openWorkspaceRoots, closeWorkspace } from './services/workspace';
 
@@ -116,7 +115,7 @@ import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit }
 import {
   AgentAutonomySettings, AutonomyLevel,
   loadSettings as loadAutonomySettings, saveSettings as saveAutonomySettings,
-  isPlanMode,
+  isPlanMode, getAutonomyLevel,
 } from './services/agentAutonomy';
 import { registerHook, makeReadOnlyHook, registerPostToolUseHook, makeSecretsRedactHook } from './services/toolHooks';
 import { getEnabledToolFilter, listToolStatuses, setToolEnabled, loadDisabledTools } from './services/toolConfig';
@@ -135,7 +134,7 @@ import { setDiffReviewCallback, clearDiffReviewCallback, type PendingEdit, type 
 import { DiffReviewModal } from './components/DiffReviewModal';
 import { setBatchReviewCallback, clearBatchReviewCallback } from './services/diffReview';
 import { setEditAppliedCallback, clearEditAppliedCallback } from './services/diffReview';
-import { autoCommitEdit, loadAutoCommitEdits, saveAutoCommitEdits, undoLastAutoCommit } from './services/autoCommit';
+import { autoCommitEdit, loadAutoCommitEdits, undoLastAutoCommit } from './services/autoCommit';
 import { DiffReviewBatchModal } from './components/DiffReviewBatchModal';
 import { ContextMenu, type ContextMenuItem } from './components/ContextMenu';
 import { registerPlanTool, getPlan, setPlan, clearPlan, subscribe as subscribePlan, type PlanItem } from './services/planStore';
@@ -532,9 +531,7 @@ const App: React.FC = () => {
   // Per-tool enable/disable (Claude Code parity, #399).
   const [disabledTools, setDisabledTools] = useState<Set<string>>(() => loadDisabledTools());
   // Auto-commit after agentic edits (Aider parity, #401).
-  const [autoCommitEdits, setAutoCommitEdits] = useState<boolean>(() => loadAutoCommitEdits());
   // Auto-verify (run project checks) after agentic edits (#425).
-  const [autoVerifyEdits, setAutoVerifyEdits] = useState<boolean>(() => isAutoVerifyEnabled());
   // Agentic "Continue past max-iterations" affordance (Codex/Claude parity, #403).
   const [agentHitMax, setAgentHitMax] = useState(false);
 
@@ -562,7 +559,20 @@ const App: React.FC = () => {
 
   // Projects (#92)
   const [projects, setProjects] = useState<Project[]>(() => storage.getProjects());
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // Persisted (#549 audit rank 7): losing the active project on relaunch
+  // silently stripped folder context from every returning user's first prompt.
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem('ollama_gui_active_project');
+      return saved && storage.getProjects().some(p => p.id === saved) ? saved : null;
+    } catch { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (activeProjectId) localStorage.setItem('ollama_gui_active_project', activeProjectId);
+      else localStorage.removeItem('ollama_gui_active_project');
+    } catch { /* ignore */ }
+  }, [activeProjectId]);
   /** True while the native folder picker is open for a new project (#542). */
   const [creatingProject, setCreatingProject] = useState(false);
   // Project-first sidebar (#542): which projects are expanded, and whether the
@@ -631,8 +641,13 @@ const App: React.FC = () => {
 
   // Settings / UI state
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
-  // Generation options — num_ctx defaults modest for 8 GB machines.
-  const [genOptions, setGenOptions] = useState<GenerationOptions>({ num_ctx: 4096 });
+  // Generation options — num_ctx unset means AUTO: sized from the model's
+  // native context window and this machine's RAM at send time (#549 audit
+  // rank 3). A fixed 4096 silently truncated agentic runs mid-goal.
+  const [genOptions, setGenOptions] = useState<GenerationOptions>({});
+  // Capabilities of the selected model (/api/show, cached) + the auto ctx
+  // derived from them; used wherever an explicit num_ctx is not set.
+  const [modelCaps, setModelCaps] = useState<ModelCapabilities | null>(null);
   // Structured output (Ollama `format`): JSON mode or a JSON Schema (#148).
   const [structuredOutput, setStructuredOutput] = useState<{ enabled: boolean; schema: string }>({ enabled: false, schema: '' });
   const [schemaError, setSchemaError] = useState<string | null>(null);
@@ -694,14 +709,14 @@ const App: React.FC = () => {
     try { return localStorage.getItem('ollama_gui_notify_complete') === 'true'; } catch { return false; }
   });
   const [isMobile, setIsMobile] = useState(false);
-  // Persisted (#440): previously reset to OFF on every restart, so users had to
-  // re-enable tool calling each session.
-  const [isAgenticMode, setIsAgenticMode] = useState(() => {
-    try { return localStorage.getItem('ollama_gui_agentic_mode') === 'true'; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('ollama_gui_agentic_mode', String(isAgenticMode)); } catch { /* ignore */ }
-  }, [isAgenticMode]);
+  // Agentic mode is DERIVED, not a setting (#549 audit rank 1): tools are on
+  // exactly when the active project has a bound folder — the agent has
+  // somewhere real to work. No project → plain chat. The old toggle shipped
+  // OFF and buried in Settings, so first goal prompts landed in a chatbot.
+  const isAgenticMode = React.useMemo(() => {
+    const p = projects.find(x => x.id === activeProjectId);
+    return !!p && projectRoots(p).length > 0;
+  }, [projects, activeProjectId]);
   const [pendingApproval, setPendingApproval] = useState<{
     command: string;
     cwd?: string;
@@ -906,8 +921,22 @@ const App: React.FC = () => {
         resolve(true);
         return;
       }
+      // Edit tools are gated by the diff-review modal, which shows the actual
+      // change — a second generic "allow write_file?" modal on top of it was
+      // pure friction (#549 audit rank 2).
+      if (toolName === 'write_file' || toolName === 'apply_edit' || toolName === 'apply_patch') {
+        resolve(true);
+        return;
+      }
       if (isPlanMode()) {
         if (planApprovedRef.current) { resolve(true); return; }
+        // No published plan to approve yet — fall back to the per-tool modal
+        // that shows the arguments, instead of a plan dialog with no plan.
+        if (getPlan().length === 0) {
+          setAgentStatus(`Waiting for approval: ${toolName}`);
+          setPendingToolApproval({ toolName, args, resolve });
+          return;
+        }
         setAgentStatus('Waiting for plan approval');
         setPendingPlanApproval({ toolName, resolve });
         return;
@@ -1027,8 +1056,22 @@ const App: React.FC = () => {
     [messages, input],
   );
 
+  // Auto-sized context (#549 audit rank 3): probe the model's native window
+  // once per model (cached in the service) and derive the ctx actually used
+  // when the user hasn't set one explicitly.
+  useEffect(() => {
+    let cancelled = false;
+    if (!model) { setModelCaps(null); return; }
+    void getModelCapabilities(model, ollamaBaseUrl).then(caps => {
+      if (!cancelled) setModelCaps(caps);
+    });
+    return () => { cancelled = true; };
+  }, [model, ollamaBaseUrl]);
+  const effectiveNumCtx = genOptions.num_ctx
+    ?? autoNumCtx(modelCaps, systemMemory?.total_bytes ?? null, isAgenticMode);
+
   // Context limit warning (#319) — show a banner when usage exceeds 80%.
-  const contextPct = genOptions.num_ctx ? Math.round((conversationTokens / genOptions.num_ctx) * 100) : 0;
+  const contextPct = effectiveNumCtx ? Math.round((conversationTokens / effectiveNumCtx) * 100) : 0;
   const showContextWarning = contextPct >= 80 && !contextWarningDismissed;
   // Auto-reset the dismissed flag when usage drops below 80%.
   useEffect(() => { if (contextPct < 80) setContextWarningDismissed(false); }, [contextPct]);
@@ -1276,12 +1319,13 @@ const App: React.FC = () => {
 
       // Detect MLX availability (graceful no-op when unavailable). MLX has no
       // enable/disable settings — it is active whenever the machine supports it
-      // and the selected local model is an MLX model (#544).
-      try {
-        setMlxAvailability(await checkMlxAvailable());
-      } catch {
-        setMlxAvailability(null);
-      }
+      // and the selected local model is an MLX model (#544). Runs in the
+      // background: awaiting it delayed tool registration below, so a message
+      // sent right after launch could hit the approval gate before read-only
+      // tools were registered and prompt for a read (#549 audit).
+      void checkMlxAvailable()
+        .then(setMlxAvailability)
+        .catch(() => setMlxAvailability(null));
 
       // Initialize built-in tools and user-defined tools/functions (#127)
       registerBuiltInTools();
@@ -1295,6 +1339,12 @@ const App: React.FC = () => {
       // Diff review callback (#84/#185) — intercepts write_file/apply_edit for user approval
       setDiffReviewCallback((edit: PendingEdit) =>
        new Promise<EditDecision>(resolve => {
+         // In 'auto' the run must not stall on review — apply immediately; the
+         // inline transcript diff + auto-commit keep it visible and revertible.
+         if (getAutonomyLevel() === 'auto') {
+           resolve({ id: edit.id, accepted: true });
+           return;
+         }
          setPendingDiffEdit(edit);
          diffReviewResolveRef.current = resolve;
        })
@@ -1303,6 +1353,10 @@ const App: React.FC = () => {
      // with several ops for a single combined review.
      setBatchReviewCallback((edits: PendingEdit[]) =>
       new Promise<EditDecision[]>(resolve => {
+        if (getAutonomyLevel() === 'auto') {
+          resolve(edits.map(e => ({ id: e.id, accepted: true })));
+          return;
+        }
         setPendingDiffEdits(edits);
         batchDiffResolveRef.current = resolve;
       })
@@ -2003,7 +2057,9 @@ const App: React.FC = () => {
         setPendingApproval(null);
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'a') {
         e.preventDefault();
-        cliAllowlist.add(pendingApproval.command);
+        // Allowlist the binary, not the exact string — "always allow npm test"
+        // should cover "npm run build" too (#549 audit rank 2).
+        cliAllowlist.add(commandBinary(pendingApproval.command));
         persistCliAllowlist();
         pendingApproval.resolve(true);
         setPendingApproval(null);
@@ -2778,7 +2834,7 @@ const App: React.FC = () => {
         }
         if (result.action === 'reset') {
           // /reset restores generation parameters to defaults (#348).
-          const defaults = { num_ctx: 4096 };
+          const defaults = {};
           setGenOptions(defaults);
           safeSetItem('ollama_gui_gen_options', JSON.stringify(defaults));
           showStatusBanner('Reset generation parameters to defaults');
@@ -3562,6 +3618,11 @@ ${lines.join('\n')}`;
     // Model override for "regenerate with a different model" (#270). Falls back
     // to the active model state for normal sends.
     const activeModel = modelOverride ?? model;
+    // Explicit num_ctx (via /ctx or Settings) wins; otherwise use the
+    // auto-sized window so long agentic runs don't silently truncate (#549).
+    const sendOptions: GenerationOptions = genOptions.num_ctx !== undefined
+      ? genOptions
+      : { ...genOptions, num_ctx: effectiveNumCtx };
     // Track recent model usage (#322)
     setRecentModels(prev => {
       const next = [activeModel, ...prev.filter(m => m !== activeModel)].slice(0, 5);
@@ -3627,7 +3688,7 @@ ${lines.join('\n')}`;
           endpoint,
           maxIterations: autonomySettings.maxIterations,
           signal: abortControllerRef.current?.signal,
-          options: genOptions,
+          options: sendOptions,
           format,
           onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
           onMaxIterations: () => setAgentHitMax(true),
@@ -3647,7 +3708,14 @@ ${lines.join('\n')}`;
             });
           },
          // Only filter when some built-in tool is disabled (#399); default = expose all.
-          ...(disabledTools.size > 0 ? { toolFilter: getEnabledToolFilter(disabledTools) ?? undefined } : {}),
+          // Send the task-relevant core toolset plus user-added tools instead
+          // of every registration (#549 audit rank 3): ~60 tool definitions
+          // per request could fill a small context window on their own.
+          toolFilter: [
+            ...CORE_AGENT_TOOLS,
+            ...mcpServers.flatMap(s => getRegisteredToolNames(s)),
+            ...customTools.map(t => toolNameFor(t)),
+          ].filter(n => !disabledTools.has(n)),
           // Plan/ask autonomy gate (#88/#89/#189), shared with sub-agents (#476)
           onApprovalNeeded: createApprovalGate(),
           onAssistantMessage: (message) => {
@@ -3801,7 +3869,7 @@ ${lines.join('\n')}`;
               });
             }
             if (chunk.done) { genStats = computeGenStats(chunk); }
-          }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
+          }, endpoint, false, sendOptions, abortControllerRef.current?.signal, format);
           }
           streamOk = true;
           // Apply filter outlets after stream completes (#127)
@@ -4496,11 +4564,25 @@ ${lines.join('\n')}`;
           {/* Context limit warning (#319) */}
           {showContextWarning && (
             <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs mb-2 ${dark ? 'bg-amber-900/40 border border-amber-700/50 text-amber-300' : 'bg-amber-50 border border-amber-300 text-amber-800'}`}>
-              {/* These were written as if inside a template literal, so the
-                  stray "$" rendered verbatim — and the suggested command came
-                  out as "/ctx $6144", which /ctx parses to NaN (#533). */}
-              <span>⚠ Context window {contextPct}% full — consider /compact or /ctx {Math.round((genOptions.num_ctx ?? 4096) * 1.5)} to avoid truncation.</span>
-              <button onClick={() => setContextWarningDismissed(true)} aria-label="Dismiss context warning" className={`shrink-0 ${dark ? 'text-amber-400 hover:text-amber-200' : 'text-amber-600 hover:text-amber-400'}`}>✕</button>
+              <span>⚠ Conversation is {contextPct}% of the context window.</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {/* One-click actions instead of "/compact or /ctx 6144" jargon (#549). */}
+                <button
+                  onClick={() => { void sendMessage('/compact'); }}
+                  disabled={isLoading}
+                  className="px-2 py-0.5 rounded border border-current hover:opacity-80 disabled:opacity-40"
+                >Summarize older messages</button>
+                <button
+                  onClick={() => {
+                    const next = { ...genOptions, num_ctx: Math.round(effectiveNumCtx * 1.5) };
+                    setGenOptions(next);
+                    safeSetItem('ollama_gui_gen_options', JSON.stringify(next));
+                    showStatusBanner(`Context window raised to ${Math.round(effectiveNumCtx * 1.5)}`);
+                  }}
+                  className="px-2 py-0.5 rounded border border-current hover:opacity-80"
+                >Raise limit</button>
+                <button onClick={() => setContextWarningDismissed(true)} aria-label="Dismiss context warning" className={`${dark ? 'text-amber-400 hover:text-amber-200' : 'text-amber-600 hover:text-amber-400'}`}>✕</button>
+              </div>
             </div>
           )}
           {/* In-conversation search (#247) */}
@@ -4915,7 +4997,6 @@ ${lines.join('\n')}`;
           }`}
         >
           {/* Agentic mode with no workspace folder open (#482) */}
-          <NoWorkspaceHint dark={dark} agentic={isAgenticMode} />
           {/* M5 Issue 20: Image thumbnails preview */}
           {attachedImages.length > 0 && (
             <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
@@ -5225,7 +5306,7 @@ ${lines.join('\n')}`;
                    sendMessage();
                  }
                }}
-               placeholder="Message Ollama..."
+               placeholder={isAgenticMode ? 'Describe the goal for this session…' : 'Message Ollama...'}
                aria-label="Type your message here"
                className={`flex-1 border rounded-xl px-4 py-3 resize-none max-h-40 overflow-y-auto leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
@@ -5417,6 +5498,22 @@ ${lines.join('\n')}`;
             {models.find(m => m.name === model)?.cloud && (
               <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>⛅ Cloud</span>
             )}
+            {/* Autonomy — the one visible agent control (#549 audit rank 1).
+                Shown only when a project folder makes the agent active. */}
+            {isAgenticMode && (
+              <div className={`flex items-center rounded-lg overflow-hidden border shrink-0 ${dark ? 'border-zinc-700' : 'border-zinc-300'}`} role="group" aria-label="Autonomy level">
+                {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(lv => (
+                  <button
+                    key={lv}
+                    aria-pressed={autonomySettings.level === lv}
+                    aria-label={`Set autonomy: ${lv}`}
+                    title={lv === 'plan' ? 'Plan first, execute after approval' : lv === 'ask' ? 'Confirm each change' : 'Run without interruption'}
+                    onClick={() => { const s = { ...autonomySettings, level: lv }; setAutonomySettings(s); saveAutonomySettings(s); }}
+                    className={`px-2 py-1 text-[10px] capitalize transition-colors ${autonomySettings.level === lv ? 'bg-blue-600 text-white' : (dark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-zinc-500 hover:bg-zinc-100')}`}
+                  >{lv}</button>
+                ))}
+              </div>
+            )}
             <div className={`ml-auto text-[10px] text-right ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>
               {(() => {
                 const cost = formatCost(conversationTokens);
@@ -5426,7 +5523,7 @@ ${lines.join('\n')}`;
                       ≈ {formatTokenCount(conversationTokens)} tokens{cost ? ` · ${cost}` : ''}
                     </span>
                     {' · '}
-                    <ContextBudget tokens={conversationTokens} numCtx={genOptions.num_ctx} dark={dark} />
+                    <ContextBudget tokens={conversationTokens} numCtx={effectiveNumCtx} dark={dark} />
                   </>
                 );
               })()}
@@ -5809,7 +5906,7 @@ ${lines.join('\n')}`;
                          value={genOptions.num_ctx ?? ''}
                          onChange={(e) => updateGenOptions({ num_ctx: e.target.value === '' ? undefined : Number(e.target.value) })}
                          aria-label="Context window (num_ctx)"
-                         placeholder="4096"
+                         placeholder={`Auto (${effectiveNumCtx})`}
                          className={`w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-zinc-100 border-zinc-300 text-zinc-900'}`}
                        />
                      </div>
@@ -5869,7 +5966,7 @@ ${lines.join('\n')}`;
                      </div>
                    </details>
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     A modest context window (e.g. 4096) avoids swapping/OOM on 8 GB machines. Leave a field blank to use the model default.
+                     Leave the context window blank for automatic sizing from the model's native limit and this machine's memory.
                    </p>
                  </div>
 
@@ -5915,18 +6012,6 @@ ${lines.join('\n')}`;
                        {schemaError && <p className="text-[10px] text-red-400 mt-1">⚠️ {schemaError}</p>}
                      </div>
                    )}
-                 </div>
-
-                 <div>
-                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agentic Mode</label>
-                   <div className="flex items-center gap-3">
-                     <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Enable tool calling</span>
-                     <Toggle checked={isAgenticMode} onChange={() => setIsAgenticMode(!isAgenticMode)} dark={dark} label="Toggle tool calling" />
-                     <span className={`text-sm ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{isAgenticMode ? 'Enabled' : 'Disabled'}</span>
-                   </div>
-                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     When enabled, the AI can use tools for advanced functionality
-                   </p>
                  </div>
 
                  <div>
@@ -7509,76 +7594,6 @@ ${lines.join('\n')}`;
                   ))}
                 </div>
 
-                {/* Agent Safety — autonomy levels (#88, #89, #146) */}
-                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Agent Safety</label>
-                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Control how autonomously the agent acts when using tools.</p>
-                  {/* Autonomy level */}
-                  <div className="mb-3">
-                    <label className={`block text-xs mb-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Autonomy level</label>
-                    <div className="flex gap-2">
-                      {(['plan', 'ask', 'auto'] as AutonomyLevel[]).map(level => (
-                        <button
-                          key={level}
-                          aria-pressed={autonomySettings.level === level}
-                          onClick={() => { const s = { ...autonomySettings, level }; setAutonomySettings(s); saveAutonomySettings(s); }}
-                          className={`flex-1 text-xs py-1 rounded border transition-colors capitalize ${autonomySettings.level === level ? (dark ? 'bg-blue-600 border-blue-500 text-white' : 'bg-blue-600 border-blue-500 text-white') : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')}`}
-                        >{level}</button>
-                      ))}
-                    </div>
-                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                      {autonomySettings.level === 'plan' && 'Agent proposes a plan first; executes only after approval.'}
-                      {autonomySettings.level === 'ask' && 'Agent confirms each mutating tool call before running it.'}
-                      {autonomySettings.level === 'auto' && 'Agent runs all tools without interruption.'}
-                    </p>
-                  </div>
-                  {/* Max iterations */}
-                  <div className="flex items-center justify-between mb-2">
-                    <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Max iterations</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={200}
-                      value={autonomySettings.maxIterations}
-                      onChange={e => { const v = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 1)); const s = { ...autonomySettings, maxIterations: v }; setAutonomySettings(s); saveAutonomySettings(s); }}
-                      className={`w-20 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                    />
-                  </div>
-                  {/* Read-only mode */}
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Read only mode</span>
-                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Block all tools that write or execute; only read tools are allowed.</p>
-                    </div>
-                    <Toggle dark={dark} label="Read only mode" checked={autonomySettings.readOnly} onChange={() => { const s = { ...autonomySettings, readOnly: !autonomySettings.readOnly }; setAutonomySettings(s); saveAutonomySettings(s); }} />
-                  </div>
-                  {/* Smart approve */}
-                  {autonomySettings.level === 'ask' && (
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Smart approve</span>
-                        <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Auto-approve safe read tools; only prompt before mutating ones.</p>
-                      </div>
-                      <Toggle dark={dark} label="Smart approve" checked={autonomySettings.smartApprove} onChange={() => { const s = { ...autonomySettings, smartApprove: !autonomySettings.smartApprove }; setAutonomySettings(s); saveAutonomySettings(s); }} />
-                    </div>
-                  )}
-                  {/* Auto-commit after edits (Aider parity, #401) */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-commit edits</span>
-                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Stage & commit each applied file edit to the workspace git repo with a descriptive message.</p>
-                    </div>
-                    <Toggle dark={dark} label="Auto-commit edits" checked={autoCommitEdits} onChange={() => { const v = !autoCommitEdits; setAutoCommitEdits(v); saveAutoCommitEdits(v); }} />
-                  </div>
-                  {/* Auto-verify after edits (#425) */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-verify edits</span>
-                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>After each applied edit, run the project checks (run_checks command) and feed any diagnostics back to the model. Slower, but catches broken edits automatically.</p>
-                    </div>
-                    <Toggle dark={dark} label="Auto-verify edits" checked={autoVerifyEdits} onChange={() => { const v = !autoVerifyEdits; setAutoVerifyEdits(v); setAutoVerifyEnabled(v); }} />
-                  </div>
-                </div>
 
                 {/* Memory (#95) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
@@ -8337,7 +8352,7 @@ ${lines.join('\n')}`;
                 </button>
                 <button
                   onClick={() => {
-                    cliAllowlist.add(pendingApproval.command);
+                    cliAllowlist.add(commandBinary(pendingApproval.command));
                     persistCliAllowlist();
                     pendingApproval.resolve(true);
                     setPendingApproval(null);

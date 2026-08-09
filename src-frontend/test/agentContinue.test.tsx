@@ -26,8 +26,13 @@ beforeEach(() => {
   localStorage.clear();
   // Auto level + low cap so the loop hits maxIterations quickly.
   localStorage.setItem('ollama_gui_agent_autonomy', JSON.stringify({
-    level: 'auto', maxIterations: 2, readOnly: false, smartApprove: false,
+    level: 'auto', maxIterations: 2, readOnly: false,
   }));
+  // Agentic mode is derived: an active project with a bound folder turns tools on.
+  localStorage.setItem('ollama_gui_projects', JSON.stringify([
+    { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+  ]));
+  localStorage.setItem('ollama_gui_active_project', 'proj_t');
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
@@ -55,12 +60,8 @@ describe('Continue agent past max-iterations (#403)', () => {
     });
 
     render(<App />);
-    // Enable agentic (tool-calling) mode via the Settings switch.
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
-
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode is already active via the folder-bound project (beforeEach).
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     // First agentic run: 2 iterations (maxIterations=2) then the stop warning.

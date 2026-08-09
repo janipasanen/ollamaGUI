@@ -111,6 +111,52 @@ export function persistCliAllowlist(): void {
   // no-op: session-only by design
 }
 
+/**
+ * The binary (first token) of a command line, for binary-level allowlisting.
+ * "Always allow" on `npm test` should also cover `npm run build` — exact-string
+ * matching made every unique command line prompt again, which turned 'auto'
+ * runs into an approval treadmill.
+ */
+export function commandBinary(command: string): string {
+  return command.trim().split(/\s+/)[0] ?? '';
+}
+
+/** True when the command is covered by an exact or binary-level approval. */
+export function isCommandAllowlisted(command: string): boolean {
+  if (cliAllowlist.has(command)) return true;
+  const bin = commandBinary(command);
+  return bin !== '' && cliAllowlist.has(bin);
+}
+
+/**
+ * The core toolset sent with agentic requests (#audit-3). Every registered
+ * tool used to ship with every request — ~60+ definitions that alone could
+ * fill a small context window. This is the task-relevant working set; MCP and
+ * user-registered tools are appended by the caller.
+ */
+export const CORE_AGENT_TOOLS = [
+  'read_file', 'write_file', 'apply_edit', 'apply_patch',
+  'list_dir', 'glob_files', 'search_files',
+  'run_shell_command', 'run_tests', 'run_checks',
+  'git_diff', 'git_status', 'update_plan',
+] as const;
+
+// The approval callback registered by the UI, kept module-level so other
+// command-running tools (run_tests / run_checks overrides) share the SAME
+// approval policy as run_shell_command instead of opening an unaudited path.
+let _cliApprovalCallback: ((command: string, cwd?: string) => Promise<boolean>) | null = null;
+
+/**
+ * Request approval for a command under the shared CLI policy: allowlisted
+ * commands pass silently; otherwise the UI approval callback decides. With no
+ * callback registered (tests / headless), commands are allowed.
+ */
+export async function requestCliApproval(command: string, cwd?: string): Promise<boolean> {
+  if (isCommandAllowlisted(command)) return true;
+  if (!_cliApprovalCallback) return true;
+  return _cliApprovalCallback(command, cwd);
+}
+
 // ── Tool-output truncation (#396, Codex/Claude/Cursor parity) ────────────────
 //
 // Tool results are fed back into the model context. Without a cap, a single
@@ -146,6 +192,7 @@ interface CliResult {
 export function registerCliTool(
   onApprovalRequired: (command: string, cwd?: string) => Promise<boolean>
 ): void {
+  _cliApprovalCallback = onApprovalRequired;
   toolRegistry.registerTool({
     name: 'run_shell_command',
     description:
@@ -180,7 +227,7 @@ export function registerCliTool(
         }
       }
 
-      if (!cliAllowlist.has(command)) {
+      if (!isCommandAllowlisted(command)) {
         // Approve against the directory the command will actually run in.
         const approved = await onApprovalRequired(command, cwd);
         if (!approved) {

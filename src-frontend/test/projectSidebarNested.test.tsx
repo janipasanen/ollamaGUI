@@ -73,7 +73,12 @@ describe('Project-first sidebar: sessions nested under projects', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'payments' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Load session: Fix login bug' }));
 
-    expect(await screen.findByText('hello there')).toBeInTheDocument();
+    // Re-query inside waitFor: async post-load work (e.g. effective-context
+    // resolution) re-renders the message list, which can detach a node grabbed
+    // by findByText before the assertion runs.
+    await waitFor(() => {
+      expect(screen.getByText('hello there')).toBeInTheDocument();
+    }, { timeout: 3000 });
     const header = await screen.findByTestId('project-header');
     expect(within(header).getByRole('heading', { name: 'payments' })).toBeInTheDocument();
   });

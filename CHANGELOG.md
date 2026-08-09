@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### Autonomy by default — create a project, state the goal, let it run (#549)
+- **Agentic mode is derived, not a setting**: tools are on exactly when the
+  active project has a bound folder; plain chat otherwise. The Settings
+  "Agentic Mode" toggle and the whole "Agent Safety" section are deleted; the
+  one visible control is a Plan / Ask / Auto selector beside the model
+  switcher, shown only while a project makes the agent active. The composer
+  placeholder becomes "Describe the goal for this session…" in agentic mode.
+- **Approvals honor the autonomy level**: read-only tools never prompt at any
+  level (the smartApprove toggle is gone); in `auto`, diff review is skipped
+  and edits apply immediately (revertible via auto-commit); in `ask`, the diff
+  modal alone gates edit tools (no duplicate generic modal); "Always allow"
+  for shell commands now allowlists the binary (first token) instead of the
+  exact command line; `run_tests`/`run_checks` command overrides go through
+  the same approval policy; plan mode with no published plan falls back to the
+  per-tool approval modal.
+- **Context auto-sizing**: `num_ctx` unset now means auto — the model's native
+  context window (read from `/api/show`, cached) capped by a RAM budget, with
+  agentic runs getting the larger window. The fixed 4096 default that silently
+  truncated agent runs is gone; the 80%-full banner gained one-click
+  "Summarize older messages" / "Raise limit" actions; agentic requests now
+  send a core toolset (+ MCP + custom tools) instead of every registration.
+- **Auto-commit and auto-verify default ON** (explicit off still respected);
+  their Settings toggles are removed.
+- **Active project persists** across restarts (`ollama_gui_active_project`),
+  so returning users keep their folder context.
+
 #### UI simplification — white minimal Ollama-style layout (#549)
 - **Look**: copies the official Ollama macOS app — white, minimal, light theme
   by default (`DEFAULT_THEME.mode: 'light'`). Dark mode still available via
