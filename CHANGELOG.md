@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### First-run, trust & project management fixes (#549 audit ranks 4-6, 8, 10)
+- **Zero-models first run**: when connected with no models installed, the
+  welcome screen offers the curated one-click download list (with RAM-fit
+  notes and inline pull progress) instead of a disabled dropdown option
+  telling the user to run `ollama pull` in a terminal.
+- **Connection self-heals**: while disconnected, the 30-second poll retries
+  the connection, and a banner above the composer says what to do with a
+  one-click Retry. Error copy leads with GUI actions, not terminal commands.
+- **One folder concept**: the welcome CTA now creates a project (same path as
+  the sidebar "+"), is hidden once a project is active, and a cancelled or
+  broken folder picker shows a status banner instead of doing nothing.
+  Starter prompts are goal-shaped when a project is active.
+- **Sub-agent approval deadlock fixed**: approval requests are serialized (one
+  modal at a time; queued gates resolve in order) and sub-agent streams get
+  the parent run's AbortSignal, so Stop always unwinds a waiting run.
+- **Projects are renamable**: double-click a project row (or right-click →
+  Rename) for inline rename; project rows also gained a context menu with
+  New chat and Delete.
+
 #### Autonomy by default — create a project, state the goal, let it run (#549)
 - **Agentic mode is derived, not a setting**: tools are on exactly when the
   active project has a bound folder; plain chat otherwise. The Settings

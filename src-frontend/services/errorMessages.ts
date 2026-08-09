@@ -48,7 +48,7 @@ export function formatError(
     if (context === 'ollama') {
       return {
         title: 'Cannot reach Ollama',
-        detail: 'Is Ollama running? Start it with `ollama serve`, then check the base URL in Settings (default http://localhost:11434).',
+        detail: 'Ollama isn’t running. Open the Ollama app (or run `ollama serve`), then click Retry in the banner above the chat box — the app also reconnects automatically.',
       };
     }
     if (context === 'mcp') {
@@ -74,7 +74,7 @@ export function formatError(
   if (lower.includes('model') && (lower.includes('not found') || lower.includes('no such') || lower.includes('try pulling'))) {
     return {
       title: 'Model not available',
-      detail: 'That model is not installed. Pull it from the Model Management panel (e.g. `ollama pull llama3`) or pick another model.',
+      detail: 'That model is not installed. Pick another model from the switcher below the chat box, or download one in Settings → Model Management.',
     };
   }
 

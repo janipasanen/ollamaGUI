@@ -63,7 +63,9 @@ describe('Model pull UI (#238)', () => {
     fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
     const downloadBtn = await screen.findByRole('button', { name: /Download ministral-3:3b/i });
     fireEvent.click(downloadBtn);
-    await waitFor(() => expect(screen.getByText(/Error pulling/i)).toBeInTheDocument());
+    // Pull progress renders both in Settings and on the zero-models welcome
+    // setup (#549 rank 4), so match at-least-one rather than exactly-one.
+    await waitFor(() => expect(screen.getAllByText(/Error pulling/i).length).toBeGreaterThan(0));
     expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
   }, 15000);
 
@@ -75,6 +77,6 @@ describe('Model pull UI (#238)', () => {
     fireEvent.change(pullInput, { target: { value: 'llama3.2:1b' } });
     fireEvent.click(screen.getByRole('button', { name: /^Pull$/i }));
     // While/after pulling, a progress line referencing the model appears.
-    await waitFor(() => expect(screen.getByText(/Pull complete: llama3.2:1b/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Pull complete: llama3.2:1b/i).length).toBeGreaterThan(0));
   }, 15000);
 });

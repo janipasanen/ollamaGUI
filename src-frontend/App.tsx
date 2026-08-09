@@ -546,6 +546,12 @@ const App: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   // Inline session rename (#52)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  // Inline project rename (#549 audit rank 10): auto-derived names need an
+  // escape hatch — a bad name was previously permanent.
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [projectRenameDraft, setProjectRenameDraft] = useState('');
+  // Right-click context menu on sidebar project rows.
+  const [projectContextMenu, setProjectContextMenu] = useState<{ x: number; y: number; projectId: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   // Transient toast notification (#58 and general feedback)
   const [notification, setNotification] = useState<string | null>(null);
@@ -915,8 +921,18 @@ const App: React.FC = () => {
   // used by the top-level agentic run must also apply to sub-agents spawned
   // via spawn_subagent/spawn_parallel_subagents -- otherwise a sub-agent can
   // run mutating tools with no confirmation at all.
-  const createApprovalGate = () => (toolName: string, args: Record<string, unknown>) =>
+  // Approval requests are SERIALIZED (#549 audit rank 8): concurrent
+  // sub-agents each requesting approval used to overwrite the single
+  // pending-modal state, orphaning the earlier resolver — a permanent hang
+  // only an app restart could clear. One gate at a time; a cancelled run
+  // resolves queued gates as denied via the abort check.
+  const approvalChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const requestToolApproval = (toolName: string, args: Record<string, unknown>) =>
     new Promise<boolean>(resolve => {
+      if (abortControllerRef.current?.signal.aborted) {
+        resolve(false);
+        return;
+      }
       if (sessionToolAllowlistRef.current.has(toolName)) {
         resolve(true);
         return;
@@ -944,6 +960,13 @@ const App: React.FC = () => {
       setAgentStatus(`Waiting for approval: ${toolName}`);
       setPendingToolApproval({ toolName, args, resolve });
     });
+
+  const createApprovalGate = () => (toolName: string, args: Record<string, unknown>) => {
+    const result = approvalChainRef.current.then(() => requestToolApproval(toolName, args));
+    // Keep the chain alive regardless of outcome so one denial can't wedge it.
+    approvalChainRef.current = result.catch(() => undefined);
+    return result;
+  };
 
   // Modal focus management (#447): focus-in, Tab trap, focus-restore for the
   // main overlays. Each ref is attached to its dialog element in the JSX.
@@ -1242,14 +1265,21 @@ const App: React.FC = () => {
   }, [activeProjectId, projects, repoClis]);
 
   // Poll running models every 30s so the warm indicator stays current (#478).
+  // While disconnected the same tick retries the connection instead (#549
+  // audit rank 5): the app heals itself the moment the daemon starts, rather
+  // than requiring the user to find "Test connection" in Settings.
   useEffect(() => {
     const id = setInterval(() => {
+      if (ollamaConnected === false) {
+        refreshModels().catch(() => {});
+        return;
+      }
       fetchRunningModels(url('/api/ps'))
         .then(r => setRunningModels(new Set(r.map(m => m.name))))
         .catch(() => {});
     }, 30_000);
     return () => clearInterval(id);
-  }, [ollamaBaseUrl]);
+  }, [ollamaBaseUrl, ollamaConnected, refreshModels]);
 
   useEffect(() => {
     async function loadInitialData() {
@@ -1455,6 +1485,9 @@ const App: React.FC = () => {
               maxIterations: 3,
               endpoint: url('/api/chat'),
               toolFilter,
+              // Propagate the parent run's abort (#549 audit rank 8): without
+              // it, Stop could not unwind a hung sub-agent.
+              signal: abortControllerRef.current?.signal,
               onApprovalNeeded: createApprovalGate(),
               onAssistantMessage: (msg) => { result = msg; },
             });
@@ -1506,6 +1539,7 @@ const App: React.FC = () => {
                 maxIterations: 3,
                 endpoint: url('/api/chat'),
                 toolFilter,
+                signal: abortControllerRef.current?.signal,
                 onApprovalNeeded: createApprovalGate(),
                 onAssistantMessage: (msg) => { result = msg; },
               });
@@ -1811,7 +1845,13 @@ const App: React.FC = () => {
     setCreatingProject(true);
     try {
       const dir = await pickDirectory();
-      if (!dir) return; // cancelled
+      if (!dir) {
+        // Cancel and a broken picker both return null — say SOMETHING either
+        // way; a silent dead click on the primary CTA reads as a broken app
+        // (#549 audit rank 6).
+        showStatusBanner('No folder selected');
+        return;
+      }
       const existing = storage.getProjects().find(p => projectRoots(p)[0] === dir);
       if (existing) {
         // Re-opening a folder already bound to a project just switches to it,
@@ -2270,6 +2310,28 @@ const App: React.FC = () => {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  // Inline project rename (#549 audit rank 10) — the escape hatch for the
+  // auto-derived name; a rename here also marks the name as deliberate so
+  // the first-prompt auto-rename never overwrites it (isAutoFolderName).
+  const commitProjectRename = () => {
+    const id = renamingProjectId;
+    const name = projectRenameDraft.trim();
+    setRenamingProjectId(null);
+    if (!id || !name) return;
+    const project = storage.getProjects().find(p => p.id === id);
+    if (!project || project.name === name) return;
+    storage.saveProject({ ...project, name });
+    setProjects(storage.getProjects());
+  };
+
+  const deleteProject = (id: string, name: string) => {
+    if (!confirm(`Delete project "${name}"? Its chats are kept, just unfiled.`)) return;
+    storage.deleteProject(id);
+    setProjects(storage.getProjects());
+    setSessions(storage.getSessions());
+    if (activeProjectId === id) setActiveProjectId(null);
   };
 
   // Opt-in: resume the most recent conversation on startup (#356).
@@ -4384,8 +4446,26 @@ ${lines.join('\n')}`;
             return (
               <div key={p.id} className="mb-0.5">
                 <div className="group/proj flex items-center">
+                  {renamingProjectId === p.id ? (
+                    <input
+                      autoFocus
+                      value={projectRenameDraft}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setProjectRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter') commitProjectRename();
+                        else if (e.key === 'Escape') setRenamingProjectId(null);
+                      }}
+                      onBlur={commitProjectRename}
+                      aria-label="Rename project"
+                      className={`flex-1 min-w-0 text-sm px-2 py-1 rounded border outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                    />
+                  ) : (
                   <button
                     onClick={() => { toggleProjectExpanded(p.id); setActiveProjectId(p.id); }}
+                    onDoubleClick={() => { setRenamingProjectId(p.id); setProjectRenameDraft(p.name); }}
+                    onContextMenu={(e) => { e.preventDefault(); setProjectContextMenu({ x: e.clientX, y: e.clientY, projectId: p.id }); }}
                     aria-expanded={expanded}
                     aria-current={activeProjectId === p.id}
                     aria-label={p.name}
@@ -4401,6 +4481,7 @@ ${lines.join('\n')}`;
                       {p.name}
                     </span>
                   </button>
+                  )}
                   <button
                     onClick={() => {
                       setExpandedProjects(prev => new Set(prev).add(p.id));
@@ -4411,14 +4492,7 @@ ${lines.join('\n')}`;
                     className={`opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1.5 text-sm ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
                   >+</button>
                   <button
-                    onClick={() => {
-                      if (confirm(`Delete project "${p.name}"?`)) {
-                        storage.deleteProject(p.id);
-                        setProjects(storage.getProjects());
-                        setSessions(storage.getSessions());
-                        if (activeProjectId === p.id) setActiveProjectId(null);
-                      }
-                    }}
+                    onClick={() => deleteProject(p.id, p.name)}
                     className="opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1 text-[10px] text-red-400 hover:text-red-300"
                     aria-label={`Delete project ${p.name}`}
                   >✕</button>
@@ -4610,6 +4684,15 @@ ${lines.join('\n')}`;
                 setInput(prompt);
                 document.getElementById('chat-input')?.focus();
               }}
+              hasProject={isAgenticMode}
+              onOpenProject={() => { void createProjectFromFolder(); }}
+              creatingProject={creatingProject}
+              showModelSetup={ollamaConnected === true && models.length === 0}
+              suggestedModels={SUGGESTED_MODELS}
+              onPullModel={(name) => { void handlePullModel(name); }}
+              pullStatus={pullProgress || null}
+              pulling={isPulling}
+              systemRamGB={systemMemory ? systemMemory.total_bytes / 1024 ** 3 : null}
             />
           )}
             {messages.map((msg, i) => {
@@ -4964,6 +5047,19 @@ ${lines.join('\n')}`;
             </button>
           )}
         </div>
+
+        {/* Ollama disconnected (#549 audit rank 5): visible where the user is
+            about to act, with a one-click retry — not just a 2.5px header dot. */}
+        {ollamaConnected === false && (
+          <div className={`mx-4 mb-2 flex items-center justify-between rounded-lg px-3 py-2 text-xs border ${dark ? 'bg-red-900/30 border-red-800 text-red-200' : 'bg-red-50 border-red-200 text-red-700'}`} role="status">
+            <span>Ollama isn't running — open the Ollama app, then retry. Reconnecting automatically every 30s.</span>
+            <button
+              onClick={() => { void refreshModels().then(() => showStatusBanner('Connected to Ollama')).catch(() => showStatusBanner('Still no connection — is Ollama running?')); }}
+              aria-label="Retry Ollama connection"
+              className="ml-3 shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
+            >Retry</button>
+          </div>
+        )}
 
         {/* Storage quota warning */}
         {storageWarning && (
@@ -8549,6 +8645,18 @@ ${lines.join('\n')}`;
             } });
           }
           return <ContextMenu x={contextMenu.x} y={contextMenu.y} items={items} onClose={() => setContextMenu(null)} dark={dark} />;
+        })()}
+
+        {/* Right-click context menu on sidebar project rows (#549 rank 10) */}
+        {projectContextMenu && (() => {
+          const proj = projects.find(p => p.id === projectContextMenu.projectId);
+          if (!proj) { setProjectContextMenu(null); return null; }
+          const items: ContextMenuItem[] = [
+            { label: 'Rename', onSelect: () => { setRenamingProjectId(proj.id); setProjectRenameDraft(proj.name); } },
+            { label: 'New chat', onSelect: () => { setExpandedProjects(prev => new Set(prev).add(proj.id)); startNewChat(proj.id); } },
+            { label: 'Delete', onSelect: () => deleteProject(proj.id, proj.name) },
+          ];
+          return <ContextMenu x={projectContextMenu.x} y={projectContextMenu.y} items={items} onClose={() => setProjectContextMenu(null)} dark={dark} />;
         })()}
 
         {/* Right-click context menu on sidebar session items (#381) */}
