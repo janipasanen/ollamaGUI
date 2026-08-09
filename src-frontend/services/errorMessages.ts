@@ -70,6 +70,14 @@ export function formatError(
     };
   }
 
+  // Model lacks tool-calling support (#549 rank 11) — agentic requests 400.
+  if (lower.includes('does not support tools')) {
+    return {
+      title: 'This model can’t use tools',
+      detail: 'Agent runs need a tool-capable model. Pick a recent instruct model from the switcher below the chat (e.g. qwen2.5, llama3.1) and send again.',
+    };
+  }
+
   // Model not found
   if (lower.includes('model') && (lower.includes('not found') || lower.includes('no such') || lower.includes('try pulling'))) {
     return {

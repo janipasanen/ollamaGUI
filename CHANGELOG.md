@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### Run trust, model steering & endurance (#549 audit ranks 9, 11, 13)
+- **End-of-run summary**: a finished agentic run appends a quiet ✅ card —
+  duration, steps, files edited, commits, check verdict — built from data the
+  callbacks were already computing (commit hashes and verify results were
+  previously discarded). Completion notification + sound now fire for agentic
+  runs too, and the tool trail is persisted as it happens so errors and
+  reloads no longer lose the record of what the agent did. The max-iterations
+  stop message gained a plain-language second sentence.
+- **Model steering**: the startup default prefers an installed local MLX
+  model; an "⚠ no tool support" chip appears beside the switcher when the
+  selected model can't run agent tools; the raw `does not support tools` 400
+  now maps to a plain-language error with a next step.
+- **Always-on compaction, sized to the window**: the Auto-compact toggle and
+  fixed 3,000-token threshold are gone. Compaction triggers at ~70% of the
+  effective context window, both before a send and — new — inside the agent
+  loop between iterations, where overflow actually happens. The old
+  "Context Compaction" Settings section became a minimal "General" section.
+
 #### First-run, trust & project management fixes (#549 audit ranks 4-6, 8, 10)
 - **Zero-models first run**: when connected with no models installed, the
   welcome screen offers the curated one-click download list (with RAM-fit

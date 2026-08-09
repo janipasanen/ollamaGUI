@@ -3,6 +3,7 @@ import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs } from '
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
 import { truncateToolContent } from './tools';
+import { shouldCompact, compactConversation, makeSummarizeFn } from './compaction';
 
 export interface AgenticChatOptions {
   model: string;
@@ -42,6 +43,13 @@ export interface AgenticChatOptions {
   /** Fired when the run is cancelled via AbortSignal mid-fetch (#405). Unlike
    *  onError, a cancel is intentional and should not surface an error banner. */
   onCancel?: () => void;
+  /**
+   * Compact the transcript INSIDE the loop when it grows past this many
+   * estimated tokens (#549 audit rank 13). Overflow happens during the
+   * iterations, not before them — a pre-send-only compaction never fired
+   * where it mattered. Omit to disable (service tests, sub-agents).
+   */
+  compactThresholdTokens?: number;
 }
 
 export async function* agenticChatStream(options: AgenticChatOptions): AsyncGenerator<Message, void, unknown> {
@@ -65,6 +73,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onCancel,
     toolFilter,
     onApprovalNeeded,
+    compactThresholdTokens,
   } = options;
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
@@ -80,6 +89,19 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     iteration++;
 
     if (onIteration) onIteration(iteration, maxIterations);
+
+    // In-loop compaction (#549 rank 13): tool output accumulates ACROSS
+    // iterations, so the window fills mid-run. Summarize the oldest turns
+    // before the next request rather than letting Ollama truncate silently
+    // (which evicts the system prompt and the user's goal first).
+    if (compactThresholdTokens && shouldCompact(currentMessages, compactThresholdTokens)) {
+      try {
+        currentMessages = await compactConversation(currentMessages, {
+          thresholdTokens: compactThresholdTokens,
+          summarizeFn: makeSummarizeFn(model, endpoint),
+        });
+      } catch { /* compaction is best-effort — never kill the run over it */ }
+    }
 
     // Get available tools, filtered by toolFilter if provided (#104)
     const allTools = toolRegistry.getOllamaToolDefinitions();
@@ -367,7 +389,9 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     if (onMaxIterations) onMaxIterations();
     yield {
       role: 'assistant',
-      content: `⚠️ Agent stopped: maximum tool iterations (${maxIterations}) reached without a final answer.`,
+      // The prefix is load-bearing (the "Continue agent" button keys off it);
+      // the second sentence is the plain-language part (#549 rank 9).
+      content: `⚠️ Agent stopped: maximum tool iterations (${maxIterations}) reached without a final answer. It paused before finishing — use "Continue agent" below to let it keep working.`,
     } as Message;
   }
 

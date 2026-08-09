@@ -27,6 +27,8 @@ export interface Message {
   isError?: boolean;
   /** True when the user cancelled generation mid-stream (#303). */
   wasCancelled?: boolean;
+  /** End-of-run summary card appended after an agentic run (#549 rank 9). */
+  runSummary?: boolean;
 }
 
 export interface OllamaResponse {

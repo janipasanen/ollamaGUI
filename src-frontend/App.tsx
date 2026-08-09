@@ -606,9 +606,6 @@ const App: React.FC = () => {
   const [newSecretValue, setNewSecretValue] = useState('');
 
   // Compaction (#95)
-  const [autoCompact, setAutoCompact] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('ollama_gui_auto_compact') ?? 'false'); } catch { return false; }
-  });
   // Opt-in: resume the most recent conversation on startup (#356).
   const [resumeLastSession, setResumeLastSession] = useState<boolean>(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_resume_last_session') ?? 'false'); } catch { return false; }
@@ -640,10 +637,6 @@ const App: React.FC = () => {
       return next;
     });
   }, []);
-  const [compactionThreshold, setCompactionThreshold] = useState(() => {
-    const v = parseInt(localStorage.getItem('ollama_gui_compact_threshold') ?? '3000', 10);
-    return isNaN(v) ? 3000 : v;
-  });
 
   // Settings / UI state
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
@@ -898,6 +891,20 @@ const App: React.FC = () => {
 
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Per-run stats for the end-of-run summary card (#549 audit rank 9): the
+  // data already flows through the callbacks — it was just being discarded.
+  const runStatsRef = useRef<{
+    startedAt: number;
+    toolCalls: number;
+    filesEdited: Set<string>;
+    commits: string[];
+    checks: 'passed' | 'failed' | null;
+  }>({ startedAt: 0, toolCalls: 0, filesEdited: new Set(), commits: [], checks: null });
+  // True when the current run stopped at the iteration cap — it is PAUSED,
+  // not done: no ✅ card (it would displace the "Continue agent" button as
+  // the last message and misreport an unfinished run as finished).
+  const runHitMaxRef = useRef(false);
 
   // Session-only auto-approve list for general agent tools (#406, Codex/Claude
   // "Yes, and don't ask again" parity). Not persisted — resets on reload, like
@@ -1393,7 +1400,14 @@ const App: React.FC = () => {
     );
      // Auto-commit after an edit is applied to disk (#401). Reads the setting
      // fresh from localStorage so toggling it takes effect immediately.
-     setEditAppliedCallback((path, label) => { void autoCommitEdit(path, label, loadAutoCommitEdits()); });
+     setEditAppliedCallback((path, label) => {
+       // Feed the run-summary card (#549 rank 9): files touched + commit
+       // hashes were previously discarded on the floor here.
+       runStatsRef.current.filesEdited.add(path);
+       void autoCommitEdit(path, label, loadAutoCommitEdits())
+         .then(r => { if (r.committed && r.hash) runStatsRef.current.commits.push(r.hash); })
+         .catch(() => {});
+     });
      // Wire the read-only mode hook (#146) so the hook chain enforces it.
       registerHook('builtin:read-only', makeReadOnlyHook());
       // Redact known secrets (connection API keys) from tool output before it
@@ -1595,7 +1609,13 @@ const App: React.FC = () => {
         // resume-on-startup effect restores session.model synchronously on
         // mount, but this runs later (after the /api/tags round-trip) and used
         // to overwrite it — so resuming a chat silently switched its model (#533).
-        if (combined.length > 0 && !modelClaimedRef.current) setModel(combined[0].name);
+        if (combined.length > 0 && !modelClaimedRef.current) {
+          // Default to a model that can actually run the journey (#549 rank
+          // 11): prefer an installed local MLX model over whatever /api/tags
+          // happened to list first.
+          const preferred = combined.find(m => !m.cloud && isMlxModelName(m.name)) ?? combined[0];
+          setModel(preferred.name);
+        }
       } catch (e) {
         console.error('Failed to load models', e);
         setOllamaConnected(false);
@@ -2708,6 +2728,47 @@ const App: React.FC = () => {
     setAgentStep(null);
   };
 
+  // Close the loop at run end (#549 audit rank 9): a finished agentic run used
+  // to just go quiet — verify verdicts shown only to the model, commit hashes
+  // discarded, notifications wired only into plain chat. One shared exit.
+  const finishAgentRun = (outcome: 'done' | 'error' | 'paused') => {
+    const s = runStatsRef.current;
+    if (!s.startedAt) return;
+    // A tool-less agentic reply is just a chat answer — no run to summarize,
+    // and a "Run finished" banner would be noise.
+    if (s.toolCalls === 0) { s.startedAt = 0; return; }
+    const secs = Math.max(1, Math.round((Date.now() - s.startedAt) / 1000));
+    const dur = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    const bits = [
+      `${s.toolCalls} ${s.toolCalls === 1 ? 'step' : 'steps'}`,
+      s.filesEdited.size > 0 ? `${s.filesEdited.size} ${s.filesEdited.size === 1 ? 'file' : 'files'} edited` : null,
+      s.commits.length > 0 ? `${s.commits.length} ${s.commits.length === 1 ? 'commit' : 'commits'}` : null,
+      s.checks ? `checks ${s.checks}` : null,
+    ].filter(Boolean).join(' · ');
+    if (outcome === 'done' && s.toolCalls > 0) {
+      setMessages(prev => {
+        const updated = [...prev, { role: 'assistant', content: `✅ Done in ${dur} — ${bits}.`, runSummary: true, ts: Date.now() } as Message];
+        saveCurrentSession(updated);
+        return updated;
+      });
+    }
+    showStatusBanner(
+      outcome === 'done' ? `Run finished in ${dur}`
+        : outcome === 'paused' ? 'Run paused at the step limit — use "Continue agent" to keep going'
+        : 'Run stopped on an error',
+    );
+    if (notifyOnComplete && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(
+          outcome === 'done' ? 'Agent run finished' : outcome === 'paused' ? 'Agent run paused' : 'Agent run failed',
+          { body: bits },
+        );
+      } catch { /* blocked */ }
+    }
+    if (playSoundOnComplete) playCompletionSound();
+    s.startedAt = 0;
+  };
+
   // Send message
   const sendMessage = async (textOverride?: string, modelOverride?: string, continueMode: boolean = false) => {
     let text = textOverride ?? input;
@@ -3692,10 +3753,13 @@ ${lines.join('\n')}`;
       return next;
     });
 
-    // Auto-compact when history approaches context limit (#95)
-    if (autoCompact && shouldCompact(rawHistory, compactionThreshold)) {
+    // Compaction is always on, sized to the real window (#549 rank 13):
+    // summarize at ~70% of the effective context instead of a fixed 3000
+    // tokens that ignored the window entirely.
+    const compactAt = Math.round(effectiveNumCtx * 0.7);
+    if (shouldCompact(rawHistory, compactAt)) {
       rawHistory = await compactConversation(rawHistory, {
-        thresholdTokens: compactionThreshold,
+        thresholdTokens: compactAt,
         summarizeFn: makeSummarizeFn(activeModel, url('/api/chat')),
       });
     }
@@ -3721,6 +3785,8 @@ ${lines.join('\n')}`;
     setAttachedImages([]);
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
+    runStatsRef.current = { startedAt: Date.now(), toolCalls: 0, filesEdited: new Set(), commits: [], checks: null };
+    runHitMaxRef.current = false;
 
     // Hoisted above the try so the catch can reference it too, and named
     // distinctly so it does not shadow the module-level isCloudModel() (#484).
@@ -3751,9 +3817,10 @@ ${lines.join('\n')}`;
           maxIterations: autonomySettings.maxIterations,
           signal: abortControllerRef.current?.signal,
           options: sendOptions,
+          compactThresholdTokens: compactAt,
           format,
           onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
-          onMaxIterations: () => setAgentHitMax(true),
+          onMaxIterations: () => { setAgentHitMax(true); runHitMaxRef.current = true; },
           // Clean abort handling (#405): a user-initiated Stop during an
           // agentic fetch marks the partial assistant reply as cancelled
           // (parity with the normal streaming cancel-keep-partial #303)
@@ -3811,6 +3878,7 @@ ${lines.join('\n')}`;
           onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
             setAgentStatus(`Running: ${toolCallName(toolCall)}`);
+            runStatsRef.current.toolCalls += 1;
             // Feed the agent-activity timeline (#432).
             try {
               const args = (toolCall as any).function?.arguments ?? (toolCall as any).arguments;
@@ -3828,19 +3896,27 @@ ${lines.join('\n')}`;
           onToolResult: (toolResult) => {
             setAgentStatus('Thinking…');
             pushActivity('result', toolResult.name, toolResult.content); // (#432)
-            setMessages(prev => [
-              ...prev,
-              {
-                role: 'tool',
-                content: toolResult.content,
-                name: toolResult.name,
-              },
-            ]);
+            // Track check/test verdicts for the run summary (#549 rank 9).
+            if (toolResult.name === 'run_tests' || toolResult.name === 'run_checks') {
+              try {
+                const parsed = JSON.parse(toolResult.content);
+                if (typeof parsed.ok === 'boolean') runStatsRef.current.checks = parsed.ok ? 'passed' : 'failed';
+              } catch { /* non-JSON result — no verdict */ }
+            }
+            setMessages(prev => {
+              // Persist the tool trail as it happens (#549 rank 9): previously
+              // only text streaming saved, so an error or reload dropped the
+              // whole record of what the agent actually did.
+              const updated = [...prev, { role: 'tool', content: toolResult.content, name: toolResult.name } as Message];
+              saveCurrentSession(updated);
+              return updated;
+            });
           },
           onComplete: () => {
             setIsLoading(false);
             setAgentStatus(null);
             setAgentStep(null);
+            finishAgentRun(runHitMaxRef.current ? 'paused' : 'done');
             // Intentionally do NOT reset agentHitMax here: a max-iterations
             // stop sets it via onMaxIterations and the "Continue agent" button
             // (#403) must remain visible after the run completes. sendMessage
@@ -3855,6 +3931,7 @@ ${lines.join('\n')}`;
             setAgentStatus(null);
             setAgentStep(null);
             setAgentHitMax(false);
+            finishAgentRun('error');
           },
         });
 
@@ -4713,7 +4790,9 @@ ${lines.join('\n')}`;
               >
                <div
                  className={`group/msg ${
-                 msg.role === 'user'
+                 msg.runSummary
+                   ? `w-full md:max-w-3xl px-4 py-2.5 rounded-xl border text-sm ${dark ? 'bg-emerald-900/20 border-emerald-800/60 text-emerald-200' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`
+                   : msg.role === 'user'
                    ? `max-w-[85%] md:max-w-xl px-4 py-2.5 rounded-2xl ${dark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-100 text-zinc-900'}`
                    : msg.role === 'tool'
                      ? `w-full md:max-w-3xl p-4 rounded-2xl border-l-2 border-blue-500 ${dark ? 'bg-zinc-800/60 text-zinc-100' : 'bg-zinc-50 text-zinc-900'}`
@@ -5590,6 +5669,14 @@ ${lines.join('\n')}`;
                 title="MLX acceleration active — this model uses Apple-Silicon MLX weights"
                 className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}
               >⚡ MLX</span>
+            )}
+            {/* Tool-capability warning (#549 rank 11): agent runs fail with a
+                raw 400 on models without tool support — say so up front. */}
+            {isAgenticMode && modelCaps?.tools === false && (
+              <span
+                title="This model doesn't support tool calling — agent runs will fail. Pick a recent instruct model (e.g. qwen2.5, llama3.1)."
+                className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700'}`}
+              >⚠ no tool support</span>
             )}
             {models.find(m => m.name === model)?.cloud && (
               <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>⛅ Cloud</span>
@@ -8156,33 +8243,18 @@ ${lines.join('\n')}`;
                   </div>
                 </div>
 
-                {/* Compaction (#95) */}
+                {/* General (#549 rank 13: compaction is always on now, sized to
+                    the effective context window — its toggle and threshold are
+                    gone; the misfiled general toggles keep their home here) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Context Compaction</label>
-                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Automatically summarise old messages when the conversation approaches the context limit. Keeps recent turns intact.</p>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Auto-compact</span>
-                    <Toggle checked={autoCompact} onChange={() => { const v = !autoCompact; setAutoCompact(v); safeSetItem('ollama_gui_auto_compact', JSON.stringify(v)); }} dark={dark} label="Toggle auto-compact" />
-                  </div>
-                  {/* Own labeled row (#449) — was an unlabeled toggle jammed into the Auto-compact row. */}
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>General</label>
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Resume last conversation on startup</span>
                     <Toggle checked={resumeLastSession} onChange={() => { const v = !resumeLastSession; setResumeLastSession(v); safeSetItem('ollama_gui_resume_last_session', JSON.stringify(v)); }} dark={dark} label="Resume last conversation on startup" />
                   </div>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between">
                     <span className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Send on Ctrl+Enter (Enter = newline)</span>
                     <Toggle checked={sendOnCtrlEnter} onChange={() => { const v = !sendOnCtrlEnter; setSendOnCtrlEnter(v); safeSetItem('ollama_gui_send_on_ctrl_enter', JSON.stringify(v)); }} dark={dark} label="Toggle send on Ctrl+Enter" />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Threshold (tokens)</label>
-                    <input
-                      type="number"
-                      min={500}
-                      max={32000}
-                      value={compactionThreshold}
-                      onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) { setCompactionThreshold(v); safeSetItem('ollama_gui_compact_threshold', String(v)); } }}
-                      className={`w-24 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                    />
                   </div>
                 </div>
 
