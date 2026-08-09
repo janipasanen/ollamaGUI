@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+#### Settings deletion pass (#549 audit rank 15)
+- **Voice Call overlay deleted**: the overlay had no way to open since the
+  header button was removed; its states, ref, and imports are gone
+  (`services/voiceCall.ts` and its tests remain for the service layer).
+- **Prompt Library dropped, data migrated**: the Settings section, App state
+  and WelcomeScreen custom-starter branch are deleted. On first boot after
+  the update, every saved prompt becomes a user slash command (slugified
+  name, description "migrated prompt", body as template) and the old store
+  is cleared — user data survives as `/commands`.
+- **Browser Scenarios section deleted** from Settings along with its five App
+  states (`services/scenario.ts` + tests remain).
+- **"Remote Ollama Servers" + "Connections" merged into one "Model
+  providers" section**: both edited the same connections store. The full
+  editor (kind Ollama/OpenAI-compat, test, edit, on/off, remove) remains and
+  the API key field now applies to both kinds, covering remote-Ollama bearer
+  tokens; the redundant second listing and quick-add form are gone.
+- **Expert builders collapsed under "Advanced"**: Custom Tools & Functions,
+  Create Model (Modelfile), OpenAPI Tool Servers, Image Generation,
+  Speech-to-Text (Whisper) and Secret Store now sit unchanged inside one
+  closed `<details>` group at the end of Settings.
+- **Secure wipe moved to the very bottom** of the modal and now requires
+  typing `ERASE` (window.prompt) instead of a one-click confirm().
+- Fixed the unbalanced `space-y-6` wrapper: every Settings section now sits
+  inside one consistent container. Dead `toggleStarModel` helper removed
+  (the ★ Starred optgroup still reads `starredModels` from localStorage).
+
 #### Project management on the project & a readable agent transcript (#549 audit ranks 12, 14)
 - **Folders live on the project now**: creating a project accepts multiple
   folders in one OS dialog; the project row's right-click menu gained

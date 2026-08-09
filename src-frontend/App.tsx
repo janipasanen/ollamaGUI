@@ -75,10 +75,6 @@ import {
   startDictation, stopDictation, transcribeBlob, checkWhisperAvailable,
 } from './services/stt';
 import {
-  startVoiceCall, defaultSpeak, defaultRecordUtterance,
-  type CallState, type VoiceCallHandle,
-} from './services/voiceCall';
-import {
   VoiceSettings,
   loadVoiceSettings, saveVoiceSettings,
   recognize, speak, stopSpeaking, isSpeechRecognitionAvailable, isTtsAvailable,
@@ -88,14 +84,9 @@ import {
   filterCommands, findCommand, runCommand, getAllCommands,
   loadUserCommands, addUserCommand, updateUserCommand, removeUserCommand,
 } from './services/commands';
-import {
-  SavedPrompt,
-  loadPrompts, addPrompt, removePrompt,
-} from './services/promptLibrary';
-import {
-  BrowserScenario, ScenarioResult, StepAction,
-  listScenarios, saveScenario, deleteScenario, generateScenarioId, runScenario,
-} from './services/scenario';
+// Prompt Library UI is gone (#549 rank 15) — the service is only read once at
+// boot to migrate any saved prompts into user slash commands.
+import { loadPrompts, savePrompts } from './services/promptLibrary';
 import {
   BranchState,
   createBranch, navigateBranch, getForkInfo, getForkPoints,
@@ -664,12 +655,8 @@ const App: React.FC = () => {
   const [schemaError, setSchemaError] = useState<string | null>(null);
   /** Server id whose OAuth flow is currently running, if any (#503). */
   const [authInFlight, setAuthInFlight] = useState<string | null>(null);
-  /** Mirrors the voice-call handle's mute flag so the button re-renders (#530). */
-  const [voiceCallMuted, setVoiceCallMuted] = useState(false);
   /** Validation message for the custom-tool form (#516, #517). */
   const [customToolError, setCustomToolError] = useState<string | null>(null);
-  /** Inline "add step" draft for a browser scenario (#530). */
-  const [scenarioStepDraft, setScenarioStepDraft] = useState<{ id: string; action: StepAction; arg: string } | null>(null);
   // Initialise from storage during the first render (#509). Previously the
   // mount effect called setOllamaBaseUrl(saved) and then refreshModels() in the
   // same pass — but that refreshModels closure was built on the first render,
@@ -699,20 +686,15 @@ const App: React.FC = () => {
   const [recentModels, setRecentModels] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('ollama_gui_recent_models') ?? '[]'); } catch { return []; }
   });
- // Starred/favourite models (#339) — pinned to the top of the selector.
- const [starredModels, setStarredModels] = useState<string[]>(() => {
+ // Starred/favourite models (#339) — pinned to the top of the selector. The
+ // last starring UI went with the header rewrite, so this is read-only state
+ // seeded from localStorage (#549 rank 15 removed the dead toggleStarModel).
+ const [starredModels] = useState<string[]>(() => {
    try { return JSON.parse(localStorage.getItem('ollama_gui_starred_models') ?? '[]'); } catch { return []; }
  });
   // Models currently loaded in Ollama memory (#478) — refreshed periodically
   // so the selector shows a ● badge next to warm models (LM Studio / Codex parity).
   const [runningModels, setRunningModels] = useState<Set<string>>(new Set());
-  const toggleStarModel = useCallback((name: string) => {
-    setStarredModels(prev => {
-      const next = prev.includes(name) ? prev.filter(m => m !== name) : [...prev, name];
-      safeSetItem('ollama_gui_starred_models', JSON.stringify(next));
-      return next;
-    });
-  }, []);
   const [playSoundOnComplete, setPlaySoundOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('ollama_gui_sound_complete') === 'true'; } catch { return false; }
   });
@@ -764,12 +746,6 @@ const App: React.FC = () => {
   const [newCustomTool, setNewCustomTool] = useState({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
   const [newFunction, setNewFunction] = useState<{ kind: 'filter' | 'action'; name: string; code: string; priority: string }>({ kind: 'filter', name: '', code: '', priority: '100' });
 
-  // Browser scenarios (#78/#200)
-  const [scenarios, setScenarios] = useState<BrowserScenario[]>(() => listScenarios());
-  const [scenarioResults, setScenarioResults] = useState<Record<string, ScenarioResult>>({});
-  const [runningScenarioId, setRunningScenarioId] = useState<string | null>(null);
-  const [newScenarioName, setNewScenarioName] = useState('');
-
   // Model presets (#124)
   const [presets, setPresets] = useState<ModelPreset[]>(() => loadPresets());
   const [activePresetId, setActivePresetId] = useState<string | null>(() => loadActivePresetId());
@@ -791,11 +767,6 @@ const App: React.FC = () => {
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
   const [editingConnId, setEditingConnId] = useState<string | null>(null); // #419 edit affordance
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
-  // Remote Ollama quick-add state
-  const [newRemoteOllamaUrl, setNewRemoteOllamaUrl] = useState('');
-  const [newRemoteOllamaName, setNewRemoteOllamaName] = useState('');
-  // Optional bearer token for authenticated remote Ollama servers (#493).
-  const [newRemoteOllamaToken, setNewRemoteOllamaToken] = useState('');
 
 
   // Image generation (#130)
@@ -808,12 +779,6 @@ const App: React.FC = () => {
   const [webSearchConfig, setWebSearchConfig] = useState<WebSearchConfig>(() => loadWebSearchConfig());
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [whisperAvailable, setWhisperAvailable] = useState<boolean | null>(null);
-
-  // Prompt library (#97)
-  const [prompts, setPrompts] = useState<SavedPrompt[]>(() => loadPrompts());
-  const [showPromptPicker, setShowPromptPicker] = useState(false);
-  const [newPromptName, setNewPromptName] = useState('');
-  const [newPromptBody, setNewPromptBody] = useState('');
 
   // Conversation branching (#98)
   const [branchState, setBranchState] = useState<BranchState>(emptyBranchState());
@@ -889,13 +854,6 @@ const App: React.FC = () => {
   const [collapsedMsg, setCollapsedMsg] = useState<Record<number, boolean>>({});
   const [copiedChat, setCopiedChat] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
-
-  // Voice call mode (#132)
-  const [voiceCallActive, setVoiceCallActive] = useState(false);
-  const [voiceCallState, setVoiceCallState] = useState<CallState>('idle');
-  const [voiceCallTranscript, setVoiceCallTranscript] = useState('');
-  const [voiceCallResponse, setVoiceCallResponse] = useState('');
-  const voiceCallHandleRef = useRef<VoiceCallHandle | null>(null);
 
   // MLX acceleration (Apple Silicon): detection only — no settings. Active
   // whenever the selected local model is an MLX model on a capable machine.
@@ -1325,6 +1283,25 @@ const App: React.FC = () => {
       setThemeSettings(ts);
       setIsDarkMode(resolveDark(ts.mode));
       applyTheme(ts);
+
+      // One-time migration (#549 rank 15): the Prompt Library UI is gone.
+      // Any prompts the user saved become user slash commands (same power,
+      // one concept), then the old store is cleared so this never re-runs.
+      const legacyPrompts = loadPrompts();
+      if (legacyPrompts.length > 0) {
+        const taken = new Set(getAllCommands().map(c => c.name));
+        for (const p of legacyPrompts) {
+          if (!p.body || !p.body.trim()) continue;
+          const base = p.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'prompt';
+          let name = base;
+          let n = 2;
+          while (taken.has(name)) name = `${base}-${n++}`;
+          taken.add(name);
+          addUserCommand({ name, description: 'migrated prompt', template: p.body });
+        }
+        savePrompts([]);
+        setUserCommands(loadUserCommands());
+      }
 
       setSessions(storage.getSessions());
       setFolders(storage.getFolders());
@@ -4773,7 +4750,6 @@ ${lines.join('\n')}`;
           {messages.length === 0 && (
             <WelcomeScreen
               dark={dark}
-              prompts={prompts.map(p => ({ name: p.name, body: p.body }))}
               onPrompt={(prompt) => {
                 setInput(prompt);
                 document.getElementById('chat-input')?.focus();
@@ -5748,50 +5724,6 @@ ${lines.join('\n')}`;
             </div>
           </div>
 
-        {/* Voice Call Overlay (#132) */}
-        {voiceCallActive && (
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center gap-6 p-8 text-white">
-            <div className="text-6xl">{voiceCallState === 'listening' ? '🎙' : voiceCallState === 'transcribing' ? '✍️' : voiceCallState === 'responding' ? '🤔' : voiceCallState === 'speaking' ? '🔊' : '📞'}</div>
-            <div className={`text-lg font-semibold capitalize ${voiceCallState === 'listening' ? 'text-green-400 animate-pulse' : 'text-zinc-200'}`}>
-              {voiceCallState === 'listening' ? 'Listening…' : voiceCallState === 'transcribing' ? 'Transcribing…' : voiceCallState === 'responding' ? 'Thinking…' : voiceCallState === 'speaking' ? 'Speaking…' : voiceCallState}
-            </div>
-            {voiceCallTranscript && (
-              <div className={`max-w-md text-center text-sm rounded-xl px-4 py-2 ${dark ? 'bg-zinc-800 text-zinc-200' : 'bg-zinc-100 text-zinc-800'}`}>
-                <span className="text-zinc-400 text-xs block mb-1">You said</span>
-                {voiceCallTranscript}
-              </div>
-            )}
-            {voiceCallResponse && (
-              <div className={`max-w-md text-center text-sm rounded-xl px-4 py-2 ${dark ? 'bg-blue-900/50 text-blue-100' : 'bg-blue-50 text-blue-900'}`}>
-                <span className="text-blue-400 text-xs block mb-1">Assistant</span>
-                {voiceCallResponse}
-              </div>
-            )}
-            <div className="flex gap-4">
-              <button
-                onClick={() => {
-                  // Mirror into state (#530): the label read voiceCallHandleRef
-                  // directly, and mutating a ref does not re-render — so the
-                  // button text never changed and clicking Mute looked inert.
-                  const h = voiceCallHandleRef.current;
-                  if (!h?.mute) return;
-                  if (h.muted) { h.unmute(); setVoiceCallMuted(false); }
-                  else { h.mute(); setVoiceCallMuted(true); }
-                }}
-                className="px-5 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-semibold"
-              >
-                {voiceCallMuted ? 'Unmute' : 'Mute'}
-              </button>
-              <button
-                onClick={() => { voiceCallHandleRef.current?.stop(); setVoiceCallActive(false); setVoiceCallState('idle'); }}
-                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-sm font-semibold"
-              >
-                End Call
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Settings Overlay */}
         {isSettingsOpen && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -5956,121 +5888,6 @@ ${lines.join('\n')}`;
                    </div>
                  </div>
 
-                 {/* Remote Ollama servers — quick add/remove */}
-                 <div>
-                   <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Remote Ollama Servers</label>
-                   <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     Add remote Ollama instances (e.g. a server on another machine, or an authenticated cloud endpoint). Their models appear under "Remote Ollama: name" in the model selector. Use 🔑 to set an API token for servers that require one.
-                   </p>
-                   {/* Existing remote Ollama connections */}
-                   {connections.filter(c => c.kind === 'ollama').length > 0 && (
-                     <div className="space-y-1 mb-2">
-                       {connections.filter(c => c.kind === 'ollama').map(conn => {
-                         const modelCount = connectedModels.filter(m => m.connectionId === conn.id).length;
-                         return (
-                           <div key={conn.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 border ${dark ? 'border-zinc-700 bg-zinc-800/60' : 'border-zinc-200 bg-zinc-50'}`}>
-                             <div className="flex-1 min-w-0">
-                               <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{conn.name}</div>
-                               <div className={`text-[10px] font-mono truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} · {modelCount} model{modelCount !== 1 ? 's' : ''}{conn.apiKey ? ' · 🔑 token set' : ''}</div>
-                             </div>
-                             <button
-                               aria-label={`${conn.apiKey ? 'Change' : 'Set'} API token for ${conn.name}`}
-                               title={conn.apiKey ? 'Change API token' : 'Set API token'}
-                               onClick={async () => {
-                                 // Authenticated remotes (incl. ollama.com) need a bearer token (#493).
-                                 const entered = window.prompt(
-                                   `API token for "${conn.name}" (leave empty to remove):`,
-                                   conn.apiKey ?? '',
-                                 );
-                                 if (entered === null) return;
-                                 const token = entered.trim();
-                                 const updated = connections.map(c =>
-                                   c.id === conn.id ? { ...c, apiKey: token || undefined } : c);
-                                 saveConnections(updated);
-                                 setConnections(updated);
-                                 const changed = updated.find(c => c.id === conn.id)!;
-                                 const { fetchOllamaConnectionModels } = await import('./services/connections');
-                                 fetchOllamaConnectionModels(changed)
-                                   .then(newModels => setConnectedModels(prev =>
-                                     [...prev.filter(m => m.connectionId !== conn.id), ...newModels]))
-                                   .catch(() => {});
-                               }}
-                               className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                             >🔑</button>
-                             <button
-                               onClick={() => {
-                                 const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
-                                 saveConnections(updated);
-                                 setConnections(updated);
-                               }}
-                               className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-emerald-700 text-emerald-400' : 'border-emerald-400 text-emerald-600') : (dark ? 'border-zinc-600 text-zinc-500' : 'border-zinc-300 text-zinc-400')}`}
-                             >{conn.enabled ? 'On' : 'Off'}</button>
-                             <button
-                               aria-label={`Remove connection ${conn.name}`}
-                               onClick={() => {
-                                 if (!window.confirm(`Remove connection "${conn.name}"?`)) return;
-                                 const updated = connections.filter(c => c.id !== conn.id);
-                                 saveConnections(updated);
-                                 setConnections(updated);
-                                 setConnectedModels(prev => prev.filter(m => m.connectionId !== conn.id));
-                               }}
-                               className="shrink-0 text-red-400 hover:text-red-300 text-xs"
-                             >✕</button>
-                           </div>
-                         );
-                       })}
-                     </div>
-                   )}
-                   {/* Quick-add form */}
-                   <div className="flex gap-1 mb-1">
-                     <input
-                       value={newRemoteOllamaName}
-                       onChange={e => setNewRemoteOllamaName(e.target.value)}
-                       placeholder="Name (e.g. Home Server)"
-                       className={`flex-1 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                     />
-                   </div>
-                   <div className="flex gap-1">
-                     <input
-                       value={newRemoteOllamaUrl}
-                       onChange={e => setNewRemoteOllamaUrl(e.target.value)}
-                       placeholder="URL (e.g. http://192.168.1.10:11434)"
-                       className={`flex-1 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                     />
-                     <input
-                       type="password"
-                       value={newRemoteOllamaToken}
-                       onChange={e => setNewRemoteOllamaToken(e.target.value)}
-                       placeholder="API token (optional)"
-                       aria-label="Remote Ollama API token"
-                       className={`w-40 text-xs px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                     />
-                     <button
-                       onClick={async () => {
-                         const rawUrl = newRemoteOllamaUrl.trim();
-                         const name = newRemoteOllamaName.trim() || rawUrl;
-                         if (!rawUrl) return;
-                         const token = newRemoteOllamaToken.trim();
-                         const conn = addConnection({
-                           name, kind: 'ollama', baseUrl: rawUrl, enabled: true,
-                           ...(token ? { apiKey: token } : {}),
-                         });
-                         const updated = loadConnections();
-                         setConnections(updated);
-                         setNewRemoteOllamaUrl('');
-                         setNewRemoteOllamaName('');
-                         setNewRemoteOllamaToken('');
-                         // Fetch models from the new remote server
-                         const { fetchOllamaConnectionModels } = await import('./services/connections');
-                         fetchOllamaConnectionModels(conn).then(newModels => {
-                           setConnectedModels(prev => [...prev.filter(m => m.connectionId !== conn.id), ...newModels]);
-                         }).catch(() => {});
-                       }}
-                       className={`shrink-0 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white`}
-                     >Add</button>
-                   </div>
-                 </div>
-
                  {/* System Prompt */}
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>System Prompt</label>
@@ -6188,26 +6005,6 @@ ${lines.join('\n')}`;
                    </p>
                  </div>
 
-                 {/* Privacy & data — secure cleanup (#38) */}
-                 <div>
-                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Privacy &amp; data</label>
-                   <button
-                     onClick={() => {
-                       if (!confirm('Securely erase ALL local data (chats, settings, MCP servers)? This cannot be undone.')) return;
-                       const wiped = secureWipeAll();
-                       notify(`Securely erased ${wiped.length} stored item${wiped.length === 1 ? '' : 's'}.`);
-                       setSessions([]); setFolders([]); setMessages([]); setCurrentSessionId(null);
-                       setMcpServers([]);
-                     }}
-                     className={`text-xs px-3 py-1.5 rounded border transition-colors ${dark ? 'border-red-800 text-red-400 hover:bg-red-950/40' : 'border-red-300 text-red-600 hover:bg-red-50'}`}
-                   >
-                     Securely erase all local data
-                   </button>
-                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     Overwrites then removes every stored item. Secrets (tokens) already live in the OS keychain; chat history can be encrypted at rest with AES-GCM via secureStorage.
-                   </p>
-                 </div>
-
                  {/* Structured output (#148) */}
                  <div>
                    <div className="flex items-center justify-between">
@@ -6293,10 +6090,13 @@ ${lines.join('\n')}`;
                    </div>
                  </div>
 
-                {/* Model Connections — OpenAI-compatible endpoints (#123) */}
+                {/* Model providers (#123/#493) — one section for every extra endpoint:
+                    remote Ollama servers and OpenAI-compatible APIs share the same
+                    connections store, so the old separate 'Remote Ollama Servers'
+                    section was a second CRUD UI over identical data (#549 rank 15). */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Connections ({connections.length})</label>
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Model providers ({connections.length})</label>
                     <button onClick={() => {
                         if (showAddConnection) { setEditingConnId(null); setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' }); }
                         setShowAddConnection(v => !v);
@@ -6318,10 +6118,8 @@ ${lines.join('\n')}`;
                       </div>
                       <input aria-label="Connection base URL" placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      {newConn.kind === 'openai' && (
-                        <input aria-label="Connection API key" placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      )}
+                      <input aria-label="Connection API key" placeholder="API key / token (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       <button onClick={() => {
                         if (!newConn.name.trim() || !newConn.baseUrl.trim()) return;
                         if (editingConnId) {
@@ -6341,7 +6139,7 @@ ${lines.join('\n')}`;
                   )}
                   <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
                     {connections.length === 0
-                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No extra connections. Add an OpenAI-compatible (LM Studio, llama.cpp) or a second Ollama host.</p>
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No extra model providers. Add an OpenAI-compatible endpoint (LM Studio, llama.cpp) or a remote Ollama server.</p>
                       : connections.map(conn => {
                         const modelCount = connectedModels.filter(m => m.connectionId === conn.id).length;
                         return (
@@ -6392,7 +6190,7 @@ ${lines.join('\n')}`;
                     }
                   </div>
                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Models from extra connections appear in the model selector grouped by connection.
+                    Models from extra providers appear in the model selector grouped by provider. For a remote Ollama server pick kind "Ollama"; set its bearer token in the API key field (#493).
                   </p>
                 </div>
 
@@ -6782,321 +6580,6 @@ ${lines.join('\n')}`;
                    </p>
                 </div>
 
-                {/* OpenAPI Tool Servers (#129) */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                      OpenAPI Servers ({openApiServers.length})
-                    </label>
-                    <button
-                      onClick={() => setShowAddOpenApi(v => !v)}
-                      className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                    >
-                      {showAddOpenApi ? 'Cancel' : '+ Add'}
-                    </button>
-                  </div>
-
-                  {showAddOpenApi && (
-                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
-                      <input
-                        type="text"
-                        placeholder="Name (e.g. My REST API)"
-                        value={newOpenApi.name}
-                        onChange={e => setNewOpenApi(v => ({ ...v, name: e.target.value }))}
-                        className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                      />
-                      <input
-                        type="url"
-                        placeholder="Spec URL (https://…/openapi.json)"
-                        value={newOpenApi.specUrl}
-                        onChange={e => setNewOpenApi(v => ({ ...v, specUrl: e.target.value }))}
-                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                      />
-                      <input
-                        type="text"
-                        placeholder="API key (optional)"
-                        value={newOpenApi.apiKey}
-                        onChange={e => setNewOpenApi(v => ({ ...v, apiKey: e.target.value }))}
-                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                      />
-                      <input
-                        type="text"
-                        placeholder="API key header (default: Authorization)"
-                        value={newOpenApi.apiKeyHeader}
-                        onChange={e => setNewOpenApi(v => ({ ...v, apiKeyHeader: e.target.value }))}
-                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                      />
-                      <button
-                        onClick={async () => {
-                          if (!newOpenApi.name.trim() || !newOpenApi.specUrl.trim()) return;
-                          const cfg: OpenApiServerConfig = {
-                            id: crypto.randomUUID(),
-                            name: newOpenApi.name.trim(),
-                            specUrl: newOpenApi.specUrl.trim(),
-                            apiKey: newOpenApi.apiKey.trim() || undefined,
-                            apiKeyHeader: newOpenApi.apiKeyHeader.trim() || undefined,
-                            enabled: true,
-                          };
-                          const updated = [...openApiServers, cfg];
-                          setOpenApiServers(updated);
-                          saveOpenApiServers(updated);
-                          // A failed spec fetch used to be swallowed while the
-                          // server stayed in the list with a green status dot, so a
-                          // broken server looked healthy and its tools silently never
-                          // appeared (#522).
-                          registerOpenApiServer(cfg).catch((e) => {
-                            showStatusBanner(`OpenAPI server "${cfg.name}": ${formatErrorLine(e)}`);
-                            const disabled = { ...cfg, enabled: false };
-                            setOpenApiServers(prev => {
-                              const next = prev.map(x => x.id === cfg.id ? disabled : x);
-                              saveOpenApiServers(next);
-                              return next;
-                            });
-                          });
-                          setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
-                          setShowAddOpenApi(false);
-                        }}
-                        className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
-                      >
-                        Add Server
-                      </button>
-                    </div>
-                  )}
-
-                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                    {openApiServers.length === 0 ? (
-                      <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No OpenAPI servers added.</p>
-                    ) : openApiServers.map(srv => (
-                      <div key={srv.id} className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${srv.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
-                            <span className="text-xs font-medium truncate">{srv.name}</span>
-                          </div>
-                          <div className={`text-[10px] truncate mt-0.5 font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{srv.specUrl}</div>
-                          {openApiTestStatus[srv.id] && (
-                            <div className={`text-[10px] mt-0.5 ${openApiTestStatus[srv.id] === 'ok' ? 'text-green-400' : openApiTestStatus[srv.id] === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>
-                              {openApiTestStatus[srv.id] === 'testing' ? 'Testing…' : openApiTestStatus[srv.id] === 'ok' ? '✓ Spec loaded' : '✗ Failed to fetch spec'}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={async () => {
-                              setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'testing' }));
-                              try {
-                                await registerOpenApiServer(srv);
-                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'ok' }));
-                              } catch {
-                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'error' }));
-                              }
-                            }}
-                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                          >
-                            {openApiTestStatus[srv.id] === 'testing' ? '…' : 'Test'}
-                          </button>
-                          <button
-                            onClick={() => {
-                              const updated = openApiServers.map(s => s.id === srv.id ? { ...s, enabled: !s.enabled } : s);
-                              setOpenApiServers(updated);
-                              saveOpenApiServers(updated);
-                              const toggled = updated.find(s => s.id === srv.id)!;
-                              if (toggled.enabled) registerOpenApiServer(toggled).catch(() => {});
-                              else unregisterOpenApiServer(srv.id);
-                            }}
-                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
-                              srv.enabled
-                                ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
-                                : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')
-                            }`}
-                          >
-                            {srv.enabled ? 'On' : 'Off'}
-                          </button>
-                          <button
-                            onClick={() => {
-                              const updated = openApiServers.filter(s => s.id !== srv.id);
-                              setOpenApiServers(updated);
-                              saveOpenApiServers(updated);
-                              unregisterOpenApiServer(srv.id);
-                            }}
-                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-red-400 hover:bg-zinc-700' : 'border-zinc-300 text-red-500 hover:bg-zinc-50'}`}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Point at any OpenAPI 3.x spec URL — operations become callable tools for the agent.
-                  </p>
-                </div>
-
-                {/* Custom Tools & Functions (#127) */}
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Tools & Functions</label>
-
-                  {/* Custom Tools */}
-                  <div className="mb-3">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Custom Tools ({customTools.length})</span>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => {
-                            const ex = STARTER_EXAMPLES.find(e => e.tool);
-                            if (ex?.tool) {
-                              const t = addCustomTool(ex.tool);
-                              setCustomTools(loadCustomTools());
-                              void t;
-                            }
-                          }}
-                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                        >Example</button>
-                        <button
-                          onClick={() => setShowAddCustomTool(v => !v)}
-                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                        >{showAddCustomTool ? 'Cancel' : '+ Add'}</button>
-                      </div>
-                    </div>
-                    {showAddCustomTool && (
-                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
-                        <input aria-label="Tool name" placeholder="Tool name (alphanumeric, _)" value={newCustomTool.name} onChange={e => setNewCustomTool(v => ({ ...v, name: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <input aria-label="Tool description" placeholder="Description" value={newCustomTool.description} onChange={e => setNewCustomTool(v => ({ ...v, description: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <textarea placeholder='Parameters JSON: {"key":{"type":"string","description":"desc"}}' rows={2} value={newCustomTool.paramsJson} onChange={e => setNewCustomTool(v => ({ ...v, paramsJson: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <textarea placeholder="JS body — use params.x to access parameters. Must return/resolve a value." rows={3} value={newCustomTool.code} onChange={e => setNewCustomTool(v => ({ ...v, code: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        {customToolError && (
-                          <p role="alert" className="text-[10px] text-red-400">⚠️ {customToolError}</p>
-                        )}
-                        <button onClick={() => {
-                          const name = newCustomTool.name.trim();
-                          // Previously: a blank name returned silently, a malformed
-                          // params JSON was swallowed by `catch {}` and saved the tool
-                          // with ZERO parameters (#516), and a duplicate name collided
-                          // on one registry key so deleting either killed both (#517).
-                          if (!name) { setCustomToolError('Enter a tool name.'); return; }
-                          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-                            setCustomToolError('Tool names may contain only letters, digits and underscores, and cannot start with a digit.');
-                            return;
-                          }
-                          if (customTools.some(t => t.name === name)) {
-                            setCustomToolError(`A tool named "${name}" already exists — pick another name.`);
-                            return;
-                          }
-                          let props: Record<string, { type: string; description: string }> = {};
-                          const raw = newCustomTool.paramsJson.trim();
-                          if (raw) {
-                            try {
-                              const parsed = JSON.parse(raw);
-                              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-                                setCustomToolError('Parameters JSON must be an object, e.g. {"input":{"type":"string","description":"…"}}.');
-                                return;
-                              }
-                              props = parsed;
-                            } catch (e) {
-                              setCustomToolError(`Parameters JSON is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
-                              return;
-                            }
-                          }
-                          setCustomToolError(null);
-                          addCustomTool({ name, description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
-                          setCustomTools(loadCustomTools());
-                          setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
-                          setShowAddCustomTool(false);
-                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add Tool</button>
-                      </div>
-                    )}
-                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                      {customTools.length === 0
-                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No custom tools.</p>
-                        : customTools.map(t => (
-                          <div key={t.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
-                            <span className="text-xs font-medium flex-1 truncate font-mono">{t.name}</span>
-                            <span className={`text-[10px] truncate flex-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t.description}</span>
-                            <button onClick={() => { updateCustomTool(t.id, { enabled: !t.enabled }); setCustomTools(loadCustomTools()); }}
-                              className={`text-[10px] px-1.5 py-0.5 rounded border ${t.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
-                              {t.enabled ? 'On' : 'Off'}
-                            </button>
-                            <button aria-label={`Remove tool ${t.name}`} onClick={() => { if (!window.confirm(`Remove tool "${t.name}"?`)) return; removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
-                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
-                          </div>
-                        ))
-                      }
-                    </div>
-                  </div>
-
-                  {/* Filters + Actions */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Filters & Actions ({functionDefs.length})</span>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => {
-                            const ex = STARTER_EXAMPLES.find(e => e.fn);
-                            if (ex?.fn) { addFunctionDef(ex.fn); setFunctionDefs(loadFunctionDefs()); }
-                          }}
-                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                        >Example</button>
-                        <button onClick={() => setShowAddFunction(v => !v)}
-                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                        >{showAddFunction ? 'Cancel' : '+ Add'}</button>
-                      </div>
-                    </div>
-                    {showAddFunction && (
-                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
-                        <div className="flex gap-1.5">
-                          <select value={newFunction.kind} onChange={e => setNewFunction(v => ({ ...v, kind: e.target.value as 'filter' | 'action' }))}
-                            className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
-                            <option value="filter">Filter</option>
-                            <option value="action">Action</option>
-                          </select>
-                          <input aria-label="Function name" placeholder="Name" value={newFunction.name} onChange={e => setNewFunction(v => ({ ...v, name: e.target.value }))}
-                            className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                          {newFunction.kind === 'filter' && (
-                            <input aria-label="Function priority" placeholder="Priority" value={newFunction.priority} onChange={e => setNewFunction(v => ({ ...v, priority: e.target.value }))}
-                              className={`w-16 border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                          )}
-                        </div>
-                        <textarea placeholder={newFunction.kind === 'filter' ? 'function inlet(messages){return messages;} // and/or function outlet(text){return text;}' : 'function action(message){return "Prompt: "+message.content;}'}
-                          rows={4} value={newFunction.code} onChange={e => setNewFunction(v => ({ ...v, code: e.target.value }))}
-                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                        <button onClick={() => {
-                          if (!newFunction.name.trim()) return;
-                          addFunctionDef({ kind: newFunction.kind, name: newFunction.name.trim(), code: newFunction.code, priority: parseInt(newFunction.priority) || 100, enabled: true });
-                          setFunctionDefs(loadFunctionDefs());
-                          setNewFunction({ kind: 'filter', name: '', code: '', priority: '100' });
-                          setShowAddFunction(false);
-                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add</button>
-                      </div>
-                    )}
-                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                      {functionDefs.length === 0
-                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No filters or actions.</p>
-                        : functionDefs.map(f => (
-                          <div key={f.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
-                            <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${f.kind === 'filter' ? (dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700')}`}>{f.kind}</span>
-                            <span className="text-xs font-medium flex-1 truncate">{f.name}</span>
-                            <button onClick={() => { updateFunctionDef(f.id, { enabled: !f.enabled }); setFunctionDefs(loadFunctionDefs()); }}
-                              className={`text-[10px] px-1.5 py-0.5 rounded border ${f.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
-                              {f.enabled ? 'On' : 'Off'}
-                            </button>
-                            <button aria-label={`Remove function ${f.name}`} onClick={() => { if (!window.confirm(`Remove function "${f.name}"?`)) return; removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
-                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
-                          </div>
-                        ))
-                      }
-                    </div>
-                  </div>
-                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Tools run in a sandboxed Web Worker. Filters mutate messages; Actions add buttons to replies.
-                  </p>
-                </div>
-
                 {/* Model Presets (#124) */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
@@ -7306,159 +6789,6 @@ ${lines.join('\n')}`;
                    </div>
                 </div>
 
-                {/* Modelfile Builder (#125) */}
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Create Model (Modelfile)</label>
-                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
-                    <div className="flex gap-1.5">
-                      <input aria-label="New model name" placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
-                        const f = { ...modelfileFields, name: e.target.value };
-                        setModelfileFields(f);
-                        setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
-                      }}
-                        className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    </div>
-                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base: <span className="font-mono">{model}</span> (currently selected)</p>
-                    <textarea placeholder="SYSTEM prompt (optional)" rows={2} value={modelfileFields.system} onChange={e => {
-                      const f = { ...modelfileFields, system: e.target.value };
-                      setModelfileFields(f);
-                      setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined }));
-                    }}
-                      className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    <div className="flex gap-1.5">
-                      <input aria-label="Modelfile temperature" placeholder="Temperature" value={modelfileFields.temperature} onChange={e => setModelfileFields(v => ({ ...v, temperature: e.target.value }))}
-                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      <input aria-label="Modelfile context window" placeholder="num_ctx" value={modelfileFields.numCtx} onChange={e => setModelfileFields(v => ({ ...v, numCtx: e.target.value }))}
-                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    </div>
-                    {modelfilePreview && (
-                      <div className={`rounded border p-2 text-[10px] font-mono whitespace-pre-wrap max-h-24 overflow-auto ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-200 text-zinc-600'}`}>
-                        {modelfilePreview}
-                      </div>
-                    )}
-                    {(modelfileError || modelfileProgress) && (
-                      <p role={modelfileError ? 'alert' : undefined} className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>
-                        {/* Render the error, not just the progress text (#528).
-                            The catch path clears modelfileProgress, so this
-                            paragraph used to go blank and every failure —
-                            including "Enter a model name" — was invisible. */}
-                        {modelfileError || modelfileProgress}
-                      </p>
-                    )}
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => {
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
-                          setModelfilePreview(mf);
-                        }}
-                        className={`flex-1 text-xs py-1.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                      >Preview</button>
-                      <button
-                        onClick={async () => {
-                          if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
-                          // "16k" used to parse to 16 and any non-numeric text
-                          // emitted `PARAMETER temperature NaN` into the Modelfile
-                          // (#520). Reject rather than silently mangling.
-                          const tempRaw = modelfileFields.temperature.trim();
-                          const ctxRaw = modelfileFields.numCtx.trim();
-                          const temperature = tempRaw ? Number(tempRaw) : undefined;
-                          const numCtx = ctxRaw ? Number(ctxRaw) : undefined;
-                          if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
-                            setModelfileError('Temperature must be a number between 0 and 2.');
-                            return;
-                          }
-                          if (numCtx !== undefined && (!Number.isInteger(numCtx) || numCtx <= 0)) {
-                            setModelfileError('Context window (num_ctx) must be a positive whole number — e.g. 16384, not "16k".');
-                            return;
-                          }
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature, numCtx });
-                          setIsCreatingModel(true);
-                          setModelfileError('');
-                          setModelfileProgress('Starting…');
-                          try {
-                            await createOllamaModel(modelfileFields.name.trim(), mf, (p) => {
-                              setModelfileProgress(p.status ?? 'Working…');
-                              if (p.error) setModelfileError(p.error);
-                            }, url('/api/create'));
-                            setModelfileProgress('✓ Model created');
-                            refreshModels().catch(() => {});
-                          } catch (e) {
-                            setModelfileError(e instanceof Error ? e.message : 'Create failed');
-                            setModelfileProgress('');
-                          } finally {
-                            setIsCreatingModel(false);
-                          }
-                        }}
-                        disabled={isCreatingModel}
-                        className="flex-1 text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white font-semibold transition-colors"
-                      >{isCreatingModel ? 'Creating…' : 'Create Model'}</button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Image Generation (#130) */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Image Generation</label>
-                    <Toggle
-                      checked={imageGenConfig.enabled}
-                      onChange={() => { const cfg = { ...imageGenConfig, enabled: !imageGenConfig.enabled }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                      dark={dark}
-                      label="Enable image generation"
-                    />
-                  </div>
-                  {imageGenConfig.enabled && (
-                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
-                      <div className="flex gap-1.5">
-                        <select
-                          value={imageGenConfig.backend}
-                          onChange={e => { const cfg = { ...imageGenConfig, backend: e.target.value as any }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        >
-                          <option value="a1111">A1111 / Forge</option>
-                          <option value="comfyui">ComfyUI</option>
-                          <option value="openai">OpenAI DALL-E</option>
-                        </select>
-                      </div>
-                      {imageGenConfig.backend !== 'openai' && (
-                        <input
-                          placeholder="Base URL (e.g. http://127.0.0.1:7860)"
-                          value={imageGenConfig.baseUrl}
-                          onChange={e => { const cfg = { ...imageGenConfig, baseUrl: e.target.value }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                      )}
-                      {(imageGenConfig.backend === 'a1111' || imageGenConfig.backend === 'openai') && (
-                        <input
-                          placeholder={imageGenConfig.backend === 'openai' ? 'OpenAI API key (sk-…)' : 'Password (optional)'}
-                          type="password"
-                          value={imageGenConfig.apiKey ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, apiKey: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                      )}
-                      <div className="flex gap-1.5">
-                        <input
-                          placeholder="Default size (e.g. 512x512)"
-                          value={imageGenConfig.size ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, size: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                        <input
-                          placeholder="Steps (e.g. 20)"
-                          type="number"
-                          value={imageGenConfig.steps ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, steps: e.target.value ? parseInt(e.target.value) : undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
-                          className={`w-28 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                      </div>
-                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                        Use <span className="font-mono">/image &lt;prompt&gt;</span> in the chat to generate an image. The <span className="font-mono">generate_image</span> tool is also available to models.
-                      </p>
-                    </div>
-                  )}
-                </div>
-
                 {/* Web Speech API voice settings (#101) */}
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Voice (Web Speech API)</label>
@@ -7533,60 +6863,6 @@ ${lines.join('\n')}`;
                   </div>
                 </div>
 
-                {/* Prompt library (#97) */}
-                <div>
-                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Prompt Library ({prompts.length})</label>
-                  <div className={`rounded-lg border divide-y overflow-hidden mb-2 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                    {prompts.length === 0
-                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No saved prompts. Add one below or click "Save input" to save your current draft.</p>
-                      : prompts.map(p => (
-                        <div key={p.id} className={`flex items-center gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
-                          <div className="flex-1 min-w-0">
-                            <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>{p.name}</div>
-                            <div className={`text-[10px] truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{p.body.slice(0, 60)}{p.body.length > 60 ? '…' : ''}</div>
-                          </div>
-                          <button
-                            onClick={() => { setInput(prev => prev ? `${prev}\n${p.body}` : p.body); }}
-                            title="Insert into chat input"
-                            className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                          >Use</button>
-                          <button aria-label={`Remove prompt ${p.name}`} onClick={() => { if (!window.confirm(`Remove prompt "${p.name}"?`)) return; removePrompt(p.id); setPrompts(loadPrompts()); }} className={`shrink-0 text-xs px-1.5 py-0.5 rounded ${dark ? 'text-zinc-500 hover:text-red-400' : 'text-zinc-400 hover:text-red-500'}`}>✕</button>
-                        </div>
-                      ))
-                    }
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <input aria-label="Prompt name" placeholder="Prompt name" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
-                      className={`border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    <textarea placeholder="Prompt body (or use 'Save input' to save the current draft)" value={newPromptBody} onChange={e => setNewPromptBody(e.target.value)}
-                      rows={2}
-                      className={`border rounded px-2 py-1 text-xs font-mono resize-none focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => {
-                          if (!newPromptName.trim() || !newPromptBody.trim()) return;
-                          addPrompt({ name: newPromptName.trim(), body: newPromptBody.trim() });
-                          setPrompts(loadPrompts());
-                          setNewPromptName('');
-                          setNewPromptBody('');
-                        }}
-                        className="flex-1 text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
-                      >Save</button>
-                      <button
-                        onClick={() => {
-                          if (!newPromptName.trim() || !input.trim()) return;
-                          addPrompt({ name: newPromptName.trim(), body: input.trim() });
-                          setPrompts(loadPrompts());
-                          setNewPromptName('');
-                        }}
-                        title="Save current chat input as a prompt"
-                        className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                      >Save input</button>
-                    </div>
-                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Prompts appear in the 📋 picker next to the composer. "Use" inserts them into the input.</p>
-                  </div>
-                </div>
-
                 {/* User-defined slash commands (#96) */}
                 <div>
                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Custom Slash Commands ({userCommands.length})</label>
@@ -7636,77 +6912,6 @@ ${lines.join('\n')}`;
                     </div>
                   </div>
                 </div>
-
-                {/* Speech-to-Text / Dictation (#131) */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Speech-to-Text (Whisper)</label>
-                    <Toggle
-                      checked={sttConfig.enabled}
-                      onChange={() => { const cfg = { ...sttConfig, enabled: !sttConfig.enabled }; setSttConfig(cfg); saveSttConfig(cfg); setIsRecordingAudio(false); }}
-                      dark={dark}
-                      label="Enable speech-to-text"
-                    />
-                  </div>
-                  {sttConfig.enabled && (
-                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
-                      <div className="flex gap-1.5 items-center">
-                        <input
-                          placeholder="Whisper server URL (e.g. http://127.0.0.1:8080)"
-                          value={sttConfig.whisperUrl}
-                          onChange={e => { const cfg = { ...sttConfig, whisperUrl: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); setWhisperAvailable(null); }}
-                          className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                        <button
-                          onClick={async () => { const ok = await checkWhisperAvailable(sttConfig); setWhisperAvailable(ok); }}
-                          className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                        >Test</button>
-                        {whisperAvailable === true && <span className="text-green-400 text-xs">✓</span>}
-                        {whisperAvailable === false && <span className="text-red-400 text-xs">✗</span>}
-                      </div>
-                      <div className="flex gap-1.5">
-                        <select
-                          value={sttConfig.language}
-                          onChange={e => { const cfg = { ...sttConfig, language: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); }}
-                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        >
-                          <option value="auto">Auto-detect language</option>
-                          <option value="en">English</option>
-                          <option value="fi">Finnish</option>
-                          <option value="sv">Swedish</option>
-                          <option value="de">German</option>
-                          <option value="fr">French</option>
-                          <option value="es">Spanish</option>
-                          <option value="zh">Chinese</option>
-                          <option value="ja">Japanese</option>
-                        </select>
-                        <input
-                          placeholder="Max sec"
-                          type="number"
-                          min="5"
-                          max="300"
-                          value={Math.round(sttConfig.maxDurationMs / 1000)}
-                          onChange={e => {
-                            // An empty/non-numeric field used to persist NaN,
-                            // which permanently broke dictation (#500).
-                            const secs = parseInt(e.target.value, 10);
-                            if (!Number.isFinite(secs)) return;
-                            const clamped = Math.min(600, Math.max(1, secs));
-                            const cfg = { ...sttConfig, maxDurationMs: clamped * 1000 };
-                            setSttConfig(cfg); saveSttConfig(cfg);
-                          }}
-                          className={`w-24 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
-                        />
-                      </div>
-                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                        Run <span className="font-mono">./server --port 8080</span> from whisper.cpp. A 🎙 button appears in the chat composer to record and transcribe.
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-              </div>
-
 
                 {/* Memory (#95) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
@@ -7810,82 +7015,6 @@ ${lines.join('\n')}`;
                         className={`w-16 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
                       />
                     </div>
-                  </div>
-                </div>
-
-                {/* Secret Store (#173) */}
-                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Secret Store</label>
-                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Secrets are stored in the OS keychain (encrypted file fallback). The agent can read them via <span className="font-mono">secret_get</span>. Values are never displayed.</p>
-                  <div className="space-y-1 mb-3 max-h-28 overflow-y-auto">
-                    {secretKeys.map(r => (
-                      <div key={`${r.service}:${r.key}`} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-zinc-700'}`}>
-                        <span className={`shrink-0 font-mono text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{r.service}</span>
-                        <span className="flex-1 font-mono">{r.key}</span>
-                        <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-300'}`}>••••••••</span>
-                        <button
-                          aria-label={`Delete secret ${r.key}`}
-                          onClick={async () => {
-                            // The value is masked and unrecoverable, so an
-                            // accidental click destroyed a credential the user
-                            // could not even read back (#523).
-                            if (!window.confirm(
-                              `Delete secret "${r.key}" from ${r.service}?\n\n` +
-                              `This removes it from the OS keychain and cannot be undone.`,
-                            )) return;
-                            try {
-                              await secretDelete(r.service, r.key);
-                            } catch (e) {
-                              showStatusBanner(`Could not delete secret: ${formatErrorLine(e)}`);
-                            }
-                            setSecretKeys(secretListRefs());
-                          }}
-                          className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
-                          title="Delete secret"
-                        >✕</button>
-                      </div>
-                    ))}
-                    {secretKeys.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No secrets stored.</p>}
-                  </div>
-                  <div className="grid grid-cols-2 gap-1 mb-1">
-                    <input
-                      value={newSecretService}
-                      onChange={e => setNewSecretService(e.target.value)}
-                      placeholder="Service (e.g. openai)"
-                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                    />
-                    <input
-                      value={newSecretKey}
-                      onChange={e => setNewSecretKey(e.target.value)}
-                      placeholder="Key (e.g. api_key)"
-                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                    />
-                  </div>
-                  <div className="flex gap-1">
-                    <input
-                      type="password"
-                      value={newSecretValue}
-                      onChange={e => setNewSecretValue(e.target.value)}
-                      onKeyDown={async e => {
-                        if (e.key === 'Enter' && newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
-                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
-                          setSecretKeys(secretListRefs());
-                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
-                        }
-                      }}
-                      placeholder="Value (never stored on disk)"
-                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                    />
-                    <button
-                      onClick={async () => {
-                        if (newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
-                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
-                          setSecretKeys(secretListRefs());
-                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
-                        }
-                      }}
-                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
-                    >Save</button>
                   </div>
                 </div>
 
@@ -8021,158 +7150,6 @@ ${lines.join('\n')}`;
                   />
                 </div>
 
-                {/* Browser Scenarios (#78/#200) */}
-                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
-                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Browser Scenarios</label>
-                  <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Record and replay browser UI test flows. Each scenario is a sequence of navigate/click/type/assert/visual_match steps run against the embedded browser.
-                  </p>
-                  <div className={`rounded-lg border divide-y overflow-hidden mb-2 ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
-                    {scenarios.length === 0
-                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No scenarios saved yet. Create one below.</p>
-                      : scenarios.map(sc => {
-                        const result = scenarioResults[sc.id];
-                        const isRunning = runningScenarioId === sc.id;
-                        return (
-                          <div key={sc.id} className={`px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 min-w-0">
-                                <div className={`text-xs font-medium truncate ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>{sc.name}</div>
-                                <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{sc.steps.length} step{sc.steps.length !== 1 ? 's' : ''}</div>
-                              </div>
-                              {result && (
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${result.pass ? (dark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700') : (dark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700')}`}>
-                                  {result.pass ? '✓ pass' : `✕ fail (step ${result.failedStepIndex ?? 0})`}
-                                </span>
-                              )}
-                              <button
-                                aria-label={`Add step to ${sc.name}`}
-                                title="Add a step"
-                                onClick={() => setScenarioStepDraft(d => d?.id === sc.id ? null : { id: sc.id, action: 'navigate', arg: '' })}
-                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
-                              >+ step</button>
-                              <button
-                                disabled={isRunning || sc.steps.length === 0}
-                                title={sc.steps.length === 0 ? 'Add at least one step first' : 'Run scenario'}
-                                onClick={async () => {
-                                  setRunningScenarioId(sc.id);
-                                  try {
-                                    const r = await runScenario(sc);
-                                    setScenarioResults(prev => ({ ...prev, [sc.id]: r }));
-                                  } catch (e) {
-                                    // A throw used to leave the PREVIOUS run's badge on
-                                    // screen, so a crashed run read as a passing run (#535).
-                                    setScenarioResults(prev => ({
-                                      ...prev,
-                                      [sc.id]: {
-                                        pass: false,
-                                        failedStepIndex: 0,
-                                        stepResults: [{ stepIndex: 0, pass: false, errorMessage: e instanceof Error ? e.message : String(e) }],
-                                      } as typeof prev[string],
-                                    }));
-                                  } finally {
-                                    setRunningScenarioId(null);
-                                  }
-                                }}
-                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${isRunning || sc.steps.length === 0 ? 'opacity-40 cursor-not-allowed' : (dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100')}`}
-                              >{isRunning ? '…' : '▶ Run'}</button>
-                              <button
-                                aria-label={`Delete scenario ${sc.name}`}
-                                onClick={() => { deleteScenario(sc.id); setScenarios(listScenarios()); setScenarioResults(prev => { const n = { ...prev }; delete n[sc.id]; return n; }); }}
-                                className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}
-                              >✕</button>
-                            </div>
-                            {result && !result.pass && result.stepResults.find(s => !s.pass) && (
-                              <p className={`text-[10px] mt-1 ${dark ? 'text-red-400' : 'text-red-600'}`}>
-                                {result.stepResults.find(s => !s.pass)?.errorMessage}
-                              </p>
-                            )}
-                            {sc.steps.length > 0 && (
-                              <ol className={`mt-1 ml-3 list-decimal text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                                {sc.steps.map((st, si) => (
-                                  <li key={si} className="flex items-center gap-1">
-                                    <span className="font-mono flex-1 truncate">
-                                      {st.action}{st.args?.value ? ` "${st.args.value}"` : ''}{st.args?.selector ? ` @${st.args.selector}` : ''}{st.args?.url ? ` ${st.args.url}` : ''}
-                                    </span>
-                                    <button
-                                      aria-label={`Remove step ${si + 1} from ${sc.name}`}
-                                      onClick={() => {
-                                        const next = { ...sc, steps: sc.steps.filter((_, k) => k !== si) };
-                                        saveScenario(next); setScenarios(listScenarios());
-                                      }}
-                                      className="text-red-400 hover:text-red-300 px-1"
-                                    >✕</button>
-                                  </li>
-                                ))}
-                              </ol>
-                            )}
-                            {scenarioStepDraft?.id === sc.id && (
-                              <div className="flex gap-1 mt-1">
-                                <select
-                                  aria-label="Step action"
-                                  value={scenarioStepDraft.action}
-                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, action: e.target.value as StepAction }))}
-                                  className={`text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                                >
-                                  {(['navigate', 'click', 'type', 'wait_for', 'assert', 'visual_match'] as StepAction[]).map(a => (
-                                    <option key={a} value={a}>{a}</option>
-                                  ))}
-                                </select>
-                                <input
-                                  aria-label="Step argument"
-                                  value={scenarioStepDraft.arg}
-                                  onChange={e => setScenarioStepDraft(d => d && ({ ...d, arg: e.target.value }))}
-                                  placeholder={scenarioStepDraft.action === 'navigate' ? 'https://…' : scenarioStepDraft.action === 'type' ? 'text to type' : 'CSS selector'}
-                                  className={`flex-1 text-[10px] rounded border px-1 py-0.5 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
-                                />
-                                <button
-                                  onClick={() => {
-                                    const d = scenarioStepDraft;
-                                    if (!d || !d.arg.trim()) return;
-                                    const args = d.action === 'navigate' ? { url: d.arg.trim() }
-                                      : d.action === 'type' ? { value: d.arg.trim() }
-                                      : { selector: d.arg.trim() };
-                                    const next = { ...sc, steps: [...sc.steps, { action: d.action, args }] };
-                                    saveScenario(next); setScenarios(listScenarios());
-                                    setScenarioStepDraft({ ...d, arg: '' });
-                                  }}
-                                  className="text-[10px] px-2 rounded bg-blue-600 hover:bg-blue-500 text-white"
-                                >Add</button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    }
-                  </div>
-                  <div className="flex gap-1">
-                    <input
-                      value={newScenarioName}
-                      onChange={e => setNewScenarioName(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' && newScenarioName.trim()) {
-                          const sc: BrowserScenario = { id: generateScenarioId(), name: newScenarioName.trim(), steps: [], createdAt: Date.now() };
-                          saveScenario(sc);
-                          setScenarios(listScenarios());
-                          setNewScenarioName('');
-                        }
-                      }}
-                      placeholder="New scenario name…"
-                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
-                    />
-                    <button
-                      onClick={() => {
-                        if (!newScenarioName.trim()) return;
-                        const sc: BrowserScenario = { id: generateScenarioId(), name: newScenarioName.trim(), steps: [], createdAt: Date.now() };
-                        saveScenario(sc);
-                        setScenarios(listScenarios());
-                        setNewScenarioName('');
-                      }}
-                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
-                    >Create</button>
-                  </div>
-                </div>
-
                 {/* General (#549 rank 13: compaction is always on now, sized to
                     the effective context window — its toggle and threshold are
                     gone; the misfiled general toggles keep their home here) */}
@@ -8187,6 +7164,650 @@ ${lines.join('\n')}`;
                     <Toggle checked={sendOnCtrlEnter} onChange={() => { const v = !sendOnCtrlEnter; setSendOnCtrlEnter(v); safeSetItem('ollama_gui_send_on_ctrl_enter', JSON.stringify(v)); }} dark={dark} label="Toggle send on Ctrl+Enter" />
                   </div>
                 </div>
+
+                {/* Advanced — expert builders, collapsed by default (#549 rank 15).
+                    Content stays mounted so label-based queries keep working. */}
+                <details className={`rounded-xl border ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
+                  <summary className={`cursor-pointer select-none px-4 py-3 text-sm font-medium ${dark ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-600 hover:text-zinc-800'}`}>Advanced</summary>
+                  <div className="px-4 pb-4 space-y-6">
+                {/* Custom Tools & Functions (#127) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Tools & Functions</label>
+
+                  {/* Custom Tools */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Custom Tools ({customTools.length})</span>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            const ex = STARTER_EXAMPLES.find(e => e.tool);
+                            if (ex?.tool) {
+                              const t = addCustomTool(ex.tool);
+                              setCustomTools(loadCustomTools());
+                              void t;
+                            }
+                          }}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >Example</button>
+                        <button
+                          onClick={() => setShowAddCustomTool(v => !v)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >{showAddCustomTool ? 'Cancel' : '+ Add'}</button>
+                      </div>
+                    </div>
+                    {showAddCustomTool && (
+                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                        <input aria-label="Tool name" placeholder="Tool name (alphanumeric, _)" value={newCustomTool.name} onChange={e => setNewCustomTool(v => ({ ...v, name: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <input aria-label="Tool description" placeholder="Description" value={newCustomTool.description} onChange={e => setNewCustomTool(v => ({ ...v, description: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <textarea placeholder='Parameters JSON: {"key":{"type":"string","description":"desc"}}' rows={2} value={newCustomTool.paramsJson} onChange={e => setNewCustomTool(v => ({ ...v, paramsJson: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <textarea placeholder="JS body — use params.x to access parameters. Must return/resolve a value." rows={3} value={newCustomTool.code} onChange={e => setNewCustomTool(v => ({ ...v, code: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        {customToolError && (
+                          <p role="alert" className="text-[10px] text-red-400">⚠️ {customToolError}</p>
+                        )}
+                        <button onClick={() => {
+                          const name = newCustomTool.name.trim();
+                          // Previously: a blank name returned silently, a malformed
+                          // params JSON was swallowed by `catch {}` and saved the tool
+                          // with ZERO parameters (#516), and a duplicate name collided
+                          // on one registry key so deleting either killed both (#517).
+                          if (!name) { setCustomToolError('Enter a tool name.'); return; }
+                          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                            setCustomToolError('Tool names may contain only letters, digits and underscores, and cannot start with a digit.');
+                            return;
+                          }
+                          if (customTools.some(t => t.name === name)) {
+                            setCustomToolError(`A tool named "${name}" already exists — pick another name.`);
+                            return;
+                          }
+                          let props: Record<string, { type: string; description: string }> = {};
+                          const raw = newCustomTool.paramsJson.trim();
+                          if (raw) {
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                                setCustomToolError('Parameters JSON must be an object, e.g. {"input":{"type":"string","description":"…"}}.');
+                                return;
+                              }
+                              props = parsed;
+                            } catch (e) {
+                              setCustomToolError(`Parameters JSON is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+                              return;
+                            }
+                          }
+                          setCustomToolError(null);
+                          addCustomTool({ name, description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
+                          setCustomTools(loadCustomTools());
+                          setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
+                          setShowAddCustomTool(false);
+                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add Tool</button>
+                      </div>
+                    )}
+                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                      {customTools.length === 0
+                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No custom tools.</p>
+                        : customTools.map(t => (
+                          <div key={t.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className="text-xs font-medium flex-1 truncate font-mono">{t.name}</span>
+                            <span className={`text-[10px] truncate flex-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t.description}</span>
+                            <button onClick={() => { updateCustomTool(t.id, { enabled: !t.enabled }); setCustomTools(loadCustomTools()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${t.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
+                              {t.enabled ? 'On' : 'Off'}
+                            </button>
+                            <button aria-label={`Remove tool ${t.name}`} onClick={() => { if (!window.confirm(`Remove tool "${t.name}"?`)) return; removeCustomTool(t.id); setCustomTools(loadCustomTools()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+
+                  {/* Filters + Actions */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Filters & Actions ({functionDefs.length})</span>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            const ex = STARTER_EXAMPLES.find(e => e.fn);
+                            if (ex?.fn) { addFunctionDef(ex.fn); setFunctionDefs(loadFunctionDefs()); }
+                          }}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >Example</button>
+                        <button onClick={() => setShowAddFunction(v => !v)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                        >{showAddFunction ? 'Cancel' : '+ Add'}</button>
+                      </div>
+                    </div>
+                    {showAddFunction && (
+                      <div className={`rounded-lg border p-2.5 mb-2 space-y-1.5 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                        <div className="flex gap-1.5">
+                          <select value={newFunction.kind} onChange={e => setNewFunction(v => ({ ...v, kind: e.target.value as 'filter' | 'action' }))}
+                            className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
+                            <option value="filter">Filter</option>
+                            <option value="action">Action</option>
+                          </select>
+                          <input aria-label="Function name" placeholder="Name" value={newFunction.name} onChange={e => setNewFunction(v => ({ ...v, name: e.target.value }))}
+                            className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                          {newFunction.kind === 'filter' && (
+                            <input aria-label="Function priority" placeholder="Priority" value={newFunction.priority} onChange={e => setNewFunction(v => ({ ...v, priority: e.target.value }))}
+                              className={`w-16 border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                          )}
+                        </div>
+                        <textarea placeholder={newFunction.kind === 'filter' ? 'function inlet(messages){return messages;} // and/or function outlet(text){return text;}' : 'function action(message){return "Prompt: "+message.content;}'}
+                          rows={4} value={newFunction.code} onChange={e => setNewFunction(v => ({ ...v, code: e.target.value }))}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        <button onClick={() => {
+                          if (!newFunction.name.trim()) return;
+                          addFunctionDef({ kind: newFunction.kind, name: newFunction.name.trim(), code: newFunction.code, priority: parseInt(newFunction.priority) || 100, enabled: true });
+                          setFunctionDefs(loadFunctionDefs());
+                          setNewFunction({ kind: 'filter', name: '', code: '', priority: '100' });
+                          setShowAddFunction(false);
+                        }} className="w-full text-xs py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">Add</button>
+                      </div>
+                    )}
+                    <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                      {functionDefs.length === 0
+                        ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No filters or actions.</p>
+                        : functionDefs.map(f => (
+                          <div key={f.id} className={`flex items-center gap-2 px-3 py-1.5 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${f.kind === 'filter' ? (dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700') : (dark ? 'bg-purple-900/50 text-purple-300' : 'bg-purple-100 text-purple-700')}`}>{f.kind}</span>
+                            <span className="text-xs font-medium flex-1 truncate">{f.name}</span>
+                            <button onClick={() => { updateFunctionDef(f.id, { enabled: !f.enabled }); setFunctionDefs(loadFunctionDefs()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${f.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
+                              {f.enabled ? 'On' : 'Off'}
+                            </button>
+                            <button aria-label={`Remove function ${f.name}`} onClick={() => { if (!window.confirm(`Remove function "${f.name}"?`)) return; removeFunctionDef(f.id); setFunctionDefs(loadFunctionDefs()); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Tools run in a sandboxed Web Worker. Filters mutate messages; Actions add buttons to replies.
+                  </p>
+                </div>
+
+                {/* Modelfile Builder (#125) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Create Model (Modelfile)</label>
+                  <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                    <div className="flex gap-1.5">
+                      <input aria-label="New model name" placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
+                        const f = { ...modelfileFields, name: e.target.value };
+                        setModelfileFields(f);
+                        setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
+                      }}
+                        className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    </div>
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base: <span className="font-mono">{model}</span> (currently selected)</p>
+                    <textarea placeholder="SYSTEM prompt (optional)" rows={2} value={modelfileFields.system} onChange={e => {
+                      const f = { ...modelfileFields, system: e.target.value };
+                      setModelfileFields(f);
+                      setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined }));
+                    }}
+                      className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    <div className="flex gap-1.5">
+                      <input aria-label="Modelfile temperature" placeholder="Temperature" value={modelfileFields.temperature} onChange={e => setModelfileFields(v => ({ ...v, temperature: e.target.value }))}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                      <input aria-label="Modelfile context window" placeholder="num_ctx" value={modelfileFields.numCtx} onChange={e => setModelfileFields(v => ({ ...v, numCtx: e.target.value }))}
+                        className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                    </div>
+                    {modelfilePreview && (
+                      <div className={`rounded border p-2 text-[10px] font-mono whitespace-pre-wrap max-h-24 overflow-auto ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-white border-zinc-200 text-zinc-600'}`}>
+                        {modelfilePreview}
+                      </div>
+                    )}
+                    {(modelfileError || modelfileProgress) && (
+                      <p role={modelfileError ? 'alert' : undefined} className={`text-xs ${modelfileError ? 'text-red-400' : 'text-green-400'}`}>
+                        {/* Render the error, not just the progress text (#528).
+                            The catch path clears modelfileProgress, so this
+                            paragraph used to go blank and every failure —
+                            including "Enter a model name" — was invisible. */}
+                        {modelfileError || modelfileProgress}
+                      </p>
+                    )}
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => {
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          setModelfilePreview(mf);
+                        }}
+                        className={`flex-1 text-xs py-1.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                      >Preview</button>
+                      <button
+                        onClick={async () => {
+                          if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
+                          // "16k" used to parse to 16 and any non-numeric text
+                          // emitted `PARAMETER temperature NaN` into the Modelfile
+                          // (#520). Reject rather than silently mangling.
+                          const tempRaw = modelfileFields.temperature.trim();
+                          const ctxRaw = modelfileFields.numCtx.trim();
+                          const temperature = tempRaw ? Number(tempRaw) : undefined;
+                          const numCtx = ctxRaw ? Number(ctxRaw) : undefined;
+                          if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+                            setModelfileError('Temperature must be a number between 0 and 2.');
+                            return;
+                          }
+                          if (numCtx !== undefined && (!Number.isInteger(numCtx) || numCtx <= 0)) {
+                            setModelfileError('Context window (num_ctx) must be a positive whole number — e.g. 16384, not "16k".');
+                            return;
+                          }
+                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature, numCtx });
+                          setIsCreatingModel(true);
+                          setModelfileError('');
+                          setModelfileProgress('Starting…');
+                          try {
+                            await createOllamaModel(modelfileFields.name.trim(), mf, (p) => {
+                              setModelfileProgress(p.status ?? 'Working…');
+                              if (p.error) setModelfileError(p.error);
+                            }, url('/api/create'));
+                            setModelfileProgress('✓ Model created');
+                            refreshModels().catch(() => {});
+                          } catch (e) {
+                            setModelfileError(e instanceof Error ? e.message : 'Create failed');
+                            setModelfileProgress('');
+                          } finally {
+                            setIsCreatingModel(false);
+                          }
+                        }}
+                        disabled={isCreatingModel}
+                        className="flex-1 text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white font-semibold transition-colors"
+                      >{isCreatingModel ? 'Creating…' : 'Create Model'}</button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* OpenAPI Tool Servers (#129) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                      OpenAPI Servers ({openApiServers.length})
+                    </label>
+                    <button
+                      onClick={() => setShowAddOpenApi(v => !v)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                    >
+                      {showAddOpenApi ? 'Cancel' : '+ Add'}
+                    </button>
+                  </div>
+
+                  {showAddOpenApi && (
+                    <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <input
+                        type="text"
+                        placeholder="Name (e.g. My REST API)"
+                        value={newOpenApi.name}
+                        onChange={e => setNewOpenApi(v => ({ ...v, name: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="url"
+                        placeholder="Spec URL (https://…/openapi.json)"
+                        value={newOpenApi.specUrl}
+                        onChange={e => setNewOpenApi(v => ({ ...v, specUrl: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="text"
+                        placeholder="API key (optional)"
+                        value={newOpenApi.apiKey}
+                        onChange={e => setNewOpenApi(v => ({ ...v, apiKey: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <input
+                        type="text"
+                        placeholder="API key header (default: Authorization)"
+                        value={newOpenApi.apiKeyHeader}
+                        onChange={e => setNewOpenApi(v => ({ ...v, apiKeyHeader: e.target.value }))}
+                        className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      />
+                      <button
+                        onClick={async () => {
+                          if (!newOpenApi.name.trim() || !newOpenApi.specUrl.trim()) return;
+                          const cfg: OpenApiServerConfig = {
+                            id: crypto.randomUUID(),
+                            name: newOpenApi.name.trim(),
+                            specUrl: newOpenApi.specUrl.trim(),
+                            apiKey: newOpenApi.apiKey.trim() || undefined,
+                            apiKeyHeader: newOpenApi.apiKeyHeader.trim() || undefined,
+                            enabled: true,
+                          };
+                          const updated = [...openApiServers, cfg];
+                          setOpenApiServers(updated);
+                          saveOpenApiServers(updated);
+                          // A failed spec fetch used to be swallowed while the
+                          // server stayed in the list with a green status dot, so a
+                          // broken server looked healthy and its tools silently never
+                          // appeared (#522).
+                          registerOpenApiServer(cfg).catch((e) => {
+                            showStatusBanner(`OpenAPI server "${cfg.name}": ${formatErrorLine(e)}`);
+                            const disabled = { ...cfg, enabled: false };
+                            setOpenApiServers(prev => {
+                              const next = prev.map(x => x.id === cfg.id ? disabled : x);
+                              saveOpenApiServers(next);
+                              return next;
+                            });
+                          });
+                          setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
+                          setShowAddOpenApi(false);
+                        }}
+                        className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
+                      >
+                        Add Server
+                      </button>
+                    </div>
+                  )}
+
+                  <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
+                    {openApiServers.length === 0 ? (
+                      <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No OpenAPI servers added.</p>
+                    ) : openApiServers.map(srv => (
+                      <div key={srv.id} className={`flex items-center justify-between gap-2 px-3 py-2 ${dark ? 'hover:bg-zinc-700/30' : 'hover:bg-zinc-50'}`}>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${srv.enabled ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                            <span className="text-xs font-medium truncate">{srv.name}</span>
+                          </div>
+                          <div className={`text-[10px] truncate mt-0.5 font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{srv.specUrl}</div>
+                          {openApiTestStatus[srv.id] && (
+                            <div className={`text-[10px] mt-0.5 ${openApiTestStatus[srv.id] === 'ok' ? 'text-green-400' : openApiTestStatus[srv.id] === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>
+                              {openApiTestStatus[srv.id] === 'testing' ? 'Testing…' : openApiTestStatus[srv.id] === 'ok' ? '✓ Spec loaded' : '✗ Failed to fetch spec'}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={async () => {
+                              setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'testing' }));
+                              try {
+                                await registerOpenApiServer(srv);
+                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'ok' }));
+                              } catch {
+                                setOpenApiTestStatus(s => ({ ...s, [srv.id]: 'error' }));
+                              }
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
+                          >
+                            {openApiTestStatus[srv.id] === 'testing' ? '…' : 'Test'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = openApiServers.map(s => s.id === srv.id ? { ...s, enabled: !s.enabled } : s);
+                              setOpenApiServers(updated);
+                              saveOpenApiServers(updated);
+                              const toggled = updated.find(s => s.id === srv.id)!;
+                              if (toggled.enabled) registerOpenApiServer(toggled).catch(() => {});
+                              else unregisterOpenApiServer(srv.id);
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                              srv.enabled
+                                ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600')
+                                : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')
+                            }`}
+                          >
+                            {srv.enabled ? 'On' : 'Off'}
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = openApiServers.filter(s => s.id !== srv.id);
+                              setOpenApiServers(updated);
+                              saveOpenApiServers(updated);
+                              unregisterOpenApiServer(srv.id);
+                            }}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-red-400 hover:bg-zinc-700' : 'border-zinc-300 text-red-500 hover:bg-zinc-50'}`}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Point at any OpenAPI 3.x spec URL — operations become callable tools for the agent.
+                  </p>
+                </div>
+
+                {/* Image Generation (#130) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Image Generation</label>
+                    <Toggle
+                      checked={imageGenConfig.enabled}
+                      onChange={() => { const cfg = { ...imageGenConfig, enabled: !imageGenConfig.enabled }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                      dark={dark}
+                      label="Enable image generation"
+                    />
+                  </div>
+                  {imageGenConfig.enabled && (
+                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={imageGenConfig.backend}
+                          onChange={e => { const cfg = { ...imageGenConfig, backend: e.target.value as any }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        >
+                          <option value="a1111">A1111 / Forge</option>
+                          <option value="comfyui">ComfyUI</option>
+                          <option value="openai">OpenAI DALL-E</option>
+                        </select>
+                      </div>
+                      {imageGenConfig.backend !== 'openai' && (
+                        <input
+                          placeholder="Base URL (e.g. http://127.0.0.1:7860)"
+                          value={imageGenConfig.baseUrl}
+                          onChange={e => { const cfg = { ...imageGenConfig, baseUrl: e.target.value }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      )}
+                      {(imageGenConfig.backend === 'a1111' || imageGenConfig.backend === 'openai') && (
+                        <input
+                          placeholder={imageGenConfig.backend === 'openai' ? 'OpenAI API key (sk-…)' : 'Password (optional)'}
+                          type="password"
+                          value={imageGenConfig.apiKey ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, apiKey: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      )}
+                      <div className="flex gap-1.5">
+                        <input
+                          placeholder="Default size (e.g. 512x512)"
+                          value={imageGenConfig.size ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, size: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                        <input
+                          placeholder="Steps (e.g. 20)"
+                          type="number"
+                          value={imageGenConfig.steps ?? ''}
+                          onChange={e => { const cfg = { ...imageGenConfig, steps: e.target.value ? parseInt(e.target.value) : undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          className={`w-28 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      </div>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        Use <span className="font-mono">/image &lt;prompt&gt;</span> in the chat to generate an image. The <span className="font-mono">generate_image</span> tool is also available to models.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Speech-to-Text / Dictation (#131) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Speech-to-Text (Whisper)</label>
+                    <Toggle
+                      checked={sttConfig.enabled}
+                      onChange={() => { const cfg = { ...sttConfig, enabled: !sttConfig.enabled }; setSttConfig(cfg); saveSttConfig(cfg); setIsRecordingAudio(false); }}
+                      dark={dark}
+                      label="Enable speech-to-text"
+                    />
+                  </div>
+                  {sttConfig.enabled && (
+                    <div className={`rounded-lg border p-3 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/30' : 'border-zinc-200 bg-zinc-50'}`}>
+                      <div className="flex gap-1.5 items-center">
+                        <input
+                          placeholder="Whisper server URL (e.g. http://127.0.0.1:8080)"
+                          value={sttConfig.whisperUrl}
+                          onChange={e => { const cfg = { ...sttConfig, whisperUrl: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); setWhisperAvailable(null); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                        <button
+                          onClick={async () => { const ok = await checkWhisperAvailable(sttConfig); setWhisperAvailable(ok); }}
+                          className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                        >Test</button>
+                        {whisperAvailable === true && <span className="text-green-400 text-xs">✓</span>}
+                        {whisperAvailable === false && <span className="text-red-400 text-xs">✗</span>}
+                      </div>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={sttConfig.language}
+                          onChange={e => { const cfg = { ...sttConfig, language: e.target.value }; setSttConfig(cfg); saveSttConfig(cfg); }}
+                          className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        >
+                          <option value="auto">Auto-detect language</option>
+                          <option value="en">English</option>
+                          <option value="fi">Finnish</option>
+                          <option value="sv">Swedish</option>
+                          <option value="de">German</option>
+                          <option value="fr">French</option>
+                          <option value="es">Spanish</option>
+                          <option value="zh">Chinese</option>
+                          <option value="ja">Japanese</option>
+                        </select>
+                        <input
+                          placeholder="Max sec"
+                          type="number"
+                          min="5"
+                          max="300"
+                          value={Math.round(sttConfig.maxDurationMs / 1000)}
+                          onChange={e => {
+                            // An empty/non-numeric field used to persist NaN,
+                            // which permanently broke dictation (#500).
+                            const secs = parseInt(e.target.value, 10);
+                            if (!Number.isFinite(secs)) return;
+                            const clamped = Math.min(600, Math.max(1, secs));
+                            const cfg = { ...sttConfig, maxDurationMs: clamped * 1000 };
+                            setSttConfig(cfg); saveSttConfig(cfg);
+                          }}
+                          className={`w-24 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                        />
+                      </div>
+                      <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                        Run <span className="font-mono">./server --port 8080</span> from whisper.cpp. A 🎙 button appears in the chat composer to record and transcribe.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Secret Store (#173) */}
+                <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>
+                  <label className={`block text-sm font-medium mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Secret Store</label>
+                  <p className={`text-xs mb-3 ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>Secrets are stored in the OS keychain (encrypted file fallback). The agent can read them via <span className="font-mono">secret_get</span>. Values are never displayed.</p>
+                  <div className="space-y-1 mb-3 max-h-28 overflow-y-auto">
+                    {secretKeys.map(r => (
+                      <div key={`${r.service}:${r.key}`} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-zinc-700'}`}>
+                        <span className={`shrink-0 font-mono text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{r.service}</span>
+                        <span className="flex-1 font-mono">{r.key}</span>
+                        <span className={`shrink-0 text-[10px] ${dark ? 'text-zinc-600' : 'text-zinc-300'}`}>••••••••</span>
+                        <button
+                          aria-label={`Delete secret ${r.key}`}
+                          onClick={async () => {
+                            // The value is masked and unrecoverable, so an
+                            // accidental click destroyed a credential the user
+                            // could not even read back (#523).
+                            if (!window.confirm(
+                              `Delete secret "${r.key}" from ${r.service}?\n\n` +
+                              `This removes it from the OS keychain and cannot be undone.`,
+                            )) return;
+                            try {
+                              await secretDelete(r.service, r.key);
+                            } catch (e) {
+                              showStatusBanner(`Could not delete secret: ${formatErrorLine(e)}`);
+                            }
+                            setSecretKeys(secretListRefs());
+                          }}
+                          className="shrink-0 text-red-400 hover:text-red-300 text-[10px]"
+                          title="Delete secret"
+                        >✕</button>
+                      </div>
+                    ))}
+                    {secretKeys.length === 0 && <p className={`text-xs italic ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No secrets stored.</p>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 mb-1">
+                    <input
+                      value={newSecretService}
+                      onChange={e => setNewSecretService(e.target.value)}
+                      placeholder="Service (e.g. openai)"
+                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <input
+                      value={newSecretKey}
+                      onChange={e => setNewSecretKey(e.target.value)}
+                      placeholder="Key (e.g. api_key)"
+                      className={`text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      type="password"
+                      value={newSecretValue}
+                      onChange={e => setNewSecretValue(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter' && newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
+                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
+                          setSecretKeys(secretListRefs());
+                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
+                        }
+                      }}
+                      placeholder="Value (never stored on disk)"
+                      className={`flex-1 text-xs px-2 py-1.5 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200 placeholder-zinc-600' : 'bg-white border-zinc-300 text-zinc-800 placeholder-zinc-400'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (newSecretService.trim() && newSecretKey.trim() && newSecretValue) {
+                          await secretSet(newSecretService.trim(), newSecretKey.trim(), newSecretValue);
+                          setSecretKeys(secretListRefs());
+                          setNewSecretService(''); setNewSecretKey(''); setNewSecretValue('');
+                        }
+                      }}
+                      className="shrink-0 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+                    >Save</button>
+                  </div>
+                </div>
+                  </div>
+                </details>
+
+                 {/* Privacy & data — secure cleanup (#38). Deliberately the last section:
+                     the destructive control sits at the very bottom of Settings. */}
+                 <div>
+                   <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Privacy &amp; data</label>
+                   <button
+                     onClick={() => {
+                       // Typed confirmation (#549 rank 15): confirm() made the most
+                       // destructive action in the app a single misclick away.
+                       const typed = window.prompt('Securely erase ALL local data (chats, settings, MCP servers)? This cannot be undone.\n\nType ERASE to confirm:');
+                       if (typed !== 'ERASE') return;
+                       const wiped = secureWipeAll();
+                       notify(`Securely erased ${wiped.length} stored item${wiped.length === 1 ? '' : 's'}.`);
+                       setSessions([]); setFolders([]); setMessages([]); setCurrentSessionId(null);
+                       setMcpServers([]);
+                     }}
+                     className={`text-xs px-3 py-1.5 rounded border transition-colors ${dark ? 'border-red-800 text-red-400 hover:bg-red-950/40' : 'border-red-300 text-red-600 hover:bg-red-50'}`}
+                   >
+                     Securely erase all local data
+                   </button>
+                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                     Overwrites then removes every stored item. Secrets (tokens) already live in the OS keychain; chat history can be encrypted at rest with AES-GCM via secureStorage.
+                   </p>
+                 </div>
+              </div>
 
               <div className="mt-6 flex justify-end">
                 <button onClick={() => setIsSettingsOpen(false)} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors">

@@ -1,16 +1,9 @@
 import React from "react";
 import type { SuggestedModel } from "../services/ollama";
 
-export interface WelcomePrompt {
-  name: string;
-  body: string;
-}
-
 export interface WelcomeScreenProps {
   dark: boolean;
   onPrompt: (text: string) => void;
-  /** User-saved prompts from the prompt library (#358). */
-  prompts?: WelcomePrompt[];
   /** True when a project (with folder) is already active — hides the CTA. */
   hasProject?: boolean;
   /** Creates a project from a folder — the ONE folder concept (#549 rank 6). */
@@ -46,17 +39,14 @@ const CHAT_PROMPTS = [
  * (if none), then state a goal.
  */
 export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
-  dark, onPrompt, prompts,
+  dark, onPrompt,
   hasProject, onOpenProject, creatingProject,
   showModelSetup, suggestedModels, onPullModel, pullStatus, pulling,
   systemRamGB,
 }) => {
-  const custom = (prompts ?? []).filter(p => p.body && p.body.trim());
   const starters = hasProject ? PROJECT_PROMPTS : CHAT_PROMPTS;
   const items: { label: string; body: string }[] =
-    custom.length > 0
-      ? custom.slice(0, 6).map(p => ({ label: p.name, body: p.body }))
-      : starters.map(p => ({ label: p, body: p }));
+    starters.map(p => ({ label: p, body: p }));
 
   return (
     <div className="h-full flex flex-col items-center justify-center p-6 text-center">
