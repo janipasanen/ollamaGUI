@@ -88,7 +88,7 @@ describe('Tool approval "Allow for session" (#406)', () => {
     // and the run completes with the final answer.
     await waitFor(() => {
       expect(screen.getByText(/all done/i)).toBeInTheDocument();
-    }, { timeout: 8000 });
+    }, { timeout: 15000 }); // slow-CI headroom: windows-latest exceeded 8s under load
 
     expect(screen.queryByText(/Agent wants to use a tool/i)).not.toBeInTheDocument();
     expect(chatCalls).toBe(3);
@@ -125,7 +125,7 @@ describe('Tool approval keyboard shortcuts (#407)', () => {
     await waitFor(() => {
       expect(screen.queryByText(/Agent wants to use a tool/i)).not.toBeInTheDocument();
       expect(screen.getByText(/denied and done/i)).toBeInTheDocument();
-    }, { timeout: 8000 });
+    }, { timeout: 15000 }); // slow-CI headroom: windows-latest exceeded 8s under load
   }, 30000);
 
   it('"A" approves the tool for the session (auto-approves the next call)', async () => {
@@ -157,7 +157,7 @@ describe('Tool approval keyboard shortcuts (#407)', () => {
     // Second call auto-approved; run completes without re-prompting.
     await waitFor(() => {
       expect(screen.getByText(/a-key done/i)).toBeInTheDocument();
-    }, { timeout: 8000 });
+    }, { timeout: 15000 }); // slow-CI headroom: windows-latest exceeded 8s under load
     expect(screen.queryByText(/Agent wants to use a tool/i)).not.toBeInTheDocument();
     expect(chatCalls).toBe(3);
   }, 30000);
