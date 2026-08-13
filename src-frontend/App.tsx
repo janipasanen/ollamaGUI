@@ -61,7 +61,7 @@ import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
 import { MlxAvailability, checkMlxAvailable, isMlxModelName } from './services/mlx';
-import { pickDirectory, pickDirectories, appendPathArg, getSystemMemory, safeSetItem } from './services/platform';
+import { pickDirectory, pickDirectories, appendPathArg, getSystemMemory, safeSetItem, checkPath } from './services/platform';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 import {
@@ -859,6 +859,15 @@ const App: React.FC = () => {
   // whenever the selected local model is an MLX model on a capable machine.
   const [mlxAvailability, setMlxAvailability] = useState<MlxAvailability | null>(null);
 
+  // Per-session working directory (#550): overrides the project's primary
+  // folder for THIS session. Ref mirrors state for the stream-time save path.
+  const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
+  const sessionWorkingDirRef = useRef<string | null>(null);
+  useEffect(() => { sessionWorkingDirRef.current = sessionWorkingDir; }, [sessionWorkingDir]);
+  // Set when the configured working folder is unreachable (moved, renamed,
+  // unmounted volume): a persistent banner with a picker — never a crash.
+  const [workspaceWarning, setWorkspaceWarning] = useState<string | null>(null);
+
   // Streaming cancel support
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -1308,7 +1317,7 @@ const App: React.FC = () => {
       getSystemMemory().then(setSystemMemory).catch(() => setSystemMemory(null));
 
       // Load persisted MCP servers
-      setMcpServers(mcpConfigStore.list());
+      void refreshMcpServers();
 
       // Reap spawned stdio MCP processes when the app window closes (#54)
       registerMcpShutdownHandler();
@@ -1770,32 +1779,55 @@ const App: React.FC = () => {
   useEffect(() => {
     const project = projects.find(p => p.id === activeProjectId);
     // A project may span several repositories (#492) — expose all of its
-    // folders, not just the primary one, so the agent can work across them.
-    const roots = projectRoots(project);
+    // folders. The SESSION's own working directory (#550), when set, becomes
+    // the primary folder for this session (relative paths, git) with the
+    // project's other folders still readable.
+    const projRoots = projectRoots(project);
+    const roots = sessionWorkingDir
+      ? [sessionWorkingDir, ...projRoots.filter(r => r !== sessionWorkingDir)]
+      : projRoots;
     if (roots.length > 0) {
       // set_workspace_roots rejects the whole list if ANY folder is missing
       // (moved, renamed, unmounted volume). That rejection used to be
       // unhandled: the sidebar showed the new project as active while the
       // backend still pointed at the PREVIOUS project's folder, so the agent
       // silently kept reading and editing the wrong repository (#502).
-      void openWorkspaceRoots(roots)
-        .then(() => {
-          registerGitTools(roots[0]);
-          return loadProjectRules(roots[0]).then(setProjectRulesContent);
+      // Proactive backend check first (#550): fs::metadata in Rust tells us
+      // the primary root is gone BEFORE set_workspace_roots rejects, so the
+      // banner can say precisely what is wrong. null = cannot check (browser
+      // dev / tests) — fall through and let the existing .catch handle it.
+      void checkPath(roots[0])
+        .then(check => {
+          if (check && (!check.exists || !check.isDir)) {
+            setProjectRulesContent(null);
+            setWorkspaceWarning(
+              check.exists
+                ? `Working folder for "${project?.name ?? 'this session'}" is not a folder: ${roots[0]}`
+                : `Working folder missing for "${project?.name ?? 'this session'}": ${roots[0]} does not exist (moved, renamed, or unmounted volume?)`,
+            );
+            return; // don't hand the backend a root we know is bad
+          }
+          return openWorkspaceRoots(roots).then(() => {
+            setWorkspaceWarning(null);
+            registerGitTools(roots[0]);
+            return loadProjectRules(roots[0]).then(setProjectRulesContent);
+          });
         })
         .catch((err) => {
+          // Warn, never crash (#550): the app stays usable in plain-chat
+          // terms and the banner offers a picker to point somewhere real.
           setProjectRulesContent(null);
-          showStatusBanner(
-            `Could not open "${project?.name ?? 'project'}" — ${formatErrorLine(err)}. ` +
-            `Check its folders in Settings → Projects.`,
+          setWorkspaceWarning(
+            `Working folder unavailable for "${project?.name ?? 'this session'}": ${formatErrorLine(err)}`,
           );
         });
     } else {
       setProjectRulesContent(null);
+      setWorkspaceWarning(null);
     }
     // Apply per-project model overrides if they are set (#171).
     if (project?.model) setModel(project.model);
- }, [activeProjectId, projects]);
+ }, [activeProjectId, projects, sessionWorkingDir]);
 
   // Wire file-tree clicks into the composer — pin the selected file into
   // context (#363). FileTreePanel dispatches this event but nothing consumed
@@ -1838,6 +1870,7 @@ const App: React.FC = () => {
     setLatestArtifact(null);
     setPinnedFiles([]);
     savePinnedFiles([]);
+    setSessionWorkingDir(null);
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
@@ -2305,6 +2338,8 @@ const App: React.FC = () => {
     setIsTemporary(false);
     // Restore this session's saved composer draft (#273)
     setInput(draftsRef.current[session.id] ?? '');
+    // Adopt this session's working directory (#550); null = project default.
+    setSessionWorkingDir(session.workingDir ?? null);
     // Loading a chat should show the latest messages and never a false unread badge (#258)
     prevMsgCountRef.current = session.messages.length;
     setUnreadCount(0);
@@ -2316,6 +2351,50 @@ const App: React.FC = () => {
   const openSession = (session: ChatSession) => {
     setActiveProjectId(session.projectId ?? null);
     loadSession(session);
+  };
+
+  // Refresh the MCP server list with `authenticated` DERIVED from the token
+  // store (#521): the flag used to live only in transient React state, so
+  // adding/deleting any server (or restarting) wiped every green badge and
+  // users re-ran OAuth for tokens that were still valid in the keychain.
+  const refreshMcpServers = useCallback(async () => {
+    const list = mcpConfigStore.list();
+    const withAuth = await Promise.all(list.map(async server => {
+      if (server.type !== 'http') return server;
+      try {
+        const tokens = await tokenStore.load(server.id);
+        const authenticated = !!tokens && (!tokenStore.isExpired(tokens) || !!tokens.refresh_token);
+        return { ...server, authenticated };
+      } catch {
+        return server;
+      }
+    }));
+    setMcpServers(withAuth);
+  }, []);
+
+  // Change THIS session's working directory (#550) — picked folder becomes
+  // the session's primary workspace and persists on the session record.
+  const changeSessionWorkingDir = () => {
+    void pickDirectory().then(dir => {
+      if (!dir) { showStatusBanner('No folder selected'); return; }
+      setSessionWorkingDir(dir);
+      setWorkspaceWarning(null);
+      if (currentSessionId) {
+        storage.updateSession(currentSessionId, { workingDir: dir });
+        setSessions(storage.getSessions());
+      }
+      showStatusBanner(`Session now works in ${dir}`);
+      // Proactive backend check (#550): warn when the picked path is missing
+      // or not a directory — but still honor the choice; the folder may live
+      // on a volume that is only temporarily unmounted. null = cannot check.
+      void checkPath(dir).then(check => {
+        if (check && (!check.exists || !check.isDir)) {
+          showStatusBanner(check.exists
+            ? `Warning: "${dir}" is not a folder`
+            : `Warning: "${dir}" does not exist (unmounted volume?)`);
+        }
+      });
+    });
   };
 
   const toggleProjectExpanded = (id: string) => {
@@ -2555,6 +2634,7 @@ const App: React.FC = () => {
         model,
         branchState: activeBranchState,
         ...(activeProjectId ? { projectId: activeProjectId } : {}),
+        ...(sessionWorkingDirRef.current ? { workingDir: sessionWorkingDirRef.current } : {}),
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
@@ -4689,10 +4769,16 @@ ${lines.join('\n')}`;
           </div>
         )}
 
-        {/* Ambient project context (#543): name + folder, always visible. */}
+        {/* Ambient project context (#543): name + working folder. The chip is
+            the SESSION's working dir (#550) — click it to change where this
+            session's agent works. */}
         {(() => {
           const active = projects.find(p => p.id === activeProjectId);
-          return <ProjectHeader name={active?.name ?? null} roots={projectRoots(active)} dark={dark} />;
+          const projRoots = projectRoots(active);
+          const roots = sessionWorkingDir
+            ? [sessionWorkingDir, ...projRoots.filter(r => r !== sessionWorkingDir)]
+            : projRoots;
+          return <ProjectHeader name={active?.name ?? null} roots={roots} dark={dark} onChangeWorkingDir={changeSessionWorkingDir} />;
         })()}
 
         {/* Messages - Responsive: full width on mobile, padded on desktop.
@@ -5148,6 +5234,19 @@ ${lines.join('\n')}`;
               aria-label="Retry Ollama connection"
               className="ml-3 shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
             >Retry</button>
+          </div>
+        )}
+
+        {/* Unreachable working folder (#550): warn and offer a picker — the
+            app must never crash because a path is gone. */}
+        {workspaceWarning && (
+          <div className={`mx-4 mb-2 flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs border ${dark ? 'bg-amber-900/30 border-amber-800 text-amber-200' : 'bg-amber-50 border-amber-300 text-amber-800'}`} role="alert">
+            <span className="min-w-0 truncate" title={workspaceWarning}>⚠ {workspaceWarning}</span>
+            <button
+              onClick={changeSessionWorkingDir}
+              aria-label="Choose a new working folder"
+              className="shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
+            >Choose folder…</button>
           </div>
         )}
 
@@ -6399,7 +6498,7 @@ ${lines.join('\n')}`;
                                 authenticated: false,
                               };
                           await mcpConfigStore.save(server);
-                          setMcpServers(mcpConfigStore.list());
+                          void refreshMcpServers();
                           setNewMcpServer({ name: '', type: 'stdio', command: '', url: '', authRequired: false, env: [], note: '' });
                           setShowAddMcpServer(false);
                         }}
@@ -6551,7 +6650,7 @@ ${lines.join('\n')}`;
                                  } catch (e) {
                                    showStatusBanner(`Could not fully remove "${server.name}": ${formatErrorLine(e)}`);
                                  }
-                                 setMcpServers(mcpConfigStore.list());
+                                 void refreshMcpServers();
                                }}
                                className="text-red-400 hover:text-red-300 text-xs px-1"
                              >
@@ -8292,6 +8391,15 @@ ${lines.join('\n')}`;
                   registerGitTools(next[0]);
                 }
                 showStatusBanner(`Added folder to "${proj.name}"`);
+                // Proactive backend check (#550): warn on a missing/non-dir
+                // pick but keep it — it may be a temporarily unmounted volume.
+                void checkPath(dir).then(check => {
+                  if (check && (!check.exists || !check.isDir)) {
+                    showStatusBanner(check.exists
+                      ? `Warning: "${dir}" is not a folder`
+                      : `Warning: "${dir}" does not exist (unmounted volume?)`);
+                  }
+                });
               });
             } },
             ...(projectRoots(proj).length > 1 ? [{

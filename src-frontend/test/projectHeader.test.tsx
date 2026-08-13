@@ -23,7 +23,11 @@ describe('ProjectHeader (#543)', () => {
 
   it('exposes every folder on hover so the summary is not lossy', () => {
     render(<ProjectHeader name="Platform" roots={['/repos/api', '/repos/web']} dark={false} />);
-    expect(screen.getByTestId('project-folder-chip')).toHaveAttribute('title', '/repos/api\n/repos/web');
+    // The chip doubles as the change-working-folder control (#550), so the
+    // tooltip carries the paths PLUS the click hint.
+    const title = screen.getByTestId('project-folder-chip').getAttribute('title') ?? '';
+    expect(title).toContain('/repos/api\n/repos/web');
+    expect(title).toMatch(/change this session's working folder/i);
   });
 
   it('omits the chip entirely for a project with no folder bound', () => {

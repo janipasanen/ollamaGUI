@@ -54,6 +54,20 @@ export async function pickDirectories(): Promise<string[] | null> {
   }
 }
 
+/**
+ * Validate a filesystem path via the Rust backend (#550) — real fs::metadata,
+ * not string guesswork. Returns null when Tauri is unavailable (browser dev /
+ * tests); callers should treat null as "cannot check" and proceed.
+ */
+export async function checkPath(path: string): Promise<{ exists: boolean; isDir: boolean; readable: boolean } | null> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return (await invoke('path_exists', { path })) as { exists: boolean; isDir: boolean; readable: boolean };
+  } catch {
+    return null; // Tauri unavailable — caller cannot check, should not block
+  }
+}
+
 /** Detect total/available system memory. Returns null outside Tauri (hides the fit indicator). */
 export async function getSystemMemory(): Promise<{ total_bytes: number; available_bytes: number; apple_silicon: boolean } | null> {
   try {

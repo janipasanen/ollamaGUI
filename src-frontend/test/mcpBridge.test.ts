@@ -2,12 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { registerMcpTools, unregisterMcpTools, getRegisteredToolNames, mcpToolName } from '../services/mcpBridge';
 import { toolRegistry } from '../services/tools';
 
-// Mock the MCP server manager
-vi.mock('../services/mcp', () => ({
-  mcpServerManager: {
-    getActiveConnection: vi.fn(),
-  },
-}));
+// Mock the MCP server manager (keep the real pure helpers, e.g.
+// extractMcpToolResultText, which mcpBridge uses for isError results).
+vi.mock('../services/mcp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/mcp')>();
+  return {
+    ...actual,
+    mcpServerManager: {
+      getActiveConnection: vi.fn(),
+    },
+  };
+});
 
 import { mcpServerManager } from '../services/mcp';
 
@@ -93,6 +98,32 @@ describe('registerMcpTools', () => {
     const result = await tool.execute({ query: 'test' });
     expect(mockCallTool).toHaveBeenCalledWith('tool_a', { query: 'test' });
     expect(result).toEqual({ result: 'ok' });
+  });
+
+  it('execute surfaces isError results as an error payload without throwing (spec tools §Error Handling)', async () => {
+    mockListTools.mockResolvedValue([
+      { name: 'tool_a', description: 'A', enabled: true },
+    ]);
+    // Tool execution error per spec: reported inside the result, isError: true.
+    mockCallTool.mockResolvedValue({
+      content: [{ type: 'text', text: 'API rate limit exceeded' }],
+      isError: true,
+    });
+    await registerMcpTools({ id: 'srv1', name: 'Server' });
+    const tool = toolRegistry.getAllTools().find(t => t.name === 'mcp_srv1_tool_a')!;
+    const result = await tool.execute({});
+    expect(result).toEqual({ isError: true, error: 'API rate limit exceeded' });
+  });
+
+  it('execute falls back to a generic message when an isError result has no text content', async () => {
+    mockListTools.mockResolvedValue([
+      { name: 'tool_a', description: 'A', enabled: true },
+    ]);
+    mockCallTool.mockResolvedValue({ content: [], isError: true });
+    await registerMcpTools({ id: 'srv1', name: 'Server' });
+    const tool = toolRegistry.getAllTools().find(t => t.name === 'mcp_srv1_tool_a')!;
+    const result = await tool.execute({});
+    expect(result).toEqual({ isError: true, error: 'MCP tool execution failed' });
   });
 
   it('execute throws when connection is gone at call time', async () => {

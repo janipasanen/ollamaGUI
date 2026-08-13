@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { probeBinary, pickDirectory, pickFile, appendPathArg, safeSetItem } from '../services/platform';
+import { probeBinary, pickDirectory, pickFile, appendPathArg, safeSetItem, checkPath } from '../services/platform';
 
 describe('appendPathArg (#111)', () => {
   it('appends a plain path', () => {
@@ -26,6 +26,10 @@ describe('platform helpers (Tauri-unavailable fallbacks) (#105)', () => {
 
   it('pickFile returns null when Tauri is unavailable', async () => {
     await expect(pickFile()).resolves.toBeNull();
+  });
+
+  it('checkPath returns null when Tauri is unavailable (#550)', async () => {
+    await expect(checkPath('/some/path')).resolves.toBeNull();
   });
 });
 

@@ -16,6 +16,9 @@ export interface ChatSession {
   branchState?: BranchState;
   // Projects (#92)
   projectId?: string;
+  /** Per-session working directory (#550): where this session's agent works.
+   *  Unset = the project's primary folder. Survives session switches. */
+  workingDir?: string;
 }
 
 // ─── Projects (#92) ───────────────────────────────────────────────────────────

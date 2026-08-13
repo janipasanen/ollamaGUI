@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+#### Per-session working directories, MCP spec compliance, Rust path validation (#550)
+- **Per-session working directory**: every chat session remembers the folder
+  its agent works in. Opening a session from the project tree loads its
+  history AND switches the workspace to that session's folder; the folder
+  chip under the project name is clickable to change it (persisted on the
+  session). An unreachable folder (moved, renamed, unmounted volume) shows a
+  persistent warning banner with a "Choose folder…" picker — the app warns,
+  it never crashes.
+- **Rust-side path validation**: a new `path_exists` Tauri command
+  (std::fs metadata, with Rust unit tests) proactively validates working
+  folders before the workspace opens, producing precise warnings ("does not
+  exist", "is not a folder") instead of backend rejections.
+- **MCP client follows the 2025-06-18 spec** (sections cited in code):
+  proper initialize handshake with protocol-version negotiation and
+  `notifications/initialized`; Streamable HTTP transport with
+  `MCP-Protocol-Version` and `Mcp-Session-Id` headers, SSE response parsing,
+  and session re-initialization on 404; `tools/list` cursor pagination;
+  `tools/call` `isError` results surfaced as tool errors (not transport
+  failures); JSON-RPC error objects passed through typed. Non-compliant
+  servers now fail cleanly at connect instead of half-working. Also fixes a
+  stdio polling loop that could spin as a microtask chain and exhaust memory.
+- **MCP OAuth badge persists** (#521): `authenticated` is derived from the
+  token store on every server-list refresh instead of living in transient
+  React state that any add/delete/restart wiped.
+- CI vitest retries moved from vite.config.ts to the CI command line
+  (`--retry=2`): the env-conditional config entry wedged local fork-worker
+  startup on macOS.
+
 ### Changed
 #### Settings deletion pass (#549 audit rank 15)
 - **Voice Call overlay deleted**: the overlay had no way to open since the

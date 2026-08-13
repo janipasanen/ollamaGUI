@@ -1061,6 +1061,36 @@ async fn get_system_memory() -> Result<SystemMemory, String> {
     .map_err(|e| e.to_string())
 }
 
+// ─── Filesystem path validation (#550) ───────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathCheck {
+    exists: bool,
+    is_dir: bool,
+    readable: bool,
+}
+
+/// Pure metadata probe behind `path_exists` — split out so the unit tests can
+/// call it without a Tauri runtime. `readable` mirrors whether `metadata()`
+/// succeeds: a path we cannot stat is a path we cannot use.
+fn check_path_metadata(path: &str) -> PathCheck {
+    match std::fs::metadata(path) {
+        Ok(meta) => PathCheck { exists: true, is_dir: meta.is_dir(), readable: true },
+        Err(_) => PathCheck { exists: false, is_dir: false, readable: false },
+    }
+}
+
+/// Validate a filesystem path from the backend (#550): the frontend used to
+/// guess from strings; now the OS answers. Runs on a blocking thread because
+/// `metadata()` on a stale network mount can stall.
+#[tauri::command]
+async fn path_exists(path: String) -> Result<PathCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || check_path_metadata(&path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ─── Terminal streaming commands (#87) ───────────────────────────────────────
 //
 // Spawns a shell command and streams stdout/stderr lines back to the frontend
@@ -2195,6 +2225,7 @@ pub fn run() {
             set_workspace_roots,
             get_workspace_roots,
             get_system_memory,
+            path_exists,
             secret_set,
             secret_get,
             secret_delete,
@@ -2318,6 +2349,46 @@ mod tests {
         assert!(is_skip_dir(".git"));
         assert!(is_skip_dir("target"));
         assert!(!is_skip_dir("src"));
+    }
+
+    #[test]
+    fn path_check_reports_real_directory() {
+        // A directory that genuinely exists: temp_dir + a freshly created child.
+        let dir = std::env::temp_dir().join("ollamagui_path_check_dir_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let check = super::check_path_metadata(dir.to_str().unwrap());
+        assert!(check.exists, "created dir should exist");
+        assert!(check.is_dir, "created dir should be a directory");
+        assert!(check.readable, "created dir should be readable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_check_reports_missing_path() {
+        let check = super::check_path_metadata("/definitely/not/a/real/path/ollamagui_550");
+        assert!(!check.exists);
+        assert!(!check.is_dir);
+        assert!(!check.readable);
+    }
+
+    #[test]
+    fn path_check_file_exists_but_is_not_dir() {
+        let file = std::env::temp_dir().join("ollamagui_path_check_file_test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let check = super::check_path_metadata(file.to_str().unwrap());
+        assert!(check.exists);
+        assert!(!check.is_dir, "a plain file must not report is_dir");
+        assert!(check.readable);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn path_check_serializes_camel_case_for_js() {
+        // platform.ts reads `isDir` — the serde rename must hold (#550).
+        let json = serde_json::to_value(super::check_path_metadata("/")).unwrap();
+        assert!(json.get("isDir").is_some());
+        assert!(json.get("exists").is_some());
+        assert!(json.get("readable").is_some());
     }
 
     #[test]
