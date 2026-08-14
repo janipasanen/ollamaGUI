@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, 
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
+import { loadFromDisk, hasTauri } from './services/rustStore';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
@@ -1328,6 +1329,34 @@ const App: React.FC = () => {
         savePrompts([]);
         setUserCommands(loadUserCommands());
       }
+
+      // Boot hydration from the Rust disk mirror: localStorage can be evicted
+      // by the WebView or cleared by the user, but every save is also mirrored
+      // to <app_data_dir>/store/*.json. When a store is missing here, restore
+      // it from disk before the first read. The synchronous hasTauri() gate
+      // keeps browser dev / tests on the fully synchronous path (no awaits
+      // before the first storage reads).
+      try {
+        if (hasTauri()) {
+          if (!localStorage.getItem('ollama_gui_sessions')) {
+            const disk = await loadFromDisk('sessions');
+            if (disk) localStorage.setItem('ollama_gui_sessions', disk);
+          }
+          if (!localStorage.getItem('ollama_gui_folders')) {
+            const disk = await loadFromDisk('folders');
+            if (disk) localStorage.setItem('ollama_gui_folders', disk);
+          }
+          if (!localStorage.getItem('ollama_gui_projects')) {
+            const disk = await loadFromDisk('projects');
+            if (disk) {
+              localStorage.setItem('ollama_gui_projects', disk);
+              // Projects state initialises from localStorage before this
+              // effect runs — refresh it with the recovered list.
+              setProjects(storage.getProjects());
+            }
+          }
+        }
+      } catch { /* hydration is best-effort */ }
 
       setSessions(storage.getSessions());
       setFolders(storage.getFolders());

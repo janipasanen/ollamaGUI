@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state and re-highlighting) every time the app re-renders mid-stream.
 
 ### Added
+#### Durable Rust-backed chat persistence
+- Sessions, projects, and folders are now mirrored to disk by the Rust
+  backend (`persist_store`/`load_store`, atomic temp-file+rename writes,
+  path-traversal-safe keys) on every save, debounced per key. On boot the
+  app restores them from disk when localStorage is empty — chats survive
+  localStorage eviction, clears, and quota exhaustion (a full localStorage
+  still shows the quota banner, but the messages land on disk regardless).
+
 #### Per-session working directories, MCP spec compliance, Rust path validation (#550)
 - **Per-session working directory**: every chat session remembers the folder
   its agent works in. Opening a session from the project tree loads its

@@ -2214,6 +2214,62 @@ async fn web_search(
     }
 }
 
+// ─── Durable store mirror (sessions / projects / folders) ────────────────────
+//
+// Chat sessions, projects, and folders live in localStorage, which the WebView
+// can evict and the user can clear. `persist_store` mirrors each payload to
+// <app_data_dir>/store/<key>.json; `load_store` hydrates it back at boot when
+// localStorage comes up empty (see App.tsx loadInitialData). Writes are atomic:
+// the payload goes to a temp file in the SAME directory first, then a rename
+// replaces the previous copy — a crash mid-write can never truncate the last
+// good snapshot. Keys are restricted to [a-z0-9_-]+ so a hostile or buggy
+// caller can never traverse outside the store directory.
+
+fn valid_store_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Pure IO helper: atomically write `<base>/store/<key>.json`. Testable with a
+/// tempdir base — the #[tauri::command] wrappers only add app_data_dir.
+fn store_file_write(base: &std::path::Path, key: &str, json: &str) -> Result<(), String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    let dir = base.join("store");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{key}.json.tmp"));
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, dir.join(format!("{key}.json"))).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pure IO helper: read `<base>/store/<key>.json`, `None` when never persisted.
+fn store_file_read(base: &std::path::Path, key: &str) -> Result<Option<String>, String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    match std::fs::read_to_string(base.join("store").join(format!("{key}.json"))) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn persist_store(app: tauri::AppHandle, key: String, json: String) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_write(&base, &key, &json)
+}
+
+#[tauri::command]
+async fn load_store(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_read(&base, &key)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2301,6 +2357,9 @@ pub fn run() {
             browser_engine::browser_cdp_assert,
             fetch_url,
             web_search,
+            // Durable store mirror for sessions/projects/folders
+            persist_store,
+            load_store,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2485,5 +2544,78 @@ mod tests {
         use base64::Engine;
         let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
         assert_eq!(dec, data);
+    }
+
+    // ── Durable store mirror ────────────────────────────────────────────────
+
+    /// Fresh per-test base dir (stands in for app_data_dir).
+    fn store_test_base(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ollamagui_store_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn store_round_trip_and_missing_key() {
+        let base = store_test_base("round_trip");
+        // Never-persisted key reads back as None, not an error.
+        assert_eq!(super::store_file_read(&base, "sessions").unwrap(), None);
+        super::store_file_write(&base, "sessions", r#"[{"id":"s1"}]"#).unwrap();
+        assert_eq!(
+            super::store_file_read(&base, "sessions").unwrap().as_deref(),
+            Some(r#"[{"id":"s1"}]"#)
+        );
+        // Keys are independent files.
+        assert_eq!(super::store_file_read(&base, "projects").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_atomic_overwrite_leaves_no_temp_file() {
+        let base = store_test_base("overwrite");
+        super::store_file_write(&base, "sessions", "old-payload").unwrap();
+        super::store_file_write(&base, "sessions", "new-payload").unwrap();
+        assert_eq!(
+            super::store_file_read(&base, "sessions").unwrap().as_deref(),
+            Some("new-payload")
+        );
+        // The rename must consume the temp file — only <key>.json remains.
+        let names: Vec<String> = std::fs::read_dir(base.join("store"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["sessions.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_rejects_traversal_and_malformed_keys() {
+        let base = store_test_base("bad_keys");
+        for bad in ["../evil", "a/b", "a\\b", "", "Sessions", "key.json", "a b", "café"] {
+            assert!(
+                super::store_file_write(&base, bad, "x").is_err(),
+                "write should reject key {bad:?}"
+            );
+            assert!(
+                super::store_file_read(&base, bad).is_err(),
+                "read should reject key {bad:?}"
+            );
+        }
+        // Nothing may have been created for rejected keys.
+        assert!(!base.exists(), "rejected writes must not create files");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_key_validator_accepts_expected_names() {
+        assert!(super::valid_store_key("sessions"));
+        assert!(super::valid_store_key("projects"));
+        assert!(super::valid_store_key("folders"));
+        assert!(super::valid_store_key("a-b_c123"));
+        assert!(!super::valid_store_key("../x"));
+        assert!(!super::valid_store_key(""));
     }
 }
