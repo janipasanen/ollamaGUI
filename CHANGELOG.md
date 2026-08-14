@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Inline code renders inline again**: react-markdown v10 stopped passing the
+  `inline` prop, so single-backtick code inside a sentence rendered as a full
+  code block with copy-button chrome. Block detection now uses the language
+  class / newline heuristic; inline code is a plain styled `<code>`.
+- **Code blocks keep their state across re-renders**: the markdown renderer
+  map is memoized, so CodeBlock no longer remounts (losing copied/expanded
+  state and re-highlighting) every time the app re-renders mid-stream.
+
 ### Added
 #### Per-session working directories, MCP spec compliance, Rust path validation (#550)
 - **Per-session working directory**: every chat session remembers the folder

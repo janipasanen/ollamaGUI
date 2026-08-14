@@ -389,62 +389,79 @@ function highlightChildren(children: React.ReactNode, query: string): React.Reac
 
 // Renders an assistant/user message as markdown with GFM, LaTeX math (KaTeX),
 // syntax-highlighted code, and Mermaid diagrams. Exported for isolated testing.
-export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggleTask?: (itemText: string, checked: boolean) => void; highlightQuery?: string; onApplyCode?: (code: string, lang: string) => void }> = ({ content, dark, onToggleTask, highlightQuery, onApplyCode }) => (
-  <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
-      components={{
-        p({ children, ...rest }: any) { return <p {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</p>; },
-        td({ children, ...rest }: any) { return <td {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</td>; },
-        strong({ children, ...rest }: any) { return <strong {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</strong>; },
-        em({ children, ...rest }: any) { return <em {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</em>; },
-        h1({ children, ...rest }: any) { return <h1 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h1>; },
-        h2({ children, ...rest }: any) { return <h2 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h2>; },
-        h3({ children, ...rest }: any) { return <h3 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h3>; },
-        h4({ children, ...rest }: any) { return <h4 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h4>; },
-        code({ node, inline, className, children, ...props }: any) {
-          const lang = (className || '').replace('language-', '') || 'text';
-          const code = String(children).replace(/\n$/, '');
-          if (!inline) {
-            if (lang === 'mermaid') return <Mermaid code={code} dark={dark} />;
-            return <CodeBlock lang={lang} code={code} dark={dark} props={props} onApplyCode={onApplyCode} />;
-          }
-          return (
-            <code className={`px-1 rounded ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
-              {children}
-            </code>
-          );
-        },
-        li({ className, children, ...rest }: any) {
-          // Interactive GFM task-list checkboxes (#352).
-          if (className !== 'task-list-item' || !onToggleTask) return <li className={className} {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</li>;
-          const arr = React.Children.toArray(children);
-          const inputIdx = arr.findIndex((c: any) => c?.type === 'input');
-          const inputChild = inputIdx >= 0 ? (arr[inputIdx] as any) : null;
-          const currentChecked = !!inputChild?.props?.checked;
-          const labelKids = inputIdx >= 0 ? arr.filter((_, i) => i !== inputIdx) : arr;
-          const itemText = reactChildrenToText(labelKids).trim();
-          return (
-            <li className={className} {...rest} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', listStyle: 'none' }}>
-              <input type="checkbox" checked={currentChecked} onChange={() => onToggleTask(itemText, currentChecked)} aria-label={`Task: ${itemText}`} style={{ marginTop: '0.3em' }} />
-              <span>{labelKids}</span>
-            </li>
-          );
-        },
-        a({ href, children, ...rest }: any) {
-          // Open external http(s) links in the system browser (#354).
-          if (!isExternalUrl(href)) return <a href={href} {...rest}>{children}</a>;
-          return (
-            <a href={href} {...rest} onClick={(e) => { e.preventDefault(); void openExternalUrl(href); }}>{children}</a>
-          );
-        },
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  </div>
-);
+// remark/rehype plugin arrays are hoisted so their identity is stable across renders.
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
+export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggleTask?: (itemText: string, checked: boolean) => void; highlightQuery?: string; onApplyCode?: (code: string, lang: string) => void }> = ({ content, dark, onToggleTask, highlightQuery, onApplyCode }) => {
+  // Memoize the renderer map so react-markdown sees stable component types
+  // across re-renders. Fresh inline functions each render made React treat
+  // every renderer as a new element type, remounting each CodeBlock and
+  // wiping its local state (copied/expanded/applied) whenever App re-rendered.
+  // Keyed on exactly the props the renderers close over — never on content.
+  const components = React.useMemo(() => ({
+    p({ children, ...rest }: any) { return <p {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</p>; },
+    td({ children, ...rest }: any) { return <td {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</td>; },
+    strong({ children, ...rest }: any) { return <strong {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</strong>; },
+    em({ children, ...rest }: any) { return <em {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</em>; },
+    h1({ children, ...rest }: any) { return <h1 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h1>; },
+    h2({ children, ...rest }: any) { return <h2 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h2>; },
+    h3({ children, ...rest }: any) { return <h3 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h3>; },
+    h4({ children, ...rest }: any) { return <h4 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h4>; },
+    code({ node, className, children, ...props }: any) {
+      // react-markdown v9+ no longer passes an `inline` prop. Block code is
+      // code with a language-* class (fenced with a lang) or whose content
+      // spans/ends with a newline (fenced without a lang); everything else
+      // is inline code inside a sentence.
+      const raw = String(children);
+      const isBlock = /language-/.test(className || '') || raw.includes('\n');
+      if (isBlock) {
+        const lang = (className || '').replace('language-', '') || 'text';
+        const code = raw.replace(/\n$/, '');
+        if (lang === 'mermaid') return <Mermaid code={code} dark={dark} />;
+        return <CodeBlock lang={lang} code={code} dark={dark} props={props} onApplyCode={onApplyCode} />;
+      }
+      return (
+        <code className={`px-1 rounded font-mono ${dark ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-300 text-zinc-800'}`} {...props}>
+          {children}
+        </code>
+      );
+    },
+    li({ className, children, ...rest }: any) {
+      // Interactive GFM task-list checkboxes (#352).
+      if (className !== 'task-list-item' || !onToggleTask) return <li className={className} {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</li>;
+      const arr = React.Children.toArray(children);
+      const inputIdx = arr.findIndex((c: any) => c?.type === 'input');
+      const inputChild = inputIdx >= 0 ? (arr[inputIdx] as any) : null;
+      const currentChecked = !!inputChild?.props?.checked;
+      const labelKids = inputIdx >= 0 ? arr.filter((_, i) => i !== inputIdx) : arr;
+      const itemText = reactChildrenToText(labelKids).trim();
+      return (
+        <li className={className} {...rest} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', listStyle: 'none' }}>
+          <input type="checkbox" checked={currentChecked} onChange={() => onToggleTask(itemText, currentChecked)} aria-label={`Task: ${itemText}`} style={{ marginTop: '0.3em' }} />
+          <span>{labelKids}</span>
+        </li>
+      );
+    },
+    a({ href, children, ...rest }: any) {
+      // Open external http(s) links in the system browser (#354).
+      if (!isExternalUrl(href)) return <a href={href} {...rest}>{children}</a>;
+      return (
+        <a href={href} {...rest} onClick={(e) => { e.preventDefault(); void openExternalUrl(href); }}>{children}</a>
+      );
+    },
+  }), [dark, onToggleTask, highlightQuery, onApplyCode]);
+  return (
+    <div className={`prose max-w-none ${dark ? 'prose-invert' : 'prose-zinc'}`}>
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        components={components}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+};
 
 // Collapsible tool-result block with a status header (#240).
 // Mirrors agentic GUIs (Codex/Claude) that collapse tool output behind a
