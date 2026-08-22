@@ -12,7 +12,8 @@ import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce, commandBinary, CORE_AGENT_TOOLS } from './services/tools';
-import { agenticChatStream } from './services/agent';
+import { agenticChatStream, type AgenticChatOptions } from './services/agent';
+import { openaiAgenticChatStream } from './services/openaiAgent';
 import { McpServerConfig, mcpConfigStore, refreshAuthFlags } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
 import {
@@ -807,6 +808,22 @@ const App: React.FC = () => {
   // Recursion-depth guard for spawn_subagent (#429). Sub-agents run sequentially
   // within the tool loop, so a single counter correctly tracks nesting depth.
   const subagentDepthRef = useRef(0);
+  /**
+   * Where an agent run should send its requests, kept in a ref because the
+   * tool registry is built once in a `[]` effect (#551): a closure over the
+   * `model` state there captures the boot-time value forever, so sub-agents
+   * used to run whatever model was selected at startup — against the local
+   * Ollama daemon — no matter what the user picked afterwards. That also made
+   * them fail outright for LM Studio models, whose names that daemon has
+   * never heard of.
+   */
+  const agentRoutingRef = useRef<{
+    model: string;
+    endpoint: string;
+    conn?: ModelConnection;
+    // Seeded with an absolute local endpoint so the value is usable even in
+    // the window before the syncing effect below first runs.
+  }>({ model, endpoint: `${ollamaBaseUrl}/api/chat` });
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
 
@@ -1130,6 +1147,36 @@ const App: React.FC = () => {
   };
 
   const url = (path: string) => `${ollamaBaseUrl}${path}`;
+
+  /**
+   * Resolve which server and model name an agent run should use for
+   * `modelId` (a bare local model name, or a "<connectionId>/<name>" id from
+   * a registered connection). Single source of truth for the main send path
+   * and for sub-agents, so they can never drift apart.
+   */
+  const resolveAgentRouting = (modelId: string) => {
+    const connectedModel = connectedModels.find(m => m.id === modelId);
+    const conn = connectedModel
+      ? connections.find(c => c.id === connectedModel.connectionId)
+      : undefined;
+    return {
+      // Connected models carry a "connId/name" id; servers want the bare name.
+      model: connectedModel?.name ?? modelId,
+      // Cloud models are proxied by the local daemon (#483), so they share the
+      // local endpoint. Only a remote Ollama connection redirects it.
+      endpoint: conn?.kind === 'ollama'
+        ? `${conn.baseUrl.replace(/\/$/, '')}/api/chat`
+        : url('/api/chat'),
+      // Present only for OpenAI-compatible servers, which need their own loop.
+      conn: conn?.kind === 'openai' ? conn : undefined,
+    };
+  };
+
+  // Keep the routing ref live for closures that outlive a render — see
+  // agentRoutingRef's declaration for why sub-agents cannot read state here.
+  useEffect(() => {
+    agentRoutingRef.current = resolveAgentRouting(model);
+  }, [model, connections, connectedModels, ollamaBaseUrl]);
 
   // Split local models so MLX-capable ones can be surfaced first (#544). The
   // split only happens when this machine actually supports MLX; otherwise every
@@ -1537,18 +1584,24 @@ const App: React.FC = () => {
             const toolFilter = params.tools && params.tools.length > 0
               ? params.tools.filter(n => n !== 'spawn_subagent')
               : allToolNames;
-            const gen = agenticChatStream({
-              model,
+            // Run on whatever the user has selected right now, through that
+            // model's own server (#551) — see agentRoutingRef.
+            const routing = agentRoutingRef.current;
+            const subOptions = {
+              model: routing.model,
               messages: subMessages,
               maxIterations: 3,
-              endpoint: url('/api/chat'),
+              endpoint: routing.endpoint,
               toolFilter,
               // Propagate the parent run's abort (#549 audit rank 8): without
               // it, Stop could not unwind a hung sub-agent.
               signal: abortControllerRef.current?.signal,
               onApprovalNeeded: createApprovalGate(),
-              onAssistantMessage: (msg) => { result = msg; },
-            });
+              onAssistantMessage: (msg: string) => { result = msg; },
+            };
+            const gen = routing.conn
+              ? openaiAgenticChatStream({ ...subOptions, conn: routing.conn })
+              : agenticChatStream(subOptions);
             for await (const _m of gen) { /* consume */ }
             return { result };
           } finally {
@@ -1588,19 +1641,23 @@ const App: React.FC = () => {
               : allToolNames;
             const runOne = async (task: string): Promise<string> => {
               let result = '';
-              const gen = agenticChatStream({
-                model,
+              const routing = agentRoutingRef.current;
+              const subOptions = {
+                model: routing.model,
                 messages: [
                   { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
                   { role: 'user', content: task },
-                ],
+                ] as Message[],
                 maxIterations: 3,
-                endpoint: url('/api/chat'),
+                endpoint: routing.endpoint,
                 toolFilter,
                 signal: abortControllerRef.current?.signal,
                 onApprovalNeeded: createApprovalGate(),
-                onAssistantMessage: (msg) => { result = msg; },
-              });
+                onAssistantMessage: (msg: string) => { result = msg; },
+              };
+              const gen = routing.conn
+                ? openaiAgenticChatStream({ ...subOptions, conn: routing.conn })
+                : agenticChatStream(subOptions);
               for await (const _m of gen) { /* consume */ }
               return result;
             };
@@ -3913,25 +3970,18 @@ ${lines.join('\n')}`;
     const usingCloudModel = models.some(m => m.name === activeModel && m.cloud);
 
     try {
-      // Resolve the connected model + connection for remote routing.
-      const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
-      const selectedConnection = selectedConnectedModel
-        ? connections.find(c => c.id === selectedConnectedModel.connectionId)
-        : undefined;
-      // Pick the chat endpoint: remote Ollama connection > local Ollama.
-      // Cloud models are NOT a separate host — the local daemon proxies them
-      // after `ollama signin` (#483), so they use the same endpoint as local.
-      const endpoint = selectedConnection?.kind === 'ollama'
-        ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
-        : url('/api/chat');
+      // Which server + model name this run targets. Shared with sub-agents
+      // through resolveAgentRouting so the two can never drift (#551).
+      const routing = resolveAgentRouting(activeModel);
+      const endpoint = routing.endpoint;
 
       if (isAgenticMode) {
         // Use agentic loop with tool calling
         let agenticReasoning = '';
         let agenticGenStats: GenStats | undefined;
         setAgentStatus('Thinking…');
-        const agentStream = agenticChatStream({
-          model: selectedConnectedModel?.name ?? model,
+        const agenticOptions: AgenticChatOptions = {
+          model: routing.model,
           messages: chatHistory,
           endpoint,
           maxIterations: autonomySettings.maxIterations,
@@ -4053,7 +4103,18 @@ ${lines.join('\n')}`;
             setAgentHitMax(false);
             finishAgentRun('error');
           },
-        });
+        };
+        // LM Studio / llama.cpp / vLLM models (openai-kind connections) run
+        // through the OpenAI-compatible tool loop (#551): the Ollama loop's
+        // /api/chat dialect silently broke tool calling there — the exact gap
+        // that made Qwen coder models fail here while opencode handled them.
+        const agentStream = routing.conn
+          ? openaiAgenticChatStream({
+              ...agenticOptions,
+              conn: routing.conn,
+              temperature: sendOptions.temperature,
+            })
+          : agenticChatStream(agenticOptions);
 
         for await (const message of agentStream) {
           // Messages are already handled by the callbacks — except the
@@ -4080,8 +4141,7 @@ ${lines.join('\n')}`;
       } else {
         // Route through OpenAI-compatible connection when model belongs to one (#123).
         // Remote Ollama connections use the resolved `endpoint` (already correct above).
-        const connectedModel = selectedConnectedModel;
-        const connForModel = connectedModel ? connections.find(c => c.id === connectedModel.connectionId && c.kind === 'openai') : undefined;
+        const connForModel = routing.conn;
 
         // Use regular chat stream
         let assistantContent = '';
@@ -4091,11 +4151,11 @@ ${lines.join('\n')}`;
         setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
 
         try {
-          if (connForModel && connectedModel) {
+          if (connForModel) {
             // OpenAI-compatible SSE stream (#123)
             await streamOpenAiChat(
               connForModel,
-              connectedModel.name,
+              routing.model,
               chatHistory,
               (delta, reasoning) => {
                 if (reasoning) assistantReasoning += reasoning;
@@ -4112,7 +4172,7 @@ ${lines.join('\n')}`;
             );
           } else {
           // Use bare model name — connected models carry a "connId/name" id prefix.
-          const ollamaModelName = connectedModel?.name ?? activeModel;
+          const ollamaModelName = routing.model;
           await fetchOllamaChatStream(ollamaModelName, chatHistory, (chunk) => {
             const thinking = chunk.message?.thinking ?? chunk.thinking;
             if (thinking) {
@@ -4385,31 +4445,39 @@ ${lines.join('\n')}`;
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
     const usingCloudModel = models.some(m => m.name === model && m.cloud);
-    const selectedConnectedModel = connectedModels.find(m => m.id === model);
-    const selectedConnection = selectedConnectedModel
-      ? connections.find(c => c.id === selectedConnectedModel.connectionId)
-      : undefined;
-    // Cloud models are proxied by the local daemon (#483), so they share the
-    // same endpoint as local models.
-    const contEndpoint = selectedConnection?.kind === 'ollama'
-      ? `${selectedConnection.baseUrl.replace(/\/$/, '')}/api/chat`
-      : url('/api/chat');
-    const ollamaModelName = selectedConnectedModel?.name ?? model;
+    const routing = resolveAgentRouting(model);
+    const contEndpoint = routing.endpoint;
+    const ollamaModelName = routing.model;
     let continuedContent = '';
     let contGenStats: GenStats | undefined;
+    const appendContinued = (delta: string) => {
+      continuedContent += delta;
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent }] as Message[];
+        saveCurrentSession(updated);
+        return updated;
+      });
+    };
     try {
-      await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
-        if (chunk.message?.content) {
-          continuedContent += chunk.message.content;
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent }] as Message[];
-            saveCurrentSession(updated);
-            return updated;
-          });
-        }
-        if (chunk.done) contGenStats = computeGenStats(chunk);
-      }, contEndpoint, false, genOptions, abortControllerRef.current?.signal);
+      if (routing.conn) {
+        // Continuing an LM Studio / vLLM reply used to be sent to the LOCAL
+        // Ollama daemon under a model name it has never heard of (#551), so
+        // "Continue generation" always failed for OpenAI-kind connections.
+        await streamOpenAiChat(
+          routing.conn,
+          routing.model,
+          history,
+          (delta) => { if (delta) appendContinued(delta); },
+          { temperature: genOptions?.temperature },
+          abortControllerRef.current?.signal,
+        );
+      } else {
+        await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
+          if (chunk.message?.content) appendContinued(chunk.message.content);
+          if (chunk.done) contGenStats = computeGenStats(chunk);
+        }, contEndpoint, false, genOptions, abortControllerRef.current?.signal);
+      }
       // Final save
       setMessages(prev => {
         const last = prev[prev.length - 1];

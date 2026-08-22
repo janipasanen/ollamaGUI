@@ -29,6 +29,9 @@ export interface Message {
   wasCancelled?: boolean;
   /** End-of-run summary card appended after an agentic run (#549 rank 9). */
   runSummary?: boolean;
+  /** OpenAI-compatible tool-result correlation id (#551): required by strict
+   *  servers (LM Studio, vLLM) to pair a role:'tool' message with its call. */
+  tool_call_id?: string;
 }
 
 export interface OllamaResponse {

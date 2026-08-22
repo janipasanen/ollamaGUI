@@ -3,6 +3,8 @@
  * alongside the default Ollama server. Each connection exposes a model list;
  * all enabled connections are aggregated into one unified model selector.
  */
+import { makeQwenStreamFilter } from './qwenDialect';
+
 const STORAGE_KEY = 'model_connections';
 
 export type ConnectionKind = 'openai' | 'ollama';
@@ -208,6 +210,30 @@ export async function streamOpenAiChat(
   const decoder = new TextDecoder();
   if (!reader) throw new Error('Response body is null');
 
+  // Qwen builds served by LM Studio / llama.cpp put their reasoning inline as
+  // <think>…</think> in `content` instead of in `reasoning_content` (#551).
+  // Without this split the chat bubble shows the model's scratchpad as if it
+  // were the answer. The filter is chunk-boundary safe, so a tag straddling
+  // two SSE frames still lands on the right channel.
+  // captureToolCalls stays OFF here: plain chat has no tool loop to consume a
+  // withheld tool-call channel, so diverting those spans would delete them
+  // from the reply — a model *explaining* the <tool_call> format would have
+  // its example vanish mid-sentence. Only <think> is split.
+  const filter = makeQwenStreamFilter({ captureToolCalls: false });
+  const emit = (raw: string) => {
+    const { content, reasoning } = filter.push(raw);
+    if (reasoning) onChunk('', reasoning);
+    if (content) onChunk(content);
+  };
+  // Release text the filter withheld while it waited to see whether a
+  // trailing "<thi…" would become a real tag; without this, a reply ending in
+  // an angle bracket loses its last characters.
+  const flush = () => {
+    const { content, reasoning } = filter.flush();
+    if (reasoning) onChunk('', reasoning);
+    if (content) onChunk(content);
+  };
+
   let buf = '';
   while (true) {
     const { done, value } = await reader.read();
@@ -218,14 +244,13 @@ export async function streamOpenAiChat(
     for (const line of lines) {
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (data === '[DONE]') return;
+      if (data === '[DONE]') { flush(); return; }
       try {
         const chunk = JSON.parse(data);
         const d = chunk?.choices?.[0]?.delta;
-        const delta = d?.content ?? '';
         const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
-        if (delta) onChunk(delta);
         if (reasoning) onChunk('', reasoning);
+        if (d?.content) emit(d.content);
       } catch {
         // malformed SSE line — skip
       }
@@ -236,17 +261,17 @@ export async function streamOpenAiChat(
     const line = buf.trim();
     if (line.startsWith('data:')) {
       const data = line.slice(5).trim();
-      if (data === '[DONE]') return;
+      if (data === '[DONE]') { flush(); return; }
       try {
         const chunk = JSON.parse(data);
         const d = chunk?.choices?.[0]?.delta;
-        const delta = d?.content ?? '';
         const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
-        if (delta) onChunk(delta);
         if (reasoning) onChunk('', reasoning);
+        if (d?.content) emit(d.content);
       } catch {
         // malformed trailing SSE line — skip
       }
     }
   }
+  flush();
 }

@@ -371,3 +371,74 @@ describe('streamOpenAiChat — SSE data: without space (#469)', () => {
     expect(chunks).toEqual(['A', 'B']);
   });
 });
+
+describe('streamOpenAiChat — Qwen inline reasoning (#551)', () => {
+  const conn: ModelConnection = { id: 'lm', name: 'LM', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+
+  function mockSse(lines: string[]) {
+    const encoder = new TextEncoder();
+    let i = 0;
+    const body = new ReadableStream({
+      pull(ctrl) {
+        if (i < lines.length) ctrl.enqueue(encoder.encode(lines[i++] + '\n'));
+        else ctrl.close();
+      },
+    });
+    return { ok: true, status: 200, body } as any;
+  }
+
+  it('routes <think> spans to the reasoning channel even when the tag straddles frames', async () => {
+    // Qwen on LM Studio streams its scratchpad inline in `content`; unsplit,
+    // it renders in the chat bubble as if it were the answer.
+    const deltas: string[] = [];
+    const reasons: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"content":"<thi"}}]}',
+      'data: {"choices":[{"delta":{"content":"nk>weighing options</think>Use "}}]}',
+      'data: {"choices":[{"delta":{"content":"a HashMap."}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], (d, r) => {
+      if (d) deltas.push(d);
+      if (r) reasons.push(r);
+    });
+    expect(deltas.join('')).toBe('Use a HashMap.');
+    expect(reasons.join('')).toBe('weighing options');
+  });
+
+  it('flushes a trailing partial tag instead of swallowing it', async () => {
+    // "5 < 3" ends the reply on a lone angle bracket — the filter holds it
+    // back waiting for "<think>", so the stream end must release it.
+    const deltas: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"content":"answer <"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], d => { if (d) deltas.push(d); });
+    expect(deltas.join('')).toBe('answer <');
+  });
+
+  it('passes <tool_call> markup through as text instead of deleting it', async () => {
+    // Plain chat has no tool loop to consume a withheld tool-call channel, so
+    // diverting those spans here would silently erase them: a model
+    // *explaining* the format would lose its example mid-sentence.
+    const deltas: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"content":"For example: <tool_call>{\\"name\\":\\"x\\"}</tool_call> clear?"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], d => { if (d) deltas.push(d); });
+    expect(deltas.join('')).toBe('For example: <tool_call>{"name":"x"}</tool_call> clear?');
+  });
+
+  it('leaves a reply with no think tags byte-identical', async () => {
+    const deltas: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
+      'data: {"choices":[{"delta":{"content":"plain "}}]}',
+      'data: {"choices":[{"delta":{"content":"answer"}}]}',
+      'data: [DONE]',
+    ])));
+    await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], d => { if (d) deltas.push(d); });
+    expect(deltas.join('')).toBe('plain answer');
+  });
+});

@@ -7,7 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+#### Qwen coder models work agentically over LM Studio (#551)
+Selecting a Qwen coder model from an OpenAI-compatible connection (LM Studio,
+llama.cpp server, vLLM) used to produce an agent that never called a tool. The
+Ollama loop speaks Ollama's `/api/chat` protocol; pointed at those servers it
+silently loses tool calling. Agentic runs on `kind: 'openai'` connections now
+go through a dedicated OpenAI chat-completions loop
+(`services/openaiAgent.ts`), verified end to end against LM Studio with
+`qwen/qwen3-coder-next`:
+- **Streamed tool calls are reassembled from fragments** — id and name arrive
+  once, arguments as many string slices, keyed by `index` until
+  `finish_reason: "tool_calls"`.
+- **Tool results round-trip with `tool_call_id`**, which strict servers
+  (LM Studio, vLLM) require to pair a result with its call.
+- **Qwen's content-channel tool calls are recovered**
+  (`services/qwenDialect.ts`). LM Studio serves Qwen3-Coder with the model's
+  own chat template, which emits calls as XML in `content` and — in streaming
+  mode — does not re-parse them back into `delta.tool_calls`
+  (lmstudio-bug-tracker#1071). Both wire dialects are parsed
+  (`<function=…>/<parameter=…>` and the older JSON-in-`<tool_call>` form),
+  with argument values coerced to their declared JSON-schema types so a
+  numeric argument does not reach the tool as a string. Recovery only runs
+  when the server produced no native calls, and only for tools that were
+  actually offered — a model *describing* a `<tool_call>` block never gets it
+  executed.
+- **`tool_calls: []` is treated as an ordinary chat turn.** LM Studio attaches
+  an empty array to every response; reading that as "a tool is coming" is what
+  hangs other clients (opencode#4255).
+- **The same autonomy gates as the Ollama loop** — tool filter, read-only
+  mode, approval prompts, pre/post hooks, output truncation, in-loop
+  compaction — run in the same order on both protocols.
+
 ### Fixed
+- **Qwen reasoning no longer renders as the answer** in non-agentic chat over
+  OpenAI-compatible connections: these builds emit their scratchpad inline as
+  `<think>…</think>` in `content` rather than in `reasoning_content`, so it
+  landed in the chat bubble. It is now split onto the reasoning channel,
+  chunk-boundary safe, with a trailing partial tag flushed rather than
+  swallowed at stream end (#551).
+- **"Continue generation" works for OpenAI-compatible models**: it always sent
+  the continuation to the *local* Ollama daemon under a model name that daemon
+  has never heard of, so continuing an LM Studio reply always failed. It now
+  routes through the model's own connection (#551).
+- **A failing tool no longer kills an agentic run** on OpenAI-compatible
+  connections: a hallucinated tool name or a throwing tool is reported back to
+  the model as a tool result so it can correct itself, matching the Ollama
+  loop's behaviour. Local models get names wrong often enough that aborting
+  read as "the model is broken" (#551).
+- **Malformed tool-call arguments are named rather than swallowed**: argument
+  JSON truncated at the token limit (routine on llama.cpp) used to fall back
+  to `{}`, so the tool ran with no arguments and the model got a baffling
+  result instead of "your JSON was invalid, re-issue the call" (#551).
+- **Sub-agents follow the model you actually selected.** `spawn_subagent` and
+  `spawn_parallel_subagents` were registered once at boot in a `[]` effect, so
+  their closure captured the *startup* model and the local Ollama endpoint —
+  they ignored every later model change, and failed outright for LM Studio
+  models whose names the local daemon has never heard of. Routing now comes
+  from a live ref, and one `resolveAgentRouting` helper serves the send path,
+  the continuation path, and sub-agents so they cannot drift apart (#551).
 - **Inline code renders inline again**: react-markdown v10 stopped passing the
   `inline` prop, so single-backtick code inside a sentence rendered as a full
   code block with copy-button chrome. Block detection now uses the language
