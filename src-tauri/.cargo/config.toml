@@ -14,3 +14,9 @@
 # leaks the macOS-only `-mmacosx-version-min` flag onto Linux/Windows, where
 # gcc/cc reject it and `Build Tauri App` fails (#397). Any macOS pin must be
 # scoped to `[target.x86_64-apple-darwin]` / `[target.aarch64-apple-darwin]`.
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-mmacosx-version-min=10.15"]
