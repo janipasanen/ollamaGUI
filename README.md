@@ -182,11 +182,132 @@ docs/
 
 ## Configuration notes
 
-- **Ollama endpoint** — set in the app's Settings (defaults to `http://localhost:11434`).
-- **Ollama Cloud** — run `ollama signin` once; your local Ollama then proxies cloud
-  models, so they use the same endpoint as local ones. Cloud models you already have
-  access to are detected automatically, and you can add any other by name under
-  Settings → Ollama Cloud Models.
+### Ollama endpoint
+
+The default Ollama endpoint is `http://localhost:11434`. You can change it in:
+- **App Settings** → Model Providers section
+- **Environment variable**: `OLLAMA_URL=http://your-host:port`
+
+### Provider Configuration
+
+This app supports multiple model providers (Ollama, LM Studio, and other OpenAI-compatible APIs).
+Provider configurations are stored in a `config.json` file at the project root.
+
+#### Config File Location
+
+Create or edit `config.json` at your project root (`/path/to/project/config.json`).
+
+#### Configuration Format
+
+```json
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "local-ollama",
+      "name": "Local Ollama",
+      "type": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "enabled": true
+    },
+    {
+      "id": "lm-studio",
+      "name": "LM Studio (gx10)",
+      "type": "lmstudio",
+      "baseUrl": "http://gx10:1234",
+      "enabled": true,
+      "defaultModel": "qwen/qwen3-coder-next"
+    }
+  ]
+}
+```
+
+#### Provider Types
+
+| Type | Description | Default Port |
+|------|-------------|--------------|
+| `ollama` | Local Ollama server | 11434 |
+| `lmstudio` | LM Studio or any OpenAI-compatible API | 1234 |
+| `ollama_cloud` | Ollama Cloud (requires authentication) | Uses local Ollama proxy |
+
+#### Provider Options
+
+- **id**: Unique identifier for the provider
+- **name**: Display name in the model selector
+- **type**: Provider type (`ollama`, `lmstudio`, or `ollama_cloud`)
+- **baseUrl**: Base URL of the provider server (e.g., `http://localhost:1234`)
+- **enabled**: Whether this provider is active by default
+- **defaultModel**: Optional model to use with this provider (if not specified, user must select one)
+
+#### Supported Provider Endpoints
+
+The app uses the following API endpoints for each provider type:
+
+**Ollama providers (`type: "ollama"`):**
+- Models list: `/api/tags`
+- Chat completion: `/api/chat`
+- Model info: `/api/show`
+
+**LM Studio / OpenAI-compatible providers (`type: "lmstudio"` or `type: "ollama_cloud"`):**
+- Models list: `/v1/models`
+- Chat completion: `/v1/chat/completions`
+
+#### Examples
+
+**Connecting to LM Studio on a remote machine:**
+```json
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "lm-studio-remote",
+      "name": "LM Studio (gx10)",
+      "type": "lmstudio",
+      "baseUrl": "http://gx10:1234",
+      "enabled": true,
+      "defaultModel": "qwen/qwen3-coder-next"
+    }
+  ]
+}
+```
+
+**Adding a vLLM server:**
+```json
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "vllm-server",
+      "name": "vLLM Server",
+      "type": "lmstudio",
+      "baseUrl": "http://localhost:8000",
+      "enabled": true
+    }
+  ]
+}
+```
+
+### LM Studio Configuration (Legacy)
+
+To use LM Studio with this app:
+
+1. Start LM Studio on your machine (e.g., `http://gx10:1234`)
+2. Load a model in LM Studio's interface (e.g., `qwen/qwen3-coder-next`)
+3. The app will automatically detect models from the OpenAI-compatible API
+
+The app includes a default LM Studio connection at `http://gx10:1234`. You can:
+- Add more LM Studio instances via Settings → Model Providers
+- Switch between Ollama and LM Studio by enabling/disabling connections
+- Use slash command `/connections` to list all configured providers
+
+LM Studio uses the same OpenAI-compatible API as other servers (vLLM, llama.cpp), so any such server can be added similarly.
+
+### Ollama Cloud
+
+Run `ollama signin` once; your local Ollama then proxies cloud
+models, so they use the same endpoint as local ones. Cloud models you already have
+access to are detected automatically, and you can add any other by name under
+Settings → Ollama Cloud Models.
 - **Secrets** (OAuth tokens, MCP credentials) are stored in the OS keychain
   (Keychain / Credential Manager / Secret Service), with an encrypted-file fallback.
 - **Optional engines** (LibreOffice, Chromium) are detected at runtime and never bundled;

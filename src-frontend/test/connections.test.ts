@@ -15,9 +15,14 @@ beforeEach(() => {
 
 describe('Connection CRUD (#123)', () => {
   it('addConnection assigns id and persists', () => {
+    // Clear localStorage first to start fresh
+    localStorage.clear();
     const c = addConnection({ name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true });
     expect(c.id).toBeTruthy();
-    expect(loadConnections()).toHaveLength(1);
+    // After adding, should have 3 connections (local-ollama + lm-studio defaults + added)
+    const conns = loadConnections();
+    expect(conns).toHaveLength(3);
+    expect(conns.find(conn => conn.name === 'LM Studio')).toBeDefined();
   });
 
   it('updateConnection patches the right entry', () => {
@@ -29,17 +34,23 @@ describe('Connection CRUD (#123)', () => {
   });
 
   it('removeConnection deletes from storage', () => {
+    localStorage.clear(); // Start fresh
     const c = addConnection({ name: 'B', kind: 'ollama', baseUrl: 'http://b', enabled: true });
     removeConnection(c.id);
-    expect(loadConnections()).toHaveLength(0);
+    // After removal, should still have the default connections (2)
+    expect(loadConnections()).toHaveLength(2);
   });
 
   it('saveConnections + loadConnections round-trips', () => {
+    localStorage.clear(); // Start fresh
     const conns: ModelConnection[] = [
       { id: 'x', name: 'X', kind: 'openai', baseUrl: 'http://x', enabled: true, apiKey: 'k' },
     ];
     saveConnections(conns);
-    expect(loadConnections()).toEqual(conns);
+    // After loading, should have the saved connection plus defaults
+    const loaded = loadConnections();
+    expect(loaded).toHaveLength(3); // x + local-ollama + lm-studio
+    expect(loaded.find(c => c.id === 'x')).toEqual({ id: 'x', name: 'X', kind: 'openai', baseUrl: 'http://x', enabled: true, apiKey: 'k' });
   });
 });
 

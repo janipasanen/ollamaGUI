@@ -40,6 +40,7 @@ import {
   ModelConnection, ConnectedModel,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchAllConnectionModels, streamOpenAiChat,
+  testLmStudioConnection, getLmStudioModels, getDefaultConnections,
 } from './services/connections';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
@@ -1204,13 +1205,13 @@ const App: React.FC = () => {
     const combined: ModelInfo[] = [...local, ...cloudModels];
    setModels(combined);
    // Fetch extra connection models in parallel (#123)
-   fetchAllConnectionModels(loadConnections()).then(setConnectedModels).catch(() => {});
+   fetchAllConnectionModels(connections).then(setConnectedModels).catch(() => {});
     // Refresh running models list (#478)
     fetchRunningModels(url('/api/ps'))
       .then(r => setRunningModels(new Set(r.map(m => m.name))))
       .catch(() => {});
    return combined;
- }, [ollamaBaseUrl]);
+ }, [ollamaBaseUrl, connections]);
 
   /** Add a user-specified cloud model name and refresh the selector (#485). */
   const addCustomCloudModel = useCallback(() => {
@@ -1234,6 +1235,7 @@ const App: React.FC = () => {
   // case when this fires as a result of activating that project).
   const activeProjectIdRef = useRef(activeProjectId);
   useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
+
   useEffect(() => {
     const onChange = () => {
       const root = getActiveRoot();
@@ -1710,11 +1712,28 @@ const App: React.FC = () => {
         // resume-on-startup effect restores session.model synchronously on
         // mount, but this runs later (after the /api/tags round-trip) and used
         // to overwrite it — so resuming a chat silently switched its model (#533).
-        if (combined.length > 0 && !modelClaimedRef.current) {
+        if ((combined.length > 0 || connectedModels.length > 0) && !modelClaimedRef.current) {
           // Default to a model that can actually run the journey (#549 rank
-          // 11): prefer an installed local MLX model over whatever /api/tags
+          // 11): prefer LM Studio models first (from connectedModels which has
+          // connection info), then local MLX models over whatever /api/tags
           // happened to list first.
-          const preferred = combined.find(m => !m.cloud && isMlxModelName(m.name)) ?? combined[0];
+          
+          // Filter for LM Studio models (connected but not Ollama本地)
+          const lmStudioModels = connectedModels.filter(m => 
+            m.connectionId && !m.cloud
+          );
+          const preferredLmStudio = lmStudioModels.find(
+            m => m.name.includes('qwen') || m.name.includes('coder')
+          ) ?? lmStudioModels[0];
+          
+          // Fall back to Ollama models if no connected models found
+          const ollamaModels = combined.filter(m => !m.cloud);
+          const preferredMlx = ollamaModels.find(m => isMlxModelName(m.name));
+          
+          // Priority: LM Studio models > MLX models > first available model
+          const preferred = preferredLmStudio ? 
+            { name: preferredLmStudio.name } : 
+            (preferredMlx ?? combined[0]);
           setModel(preferred.name);
         }
       } catch (e) {
@@ -3800,6 +3819,33 @@ ${lines.join('\n')}`;
               showStatusBanner(`Failed to fetch version: ${formatErrorLine(err, 'ollama')}`);
             }
           })();
+          return;
+        }
+        if (result.action === 'connections') {
+          // /connections shows current model provider connections
+          const conns = loadConnections();
+          const enabledConns = conns.filter(c => c.enabled);
+          const disabledConns = conns.filter(c => !c.enabled);
+          const lines: string[] = [];
+          if (enabledConns.length > 0) {
+            lines.push('Enabled connections:');
+            for (const conn of enabledConns) {
+              const models = connectedModels.filter(m => m.connectionId === conn.id);
+              lines.push(`  ${conn.name} (${conn.kind}): ${conn.baseUrl}`);
+              if (models.length > 0) {
+                lines.push(`    Models: ${models.map(m => m.name).join(', ')}`);
+              }
+            }
+          } else {
+            lines.push('No enabled connections');
+          }
+          if (disabledConns.length > 0) {
+            lines.push('Disabled connections:');
+            for (const conn of disabledConns) {
+              lines.push(`  ${conn.name} (${conn.kind}): ${conn.baseUrl}`);
+            }
+          }
+          showStatusBanner(lines.join('\n') || 'No model providers configured');
           return;
         }
        return;
@@ -8109,13 +8155,24 @@ ${lines.join('\n')}`;
 
               {/* Slash command reference (#335) */}
               <h3 className={`text-sm font-bold mt-6 mb-3 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Slash Commands</h3>
-              <div className="max-h-60 overflow-y-auto space-y-1" aria-label="Slash commands">
+              <div className="max-h-96 overflow-y-auto space-y-1" aria-label="Slash commands">
                 {getAllCommands().filter(c => c.builtin).map(c => (
                   <div key={c.name} className={`flex justify-between items-start gap-2 py-1.5 border-b last:border-b-0 ${dark ? 'border-zinc-700' : 'border-zinc-200'}`}>
                     <code className={`text-xs font-mono shrink-0 ${dark ? 'text-blue-300' : 'text-blue-600'}`}>/{c.name}</code>
                     <span className={`text-[11px] text-right ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{c.description}</span>
                   </div>
                 ))}
+              </div>
+              
+              {/* Connection management help */}
+              <h3 className={`text-sm font-bold mt-6 mb-2 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Model Providers</h3>
+              <p className={`text-[11px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                The app supports multiple model providers including Ollama and LM Studio.
+                Configure them in Settings or use the <code className={dark ? 'text-blue-300' : 'text-blue-600'}>/connections</code> slash command to list enabled connections.
+              </p>
+              <div className={`mt-2 p-3 rounded text-[10px] ${dark ? 'bg-zinc-900/50 text-zinc-400' : 'bg-zinc-100 text-zinc-600'}`}>
+                <p><strong>LM Studio:</strong> Start LM Studio at http://gx10:1234 and load a model.
+                The app will automatically detect models via the OpenAI-compatible API.</p>
               </div>
 
               <p className={`text-[10px] mt-4 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>

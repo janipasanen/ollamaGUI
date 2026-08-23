@@ -2,6 +2,66 @@
  * Model connections (#123): register OpenAI-compatible / LM Studio endpoints
  * alongside the default Ollama server. Each connection exposes a model list;
  * all enabled connections are aggregated into one unified model selector.
+ *
+ * ## Configuration
+ *
+ * Connections can be configured in two ways:
+ * 1. **Project config.json** - At project root for persistent provider definitions
+ * 2. **localStorage** - Runtime connection state (user-added or edited connections)
+ *
+ * Each connection has:
+ *   - id: unique identifier (UUID)
+ *   - name: display name for the connection
+ *   - kind: 'openai' (OpenAI-compatible APIs like LM Studio) or 'ollama'
+ *   - baseUrl: base URL of the server (e.g., http://localhost:1234 for LM Studio)
+ *   - apiKey: optional API key for authenticated endpoints
+ *   - enabled: whether this connection is active
+ *
+ * ## Provider Types
+ *
+ * | Type | Description |
+ * |------|-------------|
+ * | `ollama` | Local Ollama server at `/api/tags`, `/api/chat` |
+ * | `openai` / `lmstudio` | OpenAI-compatible APIs (`/v1/models`, `/v1/chat/completions`) |
+ *
+ * ## LM Studio Configuration
+ *
+ * To connect to LM Studio:
+ * 1. Start LM Studio on your target machine (e.g., http://gx10:1234)
+ * 2. Load a model in LM Studio (e.g., qwen/qwen3-coder-next)
+ * 3. The connection will be automatically detected when the app fetches models
+ *
+ * ## Config File Format (config.json)
+ *
+ * Create or edit `config.json` at your project root:
+ * ```json
+ * {
+ *   "version": 1,
+ *   "providers": [
+ *     {
+ *       "id": "local-ollama",
+ *       "name": "Local Ollama",
+ *       "type": "ollama",
+ *       "baseUrl": "http://localhost:11434",
+ *       "enabled": true
+ *     },
+ *     {
+ *       "id": "lm-studio",
+ *       "name": "LM Studio (gx10)",
+ *       "type": "lmstudio",
+ *       "baseUrl": "http://gx10:1234",
+ *       "enabled": true,
+ *       "defaultModel": "qwen/qwen3-coder-next"
+ *     }
+ *   ]
+ * }
+ * ```
+ *
+ * ## Default Connections
+ *
+ * The app automatically creates these default connections on first launch:
+ * - Local Ollama: http://localhost:11434 (auto-detected)
+ * - LM Studio: http://gx10:1234 (if configured in config.json or environment)
  */
 import { makeQwenStreamFilter } from './qwenDialect';
 
@@ -35,10 +95,60 @@ export interface ConnectedModel {
   cloud?: boolean;
 }
 
+// ── Default connections ─────────────────────────────────────────────────────
+
+/** Get default connections (Ollama + LM Studio) for first-time setup */
+export function getDefaultConnections(): ModelConnection[] {
+  const defaults: ModelConnection[] = [];
+
+  // Always include local Ollama as the default
+  defaults.push({
+    id: 'local-ollama',
+    name: 'Local Ollama',
+    kind: 'ollama',
+    baseUrl: 'http://localhost:11434',
+    enabled: true,
+  });
+
+  // LM Studio at gx10:1234 (as requested in the task)
+  const lmStudioUrl = typeof process !== 'undefined' && process.env && process.env.LM_STUDIO_URL
+    ? process.env.LM_STUDIO_URL
+    : 'http://gx10:1234';
+  
+  defaults.push({
+    id: 'lm-studio',
+    name: 'LM Studio (gx10)',
+    kind: 'openai', // LM Studio uses OpenAI-compatible API
+    baseUrl: lmStudioUrl,
+    enabled: true,
+  });
+
+  return defaults;
+}
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 export function loadConnections(): ModelConnection[] {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; }
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (!stored) {
+    // First-time launch: initialize with defaults
+    const defaults = getDefaultConnections();
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults)); } catch { /* quota */ }
+    return defaults;
+  }
+  
+  let parsed: ModelConnection[];
+  try { parsed = JSON.parse(stored); } catch { parsed = []; }
+  
+  // Add missing default connections (in case of app updates)
+  const storedIds = new Set(parsed.map(c => c.id));
+  for (const def of getDefaultConnections()) {
+    if (!storedIds.has(def.id)) {
+      parsed.push(def);
+    }
+  }
+  
+  return parsed;
 }
 
 export function saveConnections(conns: ModelConnection[]): void {
@@ -130,6 +240,67 @@ export async function fetchAllConnectionModels(connections: ModelConnection[]): 
     enabled.map(c => c.kind === 'openai' ? fetchOpenAiModels(c) : fetchOllamaConnectionModels(c))
   );
   return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+}
+
+// ── LM Studio specific helpers ───────────────────────────────────────────────
+
+/** Test connection to LM Studio and fetch available models */
+export async function testLmStudioConnection(conn: ModelConnection): Promise<{ success: boolean; models: ConnectedModel[]; error?: string }> {
+  try {
+    // LM Studio uses OpenAI-compatible /v1/models endpoint
+    const headers: Record<string, string> = {};
+    if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+    
+    const res = await fetch(`${conn.baseUrl.replace(/\/$/, '')}/v1/models`, { headers });
+    if (!res.ok) {
+      return {
+        success: false,
+        models: [],
+        error: `HTTP ${res.status}: ${res.statusText}`
+      };
+    }
+    
+    const data = await res.json() as { data?: { id: string }[] };
+    const models = (data.data ?? []).map(m => ({
+      id: `${conn.id}/${m.id}`,
+      name: m.id,
+      connectionId: conn.id,
+      connectionName: conn.name,
+      kind: conn.kind,
+    }));
+    
+    return {
+      success: true,
+      models,
+      error: undefined
+    };
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      models: [],
+      error: errorMsg
+    };
+  }
+}
+
+/** Get model list from LM Studio without authentication */
+export async function getLmStudioModels(baseUrl: string = 'http://localhost:1234'): Promise<ConnectedModel[]> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/models`);
+    if (!res.ok) return [];
+    
+    const data = await res.json() as { data?: { id: string }[] };
+    return (data.data ?? []).map(m => ({
+      id: `lm-studio-temp/${m.id}`,
+      name: m.id,
+      connectionId: 'lm-studio-temp',
+      connectionName: 'LM Studio',
+      kind: 'openai' as const,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 // ── Stream chat through the right connection ───────────────────────────────────

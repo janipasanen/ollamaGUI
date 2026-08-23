@@ -25,6 +25,7 @@ export interface CommandContext {
 const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'clear', description: 'Start a new chat', builtin: true },
   { name: 'help', description: 'Show keyboard shortcuts and help', builtin: true },
+  { name: 'connections', description: 'Manage model providers (Ollama, LM Studio)', builtin: true },
   { name: 'model', description: 'Switch the active model (e.g. /model llama3)', builtin: true },
   { name: 'rename', description: 'Rename the current conversation (e.g. /rename My chat)', builtin: true },
   { name: 'export', description: 'Export conversation as Markdown or JSON (e.g. /export json)', builtin: true },
@@ -152,7 +153,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version' | 'connections'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
