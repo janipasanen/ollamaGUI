@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "local-ollama",
+      "name": "Local Ollama",
+      "type": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "enabled": true
+    },
+    {
+      "id": "lm-studio",
+      "name": "LM Studio (gx10)",
+      "type": "lmstudio",
+      "baseUrl": "http://gx10:1234",
+      "enabled": true,
+      "apiKey": "",
+      "defaultModel": "qwen/qwen3-coder-next"
+    }
+  ]
+}

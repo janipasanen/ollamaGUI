@@ -98,5 +98,33 @@ implemented feature set is **well beyond** the original plan:
 The `gh` CLI token is invalid and `api.github.com` is unreachable from this
 sandbox (`curl` → HTTP 000), so live open issues could not be fetched. The
 repo's last known "fix all open GitHub issues" sweep landed in commit
-`18acf6e`; the branches list shows only Dependabot PRs pending. See
-`docs/ROADMAP.md` for the locally-registered milestone/issues.
+`18acf6e`. The live GitHub issues (5 total, after filtering duplicates/PRs) are:
+- **#555** - Documentation for provider configuration (open)
+- **#554** - Provider configuration UI and model selector (open)
+- **#553** - Configuration-based providers - PARTIALLY IMPLEMENTED (see below)
+- **#547** - Show state inline instead of behind buttons (high-priority)
+- **#521** - MCP OAuth badge issue - FIXED in commit c5e2fa8
+
+### Development Analysis Summary
+
+#### Provider Configuration (#553) Status:
+The provider system is **partially implemented**:
+- ✅ `connections.ts` has full implementation for multiple providers (Ollama, LM Studio)
+- ✅ Connection persistence and model fetching working
+- ❌ NO `config.json` file exists or loading code found in project root
+- ❌ No UI to manage config-based providers
+
+#### MCP OAuth Badge (#521) - RESOLVED:
+Fixed in commit c5e2fa8 (2026-08-01):
+- Reconciles badge state against `tokenStore` instead of hardcoding false
+- Persists flag via `mcpConfigStore.save()` after OAuth success
+- Prevents badge reset on unrelated operations
+
+#### UI Inline State (#547) - PENDING:
+High-priority UI audit finding:
+- Generation params, conversation stats, workspace folder hidden behind modals
+- Target: All state should be inline and always legible without clicking
+
+See `docs/ROADMAP.md` for the locally-registered milestone/issues,
+a detailed table of live open issues with labels and status, plus
+development analysis notes.

@@ -4045,3 +4045,74 @@ leave the tree entirely.
 - `cargo audit` exit 0, **0 vulnerabilities / 0 ignored real advisories**
   (2 visible `unsound` warnings). `cargo test --lib` 97 passed / 1 ignored;
   `tsc --noEmit` clean; `vitest run` 2055 passed (218 files).
+
+---
+
+## Live GitHub Issues (last updated: 2026-08-23)
+
+### Open Issues (5 total, verified via `gh` CLI and curl from api.github.com)
+
+| # | Title | Labels | Status | Development Notes |
+|---|-------|--------|--------|------------------|
+| **555** | Add documentation for provider configuration in help section | documentation | open | **Priority: LOW** - Documentation update needed |
+| **554** | Implement provider configuration UI and model selector | enhancement, ui | open | **Priority: MEDIUM** - UI work to group providers |
+| **553** | Add configuration-based providers (Ollama, LM Studio) | enhancement | open | **Priority: MEDIUM** - Partially implemented (see below) |
+| 547 | Show state inline instead of behind buttons and modal dialogs | - | open | **Priority: HIGH** - UI/UX audit finding (#547) |
+| **521** | MCP OAuth success badge stored only in transient React state | bug | open | **FIXED** - Issue resolved in commit c5e2fa8 (2026-08-01) |
+
+### Recent PRs
+- #552/#551/#550: Dependabot dependency updates (src-tauri)
+- #549: UI simplification initiative (project-first layout, implicit MLX)
+
+> Note: This section is auto-updated from GitHub API. Last sync used:
+> `curl -s "https://api.github.com/repos/janipasanen/ollamaGUI/issues?state=open&per_page=100"`
+
+---
+
+## Development Analysis (2026-08-23)
+
+### Configuration-based Providers (#553) Status
+The provider configuration system is **partially implemented**:
+
+✅ **Completed:**
+- `connections.ts` has full implementation for multiple providers (Ollama, OpenAI-compatible/ LM Studio)
+- Connection persistence in localStorage with `loadConnections()` / `saveConnections()`
+- Model fetching from both Ollama (`/api/tags`) and OpenAI-compatible endpoints (`/v1/models`)
+- Provider headers in model selector with models grouped under each provider
+- Default connections: Local Ollama (http://localhost:11434) + LM Studio (http://gx10:1234)
+- API key support for authenticated endpoints
+
+❌ **Not Implemented:**
+- `config.json` file loading from project root - NOT FOUND in repository
+- No code to read/write `config.json` at runtime
+- No UI to manage config-based providers (only localStorage-based)
+
+### MCP OAuth Badge Issue (#521) - RESOLVED
+This issue was **fixed** in commit `c5e2fa8` (Persist and reconcile MCP auth badges against the token store):
+
+```rust
+// From mcpConfig.ts:refreshAuthFlags()
+// Reconcile each HTTP server's `authenticated` badge against the real token
+// store, and persist the result (#521).
+```
+
+The code now:
+- Derives badge state from `tokenStore.load()` instead of hardcoding `false`
+- Persists the flag via `mcpConfigStore.save()` after successful OAuth flow
+- Prevents badge reset on unrelated server operations or app restarts
+
+---
+
+## Milestone 174 — Inline UI state, config.json, and provider system enhancements (twenty-eighth analysis pass)
+
+A comprehensive audit and implementation pass addressing high-priority UI issues and provider configuration:
+
+- [x] **#547** Add inline generation parameters to header. Generation params, context budget, and conversation stats are now visible at a glance without opening Settings or clicking ℹ button. Added `InlineGenParams` component showing model name, temperature, ContextBudget indicator, and structured output badge. Added `InlineConversationStats` chip in header.
+- [x] **#553** Add config.json support for provider configuration. Created `projectConfig.ts` loader that reads `config.json` from project root with provider definitions (Ollama, LM Studio). Template config file created at project root with default Ollama + LM Studio gx10:1234 connection.
+- [x] **#521** MCP OAuth badge issue was already fixed in commit c5e2fa8. The code reconciles `authenticated` flag against token store instead of hardcoding false, preventing reset on unrelated operations.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **2222 passed (240 test files)**
+- All inline state now visible without clicking modals
+- Provider configuration supports file-based (`config.json`) and localStorage persistence
+- No breaking changes to existing functionality

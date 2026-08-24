@@ -137,8 +137,10 @@ import { ChatSearch, findMessageMatches } from './components/ChatSearch';
 import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
-import { computeConversationStats } from './services/conversationStats';
+import { computeConversationStats, type ConversationStats } from './services/conversationStats';
 import ProjectHeader from './components/ProjectHeader';
+import { InlineConversationStats } from './components/InlineConversationStats';
+import InlineGenParams from './components/InlineGenParams';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
@@ -578,6 +580,9 @@ const App: React.FC = () => {
   const [renameDraft, setRenameDraft] = useState('');
   // Transient toast notification (#58 and general feedback)
   const [notification, setNotification] = useState<string | null>(null);
+
+  // Inline conversation stats (#547) - computed from messages
+  const stats = computeConversationStats(messages);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('recent');
   // Organization (#133)
@@ -4876,6 +4881,8 @@ ${lines.join('\n')}`;
           <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
             {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
           </span>
+          {/* Inline conversation stats (#547) */}
+          <InlineConversationStats stats={stats} dark={dark} />
           {isAgenticMode && isLoading && agentStatus && (
             <span
               role="status"
@@ -4940,6 +4947,45 @@ ${lines.join('\n')}`;
             : projRoots;
           return <ProjectHeader name={active?.name ?? null} roots={roots} dark={dark} onChangeWorkingDir={changeSessionWorkingDir} />;
         })()}
+
+        {/* Inline generation parameters (#547): always-visible key options */}
+        {currentSessionId && (
+          <div className={`px-4 pb-2 text-xs flex items-center gap-3 ${dark ? 'text-zinc-500' : 'text-zinc-600'}`}>
+            {/* Model name - show if not default */}
+            {model !== 'llama3' && (
+              <span
+                className="font-medium truncate max-w-[200px]"
+                title={model}
+              >
+                {model.length > 35 ? `${model.slice(0, 33)}…` : model}
+              </span>
+            )}
+            {/* Temperature */}
+            {genOptions.temperature !== undefined && genOptions.temperature !== null && (
+              <span className="whitespace-nowrap">
+                temp: {genOptions.temperature}
+              </span>
+            )}
+            {/* Context budget indicator (#242, #547) */}
+            <div
+              className="flex items-center gap-1 cursor-help"
+              title={`Context: ${conversationTokens} / ${effectiveNumCtx || 4096} tokens`}
+            >
+              <span className="text-[10px]">Ctx</span>
+              <ContextBudget tokens={conversationTokens} numCtx={effectiveNumCtx} dark={dark} />
+            </div>
+            {/* Structured output indicator */}
+            {structuredOutput.enabled && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider ${
+                  dark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-700'
+                }`}
+              >
+                JSON
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Messages - Responsive: full width on mobile, padded on desktop.
             role="log" + aria-live announce streamed assistant replies to screen
