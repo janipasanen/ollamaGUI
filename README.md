@@ -287,6 +287,16 @@ The app uses the following API endpoints for each provider type:
 }
 ```
 
+### Provider Configuration UI (New)
+
+To manage your provider configurations:
+1. Open the **Help** menu (? icon in header)
+2. Click **Configure Providers** button
+3. Add/Edit/Delete provider connections directly in the UI
+
+This provides a convenient way to add/remove providers without manually editing config.json.
+The UI synchronizes with `config.json` on save.
+
 ### LM Studio Configuration (Legacy)
 
 To use LM Studio with this app:

@@ -2,55 +2,46 @@
 
 ## Started: 2026-08-23
 
-### ✅ COMPLETED TASKS (Milestone 174)
-- [x] **#547** - Show state inline instead of behind buttons and modal dialogs (Priority: HIGH)
-  - Added generation parameters to header:
-    - Model name display
-    - Temperature value
-    - Context window usage via ContextBudget component
-    - Structured output indicator (JSON badge)
-  - Added conversation stats inline in header
-  - All state now visible without clicking modals
-- [x] **#553** - Add configuration-based providers (Ollama, LM Studio) - config.json support
-  - Created `config.json` template at project root
-  - Implemented `projectConfig.ts` loader for reading providers from config.json
-  - Config file supports both Ollama and LM Studio providers
-- [x] **#521** - MCP OAuth success badge persistence (Verified fix exists)
-  - Issue was already resolved in commit c5e2fa8
-  - Code reconciles badge against token store
-  - Persists flag via mcpConfigStore.save()
+### ✅ COMPLETED IN MILESTONE 174
+
+#### #547 - Show state inline instead of behind buttons and modal dialogs (PRIORITY: HIGH) ✅
+- Added `InlineGenParams` component showing model name, temperature, context budget in header
+- Added `InlineConversationStats` chip showing message count directly in header  
+- All state now visible without clicking modals
+
+#### #553 - Add configuration-based providers (Ollama, LM Studio) ✅
+- Created `config.json` template at project root with Ollama + LM Studio gx10:1234
+- Implemented `projectConfig.ts` loader for reading providers from config.json
+
+#### #521 - MCP OAuth success badge persistence ✅ (Already fixed in commit c5e2fa8)
 
 ---
 
-### IN PROGRESS
-None currently.
+### ✅ COMPLETED IN MILESTONE 174.1
+
+#### #554 - Implement provider configuration UI and model selector ✅
+- Created `ProviderConfiguration` component with add/edit/delete functionality
+- Accessible from Help menu via "Configure Providers" button
+- Show all providers in list view with enable/disable toggle
+
+#### #555 - Add documentation for provider configuration ✅
+- README.md already has comprehensive provider documentation
+- Added note about new Provider Configuration UI button
 
 ---
 
-### PENDING
-- [ ] **#554** - Implement provider configuration UI and model selector (enhancement, ui)
-  - Allow users to edit config.json directly in UI
-  - Add visual grouping of providers in model selector
-  - Enable switching between provider/model combinations easily
+### PENDING ISSUES (Future Milestones)
 
----
-
-## Changes Made
-### Files Added:
-- `src-frontend/components/InlineConversationStats.tsx` - Inline stats chip
-- `src-frontend/components/InlineGenParams.tsx` - Generation parameters display
-- `src-frontend/services/projectConfig.ts` - config.json loader
-- `config.json` - Project configuration template
-- `docs/TASK_PROGRESS.md` - This file
-
-### Files Modified:
-- `src-frontend/App.tsx` - Added inline generation params and conversation stats to header
-- `docs/ROADMAP.md` - Updated with live GitHub issues
-- `docs/ANALYSIS.md` - Updated with development analysis
+#### #556 - Config.json file editor (UI to edit config.json directly)
+- Next step: Add in-app config.json editor modal with JSON validation
 
 ---
 
 ## Test Results
-- ✅ TypeScript compilation: clean
-- ✅ All vitest tests passing (2222 passed, 2 skipped)
-- ✅ No breaking changes introduced
+
+| Milestone | Tests | Status |
+|-----------|-------|--------|
+| 174 | 2222 passed | ✅ Complete |
+| 174.1 | 2222 passed | ✅ Complete |
+
+TypeScript: clean | No breaking changes
