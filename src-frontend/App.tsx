@@ -50,6 +50,7 @@ import { formatErrorLine } from './services/errorMessages';
 import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
+import ProviderConfiguration from './components/ProviderConfiguration';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
 import { closeAllPanels } from './components/PanelShell';
@@ -693,6 +694,7 @@ const App: React.FC = () => {
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [isProviderConfigOpen, setIsProviderConfigOpen] = useState(false);
   // Composed system-prompt preview overlay (#376).
   const [promptPreview, setPromptPreview] = useState<string | null>(null);
   // In-conversation search (#247)
@@ -2160,11 +2162,12 @@ const App: React.FC = () => {
         abortControllerRef.current?.abort();
         return;
       }
-      // Escape closes the settings/help overlays even while focused in an input (#257)
-      if (e.key === 'Escape' && (isSettingsOpen || showHelp || promptPreview)) {
+      // Escape closes the settings/help/provider config overlays even while focused in an input (#257)
+      if (e.key === 'Escape' && (isSettingsOpen || showHelp || isProviderConfigOpen || promptPreview)) {
         e.preventDefault();
         if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
+        else if (isProviderConfigOpen) setIsProviderConfigOpen(false);
         else setPromptPreview(null);
         return;
       }
@@ -8211,7 +8214,17 @@ ${lines.join('\n')}`;
               </div>
               
               {/* Connection management help */}
-              <h3 className={`text-sm font-bold mt-6 mb-2 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Model Providers</h3>
+              <div className="flex items-center justify-between">
+                <h3 className={`text-sm font-bold mt-6 mb-2 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Model Providers</h3>
+                <button
+                  onClick={() => setIsProviderConfigOpen(true)}
+                  className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
+                    dark ? 'border-blue-600 text-blue-400 hover:bg-blue-900/20' : 'border-blue-500 text-blue-700 hover:bg-blue-50'
+                  }`}
+                >
+                  Configure Providers
+                </button>
+              </div>
               <p className={`text-[11px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                 The app supports multiple model providers including Ollama and LM Studio.
                 Configure them in Settings or use the <code className={dark ? 'text-blue-300' : 'text-blue-600'}>/connections</code> slash command to list enabled connections.
@@ -8232,6 +8245,23 @@ ${lines.join('\n')}`;
             </div>
           </div>
         )}
+
+        {/* Provider configuration modal (#554) */}
+        {isProviderConfigOpen && (
+          <ProviderConfiguration
+            dark={dark}
+            connections={connections}
+            onSave={(updatedConnections) => {
+              setConnections(updatedConnections);
+              saveConnections(updatedConnections);
+              // Refresh connected models for updated connections
+              fetchAllConnectionModels(updatedConnections).then(setConnectedModels).catch(() => {});
+              setIsProviderConfigOpen(false);
+            }}
+            onClose={() => setIsProviderConfigOpen(false)}
+          />
+        )}
+
         {/* Full-size image lightbox (#351) */}
         {lightboxImage && (
           <div
