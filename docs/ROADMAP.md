@@ -4116,3 +4116,14 @@ A comprehensive audit and implementation pass addressing high-priority UI issues
 - All inline state now visible without clicking modals
 - Provider configuration supports file-based (`config.json`) and localStorage persistence
 - No breaking changes to existing functionality
+
+## Milestone 174.1 — Provider configuration UI (#554)
+
+A dedicated provider configuration modal accessible from the Help menu:
+
+- [x] **#554** Add `ProviderConfiguration` component with add/edit/delete for providers, enable/disable toggle, API key field support.
+
+### Result
+- `tsc --noEmit` clean; `vitest run` = **2222 passed (240 test files)**
+- Dedicated UI for managing provider connections
+- Escape handler includes provider config overlay
