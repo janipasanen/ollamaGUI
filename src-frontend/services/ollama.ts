@@ -377,19 +377,70 @@ export function clearCapabilitiesCache(): void {
 }
 
 /**
- * The context window to actually request: the model's native limit capped by
- * a RAM-derived budget, never below the 4096 floor. Agentic runs get the full
- * budget; plain chat stays leaner so small machines aren't pushed into swap.
+ * The context window to actually request: respects user-configured limits,
+ * falls back to RAM-derived budget and native model context length.
+ * Agentic runs get the full budget; plain chat stays leaner.
  */
+// Import for context window configuration (circular dependency risk avoided by lazy loading)
+type ContextConfigEntry = {
+  contextWindow: number;
+  compactionThreshold: number;
+  autoDetected: boolean;
+};
+
+/** Lazy load model context configs to avoid circular dependencies */
+let _contextConfigCache: Map<string, ContextConfigEntry> | null = null;
+function loadContextConfigs(): Map<string, ContextConfigEntry> {
+  if (!_contextConfigCache) {
+    try {
+      const stored = localStorage.getItem('model_context_config_v1');
+      if (stored) {
+        const data = JSON.parse(stored);
+        _contextConfigCache = new Map(
+          Object.entries(data).map(([k, v]: [string, any]) => [
+            k,
+            {
+              contextWindow: v.contextWindow ?? 32768,
+              compactionThreshold: v.compactionThreshold ?? 0.8,
+              autoDetected: v.autoDetected ?? false,
+            },
+          ])
+        );
+      } else {
+        _contextConfigCache = new Map();
+      }
+    } catch {
+      _contextConfigCache = new Map();
+    }
+  }
+  return _contextConfigCache;
+}
+
 export function autoNumCtx(
   caps: ModelCapabilities | null,
   totalRamBytes: number | null,
   agentic: boolean,
+  connectionId?: string,
+  modelName?: string,
 ): number {
   const gb = totalRamBytes ? totalRamBytes / 1024 ** 3 : 8;
   const ramBudget = gb >= 24 ? 32768 : gb >= 16 ? 16384 : gb >= 8 ? 8192 : 4096;
   const budget = agentic ? ramBudget : Math.min(ramBudget, 8192);
-  const modelMax = caps?.contextLength ?? budget;
+  
+  // Get user-configured context window if available
+  let configContextWindow: number | null = null;
+  if (connectionId && modelName) {
+    try {
+      const configs = loadContextConfigs();
+      const modelId = `${connectionId}/${modelName}`;
+      configContextWindow = configs.get(modelId)?.contextWindow ?? null;
+    } catch {
+      // Error loading - fall back to other methods
+    }
+  }
+  
+  // Priority: user config > native model limit > RAM budget
+  const modelMax = configContextWindow ?? caps?.contextLength ?? budget;
   return Math.max(4096, Math.min(modelMax, budget));
 }
 

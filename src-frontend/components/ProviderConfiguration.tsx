@@ -2,10 +2,16 @@
  * Provider configuration modal (#554).
  *
  * Allows users to add, edit, and remove provider connections directly in the UI.
+ * Also manages context window configuration for each model/connection.
  */
 
 import React, { useState } from 'react';
 import type { ModelConnection } from '../services/connections';
+import {
+  loadModelContextConfigs,
+  saveModelContextConfigs,
+  getModelDefaultContext,
+} from '../services/modelContextConfig';
 
 interface Props {
   dark: boolean;
@@ -17,6 +23,9 @@ interface Props {
 export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSave, onClose }) => {
   const [editingConn, setEditingConn] = useState<ModelConnection | null>(null);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  
+  // Context window configurations per model (loaded once)
+  const [contextConfigs, setContextConfigs] = useState<Map<string, any>>(() => loadModelContextConfigs());
 
   const handleAddConnection = () => {
     if (!newConn.name || !newConn.baseUrl) return;
@@ -53,6 +62,20 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
     onSave(connections.map(c => c.id === id ? { ...c, enabled } : c));
   };
 
+  // Update context config for a specific model in a connection
+  const updateContextConfig = (modelId: string, newConfig: Partial<{contextWindow: number}>) => {
+    const updated = new Map(contextConfigs);
+    const existing = updated.get(modelId) ?? { contextWindow: getModelDefaultContext(), autoDetected: false };
+    updated.set(modelId, { ...existing, ...newConfig });
+    setContextConfigs(updated);
+  };
+
+  // Save all context configs when closing the modal
+  const handleSaveAndClose = () => {
+    saveModelContextConfigs(contextConfigs);
+    onClose();
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
@@ -67,11 +90,16 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
             Provider Configuration
           </h2>
           <button
-            onClick={onClose}
+            onClick={handleSaveAndClose}
             className={`p-1 rounded ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-500'}`}
           >
             ✕
           </button>
+        </div>
+
+        {/* Context Window Instructions */}
+        <div className={`mb-4 p-3 rounded-lg text-xs ${dark ? 'bg-blue-900/20 text-zinc-300' : 'bg-blue-50 text-zinc-700'}`}>
+          <strong>Context Window Configuration:</strong> Configure context windows for your local models. Remote models will auto-detect their limits.
         </div>
 
         {/* Connection list */}
@@ -102,36 +130,44 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleToggleEnabled(conn.id, !conn.enabled)}
-                      title={conn.enabled ? "Disable" : "Enable"}
-                      className={`px-2 py-1 text-[10px] rounded ${
-                        conn.enabled
-                          ? dark ? 'bg-emerald-900/30 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                          : dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'
-                      }`}
-                    >
-                      {conn.enabled ? 'On' : 'Off'}
-                    </button>
-                    <button
-                      onClick={() => handleEditConnection(conn)}
-                      className={`p-1.5 rounded ${
-                        dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'
-                      }`}
-                      title="Edit"
-                    >
-                      ✎
-                    </button>
-                    <button
-                      onClick={() => handleDeleteConnection(conn.id)}
-                      className={`p-1.5 rounded ${
-                        dark ? 'hover:bg-red-900/30 text-red-400' : 'hover:bg-red-50 text-red-600'
-                      }`}
-                      title="Delete"
-                    >
-                      🗑
-                    </button>
+                  <div className="flex flex-col gap-2">
+                    {/* Context window info for local models */}
+                    {conn.kind === 'ollama' && (
+                      <div className={`text-[10px] ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                        📏 Default: ~{Math.round(getModelDefaultContext() / 1024)}k tokens
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleToggleEnabled(conn.id, !conn.enabled)}
+                        title={conn.enabled ? "Disable" : "Enable"}
+                        className={`px-2 py-1 text-[10px] rounded ${
+                          conn.enabled
+                            ? dark ? 'bg-emerald-900/30 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                            : dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'
+                        }`}
+                      >
+                        {conn.enabled ? 'On' : 'Off'}
+                      </button>
+                      <button
+                        onClick={() => handleEditConnection(conn)}
+                        className={`p-1.5 rounded ${
+                          dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'
+                        }`}
+                        title="Edit"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => handleDeleteConnection(conn.id)}
+                        className={`p-1.5 rounded ${
+                          dark ? 'hover:bg-red-900/30 text-red-400' : 'hover:bg-red-50 text-red-600'
+                        }`}
+                        title="Delete"
+                      >
+                        🗑
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
