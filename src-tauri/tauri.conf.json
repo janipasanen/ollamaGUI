@@ -1,35 +1,35 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ollama-gui",
-  "version": "0.1.0",
-  "identifier": "ai.ollama.gui",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+  "$schema": "https://tauri.app/schema.json",
+  "package": {
+    "version": "0.1.0"
   },
-  "app": {
-    "windows": [
-      {
-        "title": "Ollama GUI",
-        "width": 1200,
-        "height": 800
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "targets": ["dmg"],
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns"
+      ],
+      "identifier": "ai.ollama.gui",
+      "macOS": {
+        "minimumSystemVersion": "10.15",
+        "exceptionDomain": "",
+        "frameworks": []
       }
-    ],
-    "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; connect-src 'self' ipc: http://ipc.localhost http://localhost:11434 https://cloud.ollama.ai http://localhost:* ws://localhost:* http: https: ws: wss:; frame-src 'self' http://localhost:* http://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    },
+    "security": {},
+    "updater": {
+      "active": false
     }
   },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
-  }
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "distDir": "../dist",
+    "devPath": "http://localhost:5173"
+  },
+  "plugins": {}
 }

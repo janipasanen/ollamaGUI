@@ -8,47 +8,23 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "src_tauri_tmp_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
-
 [dependencies]
-# `unstable` unlocks the multi-webview API (window.add_child) used by the
-# native browser preview pane (#72).
-tauri = { version = "2", features = ["unstable"] }
-tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tauri = { version = "1.6.0", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 lazy_static = "1.4.0"
 reqwest = { version = "0.11", features = ["json", "stream"] }
 tokio = { version = "1", features = ["full"] }
-# Cross-platform OS secret store: macOS Keychain, Windows Credential Manager, Linux Secret Service.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-# Encrypted-file fallback for environments with no OS secret store (e.g. headless Linux).
+keyring = { version = "2.3", default-features = false, features = ["platform-macos", "platform-windows", "secret-service"] }
 aes-gcm = "0.10"
-# Cross-platform system memory detection for the model-fit indicator.
-sysinfo = "0.33"
-# Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
-zip = "2"
-quick-xml = "0.41"
+sysinfo = "0.30"
+zip = "2.0.0"
+quick-xml = "0.36.0"
 lopdf = { version = "0.44", default-features = false }
-calamine = "0.36"
-# Bump transitive `plist` (via tauri) from 1.9 → 1.10 so its quick-xml dep
-# resolves to the patched 0.41 line instead of the vulnerable 0.39.4 (#395).
-plist = "1.10"
-futures = "0.3.32"
-# CDP automation engine for the AI browser (#73). tokio-runtime to match our
-# tokio; default features (incl. the bundled Chromium fetcher) are off.
-chromiumoxide = { version = "0.9", default-features = false }
-base64 = "0.23"
-# Code search tools (#420): recursive traversal + regex line matching. Both are
-# already transitive deps, so promoting them to direct deps is essentially free.
-walkdir = "2"
-regex = "1"
+calamine = "0.28.0"
 
+[build-dependencies]
+tauri-build = { version = "1.5.0", features = [] }

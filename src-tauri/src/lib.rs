@@ -14,9 +14,6 @@ mod ooxml;            // #141 OOXML template-fill + surgical edit
 mod odf;              // #142 ODF edit (mimetype-stored-first)
 mod pdf_tools;        // #143 PDF info/merge/split surface
 mod ax;               // #73 AX-tree serializer + redaction
-mod browser_engine;   // #73 chromiumoxide CDP automation engine
-mod browser_chromium; // #68 Chromium detection
-mod browser_preview;  // #72 native-preview webview (Tauri unstable add_child)
 mod config_validation; // #66 config-invariant tests
 
 #[derive(Serialize)]
@@ -2273,8 +2270,6 @@ async fn load_store(app: tauri::AppHandle, key: String) -> Result<Option<String>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_cli,
             probe_binary,
@@ -2338,23 +2333,8 @@ pub fn run() {
             // Browser infrastructure (#68 detection, #72 native-preview guard)
             browser_chromium::browser_chromium_status,
             browser_chromium::browser_chromium_download,
-            browser_preview::preview_webview_open,
-            browser_preview::preview_webview_navigate,
-            browser_preview::preview_webview_set_bounds,
-            browser_preview::preview_webview_reload,
-            browser_preview::preview_webview_close,
-            // CDP automation engine (#73)
-            browser_engine::browser_engine_start,
-            browser_engine::browser_engine_stop,
-            browser_engine::browser_cdp_navigate,
-            browser_engine::browser_cdp_get_ax_tree,
-            browser_engine::browser_cdp_click,
-            browser_engine::browser_cdp_type,
-            browser_engine::browser_cdp_screenshot,
-            browser_engine::browser_cdp_eval,
-            browser_engine::browser_cdp_read_console,
-            browser_engine::browser_cdp_wait_for,
-            browser_engine::browser_cdp_assert,
+
+            // CDP automation engine removed for Tauri v1 compatibility
             fetch_url,
             web_search,
             // Durable store mirror for sessions/projects/folders
