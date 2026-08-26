@@ -1,5 +1,5 @@
 {
-  "$schema": "https://tauri.app/schema.json",
+  "$schema": "https://tauri.app/v1/schema.json",
   "package": {
     "version": "0.1.0"
   },
