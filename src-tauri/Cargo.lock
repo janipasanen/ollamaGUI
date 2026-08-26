@@ -3236,9 +3236,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.36.2"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+checksum = "86e446ed58cef1bbfe847bc2fda0e2e4ea9f0e57b90c507d4781292590d72a4e"
 dependencies = [
  "memchr",
 ]
@@ -4020,11 +4020,14 @@ name = "src-tauri-tmp"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "base64 0.21.7",
  "calamine",
+ "dirs-next",
  "keyring",
  "lazy_static",
  "lopdf",
- "quick-xml 0.36.2",
+ "quick-xml 0.35.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -4032,6 +4035,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "walkdir",
  "zip 2.4.2",
 ]
 

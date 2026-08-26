@@ -9,7 +9,7 @@
  * are tracked in localStorage so the Settings UI can list what exists.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api';
 
 const KEYS_STORE = 'ollama_gui_secret_keys';
 

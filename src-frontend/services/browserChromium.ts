@@ -47,7 +47,7 @@ export const _mocks = {
 
 async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   if (_mocks.invoke) return _mocks.invoke(cmd, args) as Promise<T>;
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('@tauri-apps/api');
   return invoke<T>(cmd, args);
 }
 

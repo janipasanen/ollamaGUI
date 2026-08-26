@@ -75,7 +75,7 @@ export const _mocks = {
 
 async function cdpInvoke(cmd: string, args: any): Promise<any> {
   if (_mocks.invoke) return _mocks.invoke(cmd, args);
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('@tauri-apps/api');
   return invoke(cmd, args);
 }
 

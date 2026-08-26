@@ -2,7 +2,7 @@
 // Spec: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
 async function invoke(cmd: string, args: any): Promise<any> {
   try {
-    const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+    const { invoke: tauriInvoke } = await import('@tauri-apps/api');
     return await tauriInvoke(cmd, args);
   } catch {
     // Outside Tauri (browser dev / tests), perform the HTTP request for real

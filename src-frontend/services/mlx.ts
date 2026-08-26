@@ -28,7 +28,7 @@ const UNAVAILABLE: MlxAvailability = {
 /** Lazily import the Tauri invoke, returning null outside Tauri (tests / browser). */
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     return (await invoke(cmd, args)) as T;
   } catch {
     return null;

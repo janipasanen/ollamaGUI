@@ -116,7 +116,7 @@ export async function detectRepoClis(
   let probeFn = probe;
   if (!probeFn) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
+      const { invoke } = await import('@tauri-apps/api');
       probeFn = (name: string) => invoke<boolean>('probe_binary', { name });
     } catch {
       return [];

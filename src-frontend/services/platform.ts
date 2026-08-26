@@ -20,7 +20,7 @@ export function safeSessionSetItem(key: string, value: string): void {
 /** Check whether an executable (docker, uvx, npx, …) is on PATH. Returns false outside Tauri. */
 export async function probeBinary(name: string): Promise<boolean> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     return (await invoke('probe_binary', { name })) as boolean;
   } catch {
     return false; // Tauri unavailable — caller should degrade to manual entry
@@ -30,7 +30,7 @@ export async function probeBinary(name: string): Promise<boolean> {
 /** Open a native directory picker. Returns the chosen path, or null if cancelled/unavailable. */
 export async function pickDirectory(): Promise<string | null> {
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('@tauri-apps/api/dialog');
     const result = await open({ directory: true, multiple: false });
     return typeof result === 'string' ? result : null;
   } catch {
@@ -45,7 +45,7 @@ export async function pickDirectory(): Promise<string | null> {
  */
 export async function pickDirectories(): Promise<string[] | null> {
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('@tauri-apps/api/dialog');
     const result = await open({ directory: true, multiple: true });
     if (Array.isArray(result)) return result.filter((r): r is string => typeof r === 'string');
     return typeof result === 'string' ? [result] : null;
@@ -61,7 +61,7 @@ export async function pickDirectories(): Promise<string[] | null> {
  */
 export async function checkPath(path: string): Promise<{ exists: boolean; isDir: boolean; readable: boolean } | null> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     return (await invoke('path_exists', { path })) as { exists: boolean; isDir: boolean; readable: boolean };
   } catch {
     return null; // Tauri unavailable — caller cannot check, should not block
@@ -71,7 +71,7 @@ export async function checkPath(path: string): Promise<{ exists: boolean; isDir:
 /** Detect total/available system memory. Returns null outside Tauri (hides the fit indicator). */
 export async function getSystemMemory(): Promise<{ total_bytes: number; available_bytes: number; apple_silicon: boolean } | null> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     return (await invoke('get_system_memory')) as any;
   } catch {
     return null;
@@ -88,7 +88,7 @@ export function appendPathArg(command: string, path: string): string {
 /** Open a native file picker. Returns the chosen path, or null if cancelled/unavailable. */
 export async function pickFile(): Promise<string | null> {
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('@tauri-apps/api/dialog');
     const result = await open({ directory: false, multiple: false });
     return typeof result === 'string' ? result : null;
   } catch {

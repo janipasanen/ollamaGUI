@@ -21,7 +21,7 @@ export interface WebFetchOptions {
 }
 
 async function tauriInvoke(cmd: string, args: unknown): Promise<unknown> {
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('@tauri-apps/api');
   return invoke(cmd, args as Record<string, unknown>);
 }
 

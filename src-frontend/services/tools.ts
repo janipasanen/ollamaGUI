@@ -235,7 +235,7 @@ export function registerCliTool(
         }
       }
 
-      const { invoke } = await import('@tauri-apps/api/core');
+      const { invoke } = await import('@tauri-apps/api');
       const result = await invoke<CliResult>('run_cli', {
         command,
         cwd,
@@ -275,7 +275,7 @@ export async function runCliOnce(
   timeoutMs = 30_000,
 ): Promise<RunCliResult> {
   if (_cliMocks.invoke) return _cliMocks.invoke('run_cli', { command, cwd, timeoutMs }) as Promise<RunCliResult>;
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('@tauri-apps/api');
   return invoke<RunCliResult>('run_cli', { command, cwd, timeoutMs });
 }
 

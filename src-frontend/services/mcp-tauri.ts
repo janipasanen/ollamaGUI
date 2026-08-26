@@ -36,7 +36,7 @@ async function invoke(cmd: string, args: any): Promise<any> {
   // Test seam: when set, route every call through the injected mock.
   if (TauriMcpStdioTransport._mockInvoke) return TauriMcpStdioTransport._mockInvoke(cmd, args);
   try {
-    const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
+    const { invoke: tauriInvoke } = await import('@tauri-apps/api');
     return await tauriInvoke(cmd, args);
   } catch {
     return stdioStub(cmd, args);

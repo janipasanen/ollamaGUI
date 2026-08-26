@@ -26,14 +26,8 @@ export async function openDocumentPath(path: string): Promise<void> {
     return;
   }
   try {
-    const opener = await import('@tauri-apps/plugin-opener');
-    if (typeof (opener as any).openPath === 'function') {
-      await (opener as any).openPath(path);
-    } else if (typeof (opener as any).open === 'function') {
-      await (opener as any).open(path);
-    } else {
-      throw new Error('opener plugin has no open/openPath');
-    }
+    const { shell } = await import('@tauri-apps/api');
+    await shell.open(path);
   } catch (e) {
     // Re-throw so the UI can surface the failure instead of a silent no-op (#443).
     console.warn(`[artifact] openDocumentPath failed: ${e}`);
@@ -52,11 +46,11 @@ export async function exportDocumentPath(path: string): Promise<void> {
     return;
   }
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog');
-    const dest = await save({ defaultPath: path.split(/[\\/]/).pop() ?? 'document' });
+    const { dialog } = await import('@tauri-apps/api');
+    const dest = await dialog.save({ defaultPath: path.split(/[\\/]/).pop() ?? 'document' });
     if (!dest) return; // user cancelled — not an error
 
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     const command = navigator.platform.startsWith('Win')
       ? `copy "${path}" "${dest}"`
       : `cp "${path}" "${dest}"`;

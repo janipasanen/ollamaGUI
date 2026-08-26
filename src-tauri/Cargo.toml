@@ -12,19 +12,23 @@ name = "src_tauri_tmp_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-tauri = { version = "1.6.0", features = [] }
+tauri = { version = "1.5", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.21"
+dirs-next = "2.0"
 lazy_static = "1.4.0"
+regex = "1.10"
 reqwest = { version = "0.11", features = ["json", "stream"] }
+walkdir = "2.3"
 tokio = { version = "1", features = ["full"] }
 keyring = { version = "2.3", default-features = false, features = ["platform-macos", "platform-windows", "secret-service"] }
 aes-gcm = "0.10"
 sysinfo = "0.30"
 zip = "2.0.0"
-quick-xml = "0.36.0"
+quick-xml = "0.35.0"
 lopdf = { version = "0.44", default-features = false }
 calamine = "0.28.0"
 
 [build-dependencies]
-tauri-build = { version = "1.5.0", features = [] }
+tauri-build = { version = "1.4", features = [] }

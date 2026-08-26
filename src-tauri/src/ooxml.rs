@@ -194,10 +194,7 @@ pub fn surgical_replace_runs(
                     }
                     Event::Text(t) if pending_run_start.is_some() => {
                         let start_idx = pending_run_start.take().unwrap();
-                        let decoded = t
-                            .xml10_content()
-                            .map_err(|e| format!("surgical edit: xml decode: {e}"))?
-                            .into_owned();
+                        let decoded = t.unescape().map_err(|e| format!("unescape error: {:?}", e))?.into_owned();
                         let char_start = logical.chars().count();
                         logical.push_str(&decoded);
                         runs.push(RunText {
@@ -498,7 +495,7 @@ fn extract_run_text(xml_bytes: &[u8]) -> String {
             Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"t" => in_t = true,
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"t" => in_t = false,
             Ok(Event::Text(ref e)) if in_t => {
-                if let Ok(t) = e.xml10_content() {
+                if let Ok(t) = e.unescape().map_err(|e| format!("unescape error: {:?}", e)) {
                     out.push_str(&t);
                 }
             }
@@ -670,8 +667,10 @@ fn attr_local(key: &[u8]) -> &[u8] {
 /// Read a named attribute from a start tag as an unescaped `String`.
 fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
-        if attr_local(a.key.as_ref()) == name {
-            return a.normalized_value(quick_xml::XmlVersion::default()).ok().map(|v| v.into_owned());
+        // In quick_xml 0.35, Attribute has key field directly accessible (QName type)
+        let attr_key = a.key;
+        if attr_local(attr_key.as_ref()) == name {
+            return Some(String::from_utf8_lossy(attr_key.as_ref()).into_owned());
         }
     }
     None
@@ -825,13 +824,13 @@ fn make_row_events(row: u32, cell_ref: &str, value: &str) -> Result<Vec<Event<'s
 fn collect_keep_attrs(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, String)> {
     let mut keep: Vec<(String, String)> = Vec::new();
     for a in e.attributes().flatten() {
-        let local = attr_local(a.key.as_ref());
+        // In quick_xml 0.35, Attribute has key field directly accessible (QName type)
+        let attr_key = a.key;
+        let local = attr_local(attr_key.as_ref());
         if local != b"r" && local != b"t" {
             keep.push((
                 String::from_utf8_lossy(local).into_owned(),
-                a.normalized_value(quick_xml::XmlVersion::default())
-                    .map(|v| v.into_owned())
-                    .unwrap_or_default(),
+                String::from_utf8_lossy(attr_key.as_ref()).into_owned(),
             ));
         }
     }
@@ -1094,10 +1093,10 @@ fn extract_cell(
             }
             Event::Text(t) => {
                 if capture_v {
-                    v_text = Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                    v_text = Some(t.unescape().map_err(|e| format!("unescape error: {:?}", e))?.into_owned());
                 } else if capture_is {
                     is_text =
-                        Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                        Some(t.unescape().map_err(|e| format!("unescape error: {:?}", e))?.into_owned());
                 }
             }
             Event::End(e) => {
@@ -1146,7 +1145,7 @@ fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, S
                 depth += 1;
             }
             Event::Text(t) if in_si => {
-                current.push_str(&t.xml10_content().map_err(|e| format!("decode: {e}"))?);
+                current.push_str(&t.unescape().map_err(|e| format!("unescape error: {:?}", e))?);
             }
             Event::End(e) => {
                 let ln = e.local_name(); let loc: &[u8] = ln.as_ref();

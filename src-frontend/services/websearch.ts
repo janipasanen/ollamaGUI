@@ -52,7 +52,7 @@ export const _mocks = { webSearch: null as ((query: string, cfg: WebSearchConfig
 // ── Core search ───────────────────────────────────────────────────────────────
 
 async function tauriInvoke(cmd: string, args: unknown): Promise<unknown> {
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('@tauri-apps/api');
   return invoke(cmd, args as Record<string, unknown>);
 }
 

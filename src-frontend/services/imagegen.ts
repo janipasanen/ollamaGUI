@@ -63,7 +63,7 @@ async function httpRequest(
 ): Promise<{ status: number; body: string }> {
   const hdrs = { 'Content-Type': 'application/json', ...headers };
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     const res = await invoke('mcp_http_request', {
       request: { method, url, headers: hdrs, body },
     }) as { success: boolean; status: number; body: string };
@@ -82,7 +82,7 @@ async function httpRequest(
  *  browser fetch + FileReader in non-Tauri environments. */
 async function httpGetBase64(url: string): Promise<{ status: number; base64: string }> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     const res = await invoke('http_get_binary', { url }) as { success: boolean; status: number; body_base64: string };
     return { status: res.status, base64: res.body_base64 };
   } catch {

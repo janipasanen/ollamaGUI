@@ -2,8 +2,8 @@
 //!
 //! ODF files (`.odt`, `.ods`, `.odp`) are ZIP archives of XML. The body lives in
 //! `content.xml`, styles in `styles.xml`, and the package type is declared by a
-//! `mimetype` entry that — per the ODF spec (OpenDocument §3.3, "Zip File
-//! Structure") — **MUST be the FIRST entry in the archive and stored
+//! `mimetype` entry that - per the ODF spec (OpenDocument §3.3, "Zip File
+//! Structure") - **MUST be the FIRST entry in the archive and stored
 //! UNCOMPRESSED** (ZIP `Stored` method, no extra field). This lets readers sniff
 //! the package type from a fixed byte offset without inflating anything.
 //!
@@ -13,7 +13,7 @@
 //!     entry order and re-asserting the mimetype-first-stored invariant.
 //!   * [`odf_edit_text`] coalesces visible text across `<text:p>` / `<text:span>`
 //!     (odt) and table-cell (ods) nodes, then performs a unique-match
-//!     find/replace, failing loud on fragmentation or ambiguity — the same
+//!     find/replace, failing loud on fragmentation or ambiguity - the same
 //!     contract as an OOXML surgical edit.
 //!   * [`odt_surgical_edit`] wires unpack → edit → repack together.
 //!   * [`document_odf_edit`] is the Tauri command, workspace-scoped via
@@ -22,7 +22,7 @@
 //! Full-fidelity *read* and *create* (round-tripping styles, lists, tables) is
 //! delegated to Pandoc, and `.odp` authoring to LibreOffice (`soffice`); those
 //! runtime-dependent paths are out of scope here (see crate-level DEFERRED notes
-//! in the issue) — this module provides the lossless byte-level edit primitive.
+//! in the issue) - this module provides the lossless byte-level edit primitive.
 
 use serde::Serialize;
 use std::io::{Cursor, Read, Write};
@@ -39,7 +39,7 @@ const MIMETYPE_ENTRY: &str = "mimetype";
 #[derive(Serialize)]
 pub struct EditResult {
     /// A short, human-readable preview of the changed region (the replacement
-    /// text in context) — empty when nothing changed.
+    /// text in context) - empty when nothing changed.
     pub preview_text: String,
     /// Whether the file content actually changed.
     pub changed: bool,
@@ -155,9 +155,7 @@ fn collect_text_runs(content_xml: &str) -> Result<Vec<TextRun>, String> {
                 let raw_len = e.len();
                 let start = end.saturating_sub(raw_len);
                 // `e` borrows the still-escaped slice; unescape for matching.
-                let unescaped = e
-                    .xml10_content()
-                    .map_err(|err| format!("XML unescape error: {err}"))?
+                let unescaped = e.unescape().map_err(|err| format!("XML unescape error: {err}"))?
                     .into_owned();
                 if !unescaped.is_empty() {
                     runs.push(TextRun {
@@ -184,7 +182,7 @@ fn collect_text_runs(content_xml: &str) -> Result<Vec<TextRun>, String> {
 ///   * If `find` does not appear in any single run but *does* appear in the
 ///     concatenated visible text, the match is **fragmented** across multiple
 ///     XML nodes (e.g. split by a `<text:span>` boundary). We refuse such edits
-///     and return an error rather than risk corrupting markup — the caller must
+///     and return an error rather than risk corrupting markup - the caller must
 ///     narrow the match.
 ///   * Zero matches → error. More than one single-run match → ambiguous → error.
 ///
@@ -205,7 +203,7 @@ pub fn odf_edit_text(content_xml: &str, find: &str, replace: &str) -> Result<Str
         let occurrences = run.text.matches(find).count();
         if occurrences > 1 {
             return Err(format!(
-                "Ambiguous edit: '{find}' occurs {occurrences} times within a single text node — provide more surrounding context to make the match unique."
+                "Ambiguous edit: '{find}' occurs {occurrences} times within a single text node - provide more surrounding context to make the match unique."
             ));
         }
         // Splice in the source: re-escape the replacement, substitute within the
@@ -223,7 +221,7 @@ pub fn odf_edit_text(content_xml: &str, find: &str, replace: &str) -> Result<Str
             raw_slice.replacen(find, &escaped_replace, 1)
         } else {
             // Visible text matched but neither escaped nor literal form is found
-            // in the raw slice — the run is itself internally fragmented.
+            // in the raw slice - the run is itself internally fragmented.
             return Err(format!(
                 "Fragmented edit: '{find}' spans entity/markup boundaries within a node and cannot be safely replaced."
             ));
@@ -238,7 +236,7 @@ pub fn odf_edit_text(content_xml: &str, find: &str, replace: &str) -> Result<Str
 
     if hits.len() > 1 {
         return Err(format!(
-            "Ambiguous edit: '{find}' matches {} separate text nodes — provide more context to make the match unique.",
+            "Ambiguous edit: '{find}' matches {} separate text nodes - provide more context to make the match unique.",
             hits.len()
         ));
     }
@@ -247,7 +245,7 @@ pub fn odf_edit_text(content_xml: &str, find: &str, replace: &str) -> Result<Str
     let coalesced: String = runs.iter().map(|r| r.text.as_str()).collect();
     if coalesced.contains(find) {
         return Err(format!(
-            "Fragmented edit: '{find}' is split across multiple XML nodes (e.g. <text:span> boundaries) and cannot be replaced surgically — narrow the match to text within a single run."
+            "Fragmented edit: '{find}' is split across multiple XML nodes (e.g. <text:span> boundaries) and cannot be replaced surgically - narrow the match to text within a single run."
         ));
     }
 
@@ -339,7 +337,7 @@ fn build_preview(replace: &str) -> String {
         replace.to_string()
     } else {
         let truncated: String = replace.chars().take(MAX).collect();
-        format!("{truncated}…")
+        format!("{truncated}...")
     }
 }
 
@@ -505,7 +503,7 @@ mod tests {
     #[test]
     fn edit_table_cell_text_succeeds() {
         // ods-style cell content; local-name matching means we don't special-case
-        // table namespaces — we just match the visible text run.
+        // table namespaces - we just match the visible text run.
         let content = r#"<table:table-cell><text:p>Revenue</text:p></table:table-cell>"#;
         let out = odf_edit_text(content, "Revenue", "Income").unwrap();
         assert!(out.contains("Income"));
@@ -514,7 +512,7 @@ mod tests {
 
     #[test]
     fn fragmented_match_returns_err_and_no_change() {
-        // "Hello World" is split across two <text:span> nodes — must fail loud.
+        // "Hello World" is split across two <text:span> nodes - must fail loud.
         let content =
             r#"<text:p><text:span>Hello </text:span><text:span>World</text:span></text:p>"#;
         let result = odf_edit_text(content, "Hello World", "Goodbye");

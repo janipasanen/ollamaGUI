@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { toolRegistry, registerCliTool, cliAllowlist, toolCallName, toolCallArgs } from '../services/tools';
 
 // Mock the Tauri invoke API
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock('@tauri-apps/api', () => ({
   invoke: vi.fn(),
 }));
 
@@ -11,7 +11,7 @@ describe('CLI Tool', () => {
   let approvalCallback: Mock<(command: string, cwd?: string) => Promise<boolean>>;
 
   beforeEach(async () => {
-    const tauriCore = await import('@tauri-apps/api/core');
+    const tauriCore = await import('@tauri-apps/api');
     mockInvoke = tauriCore.invoke as unknown as typeof mockInvoke;
     mockInvoke.mockReset();
 

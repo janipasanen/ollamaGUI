@@ -28,7 +28,7 @@ export function hasTauri(): boolean {
 
 async function tauri(): Promise<Invoke | null> {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     return invoke as Invoke;
   } catch {
     return null; // Tauri unavailable — mirror becomes a no-op

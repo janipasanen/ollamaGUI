@@ -131,7 +131,7 @@ export function operationToToolDefinition(
     let invokeResult: { success: boolean; status: number; body: string } | null = null;
     let tauriError: any = null;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
+      const { invoke } = await import('@tauri-apps/api');
       invokeResult = await invoke('mcp_http_request', {
         request: { method: method.toUpperCase(), url, headers, body },
       }) as { success: boolean; status: number; body: string };
@@ -197,7 +197,7 @@ export async function fetchOpenApiSpec(url: string, apiKey?: string, apiKeyHeade
     headers[h] = h === 'Authorization' ? `Bearer ${apiKey}` : apiKey;
   }
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = await import('@tauri-apps/api');
     const res = await invoke('mcp_http_request', {
       request: { method: 'GET', url, headers },
     }) as { success: boolean; status: number; body: string };

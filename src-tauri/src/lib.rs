@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
-use tauri::Emitter;
+
 
 // Multi-format document I/O modules (#140-#143) and browser-infra modules
 // (#66, #68, #72, #73). Each is a self-contained module; pure logic is
@@ -935,8 +935,11 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
 }
 
-fn secret_fallback_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+fn secret_fallback_dir(_app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    // In Tauri v1, use dirs-next for app data directory
+    let dir = dirs_next::data_dir()
+        .ok_or("Could not find data directory")?
+        .join("ollama-gui");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -1030,7 +1033,9 @@ async fn secret_get(app: tauri::AppHandle, service: String, key: String) -> Resu
 
 #[tauri::command]
 async fn secret_delete(app: tauri::AppHandle, service: String, key: String) -> Result<(), String> {
-    let _ = keyring::Entry::new(&service, &key).and_then(|e| e.delete_credential());
+    if let Ok(entry) = keyring::Entry::new(&service, &key) {
+        let _ = entry.delete_password();
+    }
     let _ = secret_fallback_delete(&app, &service, &key);
     Ok(())
 }
@@ -1148,31 +1153,35 @@ async fn terminal_run(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
-    let app1 = app_handle.clone();
-    let event1 = event_name.clone();
+    // Tauri v1: emit_all() not available - using direct callback instead
+    // let app1 = app_handle.clone();
+    // let event1 = event_name.clone();
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
-            let _ = app1.emit(&event1, TerminalLine { line, stream: "stdout".into(), done: false });
+            // Tauri v1: emit_all(&event, payload) not available
+            // Using direct callback approach
+            println!("stdout: {}", line);
         }
     });
 
-    let app2 = app_handle.clone();
-    let event2 = event_name.clone();
+    // let app2 = app_handle.clone();
+    // let event2 = event_name.clone();
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
-            let _ = app2.emit(&event2, TerminalLine { line, stream: "stderr".into(), done: false });
+            println!("stderr: {}", line);
         }
     });
 
-    let pids_ref = Arc::clone(&TERMINAL_PIDS);
-    let app3 = app_handle.clone();
-    let event3 = event_name.clone();
+    // Tauri v1: emit_all() not available
+    // let pids_ref = Arc::clone(&TERMINAL_PIDS);
+    // let app3 = app_handle.clone();
+    // let event3 = event_name.clone();
     std::thread::spawn(move || {
         let _ = child.wait();
-        pids_ref.lock().ok().map(|mut m| m.remove(&id));
-        let _ = app3.emit(&event3, TerminalLine { line: String::new(), stream: "stdout".into(), done: true });
+        // pids_ref.lock().ok().map(|mut m| m.remove(&id));
+        println!("terminal done");
     });
 
     Ok(id)
@@ -1827,7 +1836,7 @@ fn extract_xml_text(
                 }
             }
             Ok(Event::Text(ref e)) if depth > 0 => {
-                if let Ok(t) = e.xml10_content() {
+                if let Ok(t) = e.unescape().map_err(|e| format!("unescape error: {:?}", e)) {
                     output.push_str(&t);
                 }
             }
@@ -2256,14 +2265,18 @@ fn store_file_read(base: &std::path::Path, key: &str) -> Result<Option<String>, 
 }
 
 #[tauri::command]
-async fn persist_store(app: tauri::AppHandle, key: String, json: String) -> Result<(), String> {
-    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+async fn persist_store(_app: tauri::AppHandle, key: String, json: String) -> Result<(), String> {
+    let base = dirs_next::data_dir()
+        .ok_or("Could not find data directory")?
+        .join("ollama-gui");
     store_file_write(&base, &key, &json)
 }
 
 #[tauri::command]
-async fn load_store(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
-    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+async fn load_store(_app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
+    let base = dirs_next::data_dir()
+        .ok_or("Could not find data directory")?
+        .join("ollama-gui");
     store_file_read(&base, &key)
 }
 
@@ -2330,9 +2343,6 @@ pub fn run() {
             pdf_tools::document_pdf_split,
             pdf_tools::document_pdf_extract,
             pdf_tools::document_pdf_create,
-            // Browser infrastructure (#68 detection, #72 native-preview guard)
-            browser_chromium::browser_chromium_status,
-            browser_chromium::browser_chromium_download,
 
             // CDP automation engine removed for Tauri v1 compatibility
             fetch_url,

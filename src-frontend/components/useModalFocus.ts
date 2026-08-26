@@ -12,13 +12,13 @@
  *   {isOpen && <div ref={ref} tabIndex={-1} role="dialog" ...>...</div>}
  */
 
-import { useEffect, useRef } from 'react';
-import type { RefObject } from 'react';
+import { useEffect, useRef, useRef as useMutableRef } from 'react';
+import type { MutableRefObject } from 'react';
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function useModalFocus<T extends HTMLElement>(open: boolean): RefObject<T | null> {
+export function useModalFocus<T extends HTMLElement>(open: boolean): MutableRefObject<T | null> {
   const containerRef = useRef<T | null>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 

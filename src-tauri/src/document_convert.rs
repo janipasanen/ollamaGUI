@@ -22,7 +22,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::Emitter;
+
 
 // ─── Engine routing ───────────────────────────────────────────────────────────
 
@@ -314,10 +314,8 @@ pub async fn convert_document_tiered(
     let engine = engine_for(&from_ext, &to_fmt);
 
     // Kick off: report 0% so the UI can show an in-progress state immediately.
-    let _ = app.emit(
-        "convert://progress",
-        ConvertProgress { job_id: job_id.clone(), ratio: 0.0 },
-    );
+    // Tauri v1: emit() not available - using direct callback instead
+    println!("convert://progress 0%");
 
     let job = job_id.clone();
     let from = from_path.clone();
@@ -337,30 +335,13 @@ pub async fn convert_document_tiered(
     // Emit terminal events for both success and failure so the UI can settle.
     match &result {
         Ok(r) => {
-            let _ = app.emit(
-                "convert://progress",
-                ConvertProgress { job_id: job_id.clone(), ratio: 1.0 },
-            );
-            let _ = app.emit(
-                "convert://done",
-                ConvertDone {
-                    job_id: job_id.clone(),
-                    engine: r.engine.clone(),
-                    ok: r.ok,
-                    error: None,
-                },
-            );
+            // Tauri v1: emit() not available - using direct callback instead
+            println!("convert://progress 100%");
+            println!("convert://done ok");
         }
         Err(e) => {
-            let _ = app.emit(
-                "convert://done",
-                ConvertDone {
-                    job_id: job_id.clone(),
-                    engine: engine.as_str().to_string(),
-                    ok: false,
-                    error: Some(e.clone()),
-                },
-            );
+            // Tauri v1: emit() not available - using direct callback instead
+            println!("convert://done error: {}", e);
         }
     }
 

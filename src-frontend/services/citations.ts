@@ -139,7 +139,7 @@ export const _mocks: { open: ((target: { kind: Source['kind']; target: string })
 /**
  * Open the underlying file or link for a source.
  *
- * - `url` sources open in the system browser via @tauri-apps/plugin-opener.
+ * - `url` sources open in the system browser via @tauri-apps/api.
  * - `file`/`chunk` sources open the file via the opener plugin's openPath.
  *
  * Every external dependency is dynamically imported and guarded, so this is a
@@ -157,16 +157,12 @@ export async function openSource(source: Source): Promise<void> {
   }
 
   try {
-    const opener = await import('@tauri-apps/plugin-opener');
+    const { shell } = await import('@tauri-apps/api');
+    // For Tauri v1, use shell module for opening URLs/files
     if (source.kind === 'url') {
-      // openUrl is the canonical browser-opening entry point.
-      if (typeof opener.openUrl === 'function') await opener.openUrl(target);
-      else if (typeof (opener as any).open === 'function') await (opener as any).open(target);
+      await shell.open(target);
     } else {
-      // File-backed source: reveal/open the file on disk if we can.
-      if (typeof (opener as any).openPath === 'function') await (opener as any).openPath(target);
-      else if (typeof (opener as any).open === 'function') await (opener as any).open(target);
-      // else: no opener available — fall back to a no-op.
+      await shell.open(target);
     }
   } catch (e) {
     // Outside Tauri (dev server / tests) the plugin import fails — degrade quietly.

@@ -78,11 +78,6 @@ export function applyTheme(settings: ThemeSettings): void {
  * area, Windows caption) with the in-app theme, so it isn't stuck light while
  * the app is dark. No-op outside Tauri (browser/tests).
  */
-export async function syncWindowTheme(dark: boolean): Promise<void> {
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().setTheme(dark ? 'dark' : 'light');
-  } catch {
-    /* not running inside Tauri */
-  }
+export async function syncWindowTheme(_dark: boolean): Promise<void> {
+  // Tauri v1: setTheme() not available
 }

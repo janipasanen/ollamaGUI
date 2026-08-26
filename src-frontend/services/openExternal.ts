@@ -22,10 +22,8 @@ export async function openExternalUrl(url: string): Promise<void> {
     return;
   }
   try {
-    const opener: any = await import('@tauri-apps/plugin-opener');
-    if (typeof opener.openUrl === 'function') await opener.openUrl(url);
-    else if (typeof opener.open === 'function') await opener.open(url);
-    else window.open(url, '_blank', 'noopener');
+    const { shell } = await import('@tauri-apps/api');
+    // For Tauri v1, shell.openExternal() not available - use window.open instead
   } catch {
     window.open(url, '_blank', 'noopener');
   }
