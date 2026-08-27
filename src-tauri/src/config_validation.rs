@@ -82,14 +82,16 @@ pub fn capability_permission_identifiers(capabilities: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Extract `app.security.csp` from a parsed `tauri.conf.json`, if present and
-/// a non-empty string. Tauri also accepts an object-form CSP (per-directive
-/// map); for #66 we require the simple string form, so the object form is
-/// treated as "absent" here and reported by the caller.
+/// Extract `tauri.security.csp` from a parsed `tauri.conf.json`, if present and
+/// a non-empty string. This matches the Tauri **v1** config layout
+/// (`Config.tauri.security.csp`) as documented at
+/// https://tauri.app/v1/api/config/#security. Tauri also accepts an object-form
+/// CSP (per-directive map); for #66 we require the simple string form, so the
+/// object form is treated as "absent" here and reported by the caller.
 pub fn csp_string(tauri_conf: &Value) -> Option<String> {
     tauri_conf
-        .get("app")
-        .and_then(|app| app.get("security"))
+        .get("tauri")
+        .and_then(|tauri| tauri.get("security"))
         .and_then(|security| security.get("csp"))
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
@@ -182,11 +184,11 @@ mod tests {
     fn csp_string_rejects_empty_and_object_forms() {
         assert_eq!(csp_string(&serde_json::json!({})), None);
         let obj_form = serde_json::json!({
-            "app": { "security": { "csp": { "default-src": ["'self'"] } } }
+            "tauri": { "security": { "csp": { "default-src": ["'self'"] } } }
         });
         assert_eq!(csp_string(&obj_form), None);
         let ok = serde_json::json!({
-            "app": { "security": { "csp": "default-src 'self'" } }
+            "tauri": { "security": { "csp": "default-src 'self'" } }
         });
         assert_eq!(csp_string(&ok).as_deref(), Some("default-src 'self'"));
     }

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // (invoke('secret_set'/'secret_get'/'secret_delete')) instead of the in-memory
 // fallback (#225).
 const invokeMock = vi.hoisted(() => vi.fn());
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api', () => ({ invoke: invokeMock }));
 
 import { secretStore } from '../services/secretStore';
 

@@ -6,7 +6,7 @@ import {
 } from '../services/imagegen';
 
 // Force Tauri to be unavailable so httpRequest falls back to fetch
-vi.mock('@tauri-apps/api/core', () => {
+vi.mock('@tauri-apps/api', () => {
   return { invoke: vi.fn(() => { throw new Error('tauri unavailable in test'); }) };
 });
 

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api', () => ({ invoke: invokeMock }));
 
 import { mirrorToDisk, loadFromDisk, hasTauri, _clearPendingMirrors } from '../services/rustStore';
 

@@ -184,6 +184,9 @@ interface CliResult {
   timed_out: boolean;
 }
 
+/** Long-running checks/builds must not be cut off at the old 30 s default. */
+export const DEFAULT_SHELL_COMMAND_TIMEOUT_MS = 120_000;
+
 /**
  * Register the `run_shell_command` tool backed by the Rust `run_cli` Tauri command.
  * `onApprovalRequired` is called whenever a command is not in the allowlist;
@@ -208,11 +211,19 @@ export function registerCliTool(
           type: 'string',
           description: 'Working directory for the command (optional).',
         },
+        timeout_ms: {
+          type: 'number',
+          description: 'Timeout in milliseconds (default 120000, maximum 600000).',
+        },
       },
       required: ['command'],
     },
     execute: async (params: Record<string, any>) => {
       const command = params.command as string;
+      const requestedTimeout = params.timeout_ms as number | undefined;
+      const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout) && requestedTimeout > 0
+        ? Math.min(Math.floor(requestedTimeout), 10 * 60_000)
+        : DEFAULT_SHELL_COMMAND_TIMEOUT_MS;
       // Default to the open workspace so `gh issue list`, `git status`, `npm
       // test` etc. target the user's project rather than the app's own working
       // directory (#490). The model routinely omits cwd, and run_cli only calls
@@ -239,7 +250,7 @@ export function registerCliTool(
       const result = await invoke<CliResult>('run_cli', {
         command,
         cwd,
-        timeoutMs: 30_000,
+        timeoutMs,
       });
 
       const output = result.timed_out
@@ -272,7 +283,7 @@ export interface RunCliResult {
 export async function runCliOnce(
   command: string,
   cwd?: string,
-  timeoutMs = 30_000,
+  timeoutMs = DEFAULT_SHELL_COMMAND_TIMEOUT_MS,
 ): Promise<RunCliResult> {
   if (_cliMocks.invoke) return _cliMocks.invoke('run_cli', { command, cwd, timeoutMs }) as Promise<RunCliResult>;
   const { invoke } = await import('@tauri-apps/api');

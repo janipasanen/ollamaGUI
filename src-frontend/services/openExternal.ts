@@ -21,10 +21,7 @@ export async function openExternalUrl(url: string): Promise<void> {
     await _mocks.openUrl(url);
     return;
   }
-  try {
-    const { shell } = await import('@tauri-apps/api');
-    // For Tauri v1, shell.openExternal() not available - use window.open instead
-  } catch {
-    window.open(url, '_blank', 'noopener');
-  }
+  // Tauri v1 has no shell.openExternal; window.open (guarded by allowlisted
+  // schemes upstream) opens the external browser without leaving the webview.
+  window.open(url, '_blank', 'noopener');
 }

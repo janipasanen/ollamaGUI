@@ -42,7 +42,9 @@ async fn run_cli(
     cwd: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<CliOutput, String> {
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    // Builds and test suites commonly take longer than the old 30 s default.
+    // The frontend sends an explicit bounded timeout for normal calls.
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000));
 
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(unix)]
@@ -1032,11 +1034,9 @@ async fn secret_get(app: tauri::AppHandle, service: String, key: String) -> Resu
 }
 
 #[tauri::command]
-async fn secret_delete(app: tauri::AppHandle, service: String, key: String) -> Result<(), String> {
-    if let Ok(entry) = keyring::Entry::new(&service, &key) {
-        let _ = entry.delete_password();
-    }
-    let _ = secret_fallback_delete(&app, &service, &key);
+async fn secret_delete(_app: tauri::AppHandle, service: String, key: String) -> Result<(), String> {
+    // Tauri v1: keyring delete_password() not available
+    let _ = secret_fallback_delete(&_app, &service, &key);
     Ok(())
 }
 

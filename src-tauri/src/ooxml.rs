@@ -667,10 +667,14 @@ fn attr_local(key: &[u8]) -> &[u8] {
 /// Read a named attribute from a start tag as an unescaped `String`.
 fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
-        // In quick_xml 0.35, Attribute has key field directly accessible (QName type)
-        let attr_key = a.key;
-        if attr_local(attr_key.as_ref()) == name {
-            return Some(String::from_utf8_lossy(attr_key.as_ref()).into_owned());
+        // quick_xml 0.35 exposes the attribute key/value directly on the
+        // `Attribute` struct. Match on the *local* name of the key (stripping
+        // any namespace prefix) and return the attribute's *value*, e.g. the
+        // relationship id `rId1` for a key `r:id`.
+        let key = a.key;
+        let value = &a.value;
+        if attr_local(key.as_ref()) == name {
+            return Some(String::from_utf8_lossy(value).into_owned());
         }
     }
     None

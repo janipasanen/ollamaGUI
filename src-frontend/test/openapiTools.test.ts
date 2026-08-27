@@ -3,7 +3,7 @@ import { toolRegistry } from '../services/tools';
 
 // Mock Tauri invoke — captured in tests to inspect calls
 let _invokeImpl: ((cmd: string, args?: any) => any) | null = null;
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock('@tauri-apps/api', () => ({
   invoke: async (cmd: string, args?: any) => {
     if (_invokeImpl) return _invokeImpl(cmd, args);
     throw new Error(`unexpected invoke: ${cmd}`);

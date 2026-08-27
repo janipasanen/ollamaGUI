@@ -339,6 +339,33 @@ export interface ModelCapabilities {
   contextLength: number | null;
   /** True when the model advertises tool-calling support; null = unknown. */
   tools: boolean | null;
+  /** Indicates that contextLength came from a built-in model profile. */
+  contextSource?: 'server' | 'built-in';
+}
+
+/**
+ * Capabilities for models whose Ollama package does not expose model_info.
+ *
+ * Custom/imported models can legitimately have a large context window while
+ * `/api/show` omits the metadata that normally tells us about it. Keep these
+ * entries narrowly scoped and use them only as a fallback; server metadata
+ * always wins when it is available.
+ */
+export interface ModelProfile {
+  contextLength: number;
+  tools?: boolean;
+}
+
+const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
+  'janimpasanen/ornith-1.5-256k-jani:35b': {
+    contextLength: 262_144,
+    tools: true,
+  },
+};
+
+/** Return a built-in profile for a model with missing server metadata. */
+export function getBuiltInModelProfile(modelName: string): ModelProfile | null {
+  return BUILT_IN_MODEL_PROFILES[modelName.trim().toLowerCase()] ?? null;
 }
 
 const _capsCache = new Map<string, ModelCapabilities>();
@@ -366,6 +393,18 @@ export async function getModelCapabilities(
       if (Array.isArray(data.capabilities)) result.tools = data.capabilities.includes('tools');
     }
   } catch { /* network error — leave unknowns */ }
+
+  // Ollama can serve custom models without model_info. Use the model's
+  // explicit profile so auto-sizing and compaction still know the true native
+  // limit instead of silently falling back to generic metadata.
+  const profile = getBuiltInModelProfile(modelName);
+  if (profile) {
+    if (result.contextLength === null) {
+      result.contextLength = profile.contextLength;
+      result.contextSource = 'built-in';
+    }
+    if (result.tools === null && profile.tools !== undefined) result.tools = profile.tools;
+  }
 
   _capsCache.set(modelName, result);
   return result;
@@ -426,6 +465,13 @@ export function autoNumCtx(
   const gb = totalRamBytes ? totalRamBytes / 1024 ** 3 : 8;
   const ramBudget = gb >= 24 ? 32768 : gb >= 16 ? 16384 : gb >= 8 ? 8192 : 4096;
   const budget = agentic ? ramBudget : Math.min(ramBudget, 8192);
+
+  // A built-in profile represents a remote/server-controlled model limit.
+  // Honour it instead of applying the frontend machine's RAM budget (which
+  // may be unrelated to the GX10 running Ollama).
+  if (caps?.contextSource === 'built-in' && caps.contextLength) {
+    return Math.max(4096, caps.contextLength);
+  }
   
   // Get user-configured context window if available
   let configContextWindow: number | null = null;

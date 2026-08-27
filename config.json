@@ -15,7 +15,7 @@
       "baseUrl": "http://gx10:1234",
       "enabled": true,
       "apiKey": "",
-      "defaultModel": "qwen/qwen3-coder-next"
+      "defaultModel": "north-mini-code-1.0:q8_0"
     }
   ]
 }

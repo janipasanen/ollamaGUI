@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const invokeMock = vi.hoisted(() => vi.fn());
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api', () => ({ invoke: invokeMock }));
 
 import { secretSet, secretGet, secretDelete, secretListRefs } from '../services/secrets';
 

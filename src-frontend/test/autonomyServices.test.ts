@@ -3,11 +3,20 @@
  * binary-level CLI allowlisting, the shared devTools approval path, and
  * RAM/model-aware context auto-sizing.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { cliAllowlist, commandBinary, isCommandAllowlisted, requestCliApproval, CORE_AGENT_TOOLS } from '../services/tools';
-import { autoNumCtx, type ModelCapabilities } from '../services/ollama';
+import {
+  autoNumCtx,
+  clearCapabilitiesCache,
+  getBuiltInModelProfile,
+  getModelCapabilities,
+  type ModelCapabilities,
+} from '../services/ollama';
 
-beforeEach(() => cliAllowlist.clear());
+beforeEach(() => {
+  cliAllowlist.clear();
+  clearCapabilitiesCache();
+});
 
 describe('binary-level CLI allowlist (#549 rank 2)', () => {
   it('commandBinary extracts the first token', () => {
@@ -60,6 +69,39 @@ describe('autoNumCtx (#549 rank 3)', () => {
 
   it('unknown capabilities fall back to the RAM budget', () => {
     expect(autoNumCtx(null, 16 * GB, true)).toBe(16384);
+  });
+
+  it('honours a built-in remote profile instead of local RAM limits', () => {
+    expect(autoNumCtx({ contextLength: 262144, contextSource: 'built-in', tools: true }, 8 * GB, false))
+      .toBe(262144);
+  });
+});
+
+describe('built-in model profiles', () => {
+  it('recognizes the Ornith 256k custom model', () => {
+    expect(getBuiltInModelProfile('janimpasanen/ornith-1.5-256k-jani:35b')).toEqual({
+      contextLength: 262144,
+      tools: true,
+    });
+  });
+
+  it('matches profile names case-insensitively and ignores surrounding whitespace', () => {
+    expect(getBuiltInModelProfile('  JANIMPASANEN/ORNITH-1.5-256K-JANI:35B ')).toEqual({
+      contextLength: 262144,
+      tools: true,
+    });
+  });
+
+  it('does not assign metadata to unknown models', () => {
+    expect(getBuiltInModelProfile('llama3:8b')).toBeNull();
+  });
+
+  it('fills missing Ollama metadata from the profile', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ model_info: {} }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getModelCapabilities('janimpasanen/ornith-1.5-256k-jani:35b', 'http://ollama'))
+      .resolves.toEqual({ contextLength: 262144, tools: true, contextSource: 'built-in' });
   });
 });
 

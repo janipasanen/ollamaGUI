@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { toolRegistry, registerCliTool, cliAllowlist, toolCallName, toolCallArgs } from '../services/tools';
+import { toolRegistry, registerCliTool, cliAllowlist, toolCallName, toolCallArgs, DEFAULT_SHELL_COMMAND_TIMEOUT_MS } from '../services/tools';
 
 // Mock the Tauri invoke API
 vi.mock('@tauri-apps/api', () => ({
@@ -48,8 +48,17 @@ describe('CLI Tool', () => {
     expect(mockInvoke).toHaveBeenCalledWith('run_cli', {
       command: 'ls -la',
       cwd: '/tmp',
-      timeoutMs: 30_000,
+      timeoutMs: DEFAULT_SHELL_COMMAND_TIMEOUT_MS,
     });
+  });
+
+  it('allows a bounded per-command timeout', async () => {
+    approvalCallback.mockResolvedValue(true);
+    mockInvoke.mockResolvedValue({ stdout: 'ok', stderr: '', exit_code: 0, timed_out: false });
+
+    await toolRegistry.getTool('run_shell_command')!.execute({ command: 'npm test', timeout_ms: 300_000 });
+
+    expect(mockInvoke).toHaveBeenCalledWith('run_cli', expect.objectContaining({ timeoutMs: 300_000 }));
   });
 
   it('returns denied error when approval callback returns false', async () => {

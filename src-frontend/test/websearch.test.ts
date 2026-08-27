@@ -7,7 +7,7 @@ import {
 
 // Make the Tauri invoke seam controllable for error-path tests (#229).
 const invokeMock = vi.fn();
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+vi.mock('@tauri-apps/api', () => ({ invoke: invokeMock }));
 
 beforeEach(() => {
   localStorage.clear();
