@@ -26,9 +26,19 @@ beforeEach(() => {
     }
     return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
   });
-  // Provide a Tauri invoke stub so run_shell_command can execute after approval.
-  (window as any).__TAURI_INTERNALS__ = {
-    invoke: vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '', exit_code: 0, timed_out: false }),
+// Provide a Tauri invoke stub so run_shell_command can execute after approval.
+  // The real @tauri-apps/api invoke(cmd, args) resolves a Promise only when the
+  // backend calls the result callback. transformCallback() stores that resolver
+  // under window[`_<identifier>`] (e.g. `window._1`) and passes the numeric id
+  // to __TAURI_IPC__. A plain `async () => ({...})` never invokes it, so
+  // invoke() hangs forever on the approve path (the deny path returns before
+  // any invoke) — wire the seam to call the registered resolver with a
+  // successful run_cli result instead.
+  (window as any).__TAURI_IPC__ = (msg: any) => {
+    const resolver = (window as any)[`_${msg.callback}`];
+    if (typeof resolver === 'function') {
+      resolver({ stdout: 'ok', stderr: '', exit_code: 0, timed_out: false });
+    }
   };
 });
 
@@ -36,6 +46,7 @@ afterEach(() => {
   global.fetch = origFetch;
   localStorage.clear();
   _cliMocks.invoke = null;
+  delete (window as any).__TAURI_IPC__;
   cliAllowlist.clear();
   delete (window as any).__TAURI_INTERNALS__;
 });

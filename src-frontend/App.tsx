@@ -2262,13 +2262,11 @@ const App: React.FC = () => {
     if (!pendingApproval) return;
     const onKey = (e: KeyboardEvent) => {
       if (!pendingApproval) return;
-      const active = document.activeElement;
-      const isButton = active instanceof HTMLButtonElement;
       if (e.key === 'Escape') {
         e.preventDefault();
         pendingApproval.resolve(false);
         setPendingApproval(null);
-      } else if (e.key === 'Enter' && !isButton) {
+      } else if (e.key === 'Enter') {
         e.preventDefault();
         pendingApproval.resolve(true);
         setPendingApproval(null);
@@ -2293,13 +2291,11 @@ const App: React.FC = () => {
     if (!pendingToolApproval) return;
     const onKey = (e: KeyboardEvent) => {
       if (!pendingToolApproval) return;
-      const active = document.activeElement;
-      const isButton = active instanceof HTMLButtonElement;
       if (e.key === 'Escape') {
         e.preventDefault();
         pendingToolApproval.resolve(false);
         setPendingToolApproval(null);
-      } else if (e.key === 'Enter' && !isButton) {
+      } else if (e.key === 'Enter') {
         e.preventDefault();
         pendingToolApproval.resolve(true);
         setPendingToolApproval(null);
