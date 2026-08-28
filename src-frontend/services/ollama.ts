@@ -322,7 +322,73 @@ export async function modelSupportsVision(
   return false;
 }
 
-/** Clear the vision capability cache (useful in tests). */
+
+
+/**
+ * Key for the per-model vision cache. Includes the connection kind and base
+ * URL so two different models with the same tag on different providers (or the
+ * same provider behind different endpoints) never collide.
+ */
+function visionCacheKey(kind: string, baseUrl: string, modelName: string): string {
+  return `${kind}::${baseUrl}/${modelName}`;
+}
+
+/**
+ * Vision capability detection that works across providers (G7).
+ *
+ * Routes on `conn.kind`:
+ * - `ollama` reuses the Ollama /api/show + family-allowlist logic in
+ *   `modelSupportsVision` (result cached under a per-connection key).
+ * - `openai` (OpenAI-compatible, e.g. LM Studio) probes `<baseUrl>/v1/models`
+ *   with the connection's API key and returns true if ANY listed model looks
+ *   vision-capable: its `id` includes a known vision family, or it carries an
+ *   explicit capability flag such as `supports_vision` / `vision`.
+ *
+ * Never throws — a fetch failure or unparseable response degrades to `false`.
+ */
+export async function modelSupportsVisionForConnection(
+  modelName: string,
+  conn: import('./connections').ModelConnection,
+): Promise<boolean> {
+  const key = visionCacheKey(conn.kind, conn.baseUrl, modelName);
+  const cached = _visionCache.get(key);
+  if (cached !== undefined) return cached;
+
+  try {
+    if (conn.kind === 'ollama') {
+      const hasVision = await modelSupportsVision(modelName, conn.baseUrl);
+      _visionCache.set(key, hasVision);
+      return hasVision;
+    }
+
+    // OpenAI-compatible: probe the model list and look for a vision-capable one.
+    const headers: Record<string, string> = {};
+    if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+    const baseUrl = conn.baseUrl.replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/v1/models`, { headers });
+    if (!res.ok) {
+      _visionCache.set(key, false);
+      return false;
+    }
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data : [];
+    const hasVision = list.some(
+      (m: any) =>
+        typeof m?.id === 'string' &&
+        VISION_FAMILIES.some((f) => m.id.toLowerCase().includes(f)) ||
+        m?.supports_vision === true ||
+        m?.vision === true ||
+        Array.isArray(m?.capabilities) && (m.capabilities.includes('vision') || m.capabilities.includes('multimodal')),
+    );
+    _visionCache.set(key, hasVision);
+    return hasVision;
+  } catch {
+    _visionCache.set(key, false);
+    return false;
+  }
+}
+
+/** Clear the cross-provider vision capability cache (useful in tests). */
 export function clearVisionCache(): void {
   _visionCache.clear();
 }

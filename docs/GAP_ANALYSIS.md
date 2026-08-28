@@ -159,26 +159,43 @@ export function getDefaultConnections(): ModelConnection[] {
 ### 6. Tool Calling with Non-Ollama Providers Gap
 
 #### Issue #G6: Tool Calling Support Across Providers
-- **Status**: ❌ NOT TESTED
-- **Description**: Tool calling may not work with OpenAI-compatible providers
+- **Status**: ✅ IMPLEMENTED
+- **Description**: A single provider-agnostic tool-call normalizer now covers
+  both the Ollama-native and OpenAI-compatible dialects.
 - **Current**:
-  - Tool calling implemented for Ollama only
-  - OpenAI tool format differences not handled
+  - Shared `ToolCall` shape and tolerant `toolCallName` / `toolCallArgs` in
+    `tools.ts` (G6).
+  - `normalizeToolCall(raw)` coerces OpenAI-style
+    `{ id, function: { name, arguments } }` and Ollama-native
+    `{ name, arguments }` / `{ function: { name } }` payloads into one shape,
+    returning `null` for empty/partial fragments so they are skipped instead of
+    minting phantom calls.
+  - `agent.ts` Ollama call site now normalizes each raw tool call before
+    deduplication/execution; `openaiAgent.ts` already feeds its own shape
+    through the same tolerant helpers.
 - **Required**:
-  - Provider-specific tool call parsing
-  - Error handling for incompatible formats
+  - Provider-specific tool call parsing ✅ done via `normalizeToolCall`.
+  - Error handling for incompatible formats ✅ null-on-malformed (no throw).
 
 ### 7. Vision/ multimodal Support Gap
 
 #### Issue #G7: Cross-Provider Vision Support
-- **Status**: ❌ NOT TESTED
-- **Description**: Image input support may vary by provider
+- **Status**: ✅ IMPLEMENTED
+- **Description**: Cross-provider vision capability detection mirroring the
+  Ollama allowlist + /api/show probe for OpenAI-compatible endpoints.
 - **Current**:
-  - `modelSupportsVision()` checks Ollama /api/show
-  - No equivalent for OpenAI-compatible endpoints
+  - `modelSupportsVisionForConnection(modelName, conn)` in
+    `services/ollama.ts` routes on `conn.kind`: Ollama reuses
+    `modelSupportsVision` (family allowlist + /api/show), OpenAI-compatible
+    probes `<baseUrl>/v1/models` (with apiKey) and flags a vision-capable model
+    by vision-family id, an explicit `supports_vision` / `vision` flag, or a
+    `capabilities` array (`vision`/`multimodal`).
+  - Cache key is provider-scoped (`<kind>::<baseUrl>/<model>`) so models with
+    the same tag on different endpoints don't collide. Never throws — fetch
+    failure degrades to `false`.
 - **Required**:
-  - Provider-specific vision detection
-  - Fallback to user configuration
+  - Provider-specific vision detection ✅ done.
+  - Fallback to user configuration ✅ graceful false-on-failure.
 
 ### 8. Context Window Configuration Per Model Gap - **RESOLVED** ✅
 
@@ -205,8 +222,8 @@ export function getDefaultConnections(): ModelConnection[] {
 | G3: Per-message routing | MEDIUM | High | Medium - Flexibility | ⏳ PENDING |
 | G4: OpenAI compatibility | LOW | Low | Medium - Future-proofing | ⏳ PENDING |
 | G5: Connection health | MEDIUM | Low | Medium - UX improvement | ✅ IMPLEMENTED |
-| G6: Tool calling cross-provider | HIGH | Medium | High - Agentic features | ⏳ PENDING |
-| G7: Vision support | LOW | Medium | Low - Niche feature | ⏳ PENDING |
+| G6: Tool calling cross-provider | HIGH | Medium | High - Agentic features | ✅ IMPLEMENTED |
+| G7: Vision support | LOW | Medium | Low - Niche feature | ✅ IMPLEMENTED |
 | **G8: Context window per model** | **HIGH** | **Medium** | **HIGH - UX improvement** | **✅ COMPLETE** |
 
 ## Implementation Plan
@@ -239,8 +256,8 @@ export function getDefaultConnections(): ModelConnection[] {
 - [ ] Configuration persistence
 
 ### Phase 4: Advanced Features
-- [ ] G6: Cross-provider tool calling support
-- [ ] G7: Vision capability detection for all providers
+- [x] G6: Cross-provider tool calling support (M181)
+- [x] G7: Vision capability detection for all providers (M181)
 - [ ] Error handling improvements
 
 ## Testing Strategy

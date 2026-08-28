@@ -4283,3 +4283,42 @@ each provider connection and surfaces it in the Provider Configuration modal.
   +14 new tests (connections 9, ProviderConfiguration 5).
 - One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
   flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M181 — G6 + G7: Cross-provider tool calling and vision
+
+Extends the Ollama-first loops with the two remaining gaps in the
+cross-provider family (G6 tool calling, G7 vision).
+
+- **[G6] Tool calling across providers** — Adds a provider-agnostic
+  `normalizeToolCall(raw)` to `src-frontend/services/tools.ts` that coerces
+  both the OpenAI-compatible shape (`{ id, type: 'function',
+  function: { name, arguments } }`) and the Ollama-native shape
+  (`{ name, arguments }` / `{ function: { name } }`) into the shared
+  `ToolCall`. Returns `null` for empty/partial fragments so a stray SSE chunk
+  is skipped instead of minting a phantom call. `toolCallName` / `toolCallArgs`
+  delegate through it; the Ollama loop in `src-frontend/services/agent.ts`
+  normalizes each raw tool call before dedup/execution. OpenAI-compatible
+  `openaiAgent.ts` already feeds its shape through the same tolerant helpers.
+- **[G6 tests]** Add `src-frontend/test/toolCallNormalize.test.ts` covering the
+  OpenAI shape, Ollama shape, partial-fragment `null` returns, malformed input,
+  and the existing `toolCallName`/`toolCallArgs` delegation paths.
+- **[G7] Vision detection across providers** — Adds
+  `modelSupportsVisionForConnection(modelName, conn)` in
+  `src-frontend/services/ollama.ts`. Ollama reuses `modelSupportsVision`
+  (family allowlist + `/api/show` probe); OpenAI-compatible endpoints probe
+  `<baseUrl>/v1/models` (with `apiKey`) and flag a vision-capable model by
+  vision-family id, an explicit `supports_vision`/`vision` flag, or a
+  `capabilities` array (`vision`/`multimodal`). Never throws — fetch failure
+  degrades to `false`.
+- **[G7 tests]** Add `src-frontend/test/ollamaVisionCrossProvider.test.ts`
+  covering Ollama allowlist + `/api/show`, OpenAI-compatible `/v1/models`
+  detection (family id, `supports_vision`, `capabilities`), provider-scoped
+  cache keys, and graceful false-on-fetch-failure.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2413 passed** (2416 total), +28 new tests (G6/G7), covering
+  all provider shapes and graceful degradation.
+- One pre-existing timing-sensitive failure remains
+  (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
+  covered by CI `--retry=2`; unrelated to this work.

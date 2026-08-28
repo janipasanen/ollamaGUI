@@ -30,12 +30,57 @@ export interface ToolCall {
   arguments?: string | Record<string, unknown>;
 }
 
+/**
+ * Coerce a raw tool-call payload from either provider into the shared
+ * {@link ToolCall} shape (G6). Both the Ollama-native and OpenAI-compatible
+ * dialects are tolerated:
+ *
+ * - OpenAI-compatible: `{ id, type: 'function', function: { name, arguments } }`
+ *   where `arguments` may be a JSON string or an already-parsed object.
+ * - Ollama-native: `{ name, arguments }`, `{ function: { name } }`, or
+ *   `{ id, function: { name } }` variants.
+ * - A partial SSE fragment (e.g. an OpenAI stream chunk whose `function`
+ *   carries no `name`/`arguments`) yields `null` so it is skipped rather than
+ *   minting a phantom call.
+ *
+ * Never throws — malformed or empty input returns `null` so callers can
+ * safely skip it. This is what lets a provider send an unexpected shape
+ * degrade gracefully instead of crashing or dispatching a nameless tool.
+ */
+export function normalizeToolCall(raw: any): ToolCall | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const maybe = raw as ToolCall;
+
+  // Prefer explicit function.name, fall back to the top-level name.
+  const name = maybe.function?.name ?? maybe.name ?? undefined;
+  if (!name || String(name).trim().length === 0) return null;
+
+  const id = maybe.id;
+  const type = maybe.type ?? 'function';
+  const arguments_ = maybe.function?.arguments ?? maybe.arguments ?? undefined;
+
+  // Reject a fragment that carries a name but no usable argument payload —
+  // otherwise empty fragments (`{ function: { name } }` with no args, or
+  // `tool_calls: []`) would be treated as real calls.
+  if (arguments_ === undefined) return null;
+
+  const normalized: ToolCall = { id, type, name, arguments: arguments_ };
+  if (maybe.function) {
+    normalized.function = {
+      name: String(name),
+      arguments: arguments_,
+    };
+  }
+  return normalized;
+}
+
 export function toolCallName(toolCall: ToolCall): string {
-  return toolCall.name ?? toolCall.function?.name ?? 'unknown';
+  return normalizeToolCall(toolCall)?.name ?? toolCall.name ?? toolCall.function?.name ?? 'unknown';
 }
 
 export function toolCallArgs(toolCall: ToolCall): Record<string, unknown> {
-  const args = toolCall.function?.arguments ?? toolCall.arguments;
+  const args = normalizeToolCall(toolCall)?.arguments ?? toolCall.function?.arguments ?? toolCall.arguments;
   if (typeof args === 'string') {
     try { return JSON.parse(args) as Record<string, unknown>; }
     catch { return {}; } // malformed JSON from model — let tool validation surface the error (#464)

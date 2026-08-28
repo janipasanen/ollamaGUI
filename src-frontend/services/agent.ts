@@ -1,5 +1,5 @@
 import { Message, GenerationOptions, cleanGenerationOptions, computeGenStats, ollamaErrorFromResponse, type GenStats } from './ollama';
-import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs } from './tools';
+import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs, normalizeToolCall } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
 import { truncateToolContent } from './tools';
@@ -181,7 +181,14 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
             // Handle tool calls
             if (parsed.message?.tool_calls) {
               hasToolCalls = true;
-              for (const toolCall of parsed.message.tool_calls) {
+              for (const raw of parsed.message.tool_calls) {
+                // Coerce provider-shaped payloads into the shared ToolCall
+                // shape (G6). A malformed / empty fragment (e.g. Ollama
+                // sending { function: { name } } without args, or a stray
+                // {}) normalizes to null and is skipped instead of minting a
+                // phantom call.
+                const toolCall = normalizeToolCall(raw);
+                if (!toolCall) continue;
                 // Deduplicate across stream chunks. When the model provides a
                 // unique `id`, use it. When `id` is missing (common with some
                 // Ollama models), fall back to a name+arguments composite key
