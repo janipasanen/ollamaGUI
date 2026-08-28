@@ -344,6 +344,7 @@ export function getDefaultConnections(): ModelConnection[] {
 - ✅ Context window configuration stored per model+connection combination
 - ✅ `autoNumCtx()` respects user settings with fallback logic
 - ✅ Compaction threshold configurable (default 80% of context)
+- ✅ Compaction threshold honours the per-model config in production (`App.tsx` reads `loadModelContextConfigs()` instead of a fixed 0.7 default)
 - ✅ Settings persisted in localStorage
 - ✅ Auto-detection from `/api/show` and `/v1/models` endpoints available
 
@@ -380,7 +381,7 @@ Copy to Desktop or Applications folder and drag to install.
 - [x] autoNumCtx() uses RAM-based defaults when no config found
 - [ ] User tests with gx10 datorn - verify context window limits
 - [ ] Test LM Studio model streaming chat
-- [ ] Test compaction respects configured context windows
+- [x] Test compaction respects configured context windows
 
 ## Notes:
 - Context window settings are stored in localStorage key `model_context_config_v1`

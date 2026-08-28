@@ -11,6 +11,7 @@ import {
 import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
+import { loadModelContextConfigs } from './services/modelContextConfig';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce, commandBinary, CORE_AGENT_TOOLS } from './services/tools';
 import { agenticChatStream, type AgenticChatOptions } from './services/agent';
 import { openaiAgenticChatStream } from './services/openaiAgent';
@@ -4063,9 +4064,13 @@ ${lines.join('\n')}`;
     });
 
     // Compaction is always on, sized to the real window (#549 rank 13):
-    // summarize at ~70% of the effective context instead of a fixed 3000
-    // tokens that ignored the window entirely.
-    const compactAt = Math.round(effectiveNumCtx * 0.7);
+    // summarize at the user-configured compaction threshold (e.g. 0.8 of the
+    // effective context window) when one is stored for this model, otherwise
+    // the pre-existing default of 0.7 so existing users don't get a silent
+    // threshold change. Active per-model config comes from Settings → Model
+    // Context Windows (persisted under model_context_config_v1).
+    const stored = loadModelContextConfigs().get(activeModel);
+    const compactAt = Math.max(1, Math.round(effectiveNumCtx * (stored?.compactionThreshold ?? 0.7)));
     if (shouldCompact(rawHistory, compactAt)) {
       rawHistory = await compactConversation(rawHistory, {
         thresholdTokens: compactAt,
