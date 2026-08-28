@@ -4322,3 +4322,46 @@ cross-provider family (G6 tool calling, G7 vision).
 - One pre-existing timing-sensitive failure remains
   (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
   covered by CI `--retry=2`; unrelated to this work.
+
+## M182 — G3: Per-conversation provider selection
+
+Closes GAP #G3 (Per-Message Provider Selection). Before G3 every chat shared
+the single app-global `model` (App.tsx held `const [model, setModel]`). G3 lets
+each conversation remember its own provider/connection, persisted per session,
+so switching the app-default model no longer hijacks an existing conversation.
+
+- **[service]** New `src-frontend/services/sessionRouting.ts` — pure, stateless
+  G3 glue:
+  - `DEFAULT_CONNECTION_ID = 'local-ollama'`
+  - `getActiveConnectionId(session, connections)` — the session's own
+    `connectionId` when set, else `local-ollama`, else the first enabled
+    connection (mirrors the pre-G3 app-global default).
+  - `resolveConnection(session, connections)` — the resolved `ModelConnection`,
+    or `null` when disabled/absent (callers fall back to the global default
+    model rather than crashing).
+  - `pickConnectionIdForModel(session, modelId, connections, connectedModels)` —
+    the connection that owns `modelId` (from the flat `connectedModels` list),
+    else the active connection; used when the user changes the model.
+- **[storage]** `ChatSession.connectionId?: string` added to
+  `src-frontend/services/storage.ts` — purely additive; unset = app default.
+- **[service tests]** `src-frontend/test/sessionRouting.test.ts` (12 cases):
+  explicit id wins over enabled-first, fallback to `local-ollama`, fallback to
+  first-enabled when `local-ollama` absent, `resolveConnection` returns the
+  right connection / `null`, `pickConnectionIdForModel` maps a foreign model id
+  and otherwise keeps the default, graceful null/undefined inputs.
+- **[app wiring]** `src-frontend/App.tsx`:
+  - `currentConnectionId` state, reset in `startNewChat`, restored in
+    `loadSession` (`setCurrentConnectionId(session.connectionId ?? null)`).
+  - `saveCurrentSession` persists `connectionId` on new-session creation and on
+    the running-session update (every streaming write).
+  - Model selector `onChange` follows the model to its provider via
+    `pickConnectionIdForModel`.
+  - A violet badge shows the current conversation's provider name
+    (`currentConnectionName`), with a warm `●` when the model is in memory.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2413 passed** (2416 total); +12 new tests (G3).
+- One pre-existing timing-sensitive failure remains
+  (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
+  covered by CI `--retry=2`; unrelated to this work.

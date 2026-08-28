@@ -43,6 +43,7 @@ import {
   testLmStudioConnection, getLmStudioModels, getDefaultConnections, buildModelGroups,
   mergeConfigWithConnections,
 } from './services/connections';
+import { getActiveConnectionId, pickConnectionIdForModel } from './services/sessionRouting';
 import { loadProvidersFromConfig, saveProjectConfigFromConnections } from './services/projectConfig';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
@@ -550,6 +551,9 @@ const App: React.FC = () => {
   const [input, setInput] = useState('');
   const [model, setModel] = useState('llama3');
   const [models, setModels] = useState<ModelInfo[]>([]);
+  // Per-conversation provider (G3): the connection the current chat was created
+  // with; unset = the app-global default connection.
+  const [currentConnectionId, setCurrentConnectionId] = useState<string | null>(null);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [systemMemory, setSystemMemory] = useState<SystemMemory | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -1222,6 +1226,14 @@ const App: React.FC = () => {
       conn: conn?.kind === 'openai' ? conn : undefined,
     };
   };
+  // Per-conversation provider name (G3). Resolves the active connection for
+  // the current chat; falls back to a generic label when unknown.
+  const currentActiveConnectionId = getActiveConnectionId(
+    { connectionId: currentConnectionId ?? undefined },
+    connections,
+  );
+  const currentConnectionName =
+    connections.find((c) => c.id === currentActiveConnectionId)?.name ?? 'Default';
 
   // Keep the routing ref live for closures that outlive a render — see
   // agentRoutingRef's declaration for why sub-agents cannot read state here.
@@ -2065,6 +2077,7 @@ const App: React.FC = () => {
     setPinnedFiles([]);
     savePinnedFiles([]);
     setSessionWorkingDir(null);
+    setCurrentConnectionId(null);
     if (projectId !== undefined) setActiveProjectId(projectId);
   }, []);
 
@@ -2525,6 +2538,8 @@ const App: React.FC = () => {
     setBranchState(bs);
     setCurrentSessionId(session.id);
     setModel(session.model);
+    // Restore this chat's provider so per-conversation selection survives switches (G3).
+    setCurrentConnectionId(session.connectionId ?? null);
     setAttachedImages([]);
     setMessageQueue([]);
     setIsTemporary(false);
@@ -2825,6 +2840,7 @@ const App: React.FC = () => {
         createdAt: Date.now(),
         model,
         branchState: activeBranchState,
+        ...(currentConnectionId ? { connectionId: currentConnectionId } : {}),
         ...(activeProjectId ? { projectId: activeProjectId } : {}),
         ...(sessionWorkingDirRef.current ? { workingDir: sessionWorkingDirRef.current } : {}),
       };
@@ -2836,7 +2852,7 @@ const App: React.FC = () => {
     } else {
       const session = storage.getSessions().find(s => s.id === currentSessionIdRef.current);
       if (session) {
-        const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState });
+        const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState, ...(currentConnectionId ? { connectionId: currentConnectionId } : {}) });
         if (result.ok === false && result.error === 'quota') setStorageWarning(true);
         setSessions(storage.getSessions());
       }
@@ -5964,6 +5980,12 @@ ${lines.join('\n')}`;
                   }
                 } else {
                   setModel(val);
+                  // Follow the model to its provider so the current chat keeps a
+                  // per-conversation provider (G3) — pickConnectionIdForModel returns
+                  // the active connection when the model belongs to it.
+                  setCurrentConnectionId(
+                    pickConnectionIdForModel({ connectionId: currentConnectionId ?? undefined }, val, connections, connectedModels),
+                  );
                   setActivePresetId(null);
                   clearActivePreset();
                 }
@@ -6058,6 +6080,16 @@ ${lines.join('\n')}`;
             )}
             {models.find(m => m.name === model)?.cloud && (
               <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700'}`}>⛅ Cloud</span>
+            )}
+            {/* Per-conversation provider (G3): show the connection the current
+                chat lives on — resolves to the active/connected name. */}
+            {currentConnectionId && (
+              <span
+                title={`Conversation runs on ${currentConnectionName}`}
+                className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${dark ? 'bg-violet-900/50 text-violet-300' : 'bg-violet-100 text-violet-700'}`}
+              >
+                {currentConnectionName}{runningModels.has(model) ? ' ●' : ''}
+              </span>
             )}
             {/* Autonomy — the one visible agent control (#549 audit rank 1).
                 Shown only when a project folder makes the agent active. */}

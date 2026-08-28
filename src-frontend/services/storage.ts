@@ -20,6 +20,10 @@ export interface ChatSession {
   /** Per-session working directory (#550): where this session's agent works.
    *  Unset = the project's primary folder. Survives session switches. */
   workingDir?: string;
+  // Per-Message Provider Selection (G3): the connection this conversation was
+  // created with, so a session can keep its provider even after the app-global
+  // default model/connection changes (#123/#318). Unset = app default.
+  connectionId?: string;
 }
 
 // ─── Projects (#92) ───────────────────────────────────────────────────────────

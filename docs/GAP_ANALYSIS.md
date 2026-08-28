@@ -11,7 +11,7 @@
 - **Total Issues Found**: 7 gaps identified across provider communication
 - **Gaps Already Implemented**: 2 (G1, G2) - LM Studio streaming and gx10 remote connections already working
 - **New Implementation**: 1 (G8) - Context window configuration per model ✅
-- **Pending/Future Work**: 4 (G3-G7) - Per-message routing, health status, tool calling, vision support
+- **Pending/Future Work**: 3 (G4, G9+) - OpenAI compat hardening, context-window tuning
 
 ### Key Discoveries:
 1. LM Studio streaming chat was **already implemented** in `openaiAgent.ts`
@@ -122,14 +122,21 @@ export function getDefaultConnections(): ModelConnection[] {
 ### 3. Model-Specific Provider Routing Gap
 
 #### Issue #G3: Per-Message Provider Selection
-- **Status**: ❌ NOT IMPLEMENTED
-- **Description**: No way to switch providers per chat message/session
+- **Status**: ✅ IMPLEMENTED (M182)
+- **Description**: Each conversation now remembers its own provider connection,
+  so the app-global default model no longer hijacks an existing chat.
 - **Current Implementation**:
-  - Single active connection model
-  - All messages use same provider
+  - `ChatSession.connectionId?: string` (storage) persists the connection a
+    session was created with; unset falls back to the app default.
+  - `sessionRouting.ts` resolves the active connection per chat
+    (`getActiveConnectionId`/`resolveConnection`) and, when the model changes,
+    the owning connection via `pickConnectionIdForModel`.
+  - `App.tsx` resets on `startNewChat`, restores on `loadSession`, persists on
+    every streaming write, and shows a violet provider badge in the selector.
+  - Model selector `onChange` follows the model to its provider.
 - **Required Feature**:
-  - Select provider for each conversation
-  - Switch providers mid-session (with proper state management)
+  - Select provider for each conversation ✅ (persisted in `ChatSession.connectionId`)
+  - Switch providers mid-session ✅ (selector onChange updates `currentConnectionId`)
 
 ### 4. OpenAI API Compatibility Gap
 
@@ -219,7 +226,7 @@ export function getDefaultConnections(): ModelConnection[] {
 |-------|----------|--------|--------|--------|
 | G1: LM Studio streaming | HIGH | Medium | High - Main use case | ✅ RESOLVED |
 | G2: Remote Ollama | HIGH | Low | High - gx10 access | ✅ RESOLVED |
-| G3: Per-message routing | MEDIUM | High | Medium - Flexibility | ⏳ PENDING |
+| G3: Per-message routing | MEDIUM | High | Medium - Flexibility | ✅ IMPLEMENTED |
 | G4: OpenAI compatibility | LOW | Low | Medium - Future-proofing | ⏳ PENDING |
 | G5: Connection health | MEDIUM | Low | Medium - UX improvement | ✅ IMPLEMENTED |
 | G6: Tool calling cross-provider | HIGH | Medium | High - Agentic features | ✅ IMPLEMENTED |
