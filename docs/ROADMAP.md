@@ -4158,3 +4158,28 @@ modules. No merge to `master` — work stays on `macOS-10.15`.
   pass (`citations.test.ts` 30, `modelContextConfig.test.ts` 22).
 - One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
   flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M176 — Service-test coverage: promptLibrary + mcp-http (thirtieth analysis pass)
+
+Continuing the service-coverage pass started in M175. Fills the two largest
+uncovered pure-function service modules. No merge to `master` — work stays on
+`macOS-10.15`.
+
+- [x] **(#97 prompt library)** Add unit tests for `promptLibrary.ts`, which had
+  no test file. Added `src-frontend/test/promptLibrary.test.ts` covering
+  `loadPrompts` (empty list, corrupt-JSON tolerance, round-trip), `addPrompt`
+  (uuid + timestamp + append), `updatePrompt` (partial patch, no-op on missing),
+  `removePrompt` (delete, no-op on missing), and `findPrompt`. 10 new tests.
+- [x] **(#21-22 MCP HTTP, #461)** Add unit tests for `mcp-http.ts`. Added
+  `src-frontend/test/mcp-http.test.ts` covering `parseSseMessages`
+  (single/multiple events, blank-line split, `\r\n` tolerance, multi-line
+  single-object join, skipping comment/blank/non-JSON events, empty body) and
+  `httpBodyErrorDetail` (fallback, string error, nested `.message`, top-level
+  `message`, no-error JSON, non-JSON body). 12 new tests.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2332 passed (248 test files)**, +22 new tests from this
+  pass (`promptLibrary.test.ts` 10, `mcp-http.test.ts` 12).
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
