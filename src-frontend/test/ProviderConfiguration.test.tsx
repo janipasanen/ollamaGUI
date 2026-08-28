@@ -4,10 +4,15 @@
  * Exercises add / edit / remove / enable flows and the default-model field
  * without importing App.tsx.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ProviderConfiguration from '../components/ProviderConfiguration';
+import { checkConnectionHealth } from '../services/connections';
 import type { ModelConnection } from '../services/connections';
+
+vi.mock('../services/connections', async () => ({
+  checkConnectionHealth: vi.fn(),
+}));
 
 function baseConn(overrides: Partial<ModelConnection> = {}): ModelConnection {
   return {
@@ -128,5 +133,91 @@ describe('ProviderConfiguration (#554)', () => {
     const { onSave } = renderModal([baseConn({ id: 'conn-1' })]);
     fireEvent.click(screen.getByRole('button', { name: 'Delete provider' }));
     expect(onSave).toHaveBeenCalledWith([]);
+  });
+});
+
+// ── G5: connection health status ────────────────────────────────────────────
+
+describe('ProviderConfiguration — connection health (#553 / G5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders a Test button for each provider', () => {
+    renderModal([baseConn()]);
+    expect(
+      screen.getByRole('button', { name: 'Test Local Ollama connection' }),
+    ).toBeTruthy();
+  });
+
+  it('shows an “Unreachable” pill after the test probe reports failure', async () => {
+    (checkConnectionHealth as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      connectionId: 'local-ollama',
+      status: 'unreachable',
+      detail: 'Local Ollama is unreachable (offline)',
+    });
+    renderModal([baseConn({ id: 'local-ollama' })]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Local Ollama connection' }));
+    await waitFor(() =>
+      expect(screen.getByText('Unreachable')).toBeInTheDocument(),
+    );
+    // Detail text surfaces beneath the pill.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Local Ollama is unreachable (offline)'),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it('shows a “Healthy” pill after a success probe', async () => {
+    (checkConnectionHealth as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      connectionId: 'local-ollama',
+      status: 'healthy',
+    });
+    renderModal([baseConn({ id: 'local-ollama' })]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Local Ollama connection' }));
+    await waitFor(() =>
+      expect(screen.getByText('Healthy')).toBeInTheDocument(),
+    );
+  });
+
+  it('shows an “Auth error” pill after a 401/403 probe', async () => {
+    (checkConnectionHealth as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      connectionId: 'local-ollama',
+      status: 'authError',
+      detail: 'requires authentication',
+    });
+    renderModal([baseConn({ id: 'local-ollama' })]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Local Ollama connection' }));
+    await waitFor(() =>
+      expect(screen.getByText('Auth error')).toBeInTheDocument(),
+    );
+  });
+
+  it('disables Test buttons on other providers while one is probing', async () => {
+    const slow = vi.fn().mockReturnValue(
+      new Promise((resolve) => setTimeout(() => resolve({
+        connectionId: 'local-ollama', status: 'healthy',
+      }), 1000)),
+    );
+    (checkConnectionHealth as ReturnType<typeof vi.fn>).mockImplementation(slow);
+    renderModal([
+      baseConn({ id: 'local-ollama' }),
+      baseConn({ id: 'lm-studio', name: 'LM Studio' }),
+    ]);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Test Local Ollama connection' }),
+    );
+    // The already-probing button stays enabled; the other is disabled.
+    expect(
+      screen.getByRole('button', { name: 'Test Local Ollama connection' }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Test LM Studio connection' }),
+    ).toBeDisabled();
   });
 });

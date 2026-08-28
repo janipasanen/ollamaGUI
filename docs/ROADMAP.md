@@ -4253,3 +4253,33 @@ workspace-picker state, #481) — the deterministic core behind
   pass.
 - One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
   flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M180 — G5: connection health status per provider
+
+Closes GAP gap #G5 (Provider Status Monitoring). Adds a live health probe for
+each provider connection and surfaces it in the Provider Configuration modal.
+
+- **[service]** Add `checkConnectionHealth(conn)` to
+  `src-frontend/services/connections.ts`. It probes the connection's canonical
+  "list models" endpoint (`/api/tags` for Ollama, `/v1/models` for
+  OpenAI-compatible), reusing the connection's `apiKey`, and classifies the
+  result as `healthy` (2xx), `unreachable` (other non-OK / fetch throw), or
+  `authError` (401/403). Returns `{ connectionId, status, detail? }`.
+- **[service tests]** Add 9 cases to
+  `src-frontend/test/connections.test.ts` covering endpoint selection by kind,
+  trailing-slash trimming, each auth/HTTP/throw classification, and Authorization
+  header handling.
+- **[ui]** `ProviderConfiguration.tsx` shows a colored status pill per
+  connection and a per-provider "Test" button that runs `checkConnectionHealth`
+  live; other "Test" buttons disable while one probe is in flight.
+- **[ui tests]** Add 5 component cases to
+  `src-frontend/test/ProviderConfiguration.test.tsx` (Test button present;
+  unhealthy/healthy/authError pills after a probe; Test buttons disable per
+  provider during a probe).
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2380 passed** (2383 total across 253 test files),
+  +14 new tests (connections 9, ProviderConfiguration 5).
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.

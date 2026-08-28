@@ -289,6 +289,80 @@ export async function fetchOllamaConnectionModels(conn: ModelConnection): Promis
   }
 }
 
+// ── Connection health status (#553 / GAP-G5) ─────────────────────────────────
+/**
+ * Connection health states surfaced by `checkConnectionHealth` (#553 / G5).
+ *
+ * - healthy:   the provider responded to the live probe (models fetched or,
+ *              for an Ollama server, the HTTP endpoint answered).
+ * - unreachable: the server did not answer — network/DNS/timeout, or the
+ *                endpoint returned a non-OK HTTP status.
+ * - authError: the provider answered but rejected the request with an
+ *              authentication error (HTTP 401/403). For Ollama this means the
+ *              configured apiKey token was rejected; for OpenAI-compatible
+ *              providers it means an invalid/missing key.
+ */
+export type ConnectionHealthStatus = 'healthy' | 'unreachable' | 'authError';
+
+/** A single-provider health check result. */
+export interface ConnectionHealth {
+  connectionId: string;
+  status: ConnectionHealthStatus;
+  /** Human-readable detail (HTTP status text, fetch message, etc.). */
+  detail?: string;
+}
+
+/**
+ * Check a single connection's health against its live endpoint.
+ *
+ * Probes the connection's canonical "list models" endpoint — /api/tags for
+ * Ollama, /v1/models for OpenAI-compatible providers — reusing the same auth
+ * headers the model fetch already sends, so the status reflects exactly what a
+ * real model request would experience (#553 / G5).
+ *
+ * Classification:
+ * - HTTP 401/403 -> authError
+ * - other non-OK / fetch throw (offline, DNS, timeout) -> unreachable
+ * - HTTP 200 -> healthy
+ */
+export async function checkConnectionHealth(conn: ModelConnection): Promise<ConnectionHealth> {
+  const base = conn.baseUrl.replace(/\/$/, '');
+  const headers: Record<string, string> = {};
+  if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+
+  try {
+    const endpoint = conn.kind === 'openai'
+      ? `${base}/v1/models`
+      : `${base}/api/tags`;
+    const res = await fetch(endpoint, { headers });
+
+    if (res.status === 401 || res.status === 403) {
+      return {
+        connectionId: conn.id,
+        status: 'authError',
+        detail: `${conn.name} requires authentication (HTTP ${res.status}). Check the API key.`,
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        connectionId: conn.id,
+        status: 'unreachable',
+        detail: `${conn.name} responded with HTTP ${res.status} ${res.statusText}`,
+      };
+    }
+
+    return { connectionId: conn.id, status: 'healthy' };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      connectionId: conn.id,
+      status: 'unreachable',
+      detail: `${conn.name} is unreachable (${message})`,
+    };
+  }
+}
+
 // ── Model selector grouping (#554) ──────────────────────────────────────────
 
 /** A single option rendered inside a provider <optgroup>. */

@@ -6,12 +6,38 @@
  */
 
 import React, { useState } from 'react';
-import type { ModelConnection } from '../services/connections';
+import type { ConnectionHealth, ModelConnection } from '../services/connections';
+import { checkConnectionHealth } from '../services/connections';
 import {
   loadModelContextConfigs,
   saveModelContextConfigs,
   getModelDefaultContext,
 } from '../services/modelContextConfig';
+
+type HealthByConn = Record<string, ConnectionHealth>;
+
+type HealthStatus = 'healthy' | 'unreachable' | 'authError';
+
+const HEALTH_META: Record<
+  HealthStatus,
+  { label: string; dot: string; text: string; bg: string }
+> = {
+  healthy: { label: 'Healthy', dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-100' },
+  unreachable: { label: 'Unreachable', dot: 'bg-red-500', text: 'text-red-600', bg: 'bg-red-100' },
+  authError: { label: 'Auth error', dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-100' },
+};
+
+/** The status shown while a "Test" probe is in flight for a connection. */
+function statusPill(status: ConnectionHealth['status'], dark: boolean, busy: boolean) {
+  const meta = HEALTH_META[status];
+  const cls = `${meta.bg} ${meta.text} text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1`;
+  return (
+    <span className={cls} data-testid={`health-pill-${status}`}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+      {busy ? `Testing…` : meta.label}
+    </span>
+  );
+}
 
 interface Props {
   dark: boolean;
@@ -26,6 +52,30 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
   
   // Context window configurations per model (loaded once)
   const [contextConfigs, setContextConfigs] = useState<Map<string, any>>(() => loadModelContextConfigs());
+
+  // Per-connection health results (G5: Connection Health Status). Keyed by
+  // connection id so the pill reflects the latest probe for each provider.
+  const [health, setHealth] = useState<HealthByConn>({});
+  const [testingConn, setTestingConn] = useState<string | null>(null);
+
+  // Probe a single provider's health. Retries once after a short wait so a
+  // transient offline blip isn't reported as down.
+  const handleTestConnection = async (id: string) => {
+    const target = connections.find((c) => c.id === id);
+    if (!target) return;
+    setTestingConn(id);
+    try {
+      const result = await checkConnectionHealth(target);
+      setHealth((prev) => ({ ...prev, [id]: result }));
+    } catch {
+      setHealth((prev) => ({
+        ...prev,
+        [id]: { connectionId: id, status: 'unreachable', detail: 'Probe failed' },
+      }));
+    } finally {
+      setTestingConn(null);
+    }
+  };
 
   const handleAddConnection = () => {
     if (!newConn.name || !newConn.baseUrl) return;
@@ -132,8 +182,43 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
                         🔑 API key configured
                       </div>
                     )}
+                    {/* G5: per-provider connection health pill */}
+                    {health[conn.id] && (
+                      <div className="mt-1">
+                        {statusPill(
+                          health[conn.id].status,
+                          dark,
+                          testingConn === conn.id,
+                        )}
+                        {health[conn.id].detail && (
+                          <div
+                            className={`text-[10px] mt-0.5 ${
+                              dark ? 'text-zinc-500' : 'text-zinc-400'
+                            }`}
+                            title={health[conn.id].detail}
+                          >
+                            {health[conn.id].detail}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      aria-label={`Test ${conn.name} connection`}
+                      data-testid={`test-btn-${conn.id}`}
+                      disabled={testingConn !== null && testingConn !== conn.id}
+                      onClick={() => handleTestConnection(conn.id)}
+                      title="Test connection"
+                      className={`px-2 py-1 text-[10px] rounded ${
+                        dark
+                          ? 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
+                          : 'bg-zinc-200 text-zinc-700 hover:bg-zinc-300'
+                      }`}
+                    >
+                      Test
+                    </button>
                     {/* Context window info for local models */}
                     {conn.kind === 'ollama' && (
                       <div className={`text-[10px] ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>

@@ -3,7 +3,7 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
-  buildModelGroups,
+  buildModelGroups, checkConnectionHealth,
   type ModelConnection,
 } from '../services/connections';
 
@@ -564,5 +564,146 @@ describe('buildModelGroups (#554)', () => {
     const groups = buildModelGroups([ollamaRemote], models);
     expect(groups[0].options[0].key).toBe('remote-a/gemma');
     expect(groups[0].options[0].value).toBe('remote-a/gemma');
+  });
+});
+
+
+// ── Connection health status (#553 / G5) ────────────────────────────────────
+
+describe('checkConnectionHealth (#553 / G5)', () => {
+  it('probes /v1/models for an OpenAI-compatible connection', async () => {
+    const conn: ModelConnection = {
+      id: 'lm-studio', name: 'LM Studio', kind: 'openai',
+      baseUrl: 'http://localhost:1234', enabled: true,
+    };
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+    });
+
+    const result = await checkConnectionHealth(conn);
+
+    expect(result.status).toBe('healthy');
+    expect(result.connectionId).toBe('lm-studio');
+    expect(calls[0].url).toBe('http://localhost:1234/v1/models');
+  });
+
+  it('probes /api/tags for an Ollama connection', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true, status: 200, json: async () => ({ models: [] }) } as any;
+    });
+
+    const result = await checkConnectionHealth(conn);
+
+    expect(result.status).toBe('healthy');
+    expect(calls[0].url).toBe('http://localhost:11434/api/tags');
+  });
+
+  it('strips a trailing slash from baseUrl before probing', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434/', enabled: true,
+    };
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      calls.push({ url });
+      return { ok: true, status: 200, json: async () => ({ models: [] }) } as any;
+    });
+
+    await checkConnectionHealth(conn);
+    expect(calls[0].url).toBe('http://localhost:11434/api/tags');
+  });
+
+  it('classifies HTTP 401 as authError', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false, status: 401, statusText: 'Unauthorized',
+    } as any);
+
+    const result = await checkConnectionHealth(conn);
+    expect(result.status).toBe('authError');
+    expect(result.detail).toContain('401');
+  });
+
+  it('classifies HTTP 403 as authError', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false, status: 403, statusText: 'Forbidden',
+    } as any);
+
+    const result = await checkConnectionHealth(conn);
+    expect(result.status).toBe('authError');
+  });
+
+  it('classifies other non-ok responses as unreachable', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false, status: 503, statusText: 'Service Unavailable',
+    } as any);
+
+    const result = await checkConnectionHealth(conn);
+    expect(result.status).toBe('unreachable');
+    expect(result.detail).toContain('503');
+  });
+
+  it('classifies a fetch rejection (offline) as unreachable', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(
+      new Error('Failed to fetch'),
+    );
+
+    const result = await checkConnectionHealth(conn);
+    expect(result.status).toBe('unreachable');
+    expect(result.detail).toContain('Failed to fetch');
+  });
+
+  it('sends the Authorization header when an apiKey is set', async () => {
+    const conn: ModelConnection = {
+      id: 'lm-studio', name: 'LM Studio', kind: 'openai',
+      baseUrl: 'http://localhost:1234', apiKey: 'secret', enabled: true,
+    };
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      calls.push({ opts });
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+    });
+
+    await checkConnectionHealth(conn);
+    expect(calls[0].opts.headers['Authorization']).toBe('Bearer secret');
+  });
+
+  it('does not send an Authorization header when no apiKey is set', async () => {
+    const conn: ModelConnection = {
+      id: 'local-ollama', name: 'Local Ollama', kind: 'ollama',
+      baseUrl: 'http://localhost:11434', enabled: true,
+    };
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
+      calls.push({ opts });
+      return { ok: true, status: 200, json: async () => ({ models: [] }) } as any;
+    });
+
+    await checkConnectionHealth(conn);
+    expect(calls[0].opts.headers).toBeDefined();
+    expect(calls[0].opts.headers['Authorization']).toBeUndefined();
   });
 });

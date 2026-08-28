@@ -144,12 +144,17 @@ export function getDefaultConnections(): ModelConnection[] {
 ### 5. Provider Status Monitoring Gap
 
 #### Issue #G5: Connection Health Status
-- **Status**: ❌ NOT IMPLEMENTED
-- **Description**: No visual indication of provider connection health
-- **Required**:
-  - Connection test button per provider
-  - Status indicators (healthy/unreachable/auth-error)
-  - Retry mechanism for failed connections
+- **Status**: ✅ IMPLEMENTED
+- **Description**: Provider connections now expose per-provider health status
+  (healthy / unreachable / auth-error) with a per-provider "Test" button.
+- **Implementation**:
+  - `checkConnectionHealth()` in `src-frontend/services/connections.ts` probes
+    each connection's canonical endpoint (`/api/tags` for Ollama,
+    `/v1/models` for OpenAI-compatible) and classifies the result as
+    `healthy` (2xx), `unreachable` (other non-OK / fetch throw), or
+    `authError` (401/403).
+  - `ProviderConfiguration.tsx` shows a colored status pill per connection and a
+    per-provider "Test" button that runs the probe live.
 
 ### 6. Tool Calling with Non-Ollama Providers Gap
 
@@ -199,7 +204,7 @@ export function getDefaultConnections(): ModelConnection[] {
 | G2: Remote Ollama | HIGH | Low | High - gx10 access | ✅ RESOLVED |
 | G3: Per-message routing | MEDIUM | High | Medium - Flexibility | ⏳ PENDING |
 | G4: OpenAI compatibility | LOW | Low | Medium - Future-proofing | ⏳ PENDING |
-| G5: Connection health | MEDIUM | Low | Medium - UX improvement | ⏳ PENDING |
+| G5: Connection health | MEDIUM | Low | Medium - UX improvement | ✅ IMPLEMENTED |
 | G6: Tool calling cross-provider | HIGH | Medium | High - Agentic features | ⏳ PENDING |
 | G7: Vision support | LOW | Medium | Low - Niche feature | ⏳ PENDING |
 | **G8: Context window per model** | **HIGH** | **Medium** | **HIGH - UX improvement** | **✅ COMPLETE** |
