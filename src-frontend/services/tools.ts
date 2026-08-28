@@ -75,12 +75,14 @@ export function normalizeToolCall(raw: any): ToolCall | null {
   return normalized;
 }
 
-export function toolCallName(toolCall: ToolCall): string {
-  return normalizeToolCall(toolCall)?.name ?? toolCall.name ?? toolCall.function?.name ?? 'unknown';
+export function toolCallName(toolCall: ToolCall | null): string {
+  const normalized = normalizeToolCall(toolCall);
+  return normalized?.name ?? toolCall?.name ?? toolCall?.function?.name ?? 'unknown';
 }
 
-export function toolCallArgs(toolCall: ToolCall): Record<string, unknown> {
-  const args = normalizeToolCall(toolCall)?.arguments ?? toolCall.function?.arguments ?? toolCall.arguments;
+export function toolCallArgs(toolCall: ToolCall | null): Record<string, unknown> {
+  const normalized = normalizeToolCall(toolCall);
+  const args = normalized?.arguments ?? toolCall?.function?.arguments ?? toolCall?.arguments;
   if (typeof args === 'string') {
     try { return JSON.parse(args) as Record<string, unknown>; }
     catch { return {}; } // malformed JSON from model — let tool validation surface the error (#464)
