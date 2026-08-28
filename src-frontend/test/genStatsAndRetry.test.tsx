@@ -56,30 +56,29 @@ describe('Retry button on failed messages (#299)', () => {
     }, { timeout: 3000 });
   });
 
-  it('retries the failed message by re-sending the last prompt', async () => {
-    let call = 0;
-    global.fetch = vi.fn().mockImplementation((url: unknown) => {
-      call++;
-      const u = String(url);
-      if (call === 1) return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null });
-      // Second call: fail the stream
-      if (call === 2) return Promise.resolve({ ok: false, statusText: 'Service Unavailable', body: null });
-      // Third call (after retry): succeed with a stream
-      if (u.includes('/api/chat') || u.includes('generate')) {
+    it('retries the failed message by re-sending the last prompt', async () => {
+      // Key off the number of *chat* calls so background model-list probes
+      // (config.json, /api/show, /api/tags, gx10 remote, /api/ps) can't shift
+      // which attempt fails — the first chat call fails, the retry succeeds.
+      let chatCalls = 0;
+      global.fetch = vi.fn().mockImplementation((url: unknown) => {
+        const u = String(url);
+        const isChat = u.includes('/api/chat') || u.includes('generate');
+        if (!isChat) return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
+        chatCalls++;
+        if (chatCalls === 1) return Promise.resolve({ ok: false, statusText: 'Service Unavailable', body: null });
         const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
         reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('{"message":{"content":"Hello there"}}\n') });
         reader.read.mockResolvedValueOnce({ done: true, value: undefined });
         return Promise.resolve({ ok: true, body: { getReader: () => reader } });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
-    });
+      });
     render(<App />);
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
     fireEvent.click(screen.getByText('Send'));
     const retryBtn = await waitFor(() => screen.getByRole('button', { name: 'Retry failed message' }), { timeout: 3000 });
     fireEvent.click(retryBtn);
     await waitFor(() => expect(document.body.textContent).toContain('Hello there'), { timeout: 3000 });
-  });
+    });
 });
 
 
