@@ -4213,3 +4213,43 @@ lacked a dedicated suite.
   pass (agentActivity 8, workspaceContext 15).
 - One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
   flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M178 — Component tests: InlineGenParams + InlineConversationStats
+
+Continuing the component-coverage pass started in M175. Adds tests for the
+two smallest header-area components with deterministic logic.
+
+- **[InlineGenParams]** Add `src-frontend/test/InlineGenParams.test.tsx`.
+  Covers model-name rendering, truncation of names longer than 25 chars to
+  `slice(0, 23)` + ellipsis (`…`), temperature shown only when defined, and
+  context-usage bar shown only when `num_ctx > 0` (title reflects the value).
+
+- **[InlineConversationStats]** Add `src-frontend/test/InlineConversationStats.test.tsx`.
+  Covers rendering the total message count with matching `aria-label`,
+  returning null for `null` or zero `totalMessages`, and toggling
+  `aria-expanded` on click.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2365 passed (252 test files)**, +10 new tests from this
+  pass (InlineGenParams 6, InlineConversationStats 4).
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M179 — Component test: workspaceLabel helper
+
+Covers the pure `workspaceLabel` helper in `useWorkspacePicker.ts` (shared
+workspace-picker state, #481) — the deterministic core behind
+`WorkspaceChip` and `NoWorkspaceHint` before any native dialog is involved.
+
+- **[workspaceLabel]** Add `src-frontend/test/useWorkspacePicker.test.ts`.
+  Covers null -> "No folder", forward- and backslash-path basename extraction,
+  trailing-slash handling, empty string treated as "No folder" (falsy), and
+  falling back to the full root when the basename is empty.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2371 passed (253 test files)**, +6 new tests from this
+  pass.
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
