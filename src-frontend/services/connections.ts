@@ -78,6 +78,8 @@ export interface ModelConnection {
   /** Optional API key for OpenAI-compatible endpoints */
   apiKey?: string;
   enabled: boolean;
+  /** Optional provider-declared default model tag (e.g. "north-mini-code-1.0:q8_0") */
+  defaultModel?: string;
 }
 
 /** A model entry tagged with which connection it came from */
@@ -153,6 +155,60 @@ export function loadConnections(): ModelConnection[] {
 
 export function saveConnections(conns: ModelConnection[]): void {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conns)); } catch { /* quota */ }
+}
+
+/**
+ * Merge project-config.json providers (from #553) with localStorage-backed
+ * connections. `connections` is the source of truth for runtime edits
+ * (user-added / enabled-flagged connections persisted to localStorage);
+ * `configJsonConns` are the persistent provider definitions from config.json.
+ *
+ * A config.json provider wins when:
+ *   - it does not already exist in `connections`, or
+ *   - it exists in `connections` but is disabled (config.json re-enables it),
+ *     and the localStorage copy is the built-in default.
+ *
+ * This keeps config.json authoritative for provider definitions while leaving
+ * localStorage edits in force, so toggling a provider back on in config.json
+ * actually re-enables it (#553).
+ */
+export function mergeConfigWithConnections(
+  connections: ModelConnection[],
+  configJsonConns: ModelConnection[]
+): ModelConnection[] {
+  if (!configJsonConns.length) return connections;
+
+  const merged = connections.slice();
+  const seen = new Set(merged.map(c => c.id));
+
+  for (const provider of configJsonConns) {
+    const existing = merged.find(c => c.id === provider.id);
+    if (existing) {
+      if (existing.enabled) {
+        // Carry the config-declared default model onto the enabled storage
+        // copy. Storage connections never ship a `defaultModel`, so a
+        // config.json value always wins here (authoritative for boot model).
+        existing.defaultModel = provider.defaultModel;
+        continue;
+      }
+      // A disabled built-in default from config.json re-enables itself.
+      if (isBuiltinDefault(existing)) {
+        const idx = merged.findIndex(c => c.id === provider.id);
+        merged[idx] = provider;
+      }
+      continue;
+    }
+    if (!seen.has(provider.id)) {
+      merged.push(provider);
+      seen.add(provider.id);
+    }
+  }
+  return merged;
+}
+
+/** Built-in defaults created on first launch (local-ollama, lm-studio). */
+function isBuiltinDefault(conn: ModelConnection): boolean {
+  return conn.id === 'local-ollama' || conn.id === 'lm-studio';
 }
 
 export function addConnection(conn: Omit<ModelConnection, 'id'>): ModelConnection {
@@ -231,6 +287,92 @@ export async function fetchOllamaConnectionModels(conn: ModelConnection): Promis
   } catch {
     return [];
   }
+}
+
+// ── Model selector grouping (#554) ──────────────────────────────────────────
+
+/** A single option rendered inside a provider <optgroup>. */
+export interface ModelSelectorOption {
+  /** DOM-safe unique key for React; uses "<connectionId>/<name>" for remotes. */
+  key: string;
+  /** The <option value> — bare model name for local models, "<connId>/<name>" for remotes. */
+  value: string;
+  /** Display name (the model tag). */
+  name: string;
+  /** Optional suffix (size / quantization) shown in the option. */
+  suffix?: string;
+  /** Optional leading marker (e.g. a ⛅ cloud glyph). */
+  marker?: string;
+}
+
+/** One provider <optgroup> in the model selector. Empty providers are kept so
+ *  config.json-declared providers that expose no models still appear in the list. */
+export interface ModelSelectorGroup {
+  /** The <optgroup label>, e.g. "— Local Ollama —" or "— Remote Ollama: Alpha —". */
+  label: string;
+  /** Whether to render this group at all. Empty providers render with 0 options. */
+  isEmpty?: boolean;
+  options: ModelSelectorOption[];
+}
+
+/** Build a stable sort key for a model tag: lowercase name, ignoring case. */
+export function sortKeyForModel(name: string): string {
+  return name.toLowerCase();
+}
+
+/**
+ * Group enabled connection models by provider for the model selector (#554).
+ *
+ * Each enabled connection becomes its own <optgroup>. Local Ollama (id
+ * `local-ollama`) is relabeled "Local Ollama" so the built-in default is
+ * recognisable; other providers are labeled by their display name, with Ollama
+ * remotes prefixed "Remote Ollama:". Groups with zero models are still emitted
+ * (with `isEmpty: true`) so a config.json provider that is enabled but currently
+ * exposes no models does not silently vanish.
+ *
+ * Options are sorted by model tag so the selector is stable across fetches.
+ */
+export function buildModelGroups(
+  connections: ModelConnection[],
+  models: ConnectedModel[],
+): ModelSelectorGroup[] {
+  const byConn = new Map<string, ConnectedModel[]>();
+  for (const m of models) {
+    const list = byConn.get(m.connectionId) ?? [];
+    list.push(m);
+    byConn.set(m.connectionId, list);
+  }
+
+  const enabledConnections = connections
+    .filter((c) => c.enabled)
+    .sort((a, b) => sortKeyForModel(a.name).localeCompare(sortKeyForModel(b.name)));
+
+  const renderLocal = (conn: ModelConnection) => conn.id === 'local-ollama';
+
+  const groups: ModelSelectorGroup[] = enabledConnections.map((conn) => {
+    const connModels = (byConn.get(conn.id) ?? []).sort((a, b) =>
+      sortKeyForModel(a.name).localeCompare(sortKeyForModel(b.name)),
+    );
+
+    const isLocal = renderLocal(conn);
+    const label = isLocal
+      ? '— Local Ollama —'
+      : conn.kind === 'ollama'
+        ? `— Remote Ollama: ${conn.name} —`
+        : `— ${conn.name} —`;
+
+    const options: ModelSelectorOption[] = connModels.map((m) => ({
+      key: m.id,
+      value: m.id,
+      name: m.name,
+      suffix: [m.parameterSize, m.quantization].filter(Boolean).join(' · '),
+      marker: m.cloud ? '⛅' : undefined,
+    }));
+
+    return { label, isEmpty: options.length === 0, options };
+  });
+
+  return groups;
 }
 
 /** Fetch models from all enabled connections in parallel */

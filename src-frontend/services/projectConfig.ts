@@ -7,6 +7,8 @@
 
 import type { ModelConnection } from './connections';
 
+export type { ModelConnection };
+
 export interface ConfigProvider {
   id: string;
   name: string;
@@ -14,6 +16,8 @@ export interface ConfigProvider {
   baseUrl: string;
   enabled?: boolean;
   apiKey?: string;
+  /** Optional default model tag (e.g. "qwen3-coder:latest"). Preserved on save. */
+  defaultModel?: string;
 }
 
 export interface ProjectConfig {
@@ -65,6 +69,7 @@ export function configProviderToConnection(provider: ConfigProvider): ModelConne
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     enabled: provider.enabled ?? true,
+    defaultModel: provider.defaultModel,
   };
 }
 
@@ -99,6 +104,48 @@ export async function saveProjectConfig(config: ProjectConfig): Promise<boolean>
     return response.ok;
   } catch (error) {
     console.warn(`Failed to save ${CONFIG_FILE_NAME}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Convert stored model connections back to ProjectConfig and persist to
+ * config.json. Only writes when a config.json already exists (never creates
+ * one out of nowhere, and never drops localStorage-only connections). Existing
+ * per-provider `defaultModel` values that are not stored on the connection
+ * object are preserved. Returns true on success.
+ */
+export async function saveProjectConfigFromConnections(
+  connections: ModelConnection[]
+): Promise<boolean> {
+  try {
+    const existing = await loadProjectConfig();
+    if (!existing || !Array.isArray(existing.providers)) {
+      // No existing config to update — leave it untouched.
+      return false;
+    }
+
+    const existingById = new Map<string, ConfigProvider>();
+    for (const p of existing.providers) existingById.set(p.id, p);
+
+    const providers = connections.map((conn) => {
+      const existing = existingById.get(conn.id);
+      const provider: ConfigProvider = {
+        id: conn.id,
+        name: conn.name,
+        type: conn.kind === 'ollama' ? 'ollama' : 'lmstudio',
+        baseUrl: conn.baseUrl,
+        enabled: conn.enabled,
+      };
+      if (conn.apiKey) provider.apiKey = conn.apiKey;
+      if (conn.defaultModel) provider.defaultModel = conn.defaultModel;
+      if (existing?.defaultModel && !provider.defaultModel) provider.defaultModel = existing.defaultModel;
+      return provider;
+    });
+
+    return await saveProjectConfig({ version: 1, providers });
+  } catch (error) {
+    console.warn('Failed to save config.json:', error);
     return false;
   }
 }

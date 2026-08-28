@@ -22,7 +22,7 @@ interface Props {
 
 export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSave, onClose }) => {
   const [editingConn, setEditingConn] = useState<ModelConnection | null>(null);
-  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '', defaultModel: '' });
   
   // Context window configurations per model (loaded once)
   const [contextConfigs, setContextConfigs] = useState<Map<string, any>>(() => loadModelContextConfigs());
@@ -37,10 +37,11 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
       baseUrl: newConn.baseUrl.replace(/\/+$/, ''),
       apiKey: newConn.apiKey.trim() || undefined,
       enabled: true,
+      defaultModel: newConn.defaultModel || undefined,
     };
     
     onSave([...connections, conn]);
-    setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' });
+    setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '', defaultModel: '' });
   };
 
   const handleEditConnection = (conn: ModelConnection) => {
@@ -90,6 +91,8 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
             Provider Configuration
           </h2>
           <button
+            type="button"
+            aria-label="Close provider settings"
             onClick={handleSaveAndClose}
             className={`p-1 rounded ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-500'}`}
           >
@@ -139,8 +142,10 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
                     )}
                     <div className="flex items-center gap-2">
                       <button
+                        type="button"
+                        aria-label={conn.enabled ? 'Disable provider' : 'Enable provider'}
                         onClick={() => handleToggleEnabled(conn.id, !conn.enabled)}
-                        title={conn.enabled ? "Disable" : "Enable"}
+                        title={conn.enabled ? 'Disable' : 'Enable'}
                         className={`px-2 py-1 text-[10px] rounded ${
                           conn.enabled
                             ? dark ? 'bg-emerald-900/30 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
@@ -150,20 +155,24 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
                         {conn.enabled ? 'On' : 'Off'}
                       </button>
                       <button
+                        type="button"
+                        aria-label="Edit provider"
                         onClick={() => handleEditConnection(conn)}
+                        title="Edit"
                         className={`p-1.5 rounded ${
                           dark ? 'hover:bg-zinc-700 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-600'
                         }`}
-                        title="Edit"
                       >
                         ✎
                       </button>
                       <button
+                        type="button"
+                        aria-label="Delete provider"
                         onClick={() => handleDeleteConnection(conn.id)}
+                        title="Delete"
                         className={`p-1.5 rounded ${
                           dark ? 'hover:bg-red-900/30 text-red-400' : 'hover:bg-red-50 text-red-600'
                         }`}
-                        title="Delete"
                       >
                         🗑
                       </button>
@@ -175,72 +184,178 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
           )}
         </div>
 
-        {/* Add new connection */}
+        {/* Add or edit connection */}
         <div className={`rounded-lg p-4 border ${dark ? 'bg-zinc-800/30 border-zinc-700' : 'bg-zinc-50 border-zinc-200'}`}>
           <h3 className={`text-sm font-medium mb-3 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>
-            Add New Provider
+            {editingConn ? 'Edit Provider' : 'Add New Provider'}
           </h3>
-          
-          <div className="space-y-3">
-            <input
-              type="text"
-              placeholder="Provider name (e.g., LM Studio)"
-              value={newConn.name}
-              onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
-              className={`w-full rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
-              }`}
+
+          {editingConn ? (
+            <ProviderEditForm
+              dark={dark}
+              conn={editingConn}
+              updater={patch => setEditingConn(prev => (prev ? { ...prev, ...patch } : prev))}
+              onSave={handleSaveEdit}
+              onCancel={() => setEditingConn(null)}
             />
-            
-            <div className="flex gap-2">
-              <select
-                value={newConn.kind}
-                onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as 'openai' | 'ollama' }))}
-                className={`flex-1 rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
-                }`}
-              >
-                <option value="openai">OpenAI-compatible (LM Studio, etc.)</option>
-                <option value="ollama">Ollama server</option>
-              </select>
-              
-              <input
-                type="text"
-                placeholder="API Key (optional)"
-                value={newConn.apiKey}
-                onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
-                className={`w-1/3 rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
-                }`}
-              />
-            </div>
-            
-            <input
-              type="text"
-              placeholder="Base URL (e.g., http://localhost:1234)"
-              value={newConn.baseUrl}
-              onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
-              className={`w-full rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
-              }`}
+          ) : (
+            <ProviderAddForm
+              dark={dark}
+              newConn={newConn}
+              updater={patch => setNewConn(prev => ({ ...prev, ...patch }))}
+              onSave={handleAddConnection}
             />
-            
-            <button
-              onClick={handleAddConnection}
-              disabled={!newConn.name || !newConn.baseUrl}
-              className={`w-full py-2 rounded-lg font-medium transition-colors ${
-                newConn.name && newConn.baseUrl
-                  ? 'bg-blue-600 hover:bg-blue-500 text-white'
-                  : dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-300 text-zinc-500'
-              }`}
-            >
-              Add Provider
-            </button>
-          </div>
+          )}
         </div>
       </div>
     </div>
   );
 };
+
+/**
+ * Fields shared by the Add / Edit provider forms.
+ */
+function ProviderFormFields({
+  dark,
+  newConn,
+  updater,
+}: {
+  dark: boolean;
+  newConn: { name: string; kind: 'openai' | 'ollama'; baseUrl: string; apiKey: string; defaultModel: string };
+  updater: (patch: Partial<typeof newConn>) => void;
+}) {
+  const input = 'w-full rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ' +
+    (dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700');
+
+  return (
+    <div className="space-y-3">
+      <input
+        type="text"
+        placeholder="Provider name (e.g., LM Studio)"
+        value={newConn.name}
+        onChange={e => updater({ name: e.target.value })}
+        className={input}
+      />
+
+      <div className="flex gap-2">
+        <select
+          value={newConn.kind}
+          onChange={e => updater({ kind: e.target.value as 'openai' | 'ollama' })}
+          className={`flex-1 rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
+          }`}
+        >
+          <option value="openai">OpenAI-compatible (LM Studio, etc.)</option>
+          <option value="ollama">Ollama server</option>
+        </select>
+
+        <input
+          type="text"
+          placeholder="API Key (optional)"
+          value={newConn.apiKey}
+          onChange={e => updater({ apiKey: e.target.value })}
+          className={`w-1/3 rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
+          }`}
+        />
+      </div>
+
+      <input
+        type="text"
+        placeholder="Base URL (e.g., http://localhost:1234)"
+        value={newConn.baseUrl}
+        onChange={e => updater({ baseUrl: e.target.value })}
+        className={input}
+      />
+
+      <input
+        type="text"
+        placeholder="Default model tag (optional)"
+        value={newConn.defaultModel}
+        onChange={e => updater({ defaultModel: e.target.value })}
+        className={input}
+      />
+    </div>
+  );
+}
+
+/** Add-new-provider form. Saves on Enter only when name + baseUrl are present. */
+function ProviderAddForm({
+  dark,
+  newConn,
+  updater,
+  onSave,
+}: {
+  dark: boolean;
+  newConn: { name: string; kind: 'openai' | 'ollama'; baseUrl: string; apiKey: string; defaultModel: string };
+  updater: (patch: Partial<typeof newConn>) => void;
+  onSave: () => void;
+}) {
+  return (
+    <>
+      <ProviderFormFields dark={dark} newConn={newConn} updater={updater} />
+      <button
+        onClick={onSave}
+        disabled={!newConn.name || !newConn.baseUrl}
+        className={`w-full py-2 rounded-lg font-medium transition-colors ${
+          newConn.name && newConn.baseUrl
+            ? 'bg-blue-600 hover:bg-blue-500 text-white'
+            : dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-300 text-zinc-500'
+        }`}
+      >
+        Add Provider
+      </button>
+    </>
+  );
+}
+
+/** Edit-existing-provider form. Cancel removes the temp edit. */
+function ProviderEditForm({
+  dark,
+  conn,
+  updater,
+  onSave,
+  onCancel,
+}: {
+  dark: boolean;
+  conn: ModelConnection;
+  updater: (patch: Partial<ModelConnection>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <ProviderFormFields
+        dark={dark}
+        newConn={{
+          name: conn.name,
+          kind: conn.kind,
+          baseUrl: conn.baseUrl,
+          apiKey: conn.apiKey ?? '',
+          defaultModel: conn.defaultModel ?? '',
+        }}
+        updater={updater}
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={onSave}
+          className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
+            dark ? 'bg-emerald-700 hover:bg-emerald-600 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+          }`}
+        >
+          Save Changes
+        </button>
+        <button
+          onClick={onCancel}
+          className={`py-2 px-4 rounded-lg font-medium transition-colors ${
+            dark ? 'bg-zinc-700 hover:bg-zinc-600 text-white' : 'bg-zinc-300 hover:bg-zinc-400 text-zinc-700'
+          }`}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default ProviderConfiguration;

@@ -247,6 +247,29 @@ describe('App Component', () => {
       expect(screen.getByText(/Ctrl\+\\/i)).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+,/i)).toBeInTheDocument();
     });
+    it('help documents model providers and config.json fields (#555)', () => {
+      render(<App />);
+
+      // The help modal now documents providers and config.json (#555).
+      fireEvent.keyDown(window, { key: '?' });
+
+      expect(screen.getByRole('heading', { name: /Model Providers/i })).toBeInTheDocument();
+      expect(screen.getByText(/Configuration lives in two places/i)).toBeInTheDocument();
+      expect(screen.getByText(/config.json fields/i)).toBeInTheDocument();
+      // Documents the required provider keys.
+      expect(screen.getByText(/auto-selects a model on startup/i)).toBeInTheDocument();
+      expect(screen.getByText(/Optional keys are/i)).toBeInTheDocument();
+      expect(screen.getByText(/Each provider needs/i)).toBeInTheDocument();
+      // Mentions both provider types and their endpoints.
+      expect(screen.getByText(/each machine starts with/i)).toBeInTheDocument();
+      expect(screen.getByText(/a top-level/i)).toBeInTheDocument();
+      expect(screen.getByText(/auto-detects/i)).toBeInTheDocument();
+      expect(screen.getByText(/OpenAI-compatible/i)).toBeInTheDocument();
+      // Links back to the provider managers from the help modal.
+      expect(screen.getByRole('button', { name: /Configure Providers/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Edit config.json/i })).toBeInTheDocument();
+    });
+
 
     it('responsive design handles different screen sizes', () => {
       render(<App />);

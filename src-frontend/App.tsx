@@ -40,8 +40,10 @@ import {
   ModelConnection, ConnectedModel,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchAllConnectionModels, streamOpenAiChat,
-  testLmStudioConnection, getLmStudioModels, getDefaultConnections,
+  testLmStudioConnection, getLmStudioModels, getDefaultConnections, buildModelGroups,
+  mergeConfigWithConnections,
 } from './services/connections';
+import { loadProvidersFromConfig, saveProjectConfigFromConnections } from './services/projectConfig';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
 import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCost } from './services/tokenEstimate';
@@ -51,6 +53,7 @@ import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import ProviderConfiguration from './components/ProviderConfiguration';
+import ProjectConfigEditor from './components/ProjectConfigEditor';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
 import { closeAllPanels } from './components/PanelShell';
@@ -608,6 +611,30 @@ const App: React.FC = () => {
       else localStorage.removeItem('ollama_gui_active_project');
     } catch { /* ignore */ }
   }, [activeProjectId]);
+
+  // Load project-config.json providers on mount (#553). localStorage-backed
+  // connections are the source of truth for runtime edits (user-added,
+  // enabled-flagged); config.json re-enables built-in defaults and adds any
+  // provider it defines that localStorage did not already register.
+  useEffect(() => {
+    let cancelled = false;
+    void loadProvidersFromConfig().then(configConns => {
+      if (cancelled) return;
+      const storageConns = loadConnections();
+      const merged = mergeConfigWithConnections(storageConns, configConns);
+      const changed =
+        merged.length !== storageConns.length ||
+        merged.some((c, i) =>
+          c.id !== storageConns[i]?.id ||
+          c.enabled !== storageConns[i]?.enabled ||
+          c.defaultModel !== storageConns[i]?.defaultModel);
+      if (changed) {
+        setConnections(merged);
+        saveConnections(merged);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
   /** True while the native folder picker is open for a new project (#542). */
   const [creatingProject, setCreatingProject] = useState(false);
   // Project-first sidebar (#542): which projects are expanded, and whether the
@@ -695,6 +722,7 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isProviderConfigOpen, setIsProviderConfigOpen] = useState(false);
+  const [isProjectConfigEditorOpen, setIsProjectConfigEditorOpen] = useState(false);
   // Composed system-prompt preview overlay (#376).
   const [promptPreview, setPromptPreview] = useState<string | null>(null);
   // In-conversation search (#247)
@@ -1011,10 +1039,25 @@ const App: React.FC = () => {
   const messageQueueRef = useRef<string[]>([]);
   // Next auto-send from the queue, dispatched from a fresh render (#507).
   const [pendingQueuedMessage, setPendingQueuedMessage] = useState<string | null>(null);
+  // Guards the auto-send effect from re-entrancy. The effect depends on both
+  // `pendingQueuedMessage` and `isLoading`; because `sendMessage` mutates
+  // `isLoading` repeatedly while its promise is in flight, an isLoading-driven
+  // render could re-fire the effect with a stale `pendingQueuedMessage` and
+  // re-send the queued prompt. The ref ensures each queued message is sent
+  // exactly once (#137).
+  const sentPendingQueuedRef = useRef<string | null>(null);
   useEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
   useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  // Clear the guard when the pending auto-send slot is emptied, so a
+  // re-queued message that happens to share the previous string can still go
+  // out (#137).
+  useEffect(() => {
+    if (pendingQueuedMessage === null) sentPendingQueuedRef.current = null;
+  }, [pendingQueuedMessage]);
   useEffect(() => {
     if (pendingQueuedMessage === null || isLoading) return;
+    if (sentPendingQueuedRef.current === pendingQueuedMessage) return;
+    sentPendingQueuedRef.current = pendingQueuedMessage;
     const text = pendingQueuedMessage;
     setPendingQueuedMessage(null);
     void sendMessage(text);
@@ -1751,6 +1794,28 @@ const App: React.FC = () => {
     loadInitialData();
   }, []);
 
+  // Honor a provider-declared default model (#553): once connectedModels
+  // populate, pick a connection whose baseUrl has a `defaultModel` that is
+  // present in the available model list. This runs after the auto-select above
+  // (which fires with an empty connectedModels list) and only applies when
+  // nothing has been claimed yet, so resuming a chat still wins (#533).
+  useEffect(() => {
+    if (modelClaimedRef.current) return;
+    if (connectedModels.length === 0) return;
+    // A connection's `defaultModel` may live in either the Ollama list
+    // (`models`) or its OpenAI-compatible list (`connectedModels`), so consider
+    // both before picking the provider-declared model (#553).
+    const available = new Set([
+      ...models.map(m => m.name),
+      ...connectedModels.map(m => m.name),
+    ]);
+    const candidate = connections
+      .filter(c => c.enabled && c.defaultModel)
+      .map(c => c.defaultModel!)
+      .find(m => available.has(m));
+    if (candidate) setModel(candidate);
+  }, [connectedModels.length]);
+
   // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
   useEffect(() => () => { clearDiffReviewCallback(); clearBatchReviewCallback(); clearEditAppliedCallback(); clearBrowserApprovalCallback(); }, []);
   // Refresh relative timestamps every minute (#260)
@@ -2163,11 +2228,12 @@ const App: React.FC = () => {
         return;
       }
       // Escape closes the settings/help/provider config overlays even while focused in an input (#257)
-      if (e.key === 'Escape' && (isSettingsOpen || showHelp || isProviderConfigOpen || promptPreview)) {
+      if (e.key === 'Escape' && (isSettingsOpen || showHelp || isProviderConfigOpen || isProjectConfigEditorOpen || promptPreview)) {
         e.preventDefault();
         if (isSettingsOpen) setIsSettingsOpen(false);
         else if (showHelp) setShowHelp(false);
         else if (isProviderConfigOpen) setIsProviderConfigOpen(false);
+         else if (isProjectConfigEditorOpen) setIsProjectConfigEditorOpen(false);
         else setPromptPreview(null);
         return;
       }
@@ -5963,22 +6029,19 @@ ${lines.join('\n')}`;
                   ))}
                 </optgroup>
               )}
-              {/* Extra connection models grouped by connection (#123) */}
-              {connections.filter(c => c.enabled).map(conn => {
-                const connModels = connectedModels.filter(m => m.connectionId === conn.id);
-                if (!connModels.length) return null;
-                const groupLabel = conn.kind === 'ollama'
-                  ? `— Remote Ollama: ${conn.name} —`
-                  : `— ${conn.name} —`;
-                return (
-                  <optgroup key={conn.id} label={groupLabel}>
-                    {connModels.map(m => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
+              {/* Extra connection models grouped by provider (#123, #554).
+                  Empty providers are kept so a config.json-declared provider with
+                  no models still appears in the selector. */}
+              {buildModelGroups(connections, connectedModels).map((group, idx) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.options.map((opt) => (
+                    <option key={opt.key} value={opt.value}>
+                      {opt.marker ? `${opt.marker} ` : ''}{opt.name}{opt.suffix ? ` · ${opt.suffix}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+</select>
             {mlxUsable && isMlxModelName(model) && (
               <span
                 title="MLX acceleration active — this model uses Apple-Silicon MLX weights"
@@ -8209,26 +8272,60 @@ ${lines.join('\n')}`;
                 ))}
               </div>
               
-              {/* Connection management help */}
-              <div className="flex items-center justify-between">
-                <h3 className={`text-sm font-bold mt-6 mb-2 ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Model Providers</h3>
-                <button
-                  onClick={() => setIsProviderConfigOpen(true)}
-                  className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
-                    dark ? 'border-blue-600 text-blue-400 hover:bg-blue-900/20' : 'border-blue-500 text-blue-700 hover:bg-blue-50'
-                  }`}
-                >
-                  Configure Providers
-                </button>
+{/* Model Providers (#555) — documentation for configuring providers */}
+              <div className="flex items-center justify-between mb-2">
+                <h3 className={`text-sm font-bold ${dark ? 'text-zinc-200' : 'text-zinc-800'}`}>Model Providers</h3>
+                <div className="flex items-center gap-2">
+                  <button
+                    aria-label="Configure providers"
+                    onClick={() => setIsProviderConfigOpen(true)}
+                    className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
+                      dark ? 'border-blue-600 text-blue-400 hover:bg-blue-900/20' : 'border-blue-500 text-blue-700 hover:bg-blue-50'
+                    }`}
+                  >
+                    Configure Providers
+                  </button>
+                  <button
+                    aria-label="Edit config.json"
+                    onClick={() => setIsProjectConfigEditorOpen(true)}
+                    className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
+                      dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-800' : 'border-zinc-400 text-zinc-600 hover:bg-zinc-100'
+                    }`}
+                  >
+                    Edit config.json
+                  </button>
+                </div>
               </div>
               <p className={`text-[11px] ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                The app supports multiple model providers including Ollama and LM Studio.
-                Configure them in Settings or use the <code className={dark ? 'text-blue-300' : 'text-blue-600'}>/connections</code> slash command to list enabled connections.
+                Providers supply the model list in the selector. Configuration lives in two places:
+                <strong className={dark ? 'text-zinc-300' : 'text-zinc-700'}> localStorage</strong> (per-install defaults that reset on reinstall) and
+                <strong className={dark ? 'text-zinc-300' : 'text-zinc-700'}> a project config.json</strong> at the repo root (tracked in version control and shared across machines).
+                A provider already in config.json wins over the localStorage copy.
               </p>
-              <div className={`mt-2 p-3 rounded text-[10px] ${dark ? 'bg-zinc-900/50 text-zinc-400' : 'bg-zinc-100 text-zinc-600'}`}>
-                <p><strong>LM Studio:</strong> Start LM Studio at http://gx10:1234 and load a model.
-                The app will automatically detect models via the OpenAI-compatible API.</p>
+              <div className={`mt-2 rounded text-[10px] space-y-2 ${dark ? 'bg-zinc-900/50 text-zinc-400' : 'bg-zinc-100 text-zinc-600'}`}>
+                <p>
+                  <span className={dark ? 'text-zinc-200' : 'text-zinc-800'}><strong>Built-in providers:</strong></span>
+                  {" "}each machine starts with a <code className={dark ? 'text-blue-300' : 'text-blue-600'}>Local Ollama</code> provider (http://localhost:11434) and an optional
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> LM Studio</code> provider (http://localhost:1234). The Ollama provider auto-detects models from
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> /api/tags</code>; LM Studio uses the OpenAI-compatible <code className={dark ? 'text-blue-300' : 'text-blue-600'}> /v1/models</code> endpoint.
+                </p>
+                <p>
+                  <span className={dark ? 'text-zinc-200' : 'text-zinc-800'}><strong>config.json fields:</strong></span>
+                  {" "} a top-level <code className={dark ? 'text-blue-300' : 'text-blue-600'}> version</code> (currently 1) and a
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> providers</code> array. Each provider needs
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> id</code>, <code className={dark ? 'text-blue-300' : 'text-blue-600'}> name</code>,
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> type</code> (one of <code className={dark ? 'text-blue-300' : 'text-blue-600'}> ollama</code>,
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> lmstudio</code>, or <code className={dark ? 'text-blue-300' : 'text-blue-600'}> ollama_cloud</code>),
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> baseUrl</code>, and
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> enabled</code>. Optional keys are
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> apiKey</code> for authenticated endpoints and
+                  <code className={dark ? 'text-blue-300' : 'text-blue-600'}> defaultModel</code>, which auto-selects a model on startup.
+                </p>
               </div>
+              <p className={`mt-2 text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                Manage providers in Settings, or list enabled connections with the
+                <code className={dark ? 'text-blue-300' : 'text-blue-600'}> /connections</code> slash command.
+              </p>
 
               <p className={`text-[10px] mt-4 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
                 Shortcuts work when not typing in an input field.
@@ -8250,15 +8347,34 @@ ${lines.join('\n')}`;
             onSave={(updatedConnections) => {
               setConnections(updatedConnections);
               saveConnections(updatedConnections);
+              saveProjectConfigFromConnections(updatedConnections);
               // Refresh connected models for updated connections
               fetchAllConnectionModels(updatedConnections).then(setConnectedModels).catch(() => {});
               setIsProviderConfigOpen(false);
             }}
-            onClose={() => setIsProviderConfigOpen(false)}
+           onClose={() => setIsProviderConfigOpen(false)}
+         />
+       )}
+
+        {/* config.json editor (#556) */}
+        {isProjectConfigEditorOpen && (
+          <ProjectConfigEditor
+            dark={dark}
+            onClose={() => setIsProjectConfigEditorOpen(false)}
+            onSave={(config) => {
+              setIsProjectConfigEditorOpen(false);
+              // Reload config.json + reconcile connections after a save.
+              void loadProvidersFromConfig().then((configConns) => {
+                const storageConns = loadConnections();
+                const merged = mergeConfigWithConnections(storageConns, configConns);
+                setConnections(merged);
+                void fetchAllConnectionModels(merged).then(setConnectedModels).catch(() => {});
+              });
+            }}
           />
         )}
 
-        {/* Full-size image lightbox (#351) */}
+       {/* Full-size image lightbox (#351) */}
         {lightboxImage && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"

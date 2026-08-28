@@ -79,6 +79,11 @@ describe('Message queue (#137)', () => {
 
     // The queued chip is gone once it has been sent.
     await waitFor(() => expect(screen.queryByText('queued')).not.toBeInTheDocument(), { timeout: 5000 });
+
+    // Regression: the queued message must be sent exactly once. A re-entrant
+    // auto-send effect would re-fire on `isLoading` ticks and call the
+    // Ollama stream mock repeatedly.
+    expect(chatCalls).toBe(2);
   }, 30000);
 
   it('a queued message can be removed before it is sent', async () => {

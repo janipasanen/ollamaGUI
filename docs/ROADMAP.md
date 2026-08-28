@@ -4122,8 +4122,9 @@ A comprehensive audit and implementation pass addressing high-priority UI issues
 A dedicated provider configuration modal accessible from the Help menu:
 
 - [x] **#554** Add `ProviderConfiguration` component with add/edit/delete for providers, enable/disable toggle, API key field support.
+ - [x] **#554** Model selector groups provider models by connection. Extracted `buildModelGroups` from `App.tsx` into `services/connections.ts` as a pure, testable helper; the selector renders one <optgroup> per enabled provider (local Ollama relabeled "Local Ollama", ollama remotes as "Remote Ollama: <name>", other remotes by display name). Empty providers are kept so config.json-declared providers that expose no models still appear.
 
 ### Result
-- `tsc --noEmit` clean; `vitest run` = **2222 passed (240 test files)**
+- `tsc --noEmit` clean; `vitest run` includes 10 new `buildModelGroups` tests in `test/connections.test.ts`.
 - Dedicated UI for managing provider connections
 - Escape handler includes provider config overlay

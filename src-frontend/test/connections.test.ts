@@ -3,6 +3,7 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
+  buildModelGroups,
   type ModelConnection,
 } from '../services/connections';
 
@@ -451,5 +452,117 @@ describe('streamOpenAiChat — Qwen inline reasoning (#551)', () => {
     ])));
     await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], d => { if (d) deltas.push(d); });
     expect(deltas.join('')).toBe('plain answer');
+  });
+});
+
+// ── buildModelGroups (#554) ─────────────────────────────────────────────────
+
+const localConn: ModelConnection = {
+  id: 'local-ollama',
+  name: 'Local Ollama',
+  kind: 'ollama',
+  baseUrl: 'http://localhost:11434',
+  enabled: true,
+};
+
+const ollamaRemote: ModelConnection = {
+  id: 'remote-a',
+  name: 'Alpha',
+  kind: 'ollama',
+  baseUrl: 'http://remote-a:11434',
+  enabled: true,
+};
+
+const openAiRemote: ModelConnection = {
+  id: 'remote-b',
+  name: 'Beta',
+  kind: 'openai',
+  baseUrl: 'http://remote-b:1234',
+  enabled: true,
+};
+
+function connModel(id: string, name: string, extra: Partial<import('../services/connections').ConnectedModel> = {}) {
+  return {
+    id,
+    name,
+    connectionId: id.split('/')[0],
+    connectionName: id.split('/')[0],
+    kind: 'ollama' as const,
+    ...extra,
+  };
+}
+
+describe('buildModelGroups (#554)', () => {
+  it('creates one group per enabled connection', () => {
+    const groups = buildModelGroups([localConn, ollamaRemote, openAiRemote], []);
+    expect(groups).toHaveLength(3);
+  });
+
+  it('groups models by their connection id', () => {
+    const models = [
+      connModel('local-ollama/llama3', 'llama3'),
+      connModel('local-ollama/qwen3', 'qwen3'),
+      connModel('remote-a/gemma', 'gemma'),
+    ];
+    const groups = buildModelGroups([localConn, ollamaRemote], models);
+    const local = groups.find((g) => g.label === '— Local Ollama —');
+    const remote = groups.find((g) => g.label === '— Remote Ollama: Alpha —');
+    expect(local?.options).toHaveLength(2);
+    expect(remote?.options).toHaveLength(1);
+    expect(remote?.options[0].name).toBe('gemma');
+  });
+
+  it('relabels the local-ollama connection as "Local Ollama"', () => {
+    const groups = buildModelGroups([localConn], []);
+    expect(groups[0].label).toBe('— Local Ollama —');
+  });
+
+  it('labels ollama remotes as "Remote Ollama: <name>"', () => {
+    const groups = buildModelGroups([ollamaRemote], []);
+    expect(groups[0].label).toBe('— Remote Ollama: Alpha —');
+  });
+
+  it('labels non-ollama (openai) remotes without the "Remote Ollama" prefix', () => {
+    const groups = buildModelGroups([openAiRemote], []);
+    expect(groups[0].label).toBe('— Beta —');
+  });
+
+  it('excludes disabled connections', () => {
+    const disabled: ModelConnection = {
+      id: 'remote-c', name: 'Gamma', kind: 'ollama', baseUrl: 'http://c:11434', enabled: false,
+    };
+    const models = [connModel('remote-c/x', 'x')];
+    const groups = buildModelGroups([localConn, disabled], models);
+    expect(groups).toHaveLength(1);
+  });
+
+  it('keeps empty groups so no-config providers still appear', () => {
+    const groups = buildModelGroups([localConn, ollamaRemote], []);
+    expect(groups.every((g) => g.isEmpty === true)).toBe(true);
+    expect(groups).toHaveLength(2);
+  });
+
+  it('sorts options by model tag and joins size/quantization as suffix', () => {
+    const models = [
+      connModel('local-ollama/zzz', 'zzz', { parameterSize: '7B', quantization: 'Q4_K_M' }),
+      connModel('local-ollama/aaa', 'aaa'),
+    ];
+    const groups = buildModelGroups([localConn], models);
+    const opts = groups[0].options;
+    expect(opts.map((o) => o.name)).toEqual(['aaa', 'zzz']);
+    expect(opts[1].suffix).toBe('7B · Q4_K_M');
+  });
+
+  it('prefixes cloud models with a cloud marker', () => {
+    const models = [connModel('local-ollama/fancy', 'fancy', { cloud: true })];
+    const groups = buildModelGroups([localConn], models);
+    expect(groups[0].options[0].marker).toBe('⛅');
+  });
+
+  it('uses "<connectionId>/<name>" as the option value and key', () => {
+    const models = [connModel('remote-a/gemma', 'gemma')];
+    const groups = buildModelGroups([ollamaRemote], models);
+    expect(groups[0].options[0].key).toBe('remote-a/gemma');
+    expect(groups[0].options[0].value).toBe('remote-a/gemma');
   });
 });
