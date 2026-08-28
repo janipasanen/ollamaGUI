@@ -11,7 +11,7 @@
 - **Total Issues Found**: 7 gaps identified across provider communication
 - **Gaps Already Implemented**: 2 (G1, G2) - LM Studio streaming and gx10 remote connections already working
 - **New Implementation**: 1 (G8) - Context window configuration per model ✅
-- **Pending/Future Work**: 3 (G4, G9+) - OpenAI compat hardening, context-window tuning
+- **Pending/Future Work**: 2 (G9+) - context-window tuning and remaining hardening
 
 ### Key Discoveries:
 1. LM Studio streaming chat was **already implemented** in `openaiAgent.ts`
@@ -141,12 +141,25 @@ export function getDefaultConnections(): ModelConnection[] {
 ### 4. OpenAI API Compatibility Gap
 
 #### Issue #G4: Standard OpenAI API Support
-- **Status**: ⚠️ PARTIAL
-- **Description**: Limited testing with standard OpenAI API endpoints
-- **Missing**:
-  - Custom endpoint URL input
-  - API key management for OpenAI-compatible services
-  - Model list refresh from custom endpoints
+- **Status**: ✅ IMPLEMENTED
+- **Description**: Standard OpenAI-compatible `/v1/models` + `/v1/chat/completions`
+  support is in place for any `kind: 'openai'` connection (LM Studio, vLLM,
+  OpenAI, etc.). Confirmed here with dedicated test coverage.
+- **Current Implementation**:
+  - `fetchOpenAiModels()` (`src-frontend/services/connections.ts:236`) hits
+    `${baseUrl}/v1/models`, adds an `Authorization: Bearer` header when an
+    `apiKey` is set, and maps each entry into a `ConnectedModel` keyed by
+    `<connectionId>/<modelId>`. Returns `[]` on any fetch/HTTP error.
+  - `testLmStudioConnection()` probes `/v1/models` and returns
+    `{ success, models, error? }` — `error` is `HTTP <status>` on a non-ok
+    response and the fetch message on a throw.
+  - `getLmStudioModels()` is the unauthenticated LM Studio convenience helper
+    (defaults to `http://localhost:1234`) used for quick model discovery.
+  - `checkConnectionHealth()` (G5) probes the same `/v1/models` endpoint, so
+    OpenAI-auth failures (401/403) are classified correctly.
+- **Test Coverage**: `fetchOpenAiModels`, `testLmStudioConnection`, and
+  `getLmStudioModels` are covered in `src-frontend/test/connections.test.ts`
+  (parsing, Authorization header, non-ok, and fetch-error paths).
 
 ### 5. Provider Status Monitoring Gap
 
@@ -227,7 +240,7 @@ export function getDefaultConnections(): ModelConnection[] {
 | G1: LM Studio streaming | HIGH | Medium | High - Main use case | ✅ RESOLVED |
 | G2: Remote Ollama | HIGH | Low | High - gx10 access | ✅ RESOLVED |
 | G3: Per-message routing | MEDIUM | High | Medium - Flexibility | ✅ IMPLEMENTED |
-| G4: OpenAI compatibility | LOW | Low | Medium - Future-proofing | ⏳ PENDING |
+| G4: OpenAI compatibility | LOW | Low | Medium - Future-proofing | ✅ IMPLEMENTED |
 | G5: Connection health | MEDIUM | Low | Medium - UX improvement | ✅ IMPLEMENTED |
 | G6: Tool calling cross-provider | HIGH | Medium | High - Agentic features | ✅ IMPLEMENTED |
 | G7: Vision support | LOW | Medium | Low - Niche feature | ✅ IMPLEMENTED |

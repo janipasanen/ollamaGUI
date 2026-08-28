@@ -4,6 +4,7 @@ import {
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
   buildModelGroups, checkConnectionHealth,
+  getLmStudioModels, testLmStudioConnection,
   type ModelConnection,
 } from '../services/connections';
 
@@ -705,5 +706,91 @@ describe('checkConnectionHealth (#553 / G5)', () => {
     await checkConnectionHealth(conn);
     expect(calls[0].opts.headers).toBeDefined();
     expect(calls[0].opts.headers['Authorization']).toBeUndefined();
+  });
+});
+
+// ── LM Studio helpers (G4 — OpenAI-compatible) ────────────────────────────────
+
+describe('getLmStudioModels (G4)', () => {
+  it('maps /v1/models into ConnectedModel entries tagged as lm-studio-temp', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [{ id: 'llama3.2' }, { id: 'mistral' }] }),
+    } as any);
+    const models = await getLmStudioModels('http://localhost:1234');
+    expect(models).toHaveLength(2);
+    expect(models[0].name).toBe('llama3.2');
+    expect(models[0].connectionId).toBe('lm-studio-temp');
+    expect(models[0].connectionName).toBe('LM Studio');
+    expect(models[0].kind).toBe('openai');
+    expect(models[0].id).toBe('lm-studio-temp/llama3.2');
+  });
+
+  it('strips a trailing slash from the base URL before appending /v1/models', async () => {
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (url, opts) => {
+      calls.push({ url });
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    });
+    await getLmStudioModels('http://localhost:1234/');
+    expect(calls[0].url).toBe('http://localhost:1234/v1/models');
+  });
+
+  it('returns [] on a non-ok response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false } as any);
+    expect(await getLmStudioModels()).toEqual([]);
+  });
+
+  it('returns [] on a fetch error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('fetch failed'));
+    expect(await getLmStudioModels()).toEqual([]);
+  });
+});
+
+describe('testLmStudioConnection (G4)', () => {
+  const conn: ModelConnection = {
+    id: 'lmstudio', name: 'LM Studio', kind: 'openai',
+    baseUrl: 'http://localhost:1234', enabled: true,
+  };
+
+  it('reports success and parses models from /v1/models', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ data: [{ id: 'gpt-j' }] }),
+    } as any);
+    const result = await testLmStudioConnection(conn);
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0].id).toBe('lmstudio/gpt-j');
+  });
+
+  it('sends the Authorization header when apiKey is set', async () => {
+    const calls: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (url, opts) => {
+      calls.push({ opts });
+      return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: [] }) } as any;
+    });
+    await testLmStudioConnection({ ...conn, apiKey: 'secret' });
+    expect(calls[0].opts.headers['Authorization']).toBe('Bearer secret');
+  });
+
+  it('returns failure with the HTTP status on a non-ok response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false, status: 500, statusText: 'Internal Server Error',
+    } as any);
+    const result = await testLmStudioConnection(conn);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('HTTP 500');
+    expect(result.models).toEqual([]);
+  });
+
+  it('returns failure with the fetch message on a fetch error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    const result = await testLmStudioConnection(conn);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('connect ECONNREFUSED');
   });
 });

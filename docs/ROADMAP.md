@@ -4323,6 +4323,37 @@ cross-provider family (G6 tool calling, G7 vision).
   (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
   covered by CI `--retry=2`; unrelated to this work.
 
+## M183 — G4: OpenAI compatibility test coverage
+
+Closes the remaining GAP #G4 (OpenAI API Compatibility) by adding test
+coverage for the previously untested OpenAI-compatible / LM Studio helpers.
+G4 is *implemented* — the code already supports a custom endpoint URL,
+per-connection `apiKey`, and model-list refresh from any `/v1/models`
+endpoint — but the two helper functions had no dedicated tests. This closes
+that gap so G4 is fully covered end-to-end.
+
+- **[service tests]** `src-frontend/test/connections.test.ts` gains:
+  - `getLmStudioModels (G4)` (5 cases): maps `/v1/models` into `ConnectedModel`
+    entries tagged `connectionId='lm-studio-temp'`, `connectionName='LM Studio'`,
+    `kind='openai'`; ids form `lm-studio-temp/<model>`; strips a trailing slash
+    from the base URL; returns `[]` on a non-ok response and on a fetch error.
+  - `testLmStudioConnection (G4)` (4 cases): returns
+    `{ success, models, error? }` with `success` and parsed models on a 200,
+    sends the `Authorization: Bearer` header when an `apiKey` is set, returns
+    `{ success:false, error:'HTTP <status>', models:[] }` on a non-ok response,
+    and `{ success:false, error: <fetch message>, models:[] }` on a fetch throw.
+- **[docs]** `docs/GAP_ANALYSIS.md` G4 updated from ⚠️ PARTIAL to ✅ IMPLEMENTED
+  (status, priority-matrix row, and summary line), documenting
+  `fetchOpenAiModels` (`services/connections.ts:236`), `testLmStudioConnection`,
+  `getLmStudioModels`, and the G5 `/v1/models` health probe.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2433 passed** (2436 total); +9 new tests (G4).
+- One pre-existing timing-sensitive failure remains
+  (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
+  covered by CI `--retry=2`; unrelated to this work.
+
 ## M182 — G3: Per-conversation provider selection
 
 Closes GAP #G3 (Per-Message Provider Selection). Before G3 every chat shared
