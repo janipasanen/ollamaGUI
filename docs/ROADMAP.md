@@ -4183,3 +4183,33 @@ uncovered pure-function service modules. No merge to `master` — work stays on
   pass (`promptLibrary.test.ts` 10, `mcp-http.test.ts` 12).
 - One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
   flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
+
+## M177 — Service-test coverage: agentActivity + workspaceContext
+
+Coverage pass continuing from M176. Adds tests for the last two services that
+lacked a dedicated suite.
+
+- **[agentActivity]** Add `src-frontend/test/agentActivity.test.ts`. The store
+  (#432) records a `call`/`result` event per tool call and feeds the
+  AgentActivityPanel. Tests cover: event fields (incrementing id, tool, kind,
+  detail), `"(tool)"` fallback for a missing tool name, 400-char detail
+  truncation, missing detail stays `undefined`, `listActivity` returns a copy
+  (external mutation doesn't leak in), `clearActivity` empties the log,
+  `subscribeActivity` fires on push/clear and the unsubscribe stops it, and the
+  300-event cap (oldest dropped, first surviving id = 51 after 350 pushes).
+
+- **[workspaceContext]** Add `src-frontend/test/workspaceContext.test.ts`.
+  Covers `formatWorkspaceContext` (empty string when no root, base working-dir
+  block, project name + git remote/branch inclusion, known-CLI hints advertised
+  while unknown CLIs are dropped, CLIs section omitted when none known);
+  `detectGitInfo` (reads remote + branch from an injected `run` fn, zero
+  exit/empty yields `{}`, passes the workspace root as cwd, `{}` when the
+  `runCliOnce` import fails); and `detectRepoClis` (`[]` outside Tauri, filters
+  to probe-present CLIs in `REPO_CLIS` order, ignores throwing probes).
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2355 passed (250 test files)**, +23 new tests from this
+  pass (agentActivity 8, workspaceContext 15).
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
