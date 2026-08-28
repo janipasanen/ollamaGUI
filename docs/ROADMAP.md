@@ -4128,3 +4128,33 @@ A dedicated provider configuration modal accessible from the Help menu:
 - `tsc --noEmit` clean; `vitest run` includes 10 new `buildModelGroups` tests in `test/connections.test.ts`.
 - Dedicated UI for managing provider connections
 - Escape handler includes provider config overlay
+
+## M175 — Service-test coverage: citations + modelContextConfig (twenty-ninth analysis pass)
+
+A focused test-coverage pass. The previous analysis pass (M174.1) closed the
+provider/config.json gap; this pass fills the two largest uncovered service
+modules. No merge to `master` — work stays on `macOS-10.15`.
+
+- [x] **(#120)** Add unit tests for `citations.ts`. The RAG/web citation module
+  had no test file. Added `src-frontend/test/citations.test.ts` covering
+  `parseCitationRefs` (`[0]` ignored, `[n](url)` markdown links skipped, dedup/sort),
+  `linkifyCitations` (resolves `[n]`→`CitePart`, merges adjacent text, leaves
+  out-of-range/`[0]`/markdown-link literals, defaults `sources` to `[]`),
+  `hasSources`, and the `openSource` system-opener via its `_mocks.open` test
+  seam. 30 new tests.
+- [x] **(#8 context window)** Add unit tests for `modelContextConfig.ts`, which
+  had no test file. Added `src-frontend/test/modelContextConfig.test.ts` covering
+  storage round-trips under the `model_context_config_v1` key, tolerance of
+  corrupt JSON, `getModelContextConfig` defaults (32768 / 0.8 threshold /
+  `autoDetected=false`), `setModelContextConfig` merge semantics, `removeModelContextConfig`,
+  `getModelDefaultContext` (32768), `buildModelId` prefix-stripping,
+  `getCompactionThreshold`, and `detectContextFromApi` (Ollama `/api/show`
+  `.context_length`, OpenAI `/v1/models` fallback, null on not-ok/throw).
+  22 new tests.
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run` = **2310 passed (246 test files)**, +52 new tests from this
+  pass (`citations.test.ts` 30, `modelContextConfig.test.ts` 22).
+- One pre-existing timing-sensitive failure remains (`genStatsAndRetry.test.tsx:79`),
+  flaky on slow runners and covered by CI `--retry=2`; unrelated to this work.
