@@ -6,12 +6,13 @@
  */
 
 import React, { useState } from 'react';
-import type { ConnectionHealth, ModelConnection } from '../services/connections';
+import type { ConnectionHealth, ConnectedModel, ModelConnection } from '../services/connections';
 import { checkConnectionHealth } from '../services/connections';
 import {
   loadModelContextConfigs,
   saveModelContextConfigs,
   getModelDefaultContext,
+  detectContextWindow,
 } from '../services/modelContextConfig';
 
 type HealthByConn = Record<string, ConnectionHealth>;
@@ -42,11 +43,18 @@ function statusPill(status: ConnectionHealth['status'], dark: boolean, busy: boo
 interface Props {
   dark: boolean;
   connections: ModelConnection[];
+  connectedModels: ConnectedModel[];
   onSave: (connections: ModelConnection[]) => void;
   onClose: () => void;
 }
 
-export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSave, onClose }) => {
+export const ProviderConfiguration: React.FC<Props> = ({
+  dark,
+  connections,
+  connectedModels,
+  onSave,
+  onClose,
+}) => {
   const [editingConn, setEditingConn] = useState<ModelConnection | null>(null);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '', defaultModel: '' });
   
@@ -57,6 +65,14 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
   // connection id so the pill reflects the latest probe for each provider.
   const [health, setHealth] = useState<HealthByConn>({});
   const [testingConn, setTestingConn] = useState<string | null>(null);
+
+  // Per-model context windows auto-detected this session, keyed by the storage
+  // model id ("connectionId/modelName"). Backing for the "Detect context"
+  // affordance (G9: context window tuning).
+  const [detectedWindows, setDetectedWindows] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const [detecting, setDetecting] = useState<string | null>(null);
 
   // Probe a single provider's health. Retries once after a short wait so a
   // transient offline blip isn't reported as down.
@@ -74,6 +90,36 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
       }));
     } finally {
       setTestingConn(null);
+    }
+  };
+
+  // Detect the context window for every connected model on a connection and
+  // persist the results under model_context_config_v1 (G9: context window
+  // tuning). Detects only models that share this connection; the connection
+  // base URL comes from `connections`.
+  const detectContextForModel = async (id: string) => {
+    setDetecting(id);
+    try {
+      const target = connections.find((c) => c.id === id);
+      if (!target) return;
+      const models = connectedModels.filter((m) => m.connectionId === id);
+      await Promise.all(
+        models.map(async (m) => {
+          const key = `${m.connectionId}/${m.name}`;
+          const detected = await detectContextWindow(
+            target.baseUrl,
+            m.connectionId,
+            m.name,
+          );
+          if (typeof detected === 'number' && detected > 0) {
+            setDetectedWindows((prev) => new Map(prev).set(key, detected));
+          }
+        }),
+      );
+    } catch {
+      // Detection failures are non-fatal; nothing is persisted on error.
+    } finally {
+      setDetecting(null);
     }
   };
 
@@ -225,6 +271,34 @@ export const ProviderConfiguration: React.FC<Props> = ({ dark, connections, onSa
                         📏 Default: ~{Math.round(getModelDefaultContext() / 1024)}k tokens
                       </div>
                     )}
+                    {/* G9: per-connection auto-detect context window affordance */}
+                    {connectedModels.filter((m) => m.connectionId === conn.id).length > 0 && (
+                      <button
+                        type="button"
+                        aria-label={`Auto-detect context windows for ${conn.name}`}
+                        data-testid={`detect-btn-${conn.id}`}
+                        onClick={() => detectContextForModel(conn.id)}
+                        disabled={detecting !== null}
+                        title="Auto-detect context window for each model from its server"
+                        className={`px-2 py-1 text-[10px] rounded ${
+                          dark
+                            ? 'bg-purple-700 text-purple-100 hover:bg-purple-600'
+                            : 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        }`}
+                      >
+                        {detecting === conn.id ? 'Detecting…' : 'Detect context'}
+                      </button>
+                    )}
+                    {connectedModels
+                      .filter((m) => m.connectionId === conn.id && detectedWindows.has(`${m.connectionId}/${m.name}`))
+                      .map((m) => {
+                        const detected = detectedWindows.get(`${m.connectionId}/${m.name}`);
+                        return detected ? (
+                          <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                            🧠 {m.name}: {detected.toLocaleString()} tokens
+                          </div>
+                        ) : null;
+                      })}
                     <div className="flex items-center gap-2">
                       <button
                         type="button"

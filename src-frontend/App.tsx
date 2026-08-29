@@ -8381,6 +8381,7 @@ ${lines.join('\n')}`;
           <ProviderConfiguration
             dark={dark}
             connections={connections}
+            connectedModels={connectedModels}
             onSave={(updatedConnections) => {
               setConnections(updatedConnections);
               saveConnections(updatedConnections);

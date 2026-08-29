@@ -205,3 +205,36 @@ export function buildModelId(connectionId: string, modelName: string): string {
 export function getCompactionThreshold(config: ModelContextConfig): number {
   return config.contextWindow * config.compactionThreshold;
 }
+
+/**
+ * Detect the context window for a specific model/connection from the server's
+ * API, then persist it under `model_context_config_v1` (marked autoDetected).
+ *
+ * This is the production entry point for GAP #G9 "context window tuning". The
+ * underlying detection (`detectContextFromApi`) existed and was unit-tested in
+ * isolation, but nothing called it — this wires the auto-detect feature into
+ * the Provider Configuration UI.
+ *
+ * @param endpoint - Server base URL, e.g. `http://localhost:11434`
+ *                     or `http://gx10:1234` (LM Studio).
+ * @param connectionId - Owning connection id, used to build the storage key.
+ * @param modelName - Model tag, e.g. `llama3:8b`.
+ * @returns the detected context window in tokens, or `null` if detection
+ *          failed or the server exposed no context limit.
+ */
+export async function detectContextWindow(
+  endpoint: string,
+  connectionId: string,
+  modelName: string,
+): Promise<number | null> {
+  const detected = await detectContextFromApi(endpoint, modelName);
+  if (typeof detected !== 'number' || !Number.isFinite(detected) || detected <= 0) {
+    return null;
+  }
+  setModelContextConfig(buildModelId(connectionId, modelName), {
+    contextWindow: detected,
+    compactionThreshold: DEFAULT_COMPACTION_THRESHOLD,
+    autoDetected: true,
+  });
+  return detected;
+}

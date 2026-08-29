@@ -9,6 +9,7 @@ import {
   buildModelId,
   getCompactionThreshold,
   detectContextFromApi,
+  detectContextWindow,
   type ModelContextConfig,
 } from '../services/modelContextConfig';
 
@@ -192,5 +193,62 @@ describe('detectContextFromApi (#8 context window)', () => {
   it('returns null on a thrown fetch error', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('boom'));
     await expect(detectContextFromApi('http://localhost:11434', 'x')).resolves.toBeNull();
+  });
+});
+
+// ── detectContextWindow — production entry point for GAP #9 ─────────────────
+
+describe('detectContextWindow (#9 context window tuning)', () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('detects from /api/show and persists it as autoDetected', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ model_info: { 'llama.context_length': 131072 } }),
+    });
+    const result = await detectContextWindow('http://localhost:11434', 'local-ollama', 'llama3');
+    expect(result).toBe(131072);
+
+    const configs = loadModelContextConfigs();
+    expect(configs.has('local-ollama/llama3')).toBe(true);
+    const entry = configs.get('local-ollama/llama3')!;
+    expect(entry.contextWindow).toBe(131072);
+    expect(entry.autoDetected).toBe(true);
+    // Default compaction threshold applied for a newly-detected model.
+    expect(entry.compactionThreshold).toBe(0.8);
+  });
+
+  it('detects from an OpenAI-compatible /v1/models endpoint', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'qwen', context_length: 32768 }] }),
+    });
+    const result = await detectContextWindow('http://gx10:1234', 'lm-studio', 'qwen');
+    expect(result).toBe(32768);
+    expect(loadModelContextConfigs().get('lm-studio/qwen')?.contextWindow).toBe(32768);
+  });
+
+  it('does not persist when the server exposes no context limit', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ model_info: {} }) });
+    const result = await detectContextWindow('http://localhost:11434', 'local-ollama', 'llama3');
+    expect(result).toBeNull();
+    expect(loadModelContextConfigs().has('local-ollama/llama3')).toBe(false);
+  });
+
+  it('does not persist or throw on a thrown fetch error', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('boom'));
+    const result = await detectContextWindow('http://localhost:11434', 'local-ollama', 'llama3');
+    expect(result).toBeNull();
+    expect(loadModelContextConfigs().has('local-ollama/llama3')).toBe(false);
+  });
+
+  it('does not persist negative / non-finite detections', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ model_info: { 'llama.context_length': -100 } }),
+    });
+    const result = await detectContextWindow('http://localhost:11434', 'local-ollama', 'llama3');
+    expect(result).toBeNull();
   });
 });

@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ProviderConfiguration from '../components/ProviderConfiguration';
 import { checkConnectionHealth } from '../services/connections';
-import type { ModelConnection } from '../services/connections';
+import type { ConnectedModel, ModelConnection } from '../services/connections';
+import * as mc from '../services/modelContextConfig';
 
 vi.mock('../services/connections', async () => ({
   checkConnectionHealth: vi.fn(),
@@ -25,18 +26,35 @@ function baseConn(overrides: Partial<ModelConnection> = {}): ModelConnection {
   };
 }
 
-function renderModal(connections: ModelConnection[]) {
+function renderModal(
+  connections: ModelConnection[],
+  connectedModels: ConnectedModel[] = [],
+) {
   const onSave = vi.fn();
   const onClose = vi.fn();
   const utils = render(
     <ProviderConfiguration
       dark={false}
       connections={connections}
+      connectedModels={connectedModels}
       onSave={onSave}
       onClose={onClose}
     />
   );
   return { onSave, onClose, ...utils };
+}
+
+function baseModel(
+  overrides: Partial<ConnectedModel> = {},
+): ConnectedModel {
+  return {
+    id: 'local-ollama/llama3',
+    name: 'llama3',
+    connectionId: 'local-ollama',
+    connectionName: 'Local Ollama',
+    kind: 'ollama',
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -219,5 +237,114 @@ describe('ProviderConfiguration — connection health (#553 / G5)', () => {
     expect(
       screen.getByRole('button', { name: 'Test LM Studio connection' }),
     ).toBeDisabled();
+  });
+});
+
+// ── G9: per-connection auto-detect context windows (#554) ────────────────────
+
+describe('ProviderConfiguration — context window detection (#554)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    vi.spyOn(mc, 'detectContextWindow');
+  });
+
+  it('shows a "Detect context" button only when the connection has models', () => {
+    // No connected models → no detect affordance.
+    renderModal([baseConn({ id: 'local-ollama' })]);
+    expect(
+      screen.queryByRole('button', {
+        name: 'Auto-detect context windows for Local Ollama',
+      }),
+    ).not.toBeInTheDocument();
+
+    // With connected models → detect button appears.
+    renderModal(
+      [baseConn({ id: 'local-ollama' })],
+      [baseModel({ connectionId: 'local-ollama', name: 'llama3' })],
+    );
+    expect(
+      screen.getByRole('button', {
+        name: 'Auto-detect context windows for Local Ollama',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls detectContextWindow for each connected model on click', async () => {
+    (mc.detectContextWindow as ReturnType<typeof vi.fn>).mockResolvedValue(32768);
+    renderModal(
+      [baseConn({ id: 'local-ollama' })],
+      [
+        baseModel({ connectionId: 'local-ollama', name: 'llama3' }),
+        baseModel({ connectionId: 'local-ollama', name: 'qwen3' }),
+      ],
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Auto-detect context windows for Local Ollama',
+      }),
+    );
+
+    await waitFor(() => expect(mc.detectContextWindow).toHaveBeenCalledTimes(2));
+    expect(mc.detectContextWindow).toHaveBeenCalledWith(
+      'http://localhost:11434',
+      'local-ollama',
+      'llama3',
+    );
+    expect(mc.detectContextWindow).toHaveBeenCalledWith(
+      'http://localhost:11434',
+      'local-ollama',
+      'qwen3',
+    );
+  });
+
+      it('marks the button busy while detecting and reveals detected values', async () => {
+    // Deferred promises so detection stays in-flight and we can observe busy.
+    const deferreds: Array<(v: number) => void> = [];
+    (mc.detectContextWindow as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      new Promise<number>((res) => {
+        deferreds.push(res);
+      }),
+    );
+
+    renderModal(
+      [baseConn({ id: 'local-ollama' })],
+      [
+        baseModel({ connectionId: 'local-ollama', name: 'llama3' }),
+        baseModel({ connectionId: 'local-ollama', name: 'qwen3' }),
+      ],
+    );
+
+    const btn = screen.getByRole('button', {
+      name: 'Auto-detect context windows for Local Ollama',
+    });
+    fireEvent.click(btn);
+
+    // Detection is in-flight → button disabled and "Detecting…".
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent('Detecting…');
+    await waitFor(() => expect(mc.detectContextWindow).toHaveBeenCalledTimes(2));
+
+    // Resolve the first detection; the second value resolves separately.
+    deferreds[0](32768);
+    // Allow state to flush for the first resolved value.
+    await waitFor(() =>
+      expect(screen.getByText('🧠 llama3: 32,768 tokens')).toBeInTheDocument(),
+    );
+    deferreds[1](16384);
+    await waitFor(() => expect(btn).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByText('🧠 qwen3: 16,384 tokens')).toBeInTheDocument(),
+    );
+  });
+
+it('does not show a detect button for connections with no models', () => {
+    renderModal([baseConn({ id: 'local-ollama' })], []);
+    expect(
+      screen.queryByRole('button', {
+        name: 'Auto-detect context windows for Local Ollama',
+      }),
+    ).not.toBeInTheDocument();
   });
 });

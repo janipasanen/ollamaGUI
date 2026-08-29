@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Per-model context-window auto-detection (G9, M186)
+The per-model context-window configuration (G8) let users *set* a context
+window by hand, but the app never *discovered* the real limit from the server.
+`detectContextFromApi()` (which parses Ollama `/api/show` and OpenAI-compatible
+`/v1/models`) was implemented and unit-tested but never called, and the
+`ProviderConfiguration` modal's `updateContextConfig` handler was dead code.
+M186 wires the auto-detect feature into the UI: a new
+`detectContextWindow()` service fn detects a model's context window from its
+server and persists it (marked `autoDetected`) under `model_context_config_v1`.
+The Provider Configuration modal now shows a "Detect context" button per
+connection with connected models, marks it busy while probing, and lists each
+detected window. The value flows into `autoNumCtx()` (which honors the
+user-configured limit) and therefore sizes production compaction.
+Verified with service tests (`detectContextWindow`) and UI tests
+(`ProviderConfiguration` detection flow).
 #### Qwen coder models work agentically over LM Studio (#551)
 Selecting a Qwen coder model from an OpenAI-compatible connection (LM Studio,
 llama.cpp server, vLLM) used to produce an agent that never called a tool. The
