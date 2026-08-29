@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Ambient counts of active configuration shown inline (#547, M188)
+MCP servers, custom tools, OpenAPI servers, knowledge collections and secrets
+were only visible behind the Settings modal. M188 adds an inline "Active
+configuration" strip (to the right of the connection indicator and conversation
+stats) showing one chip per non-empty category with its count. Each chip is a
+button that opens Settings, so the counts are a read-only ambient indicator
+rather than a data source. Counts are derived through pure helpers
+(`services/ambientCounts.ts`): MCP servers count only when enabled and
+connected, tools/OpenAPI servers only when enabled; collections/secrets count
+every entry. Unit tests cover the helpers and the component; a component test
+clicks a chip and expects Settings to open.
 #### Ollama connection state shown inline (#547, M187)
 The header connection indicator was a bare colored dot plus a `title` tooltip,
 so the only way to read "am I connected, to what" was to hover. M187 replaces

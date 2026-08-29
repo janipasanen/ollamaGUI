@@ -144,10 +144,18 @@ import { CommandPalette, type PaletteCommand } from './components/CommandPalette
 import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } from './services/formatTime';
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats, type ConversationStats } from './services/conversationStats';
+import {
+  countActiveMcpServers,
+  countEnabledCustomTools,
+  countEnabledOpenApiServers,
+  countKnowledgeCollections,
+  countSecrets,
+} from './services/ambientCounts';
 import ProjectHeader from './components/ProjectHeader';
 import { InlineConversationStats } from './components/InlineConversationStats';
 import InlineGenParams from './components/InlineGenParams';
 import { InlineConnectionIndicator } from './components/InlineConnectionIndicator';
+import { AmbientCounts } from './components/AmbientCounts';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
@@ -802,6 +810,15 @@ const App: React.FC = () => {
   // Custom Tools & Functions (#127)
   const [customTools, setCustomTools] = useState<CustomTool[]>(() => loadCustomTools());
   const [functionDefs, setFunctionDefs] = useState<FunctionDef[]>(() => loadFunctionDefs());
+  // Ambient counts of active configuration (#547): shown inline in the header
+  // so the user can see what's active without opening Settings.
+  const ambientCounts = {
+    mcpServers: countActiveMcpServers(mcpServers),
+    customTools: countEnabledCustomTools(customTools),
+    openApiServers: countEnabledOpenApiServers(openApiServers),
+    knowledgeCollections: countKnowledgeCollections(knowledgeCollections),
+    secrets: countSecrets(secretKeys),
+  };
   const [showAddCustomTool, setShowAddCustomTool] = useState(false);
   const [showAddFunction, setShowAddFunction] = useState(false);
   const [newCustomTool, setNewCustomTool] = useState({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });
@@ -4960,6 +4977,12 @@ ${lines.join('\n')}`;
           </span>
           {/* Inline conversation stats (#547) */}
           <InlineConversationStats stats={stats} dark={dark} />
+          {/* Ambient counts of active configuration (#547): inline, links to Settings */}
+          <AmbientCounts
+            counts={ambientCounts}
+            dark={dark}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+          />
           {isAgenticMode && isLoading && agentStatus && (
             <span
               role="status"
