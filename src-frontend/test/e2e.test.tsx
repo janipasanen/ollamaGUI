@@ -416,9 +416,10 @@ describe('End-to-End Tests', () => {
     it('should have proper ARIA attributes', () => {
       render(<App />);
 
-      // The header has no buttons anymore; its connection dot carries an
-      // accessible label, as does the model switcher below the composer.
-      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
+      // The header has no buttons anymore; the inline connection indicator
+      // carries an always-legible accessible label, as does the model switcher
+      // below the composer.
+      expect(screen.getByTestId('inline-connection-indicator')).toBeInTheDocument();
       expect(screen.getByLabelText('Select AI model')).toBeInTheDocument();
     });
 

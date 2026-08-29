@@ -26,7 +26,7 @@ describe('Ollama connection status indicator (#324)', () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
+      expect(screen.getByTestId('inline-connection-indicator')).toBeInTheDocument();
     });
   });
 
@@ -34,17 +34,18 @@ describe('Ollama connection status indicator (#324)', () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
     await waitFor(() => {
-      const dot = screen.getByLabelText('Ollama connection status');
-      expect(dot.className).toContain('bg-emerald-500');
+      const dot = screen.getByTestId('inline-connection-indicator');
+      // The color lives on the nested status dot, not the outer wrapper.
+      expect(dot.querySelector('span')).toHaveClass('bg-emerald-500');
     });
   });
 
   it('shows disconnected (red) when the model fetch fails', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('connection refused'));
     render(<App />);
-    const dot = await screen.findByLabelText('Ollama connection status');
     await waitFor(() => {
-      expect(dot.className).toContain('bg-red-500');
+      const dot = screen.getByTestId('inline-connection-indicator');
+      expect(dot.querySelector('span')).toHaveClass('bg-red-500');
     });
   });
 });

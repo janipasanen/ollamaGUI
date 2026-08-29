@@ -147,6 +147,7 @@ import { computeConversationStats, type ConversationStats } from './services/con
 import ProjectHeader from './components/ProjectHeader';
 import { InlineConversationStats } from './components/InlineConversationStats';
 import InlineGenParams from './components/InlineGenParams';
+import { InlineConnectionIndicator } from './components/InlineConnectionIndicator';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
@@ -4952,18 +4953,8 @@ ${lines.join('\n')}`;
               ☰
             </button>
           )}
-          {/* Ollama connection status indicator (#324) */}
-          <span
-            aria-label="Ollama connection status"
-            title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
-            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-              ollamaConnected === null
-                ? 'bg-zinc-400'
-                : ollamaConnected
-                  ? 'bg-emerald-500'
-                  : 'bg-red-500'
-            }`}
-          />
+          {/* Inline Ollama connection indicator (#547): always-legible status + endpoint, no hover needed */}
+          <InlineConnectionIndicator connected={ollamaConnected} baseUrl={ollamaBaseUrl} dark={dark} />
           <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
             {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
           </span>

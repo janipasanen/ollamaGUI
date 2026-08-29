@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Ollama connection state shown inline (#547, M187)
+The header connection indicator was a bare colored dot plus a `title` tooltip,
+so the only way to read "am I connected, to what" was to hover. M187 replaces
+it with an always-legible inline indicator that shows the live status
+(Connected / Disconnected / Connection unknown) and the endpoint together with
+the dot, without needing hover. The status label and endpoint-truncation are
+pure helpers (`connectionStatusLabel`, `shortEndpoint`) and are unit-tested;
+a component test covers the connected/disconnected/unknown states.
+
+The indicator keeps its `role` off deliberately so it does not duplicate the
+status banner's `role="status"` (which a `status`-role query elsewhere relies
+on); the accessible label is still present for screen readers.
+#### Per-model context-window auto-detection (G9, M186)
 #### Per-model context-window auto-detection (G9, M186)
 The per-model context-window configuration (G8) let users *set* a context
 window by hand, but the app never *discovered* the real limit from the server.
