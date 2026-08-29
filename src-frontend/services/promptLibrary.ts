@@ -23,7 +23,7 @@ export function savePrompts(prompts: SavedPrompt[]): void {
 }
 
 export function addPrompt(p: Omit<SavedPrompt, 'id' | 'createdAt'>): SavedPrompt {
-  const prompt: SavedPrompt = { ...p, id: crypto.randomUUID(), createdAt: Date.now() };
+  const prompt: SavedPrompt = { ...p, id: uuid(), createdAt: Date.now() };
   savePrompts([...loadPrompts(), prompt]);
   return prompt;
 }
@@ -39,3 +39,4 @@ export function removePrompt(id: string): void {
 export function findPrompt(id: string): SavedPrompt | undefined {
   return loadPrompts().find(p => p.id === id);
 }
+import { uuid } from './uuid';

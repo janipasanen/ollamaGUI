@@ -9,7 +9,10 @@
  * so the model treats them as persistent context.
  */
 
+import { uuid } from './uuid';
+
 const MEMORY_KEY = 'ollama_gui_memory';
+
 
 export interface MemoryEntry {
   id: string;
@@ -29,7 +32,7 @@ export function saveMemory(entries: MemoryEntry[]): void {
 }
 
 export function addMemoryEntry(text: string, scope: string = 'global'): MemoryEntry {
-  const entry: MemoryEntry = { id: crypto.randomUUID(), text, scope, createdAt: Date.now() };
+  const entry: MemoryEntry = { id: uuid(), text, scope, createdAt: Date.now() };
   saveMemory([...loadMemory(), entry]);
   return entry;
 }

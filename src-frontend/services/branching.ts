@@ -11,6 +11,7 @@
  * at each fork. Index -1 = trunk; ≥0 = branch array index.
  */
 
+import { uuid } from './uuid';
 import type { Message } from './ollama';
 
 export interface ConversationBranch {
@@ -47,7 +48,7 @@ export function createBranch(
   existing: BranchState
 ): { branch: ConversationBranch; updated: BranchState } {
   const branch: ConversationBranch = {
-    id: crypto.randomUUID(),
+    id: uuid(),
     forkAt,
     messages: messages.slice(forkAt),
     createdAt: Date.now(),

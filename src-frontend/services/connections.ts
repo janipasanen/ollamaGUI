@@ -63,6 +63,7 @@
  * - Local Ollama: http://localhost:11434 (auto-detected)
  * - LM Studio: http://gx10:1234 (if configured in config.json or environment)
  */
+import { uuid } from './uuid';
 import { makeQwenStreamFilter } from './qwenDialect';
 
 const STORAGE_KEY = 'model_connections';
@@ -212,7 +213,7 @@ function isBuiltinDefault(conn: ModelConnection): boolean {
 }
 
 export function addConnection(conn: Omit<ModelConnection, 'id'>): ModelConnection {
-  const entry: ModelConnection = { ...conn, id: crypto.randomUUID() };
+  const entry: ModelConnection = { ...conn, id: uuid() };
   const all = loadConnections();
   all.push(entry);
   saveConnections(all);

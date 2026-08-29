@@ -3,6 +3,7 @@
  * + enabled tool names + MCP server IDs + knowledge collection IDs into a
  * single selectable "model". Persisted in localStorage.
  */
+import { uuid } from './uuid';
 import type { GenerationOptions } from './ollama';
 
 const STORAGE_KEY = 'model_presets';
@@ -36,7 +37,7 @@ export function savePresets(presets: ModelPreset[]): void {
 }
 
 export function addPreset(preset: Omit<ModelPreset, 'id'>): ModelPreset {
-  const entry: ModelPreset = { ...preset, id: crypto.randomUUID() };
+  const entry: ModelPreset = { ...preset, id: uuid() };
   const all = loadPresets();
   all.push(entry);
   savePresets(all);

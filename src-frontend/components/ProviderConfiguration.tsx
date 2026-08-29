@@ -8,6 +8,7 @@
 import React, { useState } from 'react';
 import type { ConnectionHealth, ConnectedModel, ModelConnection } from '../services/connections';
 import { checkConnectionHealth } from '../services/connections';
+import { uuid } from '../services/uuid';
 import {
   loadModelContextConfigs,
   saveModelContextConfigs,
@@ -127,7 +128,7 @@ export const ProviderConfiguration: React.FC<Props> = ({
     if (!newConn.name || !newConn.baseUrl) return;
     
     const conn: ModelConnection = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       name: newConn.name,
       kind: newConn.kind,
       baseUrl: newConn.baseUrl.replace(/\/+$/, ''),

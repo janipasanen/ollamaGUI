@@ -9,6 +9,7 @@
  * runaway body can't hang the UI. The `eval` pattern in the built-in
  * `calculate` tool is also replaced with the sandboxed runner.
  */
+import { uuid } from './uuid';
 import { toolRegistry, type ToolDefinition } from './tools';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -127,7 +128,7 @@ export function saveCustomTools(tools: CustomTool[]): void {
 }
 
 export function addCustomTool(tool: Omit<CustomTool, 'id'>): CustomTool {
-  const entry: CustomTool = { ...tool, id: crypto.randomUUID() };
+  const entry: CustomTool = { ...tool, id: uuid() };
   const all = loadCustomTools();
   all.push(entry);
   saveCustomTools(all);
@@ -185,7 +186,7 @@ export function saveFunctionDefs(fns: FunctionDef[]): void {
 }
 
 export function addFunctionDef(fn: Omit<FunctionDef, 'id'>): FunctionDef {
-  const entry: FunctionDef = { ...fn, id: crypto.randomUUID() };
+  const entry: FunctionDef = { ...fn, id: uuid() };
   const all = loadFunctionDefs();
   all.push(entry);
   saveFunctionDefs(all);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
+import { uuid } from './services/uuid';
 import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { loadFromDisk, hasTauri } from './services/rustStore';
 import { composeSystemPrompt } from './services/systemPrompt';
@@ -7891,7 +7892,7 @@ ${lines.join('\n')}`;
                         onClick={async () => {
                           if (!newOpenApi.name.trim() || !newOpenApi.specUrl.trim()) return;
                           const cfg: OpenApiServerConfig = {
-                            id: crypto.randomUUID(),
+                            id: uuid(),
                             name: newOpenApi.name.trim(),
                             specUrl: newOpenApi.specUrl.trim(),
                             apiKey: newOpenApi.apiKey.trim() || undefined,

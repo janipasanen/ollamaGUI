@@ -3,6 +3,7 @@
  * Parses a spec into ToolDefinitions and registers them into toolRegistry.
  * HTTP calls route through the Rust mcp_http_request command to avoid CORS.
  */
+import { uuid } from './uuid';
 import { toolRegistry, type ToolDefinition } from './tools';
 
 const STORAGE_KEY = 'openapi_servers';
@@ -253,7 +254,7 @@ export function saveOpenApiServers(configs: OpenApiServerConfig[]): void {
 }
 
 export function addOpenApiServer(config: Omit<OpenApiServerConfig, 'id'>): OpenApiServerConfig {
-  const entry: OpenApiServerConfig = { ...config, id: crypto.randomUUID() };
+  const entry: OpenApiServerConfig = { ...config, id: uuid() };
   const all = loadOpenApiServers();
   all.push(entry);
   saveOpenApiServers(all);
