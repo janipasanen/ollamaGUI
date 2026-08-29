@@ -27,6 +27,15 @@ const maxWorkers = Math.max(
 
 export default defineConfig({
   plugins: [react()],
+  // macOS 10.15 (Catalina) ships Safari 13 (WebKit 605); that webview cannot
+  // parse ES2020+ syntax (BigInt literals, `??=`/`.at()`, private class fields).
+  // Vite's ESBuild defaults `build.target` to `esnext` when no browserslist is
+  // set, which would silently emit constructs that crash the 10.15 app on launch.
+  // Pin to ES2019 (the browser-engine compatibility floor) so the build refuses to
+  // emit post-Safari-13 syntax and the app stays launchable on 10.15.
+  build: {
+    target: 'es2019',
+  },
   test: {
     environment: 'jsdom',
     globals: true,

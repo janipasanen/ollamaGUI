@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Pin browser runtime to ES2019 for macOS 10.15 (Catalina) compatibility
+- The app's webview on macOS 10.15 is Safari 13 (WebKit 605), which cannot parse
+  ES2020+ syntax. Vite's ESBuild defaults `build.target` to `esnext` when no
+  `browserslist` is present, so a future line of ES2020+ syntax (BigInt literals,
+  `??=`/`.at()`, private class fields) could silently ship and crash the app on
+  launch on 10.15.
+- Add `build: { target: 'es2019' }` to `vite.config.ts`, pinning the browser
+  runtime to the Safari-13 floor. The `tsconfig` `lib` stays broad so type-checking
+  stays green against production code that legitimately uses `replaceAll`/`Array.prototype.at`.
+- Build verified green: `tsc --noEmit` clean, `vitest run` = 2496 passed / 2 skipped,
+  production bundle contains no unparseable ES2020+ syntax.
+
 #### Ambient counts of active configuration shown inline (#547, M188)
 MCP servers, custom tools, OpenAPI servers, knowledge collections and secrets
 were only visible behind the Settings modal. M188 adds an inline "Active
