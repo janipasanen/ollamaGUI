@@ -4,7 +4,7 @@
 
 ### Prerequisites
 - [ ] Node.js 18+ installed
-- [ ] Rust 1.60+ with Tauri 2.0 support
+- [ ] Rust 1.60+ with Tauri 1.5 support
 - [ ] Git for version control
 - [ ] npm/yarn/pnpm for package management
 
@@ -17,8 +17,8 @@ cargo build --release
 ```
 
 #### 2. Required Dependencies
-- `tauri`: ^2.0.0
-- `tauri-plugin-opener`: ^2.0.0
+- `tauri`: ^1.5.0
+- `tauri-plugin-opener`: ^1.5.0
 - `serde`: ^1.0 with derive feature
 - `serde_json`: ^1.0
 - `lazy_static`: ^1.4.0
@@ -42,7 +42,7 @@ npm install
 #### 2. Required Dependencies
 - `react`: ^18.2.0
 - `react-dom`: ^18.2.0
-- `@tauri-apps/api`: ^2.0.0
+- `@tauri-apps/api`: ^1.5.0
 - `react-markdown`: ^9.0.0
 - `remark-gfm`: ^4.0.0
 - `react-syntax-highlighter`: ^15.5.0

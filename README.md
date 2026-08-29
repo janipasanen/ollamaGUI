@@ -1,6 +1,6 @@
 # Ollama GUI
 
-A local-first desktop GUI for [Ollama](https://ollama.com), built with **Tauri v2**,
+A local-first desktop GUI for [Ollama](https://ollama.com), built with **Tauri v1 (Catalina 10.15 compatible)**,
 **React 19**, **TypeScript**, and **Tailwind**. Chat with local models, run an agentic
 tool loop, connect MCP servers, edit files and run commands in a workspace, browse and
 test the web, ground answers in your own documents, and work with multi-format files —
@@ -44,7 +44,7 @@ all running on your machine.
 - [Node.js](https://nodejs.org) 20+ and npm
 - [Rust](https://www.rust-lang.org/tools/install) (stable) — for the Tauri backend
 - Tauri's OS build dependencies — see the
-  [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform
+  [Tauri v1 prerequisites](https://tauri.app/v1/start/prerequisites/) for your platform
   (Xcode CLT on macOS; WebView2 on Windows; `webkit2gtk` etc. on Linux)
 - [Ollama](https://ollama.com/download) running locally (default `http://localhost:11434`),
   with at least one model pulled, e.g. `ollama pull llama3`
@@ -118,7 +118,7 @@ Platform notes:
   the installer bootstraps it on Windows 10 if missing).
 - **Linux**: the `.deb`/`.rpm` declare the WebKitGTK dependencies for you; the
   AppImage bundles most of them. On the build machine install the
-  [Tauri v2 Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+  [Tauri v1 Linux prerequisites](https://tauri.app/v1/start/prerequisites/#linux)
   first (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev`, …).
 
 ### Standalone binary
