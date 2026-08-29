@@ -147,8 +147,12 @@ export function expandTemplate(template: string, args: string): string {
   const trimmed = args.trim();
   const words = trimmed ? trimmed.split(/\s+/) : [];
   let result = template;
-  words.forEach((w, i) => { result = result.replaceAll(`$${i + 1}`, () => w); });
-  result = result.replaceAll('$ARGUMENTS', () => trimmed);
+  // Replace `$1`/`$ARGUMENTS` via split/join rather than
+  // String.prototype.replaceAll, which is missing on Safari ≤ 13 (macOS 10.15).
+  // split/join reproduces replace's global behavior for string search values.
+  const replaceAll = (needle: string, value: string) => result.split(needle).join(value);
+  words.forEach((w, i) => { result = replaceAll(`$${i + 1}`, w); });
+  result = replaceAll('$ARGUMENTS', trimmed);
   return result;
 }
 

@@ -802,3 +802,13 @@ describe('/warm /unload /running /version commands (#476)', () => {
     expect(names).toContain('version');
   });
 });
+
+// ── macOS 10.15 (Safari 13) runtime safety ────────────────────────────────────
+// expandTemplate runs on the oldest supported webview. String.prototype
+// replaceAll is a newer runtime API that Safari 13 does not implement, so the
+// production code expands via split/join rather than replaceAll.
+describe('expandTemplate runtime safety (#10.15)', () => {
+  it('expands positional and $ARGUMENTS tokens', () => {
+    expect(expandTemplate('$1 and $1 $ARGUMENTS', 'a b')).toBe('a and a a b');
+  });
+});
