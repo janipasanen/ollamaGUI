@@ -57,13 +57,22 @@ describe('Retry button on failed messages (#299)', () => {
   });
 
     it('retries the failed message by re-sending the last prompt', async () => {
-      // Key off the number of *chat* calls so background model-list probes
-      // (config.json, /api/show, /api/tags, gx10 remote, /api/ps) can't shift
-      // which attempt fails — the first chat call fails, the retry succeeds.
+      // Count a "chat call" only by an unambiguous POST body (one that carries
+      // `messages`). This keys the retry accounting off the user's actual send +
+      // retry, so any background model-list probe (config.json, /api/show,
+      // /api/tags, /api/ps, gx10 /v1/models) — which never posts a body with
+      // `messages` — can't shift which attempt fails. The first chat call
+      // fails, the retry succeeds.
       let chatCalls = 0;
-      global.fetch = vi.fn().mockImplementation((url: unknown) => {
-        const u = String(url);
-        const isChat = u.includes('/api/chat') || u.includes('generate');
+      global.fetch = vi.fn().mockImplementation((_input: unknown, init?: RequestInit) => {
+        // fetch(url, init): the request body is on the *second* argument. Count a
+        // "chat call" only when that body is a POST with a `messages` array, so
+        // any background model-list probe (config.json, /api/show, /api/tags,
+        // /api/ps, gx10 /v1/models) — which never posts a body with `messages` —
+        // can't shift which attempt fails.
+        let body: any = null;
+        try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch { body = null; }
+        const isChat = !!body && Array.isArray(body.messages);
         if (!isChat) return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
         chatCalls++;
         if (chatCalls === 1) return Promise.resolve({ ok: false, statusText: 'Service Unavailable', body: null });

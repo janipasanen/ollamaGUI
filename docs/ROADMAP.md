@@ -4396,3 +4396,29 @@ so switching the app-default model no longer hijacks an existing conversation.
 - One pre-existing timing-sensitive failure remains
   (`genStatsAndRetry.test.tsx:79`), flaky under full-suite parallel load and
   covered by CI `--retry=2`; unrelated to this work.
+
+## M185 — Test maintenance: stabilize flaky retry flow (G10) + Ollama error/timeout coverage
+
+M185 addresses two test-hygiene items flagged during the M18x review.
+
+### M185.1 — Stabilize the known-flaky retry-flow test
+Closes G10. The retry-flow test in `src-frontend/test/genStatsAndRetry.test.tsx`
+(around line 79) is the single failure the M180–M183 "Result" sections keep
+marking as "flaky under full-suite parallel load, covered by CI `--retry=2`."
+M185.1 makes the `genStatsAndRetry` suite green with `vitest run` (no `--retry`
+masking) by removing the parallel-load sensitivity in the test harness, without
+touching production behavior. Fix target is the test's fetch-mock accounting so
+background model-list probes can no longer shift the retry attempt boundaries.
+
+### M185.2 — Ollama API error-handling + timeout service tests
+Fulfills the AGENTS.md QA mandate that "API interactions with Ollama must
+include error handling and timeout tests." Adds `src-frontend/test/ollamaErrors.test.ts`
+covering the request/stream layer for: non-200 / non-ok responses, network/
+fetch throw, JSON parse failure on a chunk, and an aborted stream mid-turn —
+each asserting a clean error (no thrown exception swallowed, visible failure UI
+via the existing retry/error path).
+
+### Result
+- `tsc --noEmit` clean.
+- `vitest run src-frontend/test/genStatsAndRetry.test.tsx` = pass with no `--retry`.
+- New `src-frontend/test/ollamaErrors.test.ts` green.
