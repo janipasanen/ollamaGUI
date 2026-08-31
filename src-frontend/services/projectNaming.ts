@@ -41,7 +41,13 @@ export function deriveProjectName(prompt: string): string | null {
   if (text.startsWith('/')) return null;
   // First line, then first sentence within it.
   text = text.split('\n')[0].trim();
-  const sentence = text.split(/(?<=[.!?])\s/)[0] ?? text;
+  // First sentence, matched WITHOUT a lookbehind: RegExp lookbehind is a parse
+  // error on WebKit < 16.4, and because it is an ECMAScript Early Error the
+  // whole bundle fails to parse — a blank window on older macOS rather than a
+  // broken project name. Match up to the terminator instead of splitting after
+  // it; the capture keeps the punctuation the old expression retained.
+  const sentenceMatch = text.match(/^[\s\S]*?[.!?](?=\s)/);
+  const sentence = sentenceMatch ? sentenceMatch[0] : text;
   text = sentence.replace(/\s+/g, ' ').replace(/^[\s"'`*#>-]+|[\s"'`*.]+$/g, '').trim();
   if (!text) return null;
 

@@ -1,4 +1,5 @@
 import React from "react";
+import { useT } from "../services/i18nContext";
 import type { SuggestedModel } from "../services/ollama";
 
 export interface WelcomeScreenProps {
@@ -28,10 +29,7 @@ const PROJECT_PROMPTS = [
   "Write a concise README for this project",
 ];
 
-const CHAT_PROMPTS = [
-  "Explain quantum computing in simple terms",
-  "Write a Python function to reverse a string",
-];
+const CHAT_PROMPT_KEYS = ['welcome.prompt.quantum', 'welcome.prompt.python'];
 
 /**
  * Empty-state welcome surface shown when a chat has no messages yet.
@@ -44,7 +42,8 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   showModelSetup, suggestedModels, onPullModel, pullStatus, pulling,
   systemRamGB,
 }) => {
-  const starters = hasProject ? PROJECT_PROMPTS : CHAT_PROMPTS;
+  const t = useT();
+  const starters = hasProject ? PROJECT_PROMPTS : CHAT_PROMPT_KEYS.map(k => t(k));
   const items: { label: string; body: string }[] =
     starters.map(p => ({ label: p, body: p }));
 
@@ -52,12 +51,12 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     <div className="h-full flex flex-col items-center justify-center p-6 text-center">
       <div className={`mb-6 text-4xl ${dark ? "text-zinc-400" : "text-zinc-500"}`}>🦙</div>
       <h2 className={`text-xl font-semibold mb-2 ${dark ? "text-zinc-200" : "text-zinc-800"}`}>
-        {hasProject ? "What should we get done?" : "What can I help you with today?"}
+        {hasProject ? t('welcome.titleProject') : t('welcome.title')}
       </h2>
       <p className={`max-w-md mb-6 text-sm ${dark ? "text-zinc-400" : "text-zinc-500"}`}>
         {hasProject
-          ? "Describe the goal for this session — the agent works in your project folder until it's reached."
-          : "Open a project folder to work on code, or just start chatting."}
+          ? t('welcome.subtitleProject')
+          : t('welcome.subtitle')}
       </p>
 
       {/* Zero-models first run (#549 rank 4): the old dead-end told GUI users
@@ -101,10 +100,10 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
             disabled={creatingProject}
             className="w-full px-4 py-3 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white transition-colors"
           >
-            {creatingProject ? "Opening…" : "📁  Open a project folder"}
+            {creatingProject ? t('welcome.opening') : t('welcome.openFolder')}
           </button>
           <p className={`mt-2 text-xs ${dark ? "text-zinc-500" : "text-zinc-400"}`}>
-            The folder becomes a project in the sidebar, and the agent can read, search, and edit the code inside it.
+            {t('welcome.folderHint')}
           </p>
         </div>
       )}
@@ -120,7 +119,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                   ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700"
                   : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50"
               }`}
-              aria-label={`Use starter prompt: ${item.label}`}
+              aria-label={t('welcome.starterPrompt', { prompt: item.label })}
             >
               {item.label}
             </button>

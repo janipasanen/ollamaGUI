@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 // Build a ReadableStream that yields the given JSON lines then closes.
 function pullStream(lines: object[]): ReadableStream<Uint8Array> {
@@ -36,6 +37,8 @@ let origFetch: typeof global.fetch;
 beforeEach(() => {
   origFetch = global.fetch;
   global.innerWidth = 1024;
+  // #566: nothing is pre-configured now, so this spec adds the provider.
+  seedLocalOllama();
 });
 
 afterEach(() => {

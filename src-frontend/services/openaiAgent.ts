@@ -19,7 +19,7 @@
 // step so autonomy semantics are identical on both protocols.
 
 import { Message } from './ollama';
-import { ModelConnection, openAiErrorFromResponse } from './connections';
+import { ModelConnection, openAiErrorFromResponse, deltaReasoning } from './connections';
 import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs, truncateToolContent } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse, getAutonomyLevel } from './agentAutonomy';
@@ -206,7 +206,9 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
         if (choice.finish_reason) finishReason = choice.finish_reason;
         const d = choice.delta ?? {};
         // Reasoning: dedicated field first, <think> tags in content second.
-        const fieldReasoning = d.reasoning_content ?? d.thinking ?? '';
+        // deltaReasoning() covers vLLM's `reasoning` alongside the more common
+        // `reasoning_content`/`thinking` — see its docstring.
+        const fieldReasoning = deltaReasoning(d);
         if (fieldReasoning) {
           assistantReasoning += fieldReasoning;
           if (onAssistantReasoning) onAssistantReasoning(assistantReasoning);

@@ -3,6 +3,7 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
+  isOpenAiCompatible, normalizeBaseUrl, deltaReasoning, DEFAULT_PORTS,
   type ModelConnection,
 } from '../services/connections';
 
@@ -440,5 +441,161 @@ describe('streamOpenAiChat — Qwen inline reasoning (#551)', () => {
     ])));
     await streamOpenAiChat(conn, 'qwen/qwen3-coder-next', [], d => { if (d) deltas.push(d); });
     expect(deltas.join('')).toBe('plain answer');
+  });
+});
+
+// ── vLLM as a first-class provider (#552) ────────────────────────────────────
+
+describe('vLLM provider kind (#552)', () => {
+  it('routes vLLM through the OpenAI /v1 dialect, not Ollama /api', () => {
+    // The old dispatch was `kind === 'openai' ? openai : ollama`, so any new
+    // kind silently fell through to /api/tags and listed nothing.
+    expect(isOpenAiCompatible('vllm')).toBe(true);
+    expect(isOpenAiCompatible('openai')).toBe(true);
+    expect(isOpenAiCompatible('ollama')).toBe(false);
+    expect(isOpenAiCompatible(undefined)).toBe(false);
+  });
+
+  it('lists vLLM models from /v1/models', async () => {
+    const conn: ModelConnection = { id: 'v1', name: 'gx10', kind: 'vllm', baseUrl: 'http://gx10:8000', enabled: true };
+    const calls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(((url: any) => {
+      calls.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ data: [{ id: 'nvidia/Qwen3.6-35B-A3B-NVFP4' }] }),
+      });
+    }) as any);
+
+    const models = await fetchAllConnectionModels([conn]);
+    expect(calls[0]).toBe('http://gx10:8000/v1/models');
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      id: 'v1/nvidia/Qwen3.6-35B-A3B-NVFP4',
+      name: 'nvidia/Qwen3.6-35B-A3B-NVFP4',
+      connectionName: 'gx10',
+      kind: 'vllm',
+    });
+  });
+
+  it('aggregates models from several providers into one list', async () => {
+    // The unified selector is the whole point: one list, every provider.
+    const conns: ModelConnection[] = [
+      { id: 'v', name: 'gx10', kind: 'vllm', baseUrl: 'http://gx10:8000', enabled: true },
+      { id: 'l', name: 'LM', kind: 'openai', baseUrl: 'http://lm:1234', enabled: true },
+      { id: 'off', name: 'Disabled', kind: 'vllm', baseUrl: 'http://nope:8000', enabled: false },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(((url: any) => Promise.resolve({
+      ok: true,
+      json: async () => ({ data: [{ id: String(url).includes('gx10') ? 'qwen-vllm' : 'qwen-lm' }] }),
+    })) as any);
+
+    const models = await fetchAllConnectionModels(conns);
+    expect(models.map(m => m.name).sort()).toEqual(['qwen-lm', 'qwen-vllm']);
+    // A disabled provider contributes nothing.
+    expect(models.some(m => m.connectionId === 'off')).toBe(false);
+  });
+});
+
+describe('normalizeBaseUrl (#552)', () => {
+  it('completes a bare host with scheme and the provider default port', () => {
+    // "gx10" is what people actually type; without this it becomes an
+    // uncallable URL and every request fails with an opaque network error.
+    expect(normalizeBaseUrl('gx10', 'vllm')).toBe('http://gx10:8000');
+    expect(normalizeBaseUrl('gx10', 'ollama')).toBe('http://gx10:11434');
+    expect(normalizeBaseUrl('gx10', 'openai')).toBe('http://gx10:1234');
+  });
+
+  it('never overrides a port or scheme the user gave', () => {
+    expect(normalizeBaseUrl('http://gx10:9999', 'vllm')).toBe('http://gx10:9999');
+    expect(normalizeBaseUrl('https://api.example.com', 'openai')).toBe('https://api.example.com');
+    expect(normalizeBaseUrl('gx10:8080', 'vllm')).toBe('http://gx10:8080');
+  });
+
+  it('takes a URL written with a scheme exactly as given', () => {
+    // Writing the scheme is how a user says "this is the whole URL". Forcing
+    // a port onto it made a server behind nginx/a tunnel — reached on port 80
+    // — unreachable, and `parsed.port` reads '' for a default port, so an
+    // explicit ':80' could not be distinguished from no port at all.
+    expect(normalizeBaseUrl('http://ai.example.com', 'ollama')).toBe('http://ai.example.com');
+    expect(normalizeBaseUrl('http://ai.example.com:80', 'ollama')).toBe('http://ai.example.com');
+    expect(normalizeBaseUrl('http://gateway/ollama', 'ollama')).toBe('http://gateway/ollama');
+  });
+
+  it('drops a trailing /v1 for OpenAI-dialect providers', () => {
+    // vLLM's and LM Studio's own docs print the endpoint WITH /v1, and every
+    // call site appends its own — pasting the documented URL produced
+    // /v1/v1/models and a 404 that surfaced only as "could not fetch models".
+    expect(normalizeBaseUrl('http://gx10:8000/v1', 'vllm')).toBe('http://gx10:8000');
+    expect(normalizeBaseUrl('http://localhost:1234/v1', 'openai')).toBe('http://localhost:1234');
+    expect(normalizeBaseUrl('gx10/v1', 'vllm')).toBe('http://gx10:8000');
+    // A deeper reverse-proxy mount keeps its prefix; only the /v1 goes.
+    expect(normalizeBaseUrl('http://proxy/llm/v1', 'vllm')).toBe('http://proxy/llm');
+    // Ollama does not speak /v1, so its paths are left alone.
+    expect(normalizeBaseUrl('http://gateway/v1', 'ollama')).toBe('http://gateway/v1');
+  });
+
+  it('strips trailing slashes and tolerates blank input', () => {
+    expect(normalizeBaseUrl('http://gx10:8000/', 'vllm')).toBe('http://gx10:8000');
+    expect(normalizeBaseUrl('  ', 'vllm')).toBe('');
+    expect(normalizeBaseUrl('  gx10  ', 'vllm')).toBe('http://gx10:8000');
+  });
+
+  it('leaves an https URL on its implicit port', () => {
+    // Forcing :8000 onto an https endpoint would break every hosted provider.
+    expect(normalizeBaseUrl('https://api.example.com', 'vllm')).toBe('https://api.example.com');
+  });
+
+  it('handles IPv6 literals', () => {
+    // "[::1]" ends in ']' so it reads as portless; "[::1]:8000" does not.
+    expect(normalizeBaseUrl('[::1]', 'vllm')).toBe('http://[::1]:8000');
+    expect(normalizeBaseUrl('http://[::1]:8000', 'vllm')).toBe('http://[::1]:8000');
+  });
+
+  it('documents the conventional port per provider', () => {
+    expect(DEFAULT_PORTS.vllm).toBe(8000);
+    expect(DEFAULT_PORTS.ollama).toBe(11434);
+  });
+});
+
+describe('deltaReasoning — reasoning field per server (#552)', () => {
+  it('reads vLLM\'s `reasoning` alongside the commoner field names', () => {
+    // vLLM 0.28 streams `reasoning`; reading only reasoning_content/thinking
+    // made a vLLM reasoning model look silent — every token was discarded.
+    expect(deltaReasoning({ reasoning: 'vllm thinking' })).toBe('vllm thinking');
+    expect(deltaReasoning({ reasoning_content: 'lm studio' })).toBe('lm studio');
+    expect(deltaReasoning({ thinking: 'ollama-style' })).toBe('ollama-style');
+    expect(deltaReasoning({ content: 'not reasoning' })).toBe('');
+    expect(deltaReasoning(undefined)).toBe('');
+  });
+
+  it('streams vLLM reasoning onto the reasoning channel, not the chat bubble', async () => {
+    const conn: ModelConnection = { id: 'v', name: 'gx10', kind: 'vllm', baseUrl: 'http://gx10:8000', enabled: true };
+    const encoder = new TextEncoder();
+    const lines = [
+      'data: {"choices":[{"delta":{"reasoning":"weighing "}}]}',
+      'data: {"choices":[{"delta":{"reasoning":"options"}}]}',
+      'data: {"choices":[{"delta":{"content":"Use a HashMap."}}]}',
+      'data: [DONE]',
+    ];
+    let i = 0;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, status: 200,
+      body: new ReadableStream({
+        pull(ctrl) {
+          if (i < lines.length) ctrl.enqueue(encoder.encode(lines[i++] + '\n'));
+          else ctrl.close();
+        },
+      }),
+    } as any);
+
+    const deltas: string[] = [];
+    const reasons: string[] = [];
+    await streamOpenAiChat(conn, 'nvidia/Qwen3.6-35B-A3B-NVFP4', [], (d, r) => {
+      if (d) deltas.push(d);
+      if (r) reasons.push(r);
+    });
+    expect(reasons.join('')).toBe('weighing options');
+    expect(deltas.join('')).toBe('Use a HashMap.');
   });
 });

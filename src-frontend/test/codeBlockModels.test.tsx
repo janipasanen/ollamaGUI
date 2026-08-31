@@ -5,9 +5,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 beforeEach(() => {
   localStorage.clear();
+    // #566: nothing is pre-configured now, so this spec adds the provider.
+    seedLocalOllama();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);

@@ -1,12 +1,13 @@
 /**
- * First-run and trust fixes (#549 audit ranks 5, 6, 10):
- *  - disconnected state is visible above the composer with a one-click Retry
+ * First-run and trust fixes (#549 audit ranks 6, 10):
+ *  - an unreachable provider is reported in the sidebar's Providers panel
  *  - projects are renamable inline (double-click) and via the context menu
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 const PROJECT = {
   id: 'proj_r',
@@ -23,27 +24,35 @@ beforeEach(() => {
   window.dispatchEvent(new Event('resize'));
 });
 
-describe('disconnected banner (#549 rank 5)', () => {
-  it('shows the banner with a Retry button when Ollama is unreachable', async () => {
+describe('unreachable provider (#562, #563)', () => {
+  // The red "Ollama isn't running" banner and its 30s auto-reconnect are gone
+  // (#562): they assumed Ollama is the only provider, so a user running purely
+  // on vLLM or LM Studio saw a permanent error about a daemon they never use.
+  // Reachability is now per provider, in the sidebar panel, re-tested on demand.
+  it('reports the provider as unreachable instead of showing an Ollama banner', async () => {
+    seedLocalOllama();
     global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
     render(<App />);
-    expect(await screen.findByText(/Ollama isn't running/i, {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry Ollama connection' })).toBeInTheDocument();
+    expect(await screen.findByText('Providers', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama isn't running/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry Ollama connection' })).not.toBeInTheDocument();
   });
 
-  it('Retry reconnects when the daemon is back', async () => {
-    let up = false;
-    global.fetch = vi.fn().mockImplementation((url: unknown) => {
-      if (!up) return Promise.reject(new Error('ECONNREFUSED'));
-      return Promise.resolve({ ok: true, json: async () => ({ models: [{ name: 'llama3' }] }) });
-    });
+  it('offers a per-provider Test button rather than reconnecting on a timer', async () => {
+    seedLocalOllama();
+    global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
     render(<App />);
-    const retry = await screen.findByRole('button', { name: 'Retry Ollama connection' }, { timeout: 4000 });
-    up = true;
-    fireEvent.click(retry);
-    await waitFor(() => {
-      expect(screen.queryByText(/Ollama isn't running/i)).not.toBeInTheDocument();
-    }, { timeout: 4000 });
+    expect(await screen.findByLabelText('Test connection to Local Ollama', {}, { timeout: 4000 }))
+      .toBeInTheDocument();
+  });
+
+  it('says so plainly when no provider is configured at all', async () => {
+    // A fresh install (#566) contacts nothing and must state that, rather than
+    // blaming a daemon the user may never have installed.
+    global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    render(<App />);
+    expect(await screen.findByText(/No providers configured/i, {}, { timeout: 4000 }))
+      .toBeInTheDocument();
   });
 });
 

@@ -346,15 +346,26 @@ const _capsCache = new Map<string, ModelCapabilities>();
 export async function getModelCapabilities(
   modelName: string,
   endpoint = 'http://localhost:11434',
+  apiKey?: string,
 ): Promise<ModelCapabilities> {
-  const cached = _capsCache.get(modelName);
+  // Key on endpoint AND name: the same tag ("llama3") can be served by the
+  // local daemon and by a remote Ollama with different weights and a
+  // different context window, so a name-only key returned one server's
+  // answer for the other.
+  const cacheKey = `${endpoint} ${modelName}`;
+  const cached = _capsCache.get(cacheKey);
   if (cached) return cached;
 
   const result: ModelCapabilities = { contextLength: null, tools: null };
   try {
     const res = await fetch(`${endpoint}/api/show`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // Authenticated remotes reject an unauthenticated probe with 401,
+        // which would look identical to "model unknown" (#493).
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify({ model: modelName }),
     });
     if (res.ok) {
@@ -367,7 +378,7 @@ export async function getModelCapabilities(
     }
   } catch { /* network error — leave unknowns */ }
 
-  _capsCache.set(modelName, result);
+  _capsCache.set(cacheKey, result);
   return result;
 }
 

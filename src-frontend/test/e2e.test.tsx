@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import App from '../App';
 import { toolRegistry } from '../services/tools';
 import { storage, type ChatSession } from '../services/storage';
+import { seedLocalOllama } from './helpers/providers';
 
 describe('End-to-End Tests', () => {
   beforeAll(() => {
@@ -24,6 +25,8 @@ describe('End-to-End Tests', () => {
   beforeEach(() => {
     // Clear localStorage to prevent server state bleeding between tests
     localStorage.clear();
+    // #566: nothing is pre-configured now, so this spec adds the provider.
+    seedLocalOllama();
     // Restore desktop viewport so header buttons are visible
     Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
     window.dispatchEvent(new Event('resize'));
@@ -416,9 +419,11 @@ describe('End-to-End Tests', () => {
     it('should have proper ARIA attributes', () => {
       render(<App />);
 
-      // The header has no buttons anymore; its connection dot carries an
-      // accessible label, as does the model switcher below the composer.
-      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
+      // The header has no buttons and no connection dot anymore (#563):
+      // reachability moved to the sidebar's Providers panel, where it is
+      // stated per provider as text rather than colour alone.
+      expect(screen.queryByLabelText('Ollama connection status')).not.toBeInTheDocument();
+      expect(screen.getByText('Providers')).toBeInTheDocument();
       expect(screen.getByLabelText('Select AI model')).toBeInTheDocument();
     });
 

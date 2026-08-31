@@ -7,7 +7,79 @@ import { makeQwenStreamFilter } from './qwenDialect';
 
 const STORAGE_KEY = 'model_connections';
 
-export type ConnectionKind = 'openai' | 'ollama';
+/**
+ * 'vllm' is served by the same OpenAI chat-completions dialect as 'openai';
+ * it is a separate kind so the UI can label it, default its port, and so
+ * vLLM-only wire quirks stay documented where they are handled rather than
+ * hidden behind a generic "OpenAI-compatible" label.
+ */
+export type ConnectionKind = 'openai' | 'ollama' | 'vllm';
+
+/** Kinds that speak the OpenAI /v1 dialect (model list, chat, agent loop). */
+export const OPENAI_COMPATIBLE_KINDS: ConnectionKind[] = ['openai', 'vllm'];
+
+/**
+ * True when a connection speaks OpenAI /v1 rather than Ollama's /api.
+ * Every routing decision must go through this rather than `=== 'openai'`,
+ * or a new kind silently falls through to the Ollama branch.
+ */
+export function isOpenAiCompatible(kind: ConnectionKind | undefined): boolean {
+  return kind === 'openai' || kind === 'vllm';
+}
+
+/** Conventional port per provider, used to complete a host-only base URL. */
+export const DEFAULT_PORTS: Record<ConnectionKind, number> = {
+  openai: 1234,  // LM Studio
+  vllm: 8000,    // vLLM's `--port` default
+  ollama: 11434,
+};
+
+/**
+ * Normalise what a user typed into a base URL we can call.
+ *
+ * People paste bare hosts ("gx10", "gx10:8000") far more often than full
+ * URLs, and a bare host makes every request fail with an opaque network
+ * error. So: a bare host gets the scheme and the provider's conventional
+ * port; a URL the user wrote the scheme for is taken exactly as given,
+ * because that is how they express an endpoint on port 80 behind a proxy.
+ * A trailing "/v1" is dropped for OpenAI-dialect providers, whose callers
+ * append their own.
+ */
+export function normalizeBaseUrl(input: string, kind: ConnectionKind): string {
+  let url = input.trim().replace(/\/+$/, '');
+  if (!url) return url;
+  const hadScheme = /^https?:\/\//i.test(url);
+  if (!hadScheme) url = `http://${url}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+
+  // Complete the port ONLY for a bare host. Writing the scheme is how a user
+  // says "this is the whole URL", and we must take them at their word: a
+  // server behind nginx/Caddy/a tunnel is reached at "http://ai.example.com",
+  // and forcing :11434 or :8000 onto it made that endpoint unreachable — with
+  // no way to ask for port 80, since `parsed.port` reads '' for a scheme's
+  // default port and so cannot tell "no port" from an explicit ":80".
+  // IPv6 is safe here: "[::1]" ends in ']', while "[::1]:8000" ends in a port.
+  const authority = url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0];
+  const typedPort = /:\d+$/.test(authority);
+  if (!hadScheme && !typedPort) {
+    parsed.port = String(DEFAULT_PORTS[kind]);
+  }
+
+  // Drop a trailing "/v1": every OpenAI-dialect call site appends its own, and
+  // vLLM's and LM Studio's own docs print the endpoint WITH it — so pasting
+  // the documented URL produced /v1/v1/models and a 404 that surfaced only as
+  // "could not fetch models". A deeper prefix (a reverse-proxy mount) is kept.
+  if (isOpenAiCompatible(kind)) {
+    parsed.pathname = parsed.pathname.replace(/\/v1\/?$/, '');
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
+}
 
 export interface ModelConnection {
   id: string;
@@ -127,7 +199,7 @@ export async function fetchOllamaConnectionModels(conn: ModelConnection): Promis
 export async function fetchAllConnectionModels(connections: ModelConnection[]): Promise<ConnectedModel[]> {
   const enabled = connections.filter(c => c.enabled);
   const results = await Promise.allSettled(
-    enabled.map(c => c.kind === 'openai' ? fetchOpenAiModels(c) : fetchOllamaConnectionModels(c))
+    enabled.map(c => isOpenAiCompatible(c.kind) ? fetchOpenAiModels(c) : fetchOllamaConnectionModels(c))
   );
   return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
 }
@@ -191,6 +263,19 @@ export function buildOpenAiChatRequest(
 }
 
 /**
+ * Reasoning text carried by a streamed delta, whichever field the server uses.
+ *
+ * There is no agreed field name: LM Studio and most proxies use
+ * `reasoning_content`, some use `thinking`, and vLLM (0.28, verified against a
+ * live server) streams `reasoning`. Reading only the first two made a vLLM
+ * reasoning model look completely silent — every token went to a field we
+ * never read, so the bubble stayed empty until the final answer arrived.
+ */
+export function deltaReasoning(d: any): string {
+  return d?.reasoning_content ?? d?.thinking ?? d?.reasoning ?? '';
+}
+
+/**
  * Parse a Server-Sent Events (SSE) stream from an OpenAI-compatible endpoint.
  * Calls onChunk for each content delta. Resolves when stream ends.
  */
@@ -248,7 +333,7 @@ export async function streamOpenAiChat(
       try {
         const chunk = JSON.parse(data);
         const d = chunk?.choices?.[0]?.delta;
-        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+        const reasoning = deltaReasoning(d);
         if (reasoning) onChunk('', reasoning);
         if (d?.content) emit(d.content);
       } catch {
@@ -265,7 +350,7 @@ export async function streamOpenAiChat(
       try {
         const chunk = JSON.parse(data);
         const d = chunk?.choices?.[0]?.delta;
-        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+        const reasoning = deltaReasoning(d);
         if (reasoning) onChunk('', reasoning);
         if (d?.content) emit(d.content);
       } catch {

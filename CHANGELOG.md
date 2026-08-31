@@ -8,6 +8,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Nothing is pre-configured; providers are listed in the sidebar (#563, #566)
+A fresh install now contacts no model server at all and opens empty. The local
+Ollama daemon is added the same way as any other provider, so "no providers
+configured" is a state the UI can actually show — previously it could not,
+because a local Ollama was assumed to exist whether or not the machine ran one.
+- **Providers panel in the sidebar**, under the projects list and above
+  Settings: one compact row per provider with its type, endpoint, model count
+  and reachability, plus a per-provider Test button. Status is exposed as text,
+  not colour alone, so screen readers get it too.
+- **The header's Ollama-only status dot is gone** (#563). With several
+  providers configurable it could only ever describe one of them.
+- **The red "Ollama isn't running" banner and its 30-second auto-reconnect are
+  gone** (#562): they assumed Ollama is the only provider, so a user running
+  purely on vLLM or LM Studio saw a permanent error about a daemon they never
+  use, and paid for a request to it every 30 seconds.
+
+#### Interface language: English and Swedish (#564)
+English is the default and Swedish is selectable under Settings → Language. The
+choice persists and sets `document.documentElement.lang`, so assistive tech and
+`:lang()` follow the UI. Translations live in `src-frontend/locales/{en,sv}.ts`
+as typed modules; a parity test names any key defined in one language and not
+the other, so a forgotten translation fails the build instead of silently
+falling back to English mid-screen.
+
+#### vLLM as a first-class model provider (#552)
+A vLLM server — local or anywhere on the network — can now be added under
+Settings → Model providers, and its models join the one model list in the
+composer alongside local Ollama, cloud and LM Studio models. Verified end to
+end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
+- **Pick "vLLM", type a host.** `gx10` is completed to `http://gx10:8000` —
+  scheme and the provider's conventional port are added when missing, and an
+  explicit port or scheme is never overridden. The same applies to the other
+  kinds (Ollama → 11434, OpenAI-compat → 1234).
+- **Models are grouped by provider** in the selector (`— vLLM: gx10 —`), so
+  with several servers connected it is clear which one a model comes from.
+- **Chat and agentic runs both route to the server the model belongs to**,
+  through the OpenAI chat-completions loop added in #551 — including tool
+  calling, which vLLM implements natively.
+
+### Fixed
+- **CI is green again: the `cargo audit` gate no longer fails on RUSTSEC-2026-0258.**
+  `reqwest` 0.11 pulled `hyper` 0.14 and with it the vulnerable `h2` 0.3.27
+  ("unbounded empty DATA frames"). Upgraded to reqwest 0.13 — the version
+  `chromiumoxide` already depends on — so `h2` is now 0.4.19 and the two share
+  one copy instead of duplicating the stack.
+- **A missing image no longer hides the whole app.** The boot-failure reporter
+  registered its listener in the capture phase, which also catches *resource*
+  load failures (an icon, a lazy chunk). Those carry no `.message`, so a 404
+  rendered a full-screen "Ollama GUI could not start — Unknown error" over a
+  UI that was working perfectly. It now ignores anything whose event target is
+  an element, stays silent once React has mounted, and clears its no-render
+  timer on mount. Verified in a real browser both ways: a genuine parse error
+  is still reported, a 404 and a late promise rejection are not (#552).
+- **The boot reporter no longer risks breaking styling in the packaged app.**
+  Its markup and `<style>` block are built from script instead. A static
+  `<style>` would make Tauri add a nonce to `style-src`, and per CSP3 a nonce
+  makes the policy's `'unsafe-inline'` be ignored — which would have broken
+  every stylesheet the app injects at runtime, mermaid's most visibly (#552).
+- **`normalizeBaseUrl` no longer breaks a URL the user wrote in full.** It
+  forced the provider's default port onto any `http://` URL, so an endpoint
+  behind nginx or a tunnel on port 80 became unreachable and could not be
+  expressed at all — `parsed.port` reads empty for a scheme's default port, so
+  an explicit `:80` was indistinguishable from no port. A bare host is still
+  completed; a URL written with its scheme is now taken as given. A trailing
+  `/v1` is also dropped for OpenAI-dialect providers, whose callers append
+  their own — pasting the URL vLLM's and LM Studio's docs print produced
+  `/v1/v1/models` and a 404 shown only as "could not fetch models" (#552).
+- **Agent routing and capability probing no longer race the provider fetch.**
+  Both resolved through `connectedModels`, which arrives asynchronously, so on
+  the first renders after a reload a saved vLLM/LM Studio model looked local:
+  a send in that window went to the local Ollama daemon under a name it has
+  never heard of. Both now resolve against the synchronously-loaded connection
+  list. Model capabilities are also keyed by endpoint as well as name, so two
+  servers offering the same tag no longer share one cache entry, and a
+  token-protected remote Ollama is probed with its bearer token (#552).
+- **vLLM reasoning models no longer look silent.** vLLM streams its
+  scratchpad in a `reasoning` delta field; we read only `reasoning_content`
+  and `thinking`, so every reasoning token was discarded and the bubble
+  stayed empty until the final answer landed. All three field names are now
+  read, in both plain chat and the agent loop (#552).
+- **The app no longer renders a blank white window on older macOS (#552).**
+  The boot bundle contained RegExp lookbehind — one from our own
+  `projectNaming.ts`, one from `remark-gfm` — which is an ECMAScript *Early
+  Error* on WebKit below 16.4: the whole bundle fails to parse, nothing
+  executes, and the page stays empty. The React error boundary could not
+  report it, since it lives inside the module graph that failed to load.
+  Ours is gone; the dependency's sets an honest floor, now declared rather
+  than discovered:
+  - `vite.config.ts` pins `build.target` instead of inheriting Vite's moving
+    `baseline-widely-available` default, so a Vite upgrade can no longer
+    raise the browser floor with no diff to review.
+  - `tauri.conf.json` sets `minimumSystemVersion: 13.3`, so a Mac that
+    cannot run the app declines to launch it rather than showing a white
+    window.
+  - `index.html` carries a dependency-free boot reporter: any pre-React
+    failure — parse error, throw, or a render that silently never happens —
+    now paints a readable message instead of nothing at all.
+- **Model metadata is no longer probed on the wrong server.** Selecting a
+  model from an OpenAI-compatible provider fired `POST /api/show` at the
+  *local* Ollama daemon for a model name it has never heard of, 404-ing on
+  every model switch; a remote Ollama connection was probed at localhost
+  too. Capabilities now resolve against the model's own connection, matched
+  synchronously so a reload cannot race the provider fetch (#552).
+
 #### Qwen coder models work agentically over LM Studio (#551)
 Selecting a Qwen coder model from an OpenAI-compatible connection (LM Studio,
 llama.cpp server, vLLM) used to produce an agent that never called a tool. The

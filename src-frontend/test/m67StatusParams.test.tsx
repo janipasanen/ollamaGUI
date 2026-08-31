@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 let origFetch: typeof global.fetch;
 
 beforeEach(() => {
   origFetch = global.fetch;
   localStorage.clear();
+  // #566: nothing is pre-configured now, so these specs add the provider.
+  seedLocalOllama();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
 });
@@ -19,33 +22,33 @@ afterEach(() => {
 const emptyModelsFetch = () =>
   vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
-// ── #324 Ollama connection status indicator ──────────────────────────────────
+// ── Connection status: sidebar Providers panel (#324, moved by #563) ─────────
+// The header's single Ollama dot is gone. With several providers configurable
+// it could only ever describe one of them, so status is stated per provider in
+// the sidebar — as text, not just colour, so it is available to screen readers.
 
-describe('Ollama connection status indicator (#324)', () => {
-  it('renders a status dot with an accessible label', async () => {
+describe('provider connection status (#563)', () => {
+  it('lists the configured provider with its status', async () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
-    await waitFor(() => {
-      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
-    });
+    expect(await screen.findByText('Providers', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByText(/^Local Ollama: /)).toBeInTheDocument();
   });
 
-  it('shows connected (green) after models load successfully', async () => {
+  it('no longer renders the header status dot', async () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
-    await waitFor(() => {
-      const dot = screen.getByLabelText('Ollama connection status');
-      expect(dot.className).toContain('bg-emerald-500');
-    });
+    await screen.findByText('Providers', {}, { timeout: 4000 });
+    expect(screen.queryByLabelText('Ollama connection status')).not.toBeInTheDocument();
   });
 
-  it('shows disconnected (red) when the model fetch fails', async () => {
+  it('reports a provider that cannot be reached', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('connection refused'));
     render(<App />);
-    const dot = await screen.findByLabelText('Ollama connection status');
-    await waitFor(() => {
-      expect(dot.className).toContain('bg-red-500');
-    });
+    // Never fetched and never tested reads as unknown, not as broken; pressing
+    // Test is what turns it into a definite verdict.
+    const status = await screen.findByText(/^Local Ollama: /, {}, { timeout: 4000 });
+    expect(status.textContent).toMatch(/Unknown|Not reachable/);
   });
 });
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
@@ -37,9 +37,9 @@ import {
   loadActivePresetId, setActivePreset, clearActivePreset, getActivePreset, applyPreset,
 } from './services/presets';
 import {
-  ModelConnection, ConnectedModel,
+  ModelConnection, ConnectedModel, ConnectionKind,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
-  fetchAllConnectionModels, streamOpenAiChat,
+  fetchAllConnectionModels, streamOpenAiChat, isOpenAiCompatible, normalizeBaseUrl,
 } from './services/connections';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
 import { mcpServerManager, registerMcpShutdownHandler } from './services/mcp';
@@ -138,6 +138,9 @@ import { formatMessageTime, formatDayLabel, isSameDay, conversationDateBucket } 
 import { chatToMarkdown, messageToMarkdown, chatToPlainText, messageToPlainText, chatToHtml } from './services/chatToMarkdown';
 import { computeConversationStats } from './services/conversationStats';
 import ProjectHeader from './components/ProjectHeader';
+import ConnectionStatusPanel, { type ProviderStatus } from './components/ConnectionStatusPanel';
+import { useI18n } from './services/i18nContext';
+import { LOCALES, type Locale } from './services/i18n';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
@@ -538,6 +541,8 @@ export const ContextBudget: React.FC<{ tokens: number; numCtx?: number; dark: bo
 };
 
 const App: React.FC = () => {
+  // Interface language (#564). English by default; changed in Settings.
+  const { t, locale, setLocale } = useI18n();
   // Core chat state
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -783,7 +788,7 @@ const App: React.FC = () => {
   const [connections, setConnections] = useState<ModelConnection[]>(() => loadConnections());
   const [connectedModels, setConnectedModels] = useState<ConnectedModel[]>([]);
   const [showAddConnection, setShowAddConnection] = useState(false);
-  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as ConnectionKind, baseUrl: '', apiKey: '' });
   const [editingConnId, setEditingConnId] = useState<string | null>(null); // #419 edit affordance
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
 
@@ -1106,11 +1111,27 @@ const App: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     if (!model) { setModelCaps(null); return; }
-    void getModelCapabilities(model, ollamaBaseUrl).then(caps => {
+    // /api/show is an Ollama endpoint. Probing it for a model served by an
+    // OpenAI-compatible provider asks the LOCAL daemon about a name it has
+    // never heard of — a guaranteed 404 on every model switch (#552). Those
+    // servers expose no equivalent metadata endpoint, so we simply have no
+    // capabilities for them; a remote Ollama is probed on its own host.
+    // Resolve against `connections` (seeded synchronously from localStorage)
+    // rather than `connectedModels`, which is filled by an async fetch: on the
+    // first render after a reload that list is still empty, so a saved remote
+    // model would look local for one pass and get probed anyway — the 404 we
+    // are removing. A connected model's id is always "<connectionId>/<name>".
+    const conn = connections.find(c => model.startsWith(`${c.id}/`));
+    if (isOpenAiCompatible(conn?.kind)) { setModelCaps(null); return; }
+    const bareName = conn ? model.slice(conn.id.length + 1) : model;
+    const base = conn?.kind === 'ollama' ? conn.baseUrl.replace(/\/$/, '') : ollamaBaseUrl;
+    // A token-protected remote Ollama 401s an unauthenticated probe, which is
+    // indistinguishable from "model unknown" (#493).
+    void getModelCapabilities(bareName, base, conn?.apiKey).then(caps => {
       if (!cancelled) setModelCaps(caps);
     });
     return () => { cancelled = true; };
-  }, [model, ollamaBaseUrl]);
+  }, [model, ollamaBaseUrl, connections]);
   const effectiveNumCtx = genOptions.num_ctx
     ?? autoNumCtx(modelCaps, systemMemory?.total_bytes ?? null, isAgenticMode);
 
@@ -1155,20 +1176,23 @@ const App: React.FC = () => {
    * and for sub-agents, so they can never drift apart.
    */
   const resolveAgentRouting = (modelId: string) => {
-    const connectedModel = connectedModels.find(m => m.id === modelId);
-    const conn = connectedModel
-      ? connections.find(c => c.id === connectedModel.connectionId)
-      : undefined;
+    // Resolve through `connections` (seeded synchronously from localStorage),
+    // NOT `connectedModels`, which arrives from an async fetch: on the first
+    // renders after a reload that list is empty, so a saved vLLM/LM Studio
+    // model looked local and a send made in that window went to the local
+    // Ollama daemon under a model name it has never heard of.
+    const conn = connections.find(c => modelId.startsWith(`${c.id}/`));
     return {
       // Connected models carry a "connId/name" id; servers want the bare name.
-      model: connectedModel?.name ?? modelId,
+      model: conn ? modelId.slice(conn.id.length + 1) : modelId,
       // Cloud models are proxied by the local daemon (#483), so they share the
       // local endpoint. Only a remote Ollama connection redirects it.
       endpoint: conn?.kind === 'ollama'
         ? `${conn.baseUrl.replace(/\/$/, '')}/api/chat`
         : url('/api/chat'),
-      // Present only for OpenAI-compatible servers, which need their own loop.
-      conn: conn?.kind === 'openai' ? conn : undefined,
+      // Present for every OpenAI-dialect server (LM Studio, vLLM, …), which
+      // need their own loop.
+      conn: isOpenAiCompatible(conn?.kind) ? conn : undefined,
     };
   };
 
@@ -1177,6 +1201,7 @@ const App: React.FC = () => {
   useEffect(() => {
     agentRoutingRef.current = resolveAgentRouting(model);
   }, [model, connections, connectedModels, ollamaBaseUrl]);
+
 
   // Split local models so MLX-capable ones can be surfaced first (#544). The
   // split only happens when this machine actually supports MLX; otherwise every
@@ -1193,6 +1218,19 @@ const App: React.FC = () => {
   const [newCloudModel, setNewCloudModel] = useState('');
 
   const refreshModels = useCallback(async () => {
+    // Nothing is pre-configured (#566): with no provider added, the app talks
+    // to no server at all and opens empty. The local daemon is reached only
+    // once the user adds it as an Ollama provider, exactly like any other.
+    const conns = loadConnections();
+    const localOllama = conns.find(c => c.enabled && c.kind === 'ollama');
+    if (!localOllama) {
+      setOllamaConnected(null);
+      setModels([]);
+      setRunningModels(new Set());
+      const fromProviders = await fetchAllConnectionModels(conns).catch(() => []);
+      setConnectedModels(fromProviders);
+      return [];
+    }
     const availableModels = await fetchOllamaModels(url('/api/tags'));
     setOllamaConnected(true);
     // Cloud models: discovered from the signed-in daemon's own tags + any the
@@ -1225,6 +1263,49 @@ const App: React.FC = () => {
     setNewCloudModel('');
     void refreshModels().catch(() => {});
   }, [newCloudModel, refreshModels]);
+
+  /**
+   * The providers the user has configured, for the sidebar panel (#563).
+   *
+   * Nothing is pre-configured — not even a local Ollama (#566). A fresh
+   * install contacts no server at all and opens empty, and the panel says so;
+   * the local daemon is added the same way as any other provider. Presenting
+   * it as always-present was misleading on a machine that does not run it, and
+   * it made "no providers" a state the UI could never actually show.
+   */
+  const providerStatuses: ProviderStatus[] = useMemo(() => {
+    return connections.map(c => {
+      const count = connectedModels.filter(m => m.connectionId === c.id).length;
+      const test = connTestStatus[c.id];
+      // Models in hand is the only positive proof we have that a provider
+      // answered; an untested, never-fetched provider stays 'unknown' rather
+      // than being reported as broken.
+      const state: ProviderStatus['state'] =
+        test === 'testing' ? 'testing'
+          : count > 0 ? 'connected'
+            : test === 'error' ? 'disconnected'
+              : 'unknown';
+      return {
+        id: c.id,
+        name: c.name,
+        endpoint: c.baseUrl,
+        kind: c.kind,
+        state,
+        modelCount: count,
+        disabled: !c.enabled,
+      };
+    });
+  }, [connections, connectedModels, connTestStatus]);
+
+  /** Probe one provider on demand — the Providers panel's Test button. */
+  const testProvider = useCallback(async (id: string) => {
+    setConnTestStatus(s => ({ ...s, [id]: 'testing' }));
+    const all = loadConnections();
+    const fresh = await fetchAllConnectionModels(all);
+    setConnectedModels(fresh);
+    const count = fresh.filter(m => m.connectionId === id).length;
+    setConnTestStatus(s => ({ ...s, [id]: count > 0 ? 'ok' : 'error' }));
+  }, [refreshModels]);
 
   // Bind an ad-hoc folder back onto the active project (#488). Previously the
   // wiring only ran project -> workspace, so a folder opened from the chip or
@@ -1316,21 +1397,19 @@ const App: React.FC = () => {
   }, [activeProjectId, projects, repoClis]);
 
   // Poll running models every 30s so the warm indicator stays current (#478).
-  // While disconnected the same tick retries the connection instead (#549
-  // audit rank 5): the app heals itself the moment the daemon starts, rather
-  // than requiring the user to find "Test connection" in Settings.
+  // This no longer retries a failed connection (#562): auto-reconnecting
+  // forever assumed the local Ollama daemon is always wanted, so a user on
+  // vLLM or LM Studio paid for a request to a daemon they never run. The
+  // Providers panel reports reachability and offers Test on demand.
   useEffect(() => {
+    if (ollamaConnected === false) return;
     const id = setInterval(() => {
-      if (ollamaConnected === false) {
-        refreshModels().catch(() => {});
-        return;
-      }
       fetchRunningModels(url('/api/ps'))
         .then(r => setRunningModels(new Set(r.map(m => m.name))))
         .catch(() => {});
     }, 30_000);
     return () => clearInterval(id);
-  }, [ollamaBaseUrl, ollamaConnected, refreshModels]);
+  }, [ollamaBaseUrl, ollamaConnected]);
 
   useEffect(() => {
     async function loadInitialData() {
@@ -4640,14 +4719,14 @@ ${lines.join('\n')}`;
               if (projects.length === 0) { void createProjectFromFolder(); return; }
               setNewMenuOpen(v => !v);
             }}
-            aria-label="Start new chat"
+            aria-label={t('sidebar.startNewChat')}
             aria-haspopup="menu"
             aria-expanded={newMenuOpen}
             className={`w-full py-2 px-4 rounded-lg transition-colors text-sm font-semibold ${
               dark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-900'
             }`}
           >
-            + New
+            {t('sidebar.newChat')}
           </button>
           {newMenuOpen && (
             <div role="menu" aria-label="New chat in project" className={`absolute top-full left-0 right-0 mt-1 rounded-lg border shadow-lg z-50 max-h-64 overflow-y-auto ${dark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-zinc-200'}`}>
@@ -4684,7 +4763,7 @@ ${lines.join('\n')}`;
           aria-label="Search conversations"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search conversations..."
+          placeholder={t('sidebar.searchConversations')}
           className={`w-full text-xs border rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
             dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-50 border-zinc-200 text-zinc-900 placeholder-zinc-400'
           }`}
@@ -4693,17 +4772,17 @@ ${lines.join('\n')}`;
         {/* Projects — click a name to show its sessions; + starts a chat in it */}
         <div className="flex-1 overflow-y-auto">
           <div className="flex items-center justify-between px-1 mb-1">
-            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Projects</span>
+            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.projects')}</span>
             <button
               onClick={() => { void createProjectFromFolder(); }}
               disabled={creatingProject}
-              title="New project from a folder"
-              aria-label="New project from a folder"
+              title={t('sidebar.newProjectFromFolder')}
+              aria-label={t('sidebar.newProjectFromFolder')}
               className={`px-1.5 rounded hover:opacity-70 disabled:opacity-40 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}
             >{creatingProject ? '…' : '+'}</button>
           </div>
           {projects.length === 0 && (
-            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No projects yet — click + to open a folder.</p>
+            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{t('sidebar.noProjects')}</p>
           )}
           {projects.map(p => {
             const expanded = expandedProjects.has(p.id);
@@ -4777,11 +4856,20 @@ ${lines.join('\n')}`;
           {/* Sessions not bound to any project */}
           {unscopedSessions.length > 0 && (
             <>
-              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Chats</p>
+              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.chats')}</p>
               {unscopedSessions.map(s => renderSessionRow(s))}
             </>
           )}
         </div>
+
+        {/* Provider reachability, per provider (#563) — replaces the header's
+            Ollama-only dot. */}
+        <ConnectionStatusPanel
+          providers={providerStatuses}
+          onTest={testProvider}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          dark={dark}
+        />
 
         {/* Bottom actions */}
         <div className={`mt-2 border-t pt-2 ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
@@ -4791,7 +4879,7 @@ ${lines.join('\n')}`;
               dark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800' : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
             }`}
           >
-            ⚙️ Settings
+            ⚙️ {t('sidebar.settings')}
           </button>
           <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
         </div>
@@ -4815,20 +4903,11 @@ ${lines.join('\n')}`;
               ☰
             </button>
           )}
-          {/* Ollama connection status indicator (#324) */}
-          <span
-            aria-label="Ollama connection status"
-            title={ollamaConnected === null ? 'Connection unknown' : ollamaConnected ? `Connected · ${ollamaBaseUrl}` : `Disconnected · ${ollamaBaseUrl}`}
-            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-              ollamaConnected === null
-                ? 'bg-zinc-400'
-                : ollamaConnected
-                  ? 'bg-emerald-500'
-                  : 'bg-red-500'
-            }`}
-          />
+          {/* The Ollama-only status dot moved to the sidebar's provider panel
+              (#563): with several providers configured, one header dot could
+              only ever describe one of them. */}
           <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
-            {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
+            {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? t('header.chat')) : t('header.newChat')}
           </span>
           {isAgenticMode && isLoading && agentStatus && (
             <span
@@ -5338,19 +5417,11 @@ ${lines.join('\n')}`;
           )}
         </div>
 
-        {/* Ollama disconnected (#549 audit rank 5): visible where the user is
-            about to act, with a one-click retry — not just a 2.5px header dot. */}
-        {ollamaConnected === false && (
-          <div className={`mx-4 mb-2 flex items-center justify-between rounded-lg px-3 py-2 text-xs border ${dark ? 'bg-red-900/30 border-red-800 text-red-200' : 'bg-red-50 border-red-200 text-red-700'}`} role="status">
-            <span>Ollama isn't running — open the Ollama app, then retry. Reconnecting automatically every 30s.</span>
-            <button
-              onClick={() => { void refreshModels().then(() => showStatusBanner('Connected to Ollama')).catch(() => showStatusBanner('Still no connection — is Ollama running?')); }}
-              aria-label="Retry Ollama connection"
-              className="ml-3 shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
-            >Retry</button>
-          </div>
-        )}
-
+        {/* The red "Ollama isn't running" banner is gone (#562): it assumed
+            Ollama is the only provider, so a user running purely on vLLM or
+            LM Studio saw a permanent error about a daemon they never use.
+            Provider reachability now lives in the sidebar's Providers panel,
+            where it is stated per provider and can be re-tested on demand. */}
         {/* Unreachable working folder (#550): warn and offer a picker — the
             app must never crash because a path is gone. */}
         {workspaceWarning && (
@@ -5458,7 +5529,7 @@ ${lines.join('\n')}`;
              <button
                onClick={() => fileInputRef.current?.click()}
                title="Attach image"
-               aria-label="Attach image"
+               aria-label={t('composer.attachImage')}
                className={`px-3 py-3 rounded-xl transition-colors ${
                  dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'
                }`}
@@ -5705,8 +5776,8 @@ ${lines.join('\n')}`;
                    sendMessage();
                  }
                }}
-               placeholder={isAgenticMode ? 'Describe the goal for this session…' : 'Message Ollama...'}
-               aria-label="Type your message here"
+               placeholder={isAgenticMode ? t('composer.placeholderAgent') : t('composer.placeholder')}
+               aria-label={t('composer.typeMessage')}
                className={`flex-1 border rounded-xl px-4 py-3 resize-none max-h-40 overflow-y-auto leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
                  dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
                }`}
@@ -5714,7 +5785,7 @@ ${lines.join('\n')}`;
              {isSpeechRecognitionAvailable() && (
                <button
                  type="button"
-                 aria-label={isListening ? 'Stop listening' : 'Dictate with microphone'}
+                 aria-label={isListening ? t('composer.stopListening') : t('composer.dictate')}
                  onClick={async () => {
                    if (isListening) { setIsListening(false); return; }
                    setIsListening(true);
@@ -5773,7 +5844,7 @@ ${lines.join('\n')}`;
              {isLoading ? (
                <button
                  onClick={cancelStream}
-                 aria-label="Cancel generation"
+                 aria-label={t('composer.cancelGeneration')}
                  className="bg-red-600 hover:bg-red-500 text-white px-6 py-3 rounded-xl transition-colors font-semibold"
                >
                  Cancel
@@ -5782,11 +5853,11 @@ ${lines.join('\n')}`;
                <button
                  onClick={() => sendMessage()}
                  disabled={isLoading || !isNonEmptySubmission(input, attachedImages.length)}
-                 aria-label="Send message"
-                 title={!isNonEmptySubmission(input, attachedImages.length) ? 'Type a message or attach an image first' : 'Send message'}
+                 aria-label={t('composer.sendMessage')}
+                 title={!isNonEmptySubmission(input, attachedImages.length) ? t('composer.sendHint') : t('composer.sendMessage')}
                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:opacity-60 disabled:cursor-not-allowed text-white px-6 py-3 rounded-xl transition-colors font-semibold"
                >
-                 Send
+                 {t('composer.send')}
                </button>
              )}
           </div>
@@ -5811,7 +5882,7 @@ ${lines.join('\n')}`;
                   clearActivePreset();
                 }
               }}
-              aria-label="Select AI model"
+              aria-label={t('composer.selectModel')}
               className={`text-xs border rounded-lg px-2 py-1.5 min-w-[8rem] max-w-[16rem] truncate focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                 dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
               }`}
@@ -5819,27 +5890,29 @@ ${lines.join('\n')}`;
               {/* Empty-state placeholder (#438) */}
               {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
                 <option value="" disabled>
-                  {ollamaConnected === false
-                    ? 'No models — is Ollama running?'
-                    : 'No models — pull one (e.g. ollama pull llama3)'}
+                  {connections.length === 0
+                    ? t('models.empty.noProvider')
+                    : ollamaConnected === false
+                      ? t('models.empty.noOllama')
+                      : t('models.empty.pull')}
                 </option>
               )}
               {starredModels.length > 0 && !activePresetId && (
-                <optgroup label="— ★ Starred —">
+                <optgroup label={t('models.group.starred')}>
                   {starredModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
                     <option key={`starred:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
                   ))}
                 </optgroup>
               )}
               {recentModels.length > 0 && !activePresetId && (
-                <optgroup label="— Recent —">
+                <optgroup label={t('models.group.recent')}>
                   {recentModels.filter(m => models.some(mi => mi.name === m)).map((m) => (
                     <option key={`recent:${m}`} value={m}>{m}{runningModels.has(m) ? ' ●' : ''}</option>
                   ))}
                 </optgroup>
               )}
               {presets.length > 0 && (
-                <optgroup label="— Presets —">
+                <optgroup label={t('models.group.presets')}>
                   {presets.map(p => (
                     <option key={`preset:${p.id}`} value={`preset:${p.id}`}>
                       {p.icon ? `${p.icon} ` : ''}{p.name}
@@ -5850,7 +5923,7 @@ ${lines.join('\n')}`;
               {/* MLX-capable models first, grouped and bold, but ONLY when this
                   machine can actually accelerate them (#544). */}
               {mlxModels.length > 0 && (
-                <optgroup label="— MLX (recommended) —">
+                <optgroup label={t('models.group.mlx')}>
                   {mlxModels.map((m) => (
                     <option key={m.name} value={m.name} style={{ fontWeight: 700 }}>
                       {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}
@@ -5859,14 +5932,14 @@ ${lines.join('\n')}`;
                 </optgroup>
               )}
               {otherLocalModels.length > 0 && (
-                <optgroup label={mlxModels.length > 0 ? '— Local Ollama (other) —' : '— Local Ollama —'}>
+                <optgroup label={mlxModels.length > 0 ? t('models.group.localOther') : t('models.group.local')}>
                   {otherLocalModels.map((m) => (
                     <option key={m.name} value={m.name}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ''}{m.quantization ? ` · ${m.quantization}` : ''}{runningModels.has(m.name) ? ' ●' : ''}</option>
                   ))}
                 </optgroup>
               )}
               {models.filter(m => m.cloud).length > 0 && (
-                <optgroup label="— Cloud Ollama —">
+                <optgroup label={t('models.group.cloud')}>
                   {models.filter(m => m.cloud).map((m) => (
                     <option key={m.name} value={m.name}>{m.name} ⛅{m.parameterSize ? ` · ${m.parameterSize}` : ''}</option>
                   ))}
@@ -5876,9 +5949,14 @@ ${lines.join('\n')}`;
               {connections.filter(c => c.enabled).map(conn => {
                 const connModels = connectedModels.filter(m => m.connectionId === conn.id);
                 if (!connModels.length) return null;
+                // Name the server type in the group label: with several
+                // providers connected, "gx10" alone does not say whether its
+                // models come from vLLM or a remote Ollama.
                 const groupLabel = conn.kind === 'ollama'
-                  ? `— Remote Ollama: ${conn.name} —`
-                  : `— ${conn.name} —`;
+                  ? t('models.group.remoteOllama', { name: conn.name })
+                  : conn.kind === 'vllm'
+                    ? t('models.group.vllm', { name: conn.name })
+                    : t('models.group.provider', { name: conn.name });
                 return (
                   <optgroup key={conn.id} label={groupLabel}>
                     {connModels.map(m => (
@@ -5945,7 +6023,7 @@ ${lines.join('\n')}`;
             }`}>
               <div className="flex justify-between items-center mb-6">
                 <h2 id="settings-title" className="text-xl font-bold">Settings</h2>
-                <button aria-label="Close settings" onClick={() => setIsSettingsOpen(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
+                <button aria-label={t('settings.close')} onClick={() => setIsSettingsOpen(false)} className={dark ? 'text-zinc-400 hover:text-zinc-100' : 'text-zinc-600 hover:text-zinc-900'}>✕</button>
               </div>
 
               <div className="space-y-6">
@@ -6303,43 +6381,73 @@ ${lines.join('\n')}`;
                    </div>
                  </div>
 
+                {/* Interface language (#564). English is the default; the
+                    selector names each language in itself so a user who
+                    switched away can find their way back. */}
+                <div>
+                  <label className={`text-sm font-medium block mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                    {t('settings.language')}
+                  </label>
+                  <select
+                    aria-label={t('settings.language')}
+                    value={locale}
+                    onChange={e => setLocale(e.target.value as Locale)}
+                    className={`w-full border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                  >
+                    {LOCALES.map(l => (
+                      <option key={l.code} value={l.code}>{l.label}</option>
+                    ))}
+                  </select>
+                  <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('settings.languageHint')}</p>
+                </div>
+
                 {/* Model providers (#123/#493) — one section for every extra endpoint:
                     remote Ollama servers and OpenAI-compatible APIs share the same
                     connections store, so the old separate 'Remote Ollama Servers'
                     section was a second CRUD UI over identical data (#549 rank 15). */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Model providers ({connections.length})</label>
+                    <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>{t('settings.providers', { count: connections.length })}</label>
                     <button onClick={() => {
                         if (showAddConnection) { setEditingConnId(null); setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' }); }
                         setShowAddConnection(v => !v);
                       }}
                       className={`text-xs px-2 py-1 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}>
-                      {showAddConnection ? 'Cancel' : '+ Add'}
+                      {showAddConnection ? t('settings.providers.cancel') : t('settings.providers.add')}
                     </button>
                   </div>
                   {showAddConnection && (
                     <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
                       <div className="flex gap-1.5">
-                        <select value={newConn.kind} onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as 'openai' | 'ollama' }))}
+                        <select aria-label={t('settings.providers.kind')} value={newConn.kind} onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as ConnectionKind }))}
                           className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
                           <option value="openai">OpenAI-compat</option>
+                          <option value="vllm">vLLM</option>
                           <option value="ollama">Ollama</option>
                         </select>
-                        <input aria-label="Connection name" placeholder="Name (e.g. LM Studio)" value={newConn.name} onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
+                        <input aria-label={t('settings.providers.name')} placeholder={t('settings.providers.namePlaceholder')} value={newConn.name} onChange={e => setNewConn(v => ({ ...v, name: e.target.value }))}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       </div>
-                      <input aria-label="Connection base URL" placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
+                      <input aria-label={t('settings.providers.baseUrl')}
+                        placeholder={newConn.kind === 'vllm' ? t('settings.providers.baseUrlVllm')
+                          : newConn.kind === 'ollama' ? t('settings.providers.baseUrlOllama')
+                          : t('settings.providers.baseUrlOpenAi')}
+                        value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
-                      <input aria-label="Connection API key" placeholder="API key / token (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
+                      <input aria-label={t('settings.providers.apiKey')} placeholder={t('settings.providers.apiKeyPlaceholder')} value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       <button onClick={() => {
                         if (!newConn.name.trim() || !newConn.baseUrl.trim()) return;
+                        // Accept a bare host ("gx10") and complete it to a
+                        // callable URL — typing the scheme and the provider's
+                        // conventional port is the step people skip, and the
+                        // resulting failure is an opaque network error.
+                        const baseUrl = normalizeBaseUrl(newConn.baseUrl, newConn.kind);
                         if (editingConnId) {
                           // #419: edit an existing connection in place.
-                          updateConnection(editingConnId, { name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined });
+                          updateConnection(editingConnId, { name: newConn.name.trim(), kind: newConn.kind, baseUrl, apiKey: newConn.apiKey.trim() || undefined });
                         } else {
-                          addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
+                          addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl, apiKey: newConn.apiKey.trim() || undefined, enabled: true });
                         }
                         const updated = loadConnections();
                         setConnections(updated);
@@ -6347,12 +6455,12 @@ ${lines.join('\n')}`;
                         setNewConn({ name: '', kind: 'openai', baseUrl: '', apiKey: '' });
                         setEditingConnId(null);
                         setShowAddConnection(false);
-                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">{editingConnId ? 'Update Connection' : 'Add Connection'}</button>
+                      }} className="w-full text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold">{editingConnId ? t('settings.providers.updateButton') : t('settings.providers.addButton')}</button>
                     </div>
                   )}
                   <div className={`rounded-lg border divide-y overflow-hidden ${dark ? 'border-zinc-700 divide-zinc-700' : 'border-zinc-200 divide-zinc-200'}`}>
                     {connections.length === 0
-                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>No extra model providers. Add an OpenAI-compatible endpoint (LM Studio, llama.cpp) or a remote Ollama server.</p>
+                      ? <p className={`text-xs px-3 py-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('settings.providers.none')}</p>
                       : connections.map(conn => {
                         const modelCount = connectedModels.filter(m => m.connectionId === conn.id).length;
                         return (
@@ -6403,7 +6511,7 @@ ${lines.join('\n')}`;
                     }
                   </div>
                   <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                    Models from extra providers appear in the model selector grouped by provider. For a remote Ollama server pick kind "Ollama"; set its bearer token in the API key field (#493).
+                    Models from extra providers appear in the model selector grouped by provider. Pick "vLLM" for a vLLM server (port 8000 assumed), "OpenAI-compat" for LM Studio or llama.cpp, "Ollama" for a remote Ollama server; set any bearer token in the API key field (#493).
                   </p>
                 </div>
 

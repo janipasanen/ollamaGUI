@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 // MLX is auto-detected now (no settings). Pretend this machine supports it so
 // the switcher groups MLX models and shows the ⚡ badge for a selected -mlx model.
@@ -30,6 +31,8 @@ let origFetch: typeof global.fetch;
 beforeEach(() => {
   origFetch = global.fetch;
   localStorage.clear();
+    // #566: nothing is pre-configured now, so this spec adds the provider.
+    seedLocalOllama();
   localStorage.setItem('ollama_gui_projects', JSON.stringify(PROJECTS));
   localStorage.setItem('ollama_gui_sessions', JSON.stringify(SESSIONS));
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
