@@ -48,6 +48,32 @@ end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
   calling, which vLLM implements natively.
 
 ### Fixed
+- **Stop now stops, mid tool-batch (#577).** A turn that queued several tools
+  ran every one of them to completion after the user pressed Stop. Under
+  `auto` autonomy nothing gates those calls, so files kept being written and
+  shell commands kept firing while the UI said the run had stopped. The Ollama
+  loop now checks the abort signal before each queued call, as the OpenAI loop
+  always has.
+- **Parallel tool calls in one Ollama turn are no longer dropped (#620).** The
+  dedup key interpolated `arguments` into a template string, but Ollama sends
+  them as an object — so `read_file(a)`, `read_file(b)`, `read_file(c)` all
+  keyed to `[object Object]` and only the first ran, with the model answering
+  as if it had seen all three. Found while writing the #577 regression test,
+  which passed against the unfixed code precisely because of this.
+- **Cancelling an agent run on LM Studio / vLLM no longer freezes the UI
+  (#578).** The OpenAI loop returned early on cancel and skipped its terminal
+  callback — and that callback is the only place the app clears its loading
+  state, so pressing Esc left the composer disabled and the spinner turning
+  until the user also hit Stop. Every exit path now fires exactly one terminal
+  callback, and a cancel on the final iteration is no longer misreported as
+  hitting the iteration limit.
+- **A stopped run is no longer reported as finished (#591).** Interrupting a
+  run that had made tool calls appended a green "✅ Done in 14s — 3 steps"
+  card, a "Run finished" banner, a desktop notification and a success chime.
+  It now says "Run stopped after …", keeps the stats (after a Stop, what was
+  already done to the working tree is what matters), and stays silent. The
+  cancel is detected from the abort signal, which covers Escape too — Escape
+  never enters `cancelStream`, so a flag set there would have missed it.
 - **CI is green again: the `cargo audit` gate no longer fails on RUSTSEC-2026-0258.**
   `reqwest` 0.11 pulled `hyper` 0.14 and with it the vulnerable `h2` 0.3.27
   ("unbounded empty DATA frames"). Upgraded to reqwest 0.13 — the version

@@ -187,11 +187,19 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
                 // Ollama models), fall back to a name+arguments composite key
                 // so that DIFFERENT tool calls without ids are not silently
                 // dropped as duplicates of the first (#443).
+                // Serialise the arguments rather than interpolating them:
+                // Ollama sends `arguments` as an OBJECT, and `${{}}` is
+                // "[object Object]" for every call, so two different calls to
+                // the same tool in one turn collapsed to one and the second
+                // was silently dropped — the exact failure #443 set out to
+                // prevent, reintroduced for the shape Ollama actually sends.
+                const argKey = (a: unknown) =>
+                  typeof a === 'string' ? a : JSON.stringify(a ?? '');
                 const dedupKey = toolCall.id
-                  ?? `__no_id__:${toolCall.function?.name ?? ''}:${toolCall.function?.arguments ?? ''}`;
+                  ?? `__no_id__:${toolCall.function?.name ?? ''}:${argKey(toolCall.function?.arguments)}`;
                 const exists = toolCalls.some(tc => {
                   const tcKey = tc.id
-                    ?? `__no_id__:${tc.function?.name ?? ''}:${tc.function?.arguments ?? ''}`;
+                    ?? `__no_id__:${tc.function?.name ?? ''}:${argKey(tc.function?.arguments)}`;
                   return tcKey === dedupKey;
                 });
                 if (!exists) {
@@ -253,6 +261,14 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
           tool_calls: toolCalls,
         } as any);
         for (const toolCall of toolCalls) {
+          // Stop means stop, mid-batch (#577). Without this, a turn that
+          // queued several tools ran every one of them to completion after
+          // the user pressed Stop — under 'auto' autonomy nothing gates them,
+          // so files kept being written and shell commands kept firing while
+          // the UI said the run had stopped. Checked before onToolCall so a
+          // skipped call never appears as "called" in the activity panel.
+          // The OpenAI loop has always done this; this is the parity fix.
+          if (signal?.aborted) break;
           try {
             const toolDef = toolRegistry.getTool(toolCallName(toolCall));
             const toolIsReadOnly = (toolDef as any)?.readOnly ?? false;

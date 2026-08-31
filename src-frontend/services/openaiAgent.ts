@@ -142,6 +142,9 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
 
   let iteration = 0;
   let hitMaxIterations = false;
+  // Set when the run ends early (cancel or error) so the tail can tell that
+  // apart from "we used up every iteration" — see the guard below (#578).
+  let stopped = false;
   let currentMessages: Message[] = [...messages];
   // Monotonic fallback id for providers that omit tool-call ids in deltas.
   let syntheticCallId = 0;
@@ -393,16 +396,26 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
       }
       // Next iteration sends the tool results back to the model.
     } catch (error) {
+      // `break`, not `return` (#578): returning here skipped the trailing
+      // onComplete(), and App.tsx clears isLoading/agentStatus ONLY from
+      // onComplete — so pressing Esc on an LM Studio / vLLM run left the
+      // composer disabled and the spinner turning until the user also hit
+      // Stop. agent.ts has always fallen through; this is the parity fix.
+      stopped = true;
       if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         if (onCancel) onCancel();
-        return;
+        break;
       }
       if (onError) onError(error instanceof Error ? error : new Error(String(error)));
-      return;
+      break;
     }
   }
 
-  if (iteration >= maxIterations) {
+  // `!stopped` matters: this loop DERIVES the max-iterations verdict from the
+  // counter, so a cancel on the final iteration would otherwise be reported as
+  // "maximum tool iterations reached" — turning the user's own Stop into a
+  // bogus pause, complete with a "Continue agent" button (#578).
+  if (!stopped && iteration >= maxIterations) {
     hitMaxIterations = true;
     if (onMaxIterations) onMaxIterations();
     yield {
@@ -411,6 +424,7 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
       content: `⚠️ Agent stopped: maximum tool iterations (${maxIterations}) reached without a final answer. It paused before finishing — use "Continue agent" below to let it keep going.`,
     };
   }
-  if (onComplete && !hitMaxIterations) onComplete();
-  if (onComplete && hitMaxIterations) onComplete();
+  // One terminal callback on every exit path — cancel, error, max-iterations
+  // and success alike. The consumer resets its loading state here.
+  if (onComplete) onComplete();
 }

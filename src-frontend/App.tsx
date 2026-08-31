@@ -2987,7 +2987,7 @@ const App: React.FC = () => {
   // Close the loop at run end (#549 audit rank 9): a finished agentic run used
   // to just go quiet — verify verdicts shown only to the model, commit hashes
   // discarded, notifications wired only into plain chat. One shared exit.
-  const finishAgentRun = (outcome: 'done' | 'error' | 'paused') => {
+  const finishAgentRun = (outcome: 'done' | 'error' | 'paused' | 'cancelled') => {
     const s = runStatsRef.current;
     if (!s.startedAt) return;
     // A tool-less agentic reply is just a chat answer — no run to summarize,
@@ -3011,17 +3011,25 @@ const App: React.FC = () => {
     showStatusBanner(
       outcome === 'done' ? `Run finished in ${dur}`
         : outcome === 'paused' ? 'Run paused at the step limit — use "Continue agent" to keep going'
+        // After a Stop, what was already done to the working tree is exactly
+        // what the user needs to know, so the stats ride along (#591).
+        : outcome === 'cancelled' ? `Run stopped after ${dur} — ${bits}`
         : 'Run stopped on an error',
     );
     if (notifyOnComplete && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       try {
         new Notification(
-          outcome === 'done' ? 'Agent run finished' : outcome === 'paused' ? 'Agent run paused' : 'Agent run failed',
+          outcome === 'done' ? 'Agent run finished'
+            : outcome === 'paused' ? 'Agent run paused'
+            : outcome === 'cancelled' ? 'Agent run stopped'
+            : 'Agent run failed',
           { body: bits },
         );
       } catch { /* blocked */ }
     }
-    if (playSoundOnComplete) playCompletionSound();
+    // No success chime for a run the user stopped: they are at the keyboard,
+    // and a completion sound after their own interrupt is the wrong signal.
+    if (playSoundOnComplete && outcome !== 'cancelled') playCompletionSound();
     s.startedAt = 0;
   };
 
@@ -4165,7 +4173,12 @@ ${lines.join('\n')}`;
             setIsLoading(false);
             setAgentStatus(null);
             setAgentStep(null);
-            finishAgentRun(runHitMaxRef.current ? 'paused' : 'done');
+            // Report what actually happened (#591). Reading the signal covers
+            // every abort route — the Stop button, Escape (which never enters
+            // cancelStream), and the top-of-loop guards in both agent loops —
+            // whereas a flag set inside cancelStream would miss the keyboard.
+            const runAborted = abortControllerRef.current?.signal.aborted ?? false;
+            finishAgentRun(runAborted ? 'cancelled' : runHitMaxRef.current ? 'paused' : 'done');
             // Intentionally do NOT reset agentHitMax here: a max-iterations
             // stop sets it via onMaxIterations and the "Continue agent" button
             // (#403) must remain visible after the run completes. sendMessage
