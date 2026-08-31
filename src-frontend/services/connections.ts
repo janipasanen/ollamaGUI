@@ -68,7 +68,7 @@ import { makeQwenStreamFilter } from './qwenDialect';
 
 const STORAGE_KEY = 'model_connections';
 
-export type ConnectionKind = 'openai' | 'ollama';
+export type ConnectionKind = 'openai' | 'ollama' | 'vllm';
 
 export interface ModelConnection {
   id: string;
@@ -123,6 +123,19 @@ export function getDefaultConnections(): ModelConnection[] {
     name: 'LM Studio (gx10)',
     kind: 'openai', // LM Studio uses OpenAI-compatible API
     baseUrl: lmStudioUrl,
+    enabled: true,
+  });
+
+  // vLLM on gx10 — OpenAI-compatible API at /v1/models, /v1/chat/completions
+  const vllmUrl = typeof process !== 'undefined' && process.env && process.env.VLLM_URL
+    ? process.env.VLLM_URL
+    : 'http://gx10:8000';
+  
+  defaults.push({
+    id: 'vllm-gx10',
+    name: 'vLLM (gx10)',
+    kind: 'openai', // vLLM uses OpenAI-compatible API
+    baseUrl: vllmUrl,
     enabled: true,
   });
 
@@ -209,7 +222,7 @@ export function mergeConfigWithConnections(
 
 /** Built-in defaults created on first launch (local-ollama, lm-studio). */
 function isBuiltinDefault(conn: ModelConnection): boolean {
-  return conn.id === 'local-ollama' || conn.id === 'lm-studio';
+  return conn.id === 'local-ollama' || conn.id === 'lm-studio' || conn.id === 'vllm-gx10';
 }
 
 export function addConnection(conn: Omit<ModelConnection, 'id'>): ModelConnection {
@@ -332,7 +345,7 @@ export async function checkConnectionHealth(conn: ModelConnection): Promise<Conn
   if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
 
   try {
-    const endpoint = conn.kind === 'openai'
+    const endpoint = conn.kind === 'openai' || conn.kind === 'vllm'
       ? `${base}/v1/models`
       : `${base}/api/tags`;
     const res = await fetch(endpoint, { headers });
@@ -454,7 +467,7 @@ export function buildModelGroups(
 export async function fetchAllConnectionModels(connections: ModelConnection[]): Promise<ConnectedModel[]> {
   const enabled = connections.filter(c => c.enabled);
   const results = await Promise.allSettled(
-    enabled.map(c => c.kind === 'openai' ? fetchOpenAiModels(c) : fetchOllamaConnectionModels(c))
+    enabled.map(c => c.kind === 'openai' || c.kind === 'vllm' ? fetchOpenAiModels(c) : fetchOllamaConnectionModels(c))
   );
   return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
 }
@@ -645,6 +658,127 @@ export async function streamOpenAiChat(
     }
   }
   // Flush any remaining buffered content after the stream ends (#466).
+  if (buf.trim()) {
+    const line = buf.trim();
+    if (line.startsWith('data:')) {
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') { flush(); return; }
+      try {
+        const chunk = JSON.parse(data);
+        const d = chunk?.choices?.[0]?.delta;
+        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+        if (reasoning) onChunk('', reasoning);
+        if (d?.content) emit(d.content);
+      } catch {
+        // malformed trailing SSE line — skip
+      }
+    }
+  }
+  flush();
+}
+
+// ── vLLM support ──────────────────────────────────────────────────────────────
+
+/**
+ * Detect if a server is vLLM by checking its /v1/models endpoint.
+ * vLLM returns a distinctive response format with model object containing
+ * 'root' and 'parent' fields.
+ */
+export async function detectVllmServer(baseUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/models`);
+    if (!res.ok) return false;
+    const data = await res.json() as { data?: Array<{ id?: string; root?: string; parent?: string }> };
+    // vLLM models have a 'root' field; OpenAI/LM Studio do not
+    if (data.data && data.data.length > 0) {
+      return data.data.some(m => m.root !== undefined);
+    }
+    // Heuristic: if models exist and endpoint responds, treat as compatible
+    return !!(data.data && data.data.length > 0);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build chat-stream request options for a vLLM endpoint.
+ * vLLM supports both /v1/chat/completions and /v1/completions.
+ * Returns { url, headers, body } ready for fetch().
+ */
+export function buildVllmChatRequest(
+  conn: ModelConnection,
+  model: string,
+  messages: { role: string; content: string }[],
+  options?: { temperature?: number; max_tokens?: number },
+  stream = true
+): { url: string; headers: Record<string, string>; body: string } {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+  return {
+    url: `${conn.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
+    headers,
+    body: JSON.stringify({ model, messages, stream, ...options }),
+  };
+}
+
+/**
+ * Parse an SSE stream from a vLLM endpoint.
+ * vLLM follows the OpenAI-compatible SSE format for chat completions.
+ */
+export async function streamVllmChat(
+  conn: ModelConnection,
+  model: string,
+  messages: { role: string; content: string }[],
+  onChunk: (delta: string, reasoning?: string) => void,
+  options?: { temperature?: number },
+  signal?: AbortSignal
+): Promise<void> {
+  const { url, headers, body } = buildVllmChatRequest(conn, model, messages, options);
+  const res = await fetch(url, { method: 'POST', headers, body, signal });
+  if (!res.ok) throw await openAiErrorFromResponse(res, 'vLLM stream error');
+
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  if (!reader) throw new Error('Response body is null');
+
+  // vLLM serves Qwen models with <think>…</think> reasoning tags inline
+  // in `content` rather than `reasoning_content` (#551). Handle this
+  // exactly like the LM Studio stream handler so <think> blocks land in
+  // the reasoning channel and don't leak into the visible answer.
+  const filter = makeQwenStreamFilter({ captureToolCalls: false });
+  const emit = (raw: string) => {
+    const { content, reasoning } = filter.push(raw);
+    if (reasoning) onChunk('', reasoning);
+    if (content) onChunk(content);
+  };
+  const flush = () => {
+    const { content, reasoning } = filter.flush();
+    if (reasoning) onChunk('', reasoning);
+    if (content) onChunk(content);
+  };
+
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') { flush(); return; }
+      try {
+        const chunk = JSON.parse(data);
+        const d = chunk?.choices?.[0]?.delta;
+        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+        if (reasoning) onChunk('', reasoning);
+        if (d?.content) emit(d.content);
+      } catch {
+        // malformed SSE line — skip
+      }
+    }
+  }
   if (buf.trim()) {
     const line = buf.trim();
     if (line.startsWith('data:')) {

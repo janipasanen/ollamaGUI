@@ -1,6 +1,9 @@
-/* Tailwind v4 — single import pulls in base, components, and utilities. */
-@import "tailwindcss";
-@config "../tailwind.config.js";
+/* Tailwind v3 output is intentionally used for Safari 13 / macOS Catalina.
+ * Tailwind v4 requires Safari 16.4 and emits cascade layers and other CSS
+ * features that Catalina's WebKit silently ignores. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 /* Appearance: accent color drives primary controls via --accent (#136). */
 :root { --accent: #2563eb; }

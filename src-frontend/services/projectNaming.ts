@@ -41,7 +41,10 @@ export function deriveProjectName(prompt: string): string | null {
   if (text.startsWith('/')) return null;
   // First line, then first sentence within it.
   text = text.split('\n')[0].trim();
-  const sentence = text.split(/(?<=[.!?])\s/)[0] ?? text;
+  // Safari 13 cannot parse regular-expression lookbehind. Match through the
+  // first sentence terminator instead, preserving the same behavior without
+  // requiring ES2018 regex features.
+  const sentence = text.match(/^[\s\S]*?[.!?](?:\s|$)/)?.[0]?.trim() ?? text;
   text = sentence.replace(/\s+/g, ' ').replace(/^[\s"'`*#>-]+|[\s"'`*.]+$/g, '').trim();
   if (!text) return null;
 

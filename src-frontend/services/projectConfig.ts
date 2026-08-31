@@ -12,7 +12,7 @@ export type { ModelConnection };
 export interface ConfigProvider {
   id: string;
   name: string;
-  type: 'ollama' | 'lmstudio' | 'ollama_cloud';
+  type: 'ollama' | 'lmstudio' | 'vllm' | 'ollama_cloud';
   baseUrl: string;
   enabled?: boolean;
   apiKey?: string;
@@ -60,7 +60,7 @@ export async function loadProjectConfig(): Promise<ProjectConfig | undefined> {
  * Convert ConfigProvider to ModelConnection for compatibility.
  */
 export function configProviderToConnection(provider: ConfigProvider): ModelConnection {
-  const kind = provider.type === 'ollama' ? 'ollama' : 'openai';
+  const kind = provider.type === 'ollama' ? 'ollama' : provider.type === 'vllm' ? 'vllm' : 'openai';
   
   return {
     id: provider.id,
@@ -133,7 +133,7 @@ export async function saveProjectConfigFromConnections(
       const provider: ConfigProvider = {
         id: conn.id,
         name: conn.name,
-        type: conn.kind === 'ollama' ? 'ollama' : 'lmstudio',
+        type: conn.kind === 'ollama' ? 'ollama' : conn.kind === 'vllm' ? 'vllm' : 'lmstudio',
         baseUrl: conn.baseUrl,
         enabled: conn.enabled,
       };

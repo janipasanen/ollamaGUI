@@ -196,7 +196,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
@@ -411,7 +410,10 @@ function highlightChildren(children: React.ReactNode, query: string): React.Reac
 // Renders an assistant/user message as markdown with GFM, LaTeX math (KaTeX),
 // syntax-highlighted code, and Mermaid diagrams. Exported for isolated testing.
 // remark/rehype plugin arrays are hoisted so their identity is stable across renders.
-const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+// remark-gfm 4 emits lookbehind regular expressions that Safari 13 cannot
+// parse. Keep the core markdown/math path in the Catalina-compatible startup
+// bundle; Mermaid remains lazy-loaded and is handled separately when used.
+const MARKDOWN_REMARK_PLUGINS = [remarkMath];
 const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggleTask?: (itemText: string, checked: boolean) => void; highlightQuery?: string; onApplyCode?: (code: string, lang: string) => void }> = ({ content, dark, onToggleTask, highlightQuery, onApplyCode }) => {
   // Memoize the renderer map so react-markdown sees stable component types
@@ -843,7 +845,7 @@ const App: React.FC = () => {
   const [connections, setConnections] = useState<ModelConnection[]>(() => loadConnections());
   const [connectedModels, setConnectedModels] = useState<ConnectedModel[]>([]);
   const [showAddConnection, setShowAddConnection] = useState(false);
-  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
+  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama' | 'vllm', baseUrl: '', apiKey: '' });
   const [editingConnId, setEditingConnId] = useState<string | null>(null); // #419 edit affordance
   const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
 
@@ -1243,7 +1245,7 @@ const App: React.FC = () => {
         ? `${conn.baseUrl.replace(/\/$/, '')}/api/chat`
         : url('/api/chat'),
       // Present only for OpenAI-compatible servers, which need their own loop.
-      conn: conn?.kind === 'openai' ? conn : undefined,
+      conn: (conn?.kind === 'openai' || conn?.kind === 'vllm') ? conn : undefined,
     };
   };
   // Per-conversation provider name (G3). Resolves the active connection for
@@ -6527,7 +6529,7 @@ ${lines.join('\n')}`;
                   {showAddConnection && (
                     <div className={`rounded-lg border p-3 mb-2 space-y-2 ${dark ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-200 bg-zinc-50'}`}>
                       <div className="flex gap-1.5">
-                        <select value={newConn.kind} onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as 'openai' | 'ollama' }))}
+                        <select value={newConn.kind} onChange={e => setNewConn(v => ({ ...v, kind: e.target.value as 'openai' | 'ollama' | 'vllm' }))}
                           className={`border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}>
                           <option value="openai">OpenAI-compat</option>
                           <option value="ollama">Ollama</option>

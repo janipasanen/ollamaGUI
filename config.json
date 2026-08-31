@@ -16,6 +16,14 @@
       "enabled": true,
       "apiKey": "",
       "defaultModel": "north-mini-code-1.0:q8_0"
+    },
+    {
+      "id": "vllm-gx10",
+      "name": "vLLM (gx10)",
+      "type": "vllm",
+      "baseUrl": "http://gx10:8000",
+      "enabled": true,
+      "defaultModel": ""
     }
   ]
 }

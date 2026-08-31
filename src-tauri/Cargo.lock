@@ -3,6 +3,30 @@
 version = 4
 
 [[package]]
+name = "OllamaGUI"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.21.7",
+ "calamine",
+ "dirs-next",
+ "keyring",
+ "lazy_static",
+ "lopdf",
+ "quick-xml 0.35.0",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "walkdir",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4013,30 +4037,6 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps 5.0.0",
-]
-
-[[package]]
-name = "src-tauri-tmp"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64 0.21.7",
- "calamine",
- "dirs-next",
- "keyring",
- "lazy_static",
- "lopdf",
- "quick-xml 0.35.0",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tokio",
- "walkdir",
- "zip 2.4.2",
 ]
 
 [[package]]

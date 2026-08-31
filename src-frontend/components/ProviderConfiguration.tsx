@@ -57,7 +57,7 @@ export const ProviderConfiguration: React.FC<Props> = ({
   onClose,
 }) => {
   const [editingConn, setEditingConn] = useState<ModelConnection | null>(null);
-  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '', defaultModel: '' });
+  const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama' | 'vllm', baseUrl: '', apiKey: '', defaultModel: '' });
   
   // Context window configurations per model (loaded once)
   const [contextConfigs, setContextConfigs] = useState<Map<string, any>>(() => loadModelContextConfigs());
@@ -381,7 +381,7 @@ function ProviderFormFields({
   updater,
 }: {
   dark: boolean;
-  newConn: { name: string; kind: 'openai' | 'ollama'; baseUrl: string; apiKey: string; defaultModel: string };
+  newConn: { name: string; kind: 'openai' | 'ollama' | 'vllm'; baseUrl: string; apiKey: string; defaultModel: string };
   updater: (patch: Partial<typeof newConn>) => void;
 }) {
   const input = 'w-full rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ' +
@@ -400,11 +400,12 @@ function ProviderFormFields({
       <div className="flex gap-2">
         <select
           value={newConn.kind}
-          onChange={e => updater({ kind: e.target.value as 'openai' | 'ollama' })}
+          onChange={e => updater({ kind: e.target.value as 'openai' | 'ollama' | 'vllm' })}
           className={`flex-1 rounded px-2 py-1.5 text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
             dark ? 'bg-zinc-900 border-zinc-600 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-700'
           }`}
         >
+          <option value="vllm">vLLM</option>
           <option value="openai">OpenAI-compatible (LM Studio, etc.)</option>
           <option value="ollama">Ollama server</option>
         </select>
@@ -447,7 +448,7 @@ function ProviderAddForm({
   onSave,
 }: {
   dark: boolean;
-  newConn: { name: string; kind: 'openai' | 'ollama'; baseUrl: string; apiKey: string; defaultModel: string };
+  newConn: { name: string; kind: 'openai' | 'ollama' | 'vllm'; baseUrl: string; apiKey: string; defaultModel: string };
   updater: (patch: Partial<typeof newConn>) => void;
   onSave: () => void;
 }) {

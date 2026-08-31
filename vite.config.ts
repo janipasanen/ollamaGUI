@@ -27,6 +27,10 @@ const maxWorkers = Math.max(
 
 export default defineConfig({
   plugins: [react()],
+  // Tauri serves the production frontend from its local app protocol rather
+  // than a web server root. Root-absolute `/assets/...` URLs therefore render
+  // a blank WebView; relative URLs work in both Tauri and browser previews.
+  base: './',
   // macOS 10.15 (Catalina) ships Safari 13 (WebKit 605); that webview cannot
   // parse ES2020+ syntax (BigInt literals, `??=`/`.at()`, private class fields).
   // Vite's ESBuild defaults `build.target` to `esnext` when no browserslist is

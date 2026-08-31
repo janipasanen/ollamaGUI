@@ -2283,6 +2283,27 @@ async fn load_store(_app: tauri::AppHandle, key: String) -> Result<Option<String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Keep startup resilient when a renamed/legacy bundle is launched with
+        // stale or incomplete window metadata. Tauri should normally create
+        // this window from tauri.conf.json, but a visible foreground app with
+        // zero windows is otherwise indistinguishable from a background app.
+        .setup(|app| {
+            if app.get_window("main").is_none() {
+                tauri::WindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WindowUrl::App("index.html".into()),
+                )
+                .title("OllamaGUI")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(800.0, 600.0)
+                .center()
+                .visible(true)
+                .focused(true)
+                .build()?;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             run_cli,
             probe_binary,

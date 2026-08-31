@@ -5,10 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tauri + React + Typescript</title>
+    <script src="/boot.js"></script>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-status" style="font-family: -apple-system, sans-serif; padding: 2rem; color: #444">
+        Loading OllamaGUI…
+      </div>
+    </div>
     <script type="module" src="/src-frontend/main.tsx"></script>
   </body>
 </html>

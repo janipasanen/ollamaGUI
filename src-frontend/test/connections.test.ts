@@ -21,9 +21,9 @@ describe('Connection CRUD (#123)', () => {
     localStorage.clear();
     const c = addConnection({ name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true });
     expect(c.id).toBeTruthy();
-    // After adding, should have 3 connections (local-ollama + lm-studio defaults + added)
+    // After adding, should have 4 connections (local-ollama + lm-studio + vllm-gx10 defaults + added)
     const conns = loadConnections();
-    expect(conns).toHaveLength(3);
+    expect(conns).toHaveLength(4); // local-ollama + lm-studio + vllm-gx10 + added
     expect(conns.find(conn => conn.name === 'LM Studio')).toBeDefined();
   });
 
@@ -39,8 +39,8 @@ describe('Connection CRUD (#123)', () => {
     localStorage.clear(); // Start fresh
     const c = addConnection({ name: 'B', kind: 'ollama', baseUrl: 'http://b', enabled: true });
     removeConnection(c.id);
-    // After removal, should still have the default connections (2)
-    expect(loadConnections()).toHaveLength(2);
+    // After removal, should still have the default connections (3)
+    expect(loadConnections()).toHaveLength(3);
   });
 
   it('saveConnections + loadConnections round-trips', () => {
@@ -51,7 +51,7 @@ describe('Connection CRUD (#123)', () => {
     saveConnections(conns);
     // After loading, should have the saved connection plus defaults
     const loaded = loadConnections();
-    expect(loaded).toHaveLength(3); // x + local-ollama + lm-studio
+    expect(loaded).toHaveLength(4); // x + local-ollama + lm-studio + vllm-gx10
     expect(loaded.find(c => c.id === 'x')).toEqual({ id: 'x', name: 'X', kind: 'openai', baseUrl: 'http://x', enabled: true, apiKey: 'k' });
   });
 });

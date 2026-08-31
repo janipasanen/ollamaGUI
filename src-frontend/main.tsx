@@ -7,6 +7,7 @@ const rootEl = document.getElementById('root');
 if (!rootEl) {
   throw new Error('Root element #root not found in index.html');
 }
+document.getElementById('boot-status')?.remove();
 
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
