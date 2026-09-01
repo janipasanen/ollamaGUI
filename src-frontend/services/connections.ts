@@ -4,6 +4,7 @@
  * all enabled connections are aggregated into one unified model selector.
  */
 import { makeQwenStreamFilter } from './qwenDialect';
+import type { GenerationOptions } from './ollama';
 
 const STORAGE_KEY = 'model_connections';
 
@@ -243,6 +244,41 @@ export async function openAiErrorFromResponse(res: Response, prefix: string): Pr
 }
 
 /**
+ * Translate our Ollama-shaped generation options into OpenAI sampling
+ * parameters (#568).
+ *
+ * Only defined keys are emitted, because several servers reject a null or an
+ * empty value they would otherwise have defaulted. Specifically:
+ *  - `num_predict` is Ollama's name for `max_tokens`, and -1 is its
+ *    "unlimited" sentinel — a value OpenAI has no spelling for, so it is
+ *    dropped rather than sent as a literal -1.
+ *  - an EMPTY `stop` array is dropped: `/stop clear` leaves `stop: []`, which
+ *    survives cleanGenerationOptions (it only strips undefined/null/NaN), and
+ *    posting `stop: []` makes some servers 400.
+ *  - `num_ctx` is never forwarded. It has no chat-completions equivalent; in
+ *    this app it is the client-side budget that drives compaction and the
+ *    context meter, so it stays meaningful without being sent.
+ *  - `top_k` is NOT an OpenAI parameter. llama.cpp, LM Studio and vLLM accept
+ *    it, but a strict gateway answers 400 "Unrecognized request argument", and
+ *    nothing stops an `openai` connection pointing at one. It is sent only
+ *    where it is known-safe: vLLM, or a keyless (i.e. local) endpoint.
+ */
+export function toOpenAiSampling(
+  o: GenerationOptions | undefined,
+  conn?: Pick<ModelConnection, 'kind' | 'apiKey'>,
+): Record<string, unknown> {
+  if (!o) return {};
+  const out: Record<string, unknown> = {};
+  if (typeof o.temperature === 'number') out.temperature = o.temperature;
+  if (typeof o.top_p === 'number') out.top_p = o.top_p;
+  if (typeof o.num_predict === 'number' && o.num_predict !== -1) out.max_tokens = o.num_predict;
+  if (Array.isArray(o.stop) && o.stop.length > 0) out.stop = o.stop;
+  const topKIsSafe = conn ? (conn.kind === 'vllm' || !conn.apiKey) : false;
+  if (typeof o.top_k === 'number' && topKIsSafe) out.top_k = o.top_k;
+  return out;
+}
+
+/**
  * Build chat-stream request options for an OpenAI-compatible endpoint.
  * Returns { url, headers, body } ready for fetch().
  */
@@ -250,7 +286,7 @@ export function buildOpenAiChatRequest(
   conn: ModelConnection,
   model: string,
   messages: { role: string; content: string }[],
-  options?: { temperature?: number; max_tokens?: number },
+  options?: GenerationOptions,
   stream = true
 ): { url: string; headers: Record<string, string>; body: string } {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -258,7 +294,9 @@ export function buildOpenAiChatRequest(
   return {
     url: `${conn.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
     headers,
-    body: JSON.stringify({ model, messages, stream, ...options }),
+    // Sampling parameters are mapped, not spread: our options are Ollama-shaped
+    // and several of them need renaming or dropping (#568).
+    body: JSON.stringify({ model, messages, stream, ...toOpenAiSampling(options, conn) }),
   };
 }
 
@@ -284,7 +322,7 @@ export async function streamOpenAiChat(
   model: string,
   messages: { role: string; content: string }[],
   onChunk: (delta: string, reasoning?: string) => void,
-  options?: { temperature?: number },
+  options?: GenerationOptions,
   signal?: AbortSignal
 ): Promise<void> {
   const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options);

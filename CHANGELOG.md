@@ -48,6 +48,18 @@ end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
   calling, which vLLM implements natively.
 
 ### Fixed
+- **Max tokens, stop sequences and top_p now reach OpenAI-compatible servers
+  (#568).** An LM Studio or vLLM user could set max tokens and a stop
+  sequence, have `/params` confirm both, and never have either sent — replies
+  ran to the server default and never stopped early. Our Ollama-shaped options
+  are now mapped to OpenAI names on all three call sites (chat, agent loop,
+  Continue generation). The mapping is deliberate rather than a spread:
+  `num_predict` becomes `max_tokens` and its `-1` "unlimited" sentinel is
+  dropped (OpenAI cannot express it), an empty `stop` array is dropped (`/stop
+  clear` leaves one, and posting it 400s some servers), `num_ctx` is never
+  sent (it has no wire equivalent — it stays the client-side budget driving
+  compaction and the context meter), and `top_k` goes only to vLLM or a
+  keyless local server, since a strict gateway rejects it outright.
 - **Stop now stops, mid tool-batch (#577).** A turn that queued several tools
   ran every one of them to completion after the user pressed Stop. Under
   `auto` autonomy nothing gates those calls, so files kept being written and

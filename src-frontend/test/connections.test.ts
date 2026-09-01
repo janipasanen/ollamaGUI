@@ -3,7 +3,7 @@ import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
-  isOpenAiCompatible, normalizeBaseUrl, deltaReasoning, DEFAULT_PORTS,
+  isOpenAiCompatible, normalizeBaseUrl, deltaReasoning, DEFAULT_PORTS, toOpenAiSampling,
   type ModelConnection,
 } from '../services/connections';
 
@@ -597,5 +597,60 @@ describe('deltaReasoning — reasoning field per server (#552)', () => {
     });
     expect(reasons.join('')).toBe('weighing options');
     expect(deltas.join('')).toBe('Use a HashMap.');
+  });
+});
+
+
+// ── Generation options on the OpenAI dialect (#568) ──────────────────────────
+
+describe('toOpenAiSampling (#568)', () => {
+  const local: ModelConnection = { id: 'l', name: 'LM', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+  const vllm: ModelConnection = { id: 'v', name: 'gx10', kind: 'vllm', baseUrl: 'http://gx10:8000', enabled: true };
+  const gateway: ModelConnection = { ...local, apiKey: 'sk-123' };
+
+  it('renames num_predict to max_tokens and passes temperature and top_p', () => {
+    expect(toOpenAiSampling({ num_predict: 512, temperature: 0.4, top_p: 0.9 }, local))
+      .toEqual({ max_tokens: 512, temperature: 0.4, top_p: 0.9 });
+  });
+
+  it('drops the -1 "unlimited" sentinel, which OpenAI cannot express', () => {
+    expect(toOpenAiSampling({ num_predict: -1 }, local)).toEqual({});
+  });
+
+  it('drops an empty stop array', () => {
+    // `/stop clear` leaves stop: [], which survives cleanGenerationOptions;
+    // posting it makes some servers 400.
+    expect(toOpenAiSampling({ stop: [] }, local)).toEqual({});
+    expect(toOpenAiSampling({ stop: ['END'] }, local)).toEqual({ stop: ['END'] });
+  });
+
+  it('never forwards num_ctx — it has no chat-completions equivalent', () => {
+    // It stays meaningful client-side: it drives compaction and the context
+    // meter. It just is not a wire parameter.
+    expect(toOpenAiSampling({ num_ctx: 8192 }, local)).toEqual({});
+  });
+
+  it('sends top_k only where it is known-safe', () => {
+    // Not an OpenAI parameter: vLLM and keyless local servers accept it, a
+    // strict gateway answers 400 "Unrecognized request argument".
+    expect(toOpenAiSampling({ top_k: 40 }, vllm)).toEqual({ top_k: 40 });
+    expect(toOpenAiSampling({ top_k: 40 }, local)).toEqual({ top_k: 40 });
+    expect(toOpenAiSampling({ top_k: 40 }, gateway)).toEqual({});
+  });
+
+  it('omits every key the user has not set', () => {
+    expect(toOpenAiSampling({}, local)).toEqual({});
+    expect(toOpenAiSampling(undefined, local)).toEqual({});
+  });
+
+  it('reaches the request body rather than being spread raw', () => {
+    const req = buildOpenAiChatRequest(local, 'm', [{ role: 'user', content: 'hi' }],
+      { num_predict: 256, num_ctx: 8192, stop: [], temperature: 0.2 });
+    const body = JSON.parse(req.body);
+    expect(body.max_tokens).toBe(256);
+    expect(body.temperature).toBe(0.2);
+    expect(body).not.toHaveProperty('num_ctx');
+    expect(body).not.toHaveProperty('num_predict');
+    expect(body).not.toHaveProperty('stop');
   });
 });

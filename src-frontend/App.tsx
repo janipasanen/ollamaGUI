@@ -4204,7 +4204,8 @@ ${lines.join('\n')}`;
           ? openaiAgenticChatStream({
               ...agenticOptions,
               conn: routing.conn,
-              temperature: sendOptions.temperature,
+              // Full sampling options, not just temperature (#568).
+              genOptions: sendOptions,
             })
           : agenticChatStream(agenticOptions);
 
@@ -4259,7 +4260,7 @@ ${lines.join('\n')}`;
                   return updated;
                 });
               },
-              { temperature: genOptions?.temperature },
+              sendOptions,
               abortControllerRef.current?.signal
             );
           } else {
@@ -4561,7 +4562,7 @@ ${lines.join('\n')}`;
           routing.model,
           history,
           (delta) => { if (delta) appendContinued(delta); },
-          { temperature: genOptions?.temperature },
+          genOptions,
           abortControllerRef.current?.signal,
         );
       } else {

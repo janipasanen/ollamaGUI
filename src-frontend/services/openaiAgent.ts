@@ -18,8 +18,8 @@
 // execute → post-hooks → truncate) deliberately mirrors agent.ts step for
 // step so autonomy semantics are identical on both protocols.
 
-import { Message } from './ollama';
-import { ModelConnection, openAiErrorFromResponse, deltaReasoning } from './connections';
+import { Message, GenerationOptions } from './ollama';
+import { ModelConnection, openAiErrorFromResponse, deltaReasoning, toOpenAiSampling } from './connections';
 import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs, truncateToolContent } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse, getAutonomyLevel } from './agentAutonomy';
@@ -36,7 +36,10 @@ export interface OpenAiAgenticOptions {
   messages: Message[];
   maxIterations?: number;
   signal?: AbortSignal;
+  /** @deprecated superseded by `genOptions`; kept so existing callers work. */
   temperature?: number;
+  /** Full sampling options, mapped to OpenAI names by toOpenAiSampling (#568). */
+  genOptions?: GenerationOptions;
   toolFilter?: string[];
   compactThresholdTokens?: number;
   onApprovalNeeded?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
@@ -128,7 +131,7 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
   const {
     conn, model, messages,
     maxIterations = 5,
-    signal, temperature, toolFilter, compactThresholdTokens,
+    signal, temperature, genOptions, toolFilter, compactThresholdTokens,
     onApprovalNeeded, onToolCall, onToolResult,
     onAssistantMessage, onAssistantReasoning,
     onIteration, onMaxIterations, onComplete, onError, onCancel,
@@ -176,7 +179,12 @@ export async function* openaiAgenticChatStream(options: OpenAiAgenticOptions): A
           messages: toOpenAiMessages(currentMessages),
           stream: true,
           ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
-          ...(temperature != null ? { temperature } : {}),
+          // Max tokens, stop sequences and top_p/top_k reached only the Ollama
+          // loop before (#568): the user set them, /params echoed them back,
+          // and nothing was ever sent. `temperature` stays as an explicit
+          // fallback for callers that still pass it alone.
+          ...toOpenAiSampling(genOptions, conn as any),
+          ...(genOptions?.temperature == null && temperature != null ? { temperature } : {}),
         }),
         ...(signal ? { signal } : {}),
       });
