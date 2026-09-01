@@ -72,6 +72,7 @@ import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding
 import { openSource } from './services/citations';
 import { MlxAvailability, checkMlxAvailable, isMlxModelName } from './services/mlx';
 import { pickDirectory, pickDirectories, appendPathArg, getSystemMemory, safeSetItem, checkPath } from './services/platform';
+import { t, getLocale, setLocale, Locale } from './services/i18n';
 import { ThemeSettings, DEFAULT_THEME, ACCENTS, loadThemeSettings, saveThemeSettings, resolveDark, applyTheme, syncWindowTheme } from './services/theme';
 import { parseSchemaInput, classifyResponse } from './services/structuredOutput';
 import {
@@ -155,9 +156,9 @@ import {
 import ProjectHeader from './components/ProjectHeader';
 import { InlineConversationStats } from './components/InlineConversationStats';
 import InlineGenParams from './components/InlineGenParams';
-import { InlineConnectionIndicator } from './components/InlineConnectionIndicator';
 import { AmbientCounts } from './components/AmbientCounts';
 import { basename, folderLabel, deriveProjectName, isAutoFolderName } from './services/projectNaming';
+import ConnectionStatusPanel from './components/ConnectionStatusPanel';
 import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
@@ -749,7 +750,12 @@ const App: React.FC = () => {
   // Command palette (#251)
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    const detected = getLocale();
+    setLocale(detected);
+    return detected;
+  });
+const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
   // Temporary/incognito chat: held in memory only, never persisted (#134).
   const [isTemporary, setIsTemporary] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -1400,23 +1406,6 @@ const App: React.FC = () => {
       window.removeEventListener('ollama-gui:workspace-changed', onChange);
     };
   }, [activeProjectId, projects, repoClis]);
-
-  // Poll running models every 30s so the warm indicator stays current (#478).
-  // While disconnected the same tick retries the connection instead (#549
-  // audit rank 5): the app heals itself the moment the daemon starts, rather
-  // than requiring the user to find "Test connection" in Settings.
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (ollamaConnected === false) {
-        refreshModels().catch(() => {});
-        return;
-      }
-      fetchRunningModels(url('/api/ps'))
-        .then(r => setRunningModels(new Set(r.map(m => m.name))))
-        .catch(() => {});
-    }, 30_000);
-    return () => clearInterval(id);
-  }, [ollamaBaseUrl, ollamaConnected, refreshModels]);
 
   useEffect(() => {
     async function loadInitialData() {
@@ -3785,7 +3774,8 @@ ${lines.join('\n')}`;
         if (result.action === 'status') {
           // /status quick overview (#385).
           const wsRoot = getActiveRoot();
-          const conn = ollamaConnected === null ? 'unknown' : ollamaConnected ? 'connected' : 'disconnected';
+          const activeConns = connections.filter(c => c.enabled).length;
+          const conn = activeConns > 0 ? `connected (${activeConns} provider${activeConns !== 1 ? 's' : ''})` : 'no providers configured';
           showStatusBanner(`Model: ${model} · Workspace: ${wsRoot ?? 'none'} · Ollama: ${conn} · Messages: ${messages.length}`);
           return;
         }
@@ -4839,10 +4829,10 @@ ${lines.join('\n')}`;
         <input
           id="sidebar-search"
           type="text"
-          aria-label="Search conversations"
+          aria-label={t("sidebar.search")}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search conversations..."
+          placeholder={t("sidebar.search")}
           className={`w-full text-xs border rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
             dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100 placeholder-zinc-500' : 'bg-zinc-50 border-zinc-200 text-zinc-900 placeholder-zinc-400'
           }`}
@@ -4851,17 +4841,17 @@ ${lines.join('\n')}`;
         {/* Projects — click a name to show its sessions; + starts a chat in it */}
         <div className="flex-1 overflow-y-auto">
           <div className="flex items-center justify-between px-1 mb-1">
-            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Projects</span>
+            <span className={`text-xs uppercase font-semibold ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.projects')}</span>
             <button
               onClick={() => { void createProjectFromFolder(); }}
               disabled={creatingProject}
-              title="New project from a folder"
-              aria-label="New project from a folder"
+              title={t("sidebar.new_project")}
+              aria-label={t("sidebar.new_project")}
               className={`px-1.5 rounded hover:opacity-70 disabled:opacity-40 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}
             >{creatingProject ? '…' : '+'}</button>
           </div>
           {projects.length === 0 && (
-            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No projects yet — click + to open a folder.</p>
+            <p className={`text-xs italic px-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{t('sidebar.no_projects')}</p>
           )}
           {projects.map(p => {
             const expanded = expandedProjects.has(p.id);
@@ -4910,20 +4900,20 @@ ${lines.join('\n')}`;
                       setExpandedProjects(prev => new Set(prev).add(p.id));
                       startNewChat(p.id);
                     }}
-                    title={`New chat in ${p.name}`}
-                    aria-label={`New chat in project ${p.name}`}
+                    title={t("sidebar.new_chat", {project: p.name})}
+                    aria-label={t("sidebar.new_chat", {project: p.name})}
                     className={`opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1.5 text-sm ${dark ? 'text-zinc-500 hover:text-zinc-200' : 'text-zinc-400 hover:text-zinc-700'}`}
                   >+</button>
                   <button
                     onClick={() => deleteProject(p.id, p.name)}
                     className="opacity-0 group-hover/proj:opacity-100 focus:opacity-100 px-1 text-[10px] text-red-400 hover:text-red-300"
-                    aria-label={`Delete project ${p.name}`}
+                    aria-label={t("project.delete", {name: p.name})}
                   >✕</button>
                 </div>
                 {expanded && (
                   <div className={`ml-2.5 pl-1.5 border-l ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
                     {projSessions.length === 0 && (
-                      <p className={`text-xs italic px-2 py-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>No chats yet.</p>
+                      <p className={`text-xs italic px-2 py-1 ${dark ? 'text-zinc-600' : 'text-zinc-400'}`}>{t('sidebar.no_chats')}</p>
                     )}
                     {projSessions.map(s => renderSessionRow(s))}
                   </div>
@@ -4935,11 +4925,19 @@ ${lines.join('\n')}`;
           {/* Sessions not bound to any project */}
           {unscopedSessions.length > 0 && (
             <>
-              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Chats</p>
+              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.chats')}</p>
               {unscopedSessions.map(s => renderSessionRow(s))}
             </>
           )}
         </div>
+
+        {/* Connection status panel (#563): show provider connections below projects, above settings */}
+        <ConnectionStatusPanel
+          connections={connections}
+          connectedModels={connectedModels}
+          onOpenProviderConfig={() => setIsProviderConfigOpen(true)}
+          dark={dark}
+        />
 
         {/* Bottom actions */}
         <div className={`mt-2 border-t pt-2 ${dark ? 'border-zinc-800' : 'border-zinc-200'}`}>
@@ -4973,8 +4971,6 @@ ${lines.join('\n')}`;
               ☰
             </button>
           )}
-          {/* Inline Ollama connection indicator (#547): always-legible status + endpoint, no hover needed */}
-          <InlineConnectionIndicator connected={ollamaConnected} baseUrl={ollamaBaseUrl} dark={dark} />
           <span className={`text-sm font-medium truncate ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
             {currentSessionId ? (sessions.find(s => s.id === currentSessionId)?.title ?? 'Chat') : 'New chat'}
           </span>
@@ -5004,8 +5000,8 @@ ${lines.join('\n')}`;
                 setMobileMenu({ x: Math.max(8, r.right - 180), y: r.bottom + 4 });
               }}
               className={`ml-auto p-2 rounded-md transition-colors ${dark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-600'}`}
-              title="Menu"
-              aria-label="Open menu"
+              title={t("menu")}
+              aria-label={t("open_menu")}
               aria-haspopup="menu"
             >
               ⋯
@@ -5152,7 +5148,7 @@ ${lines.join('\n')}`;
               hasProject={isAgenticMode}
               onOpenProject={() => { void createProjectFromFolder(); }}
               creatingProject={creatingProject}
-              showModelSetup={ollamaConnected === true && models.length === 0}
+              showModelSetup={models.length === 0}
               suggestedModels={SUGGESTED_MODELS}
               onPullModel={(name) => { void handlePullModel(name); }}
               pullStatus={pullProgress || null}
@@ -5532,19 +5528,6 @@ ${lines.join('\n')}`;
             </button>
           )}
         </div>
-
-        {/* Ollama disconnected (#549 audit rank 5): visible where the user is
-            about to act, with a one-click retry — not just a 2.5px header dot. */}
-        {ollamaConnected === false && (
-          <div className={`mx-4 mb-2 flex items-center justify-between rounded-lg px-3 py-2 text-xs border ${dark ? 'bg-red-900/30 border-red-800 text-red-200' : 'bg-red-50 border-red-200 text-red-700'}`} role="status">
-            <span>Ollama isn't running — open the Ollama app, then retry. Reconnecting automatically every 30s.</span>
-            <button
-              onClick={() => { void refreshModels().then(() => showStatusBanner('Connected to Ollama')).catch(() => showStatusBanner('Still no connection — is Ollama running?')); }}
-              aria-label="Retry Ollama connection"
-              className="ml-3 shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
-            >Retry</button>
-          </div>
-        )}
 
         {/* Unreachable working folder (#550): warn and offer a picker — the
             app must never crash because a path is gone. */}
@@ -6020,7 +6003,7 @@ ${lines.join('\n')}`;
               {/* Empty-state placeholder (#438) */}
               {models.length === 0 && presets.length === 0 && connectedModels.length === 0 && (
                 <option value="" disabled>
-                  {ollamaConnected === false
+                  {models.length === 0
                     ? 'No models — is Ollama running?'
                     : 'No models — pull one (e.g. ollama pull llama3)'}
                 </option>
@@ -6187,6 +6170,23 @@ ${lines.join('\n')}`;
                         style={{ backgroundColor: hex }}
                       />
                     ))}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Language</span>
+                    <button
+                      onClick={() => {
+                        const next = locale === 'en' ? 'sv' : 'en';
+                        setLocale(next);
+                        setLocaleState(next);
+                      }}
+                      className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
+                        locale === 'sv'
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : (dark ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100')
+                      }`}
+                    >
+                      {locale === 'en' ? 'English' : 'Svenska'}
+                    </button>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className={`text-xs ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Density</span>
