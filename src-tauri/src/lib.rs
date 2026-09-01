@@ -37,8 +37,8 @@ struct CliOutput {
 /// explicit user-approval modal for every command not already on the session
 /// allow-list before it ever calls this command (the same approval-gated model
 /// as Claude Code's shell tool). Do NOT rely on this function to filter
-/// commands. See `run_cli_command` below for the alternative allow/deny-list
-/// executor (not currently wired to the frontend).
+/// commands. `run_cli_command` below carries allow/deny lists, but it is
+/// unreachable from the UI and is not a fallback — see its doc.
 #[tauri::command]
 async fn run_cli(
     command: String,
@@ -562,13 +562,22 @@ async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
 /// Hardened CLI executor that enforces [`CLI_ALLOWLIST`]/[`CLI_DENYLIST`] before
 /// running a command.
 ///
-/// NOTE (#410): this is NOT currently wired to the frontend — the removal of
-/// `CliToolWrapper` in #223 left the live agentic path on `run_cli` (which is
-/// user-approval-gated; see its doc). This command and its allow/deny lists are
-/// retained as an opt-in hardened alternative for callers that want static
-/// command filtering instead of interactive approval. It stays registered so the
-/// IPC contract remains available; re-point the `run_shell_command` tool at it
-/// to switch to list-based enforcement.
+/// NOT A SECURITY BOUNDARY FOR THIS APP, and not reachable from the UI (#609).
+/// The live agentic path is `run_cli`; nothing in src-frontend calls this. Read
+/// the lists below as documentation of THIS command only — `sudo` and `rm` are
+/// NOT blocked for the agent, and a reader who assumes otherwise from seeing
+/// `CLI_DENYLIST` in this file is being misled, which is why this note replaced
+/// the previous one.
+///
+/// The earlier suggestion to "re-point `run_shell_command` at it" is not
+/// actionable and should not be attempted: this command takes a program plus
+/// argv and spawns WITHOUT a shell, so it cannot run the pipes, `&&` and
+/// redirects the agentic loop depends on — and its first-token denylist could
+/// never see an `rm` nested inside an `sh -c` string anyway.
+///
+/// The real boundary is the frontend approval modal plus the two-scope session
+/// allowlist in services/tools.ts (exact command by default; program scope only
+/// when explicitly chosen, and never for a line containing shell operators).
 #[tauri::command]
 async fn run_cli_command(
     request: CliCommandRequest,
@@ -1225,6 +1234,29 @@ struct FsDirEntry {
 /// Returns the canonical absolute path on success.
 fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
     let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+    resolve_within_roots(path, &roots)
+}
+
+/// The sandbox check, separated from the global so it can be unit-tested.
+///
+/// SECURITY (#607): this must resolve symlinks, not just normalise `..`
+/// lexically. `std::fs` follows symlinks; a lexical check does not. With a
+/// workspace containing `link -> $HOME`, `link/.ssh/id_rsa` normalised to
+/// `<root>/link/.ssh/id_rsa`, passed `starts_with(root)`, and was read — and
+/// `read_file` is read-only, so it never prompts at ANY autonomy level. Such
+/// links occur routinely in cloned repos and node_modules link farms, so no
+/// planted file was needed.
+///
+/// Symlinks that stay inside a root are ACCEPTED: pnpm stores, monorepo
+/// package links and node_modules/.bin are all legitimate, and rejecting every
+/// symlink would break real workspaces. Only a target that leaves every root
+/// is refused.
+///
+/// Fixing this also removes a class of false rejections: the roots were
+/// canonicalised but candidates were not, so a legitimate path arriving
+/// through a symlinked ancestor (macOS `/tmp` -> `/private/tmp`, `/Volumes`
+/// aliases) failed the check despite being inside the root.
+fn resolve_within_roots(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let primary = roots
         .first()
         .ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
@@ -1236,13 +1268,57 @@ fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
     } else {
         primary.join(&candidate)
     };
-    // Normalize without requiring existence (for new files)
     let normalized = normalize_path(&abs);
+    let resolved = canonicalize_existing_prefix(&normalized);
+
     // A project may span several repositories (#492): accept any configured root.
-    if !roots.iter().any(|r| normalized.starts_with(r)) {
+    if !roots.iter().any(|r| resolved.starts_with(r)) {
+        // Name the resolved target: "outside the workspace" is baffling for a
+        // path that looks local until you know it is a link.
+        if resolved != normalized {
+            return Err(format!(
+                "Path '{}' resolves to '{}', which is outside the workspace root(s).",
+                path,
+                resolved.display()
+            ));
+        }
         return Err(format!("Path '{}' is outside the workspace root(s).", path));
     }
-    Ok(normalized)
+    Ok(resolved)
+}
+
+/// Canonicalise as much of `path` as exists, then re-append the rest verbatim.
+///
+/// A plain `canonicalize()` fails for a file being created, which is why the
+/// original code skipped it entirely. Walking up to the nearest existing
+/// ancestor keeps new-file writes working while still resolving every symlink
+/// on the part of the path that does exist — which is where an escape lives.
+fn canonicalize_existing_prefix(path: &PathBuf) -> PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.clone();
+    while let Some(parent) = cursor.parent().map(PathBuf::from) {
+        match cursor.file_name() {
+            Some(name) => trailing.push(name.to_os_string()),
+            None => break,
+        }
+        if let Ok(c) = parent.canonicalize() {
+            let mut out = c;
+            for part in trailing.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        cursor = parent;
+    }
+    // Nothing on the path exists (or the root itself is gone): fall back to the
+    // lexical form. It is still checked against the roots by the caller.
+    path.clone()
 }
 
 /// Lexically normalize a path (resolve `..` without hitting the filesystem).
@@ -2367,7 +2443,137 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{glob_to_regex, is_skip_dir};
+    use super::{glob_to_regex, is_skip_dir, resolve_within_roots};
+    use std::path::PathBuf;
+
+    /// A scratch dir under the OS temp dir, canonicalised the way the real
+    /// roots are (macOS /tmp is itself a symlink to /private/tmp).
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("ollamagui_test_{}", name));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base.canonicalize().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_out_of_workspace_is_refused() {
+        // #607: the check was lexical, so `<root>/link/secret.txt` passed
+        // starts_with(root) while std::fs happily followed the link out.
+        let base = scratch("escape");
+        let root = base.join("ws");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "private").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let roots = vec![root.clone()];
+        let err = resolve_within_roots(
+            root.join("link/secret.txt").to_str().unwrap(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside the workspace"), "got: {}", err);
+        // The message names where it actually landed — "outside the workspace"
+        // is baffling for a path that looks local until you know it is a link.
+        assert!(err.contains("resolves to"), "got: {}", err);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_staying_inside_workspace_is_allowed() {
+        // node_modules/.bin, pnpm stores and monorepo package links are all
+        // symlinks; refusing every link would break real workspaces.
+        let base = scratch("internal");
+        let root = base.join("ws");
+        let real = root.join("packages/core");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("index.ts"), "export {}").unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("node_modules/core")).unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots(
+            root.join("node_modules/core/index.ts").to_str().unwrap(),
+            &roots,
+        )
+        .expect("internal symlink must be allowed");
+        assert!(resolved.starts_with(&root));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn new_file_in_workspace_resolves_before_it_exists() {
+        // canonicalize() alone fails for a file being created, which is why
+        // the original code skipped it; the fix must not break writes.
+        let base = scratch("newfile");
+        let root = base.join("ws");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots(
+            root.join("src/brand_new.ts").to_str().unwrap(),
+            &roots,
+        )
+        .expect("a not-yet-created file inside the root must resolve");
+        assert!(resolved.starts_with(&root));
+        assert!(resolved.ends_with("brand_new.ts"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn parent_traversal_is_still_refused() {
+        let base = scratch("traversal");
+        let root = base.join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(base.join("outside.txt"), "x").unwrap();
+
+        let roots = vec![root.clone()];
+        assert!(resolve_within_roots("../outside.txt", &roots).is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_the_primary_root() {
+        let base = scratch("relative");
+        let root = base.join("ws");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), "x").unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots("src/a.ts", &roots).unwrap();
+        assert_eq!(resolved, root.join("src/a.ts").canonicalize().unwrap());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_second_root_is_accepted() {
+        // A project may span several repositories (#492).
+        let base = scratch("multiroot");
+        let a = base.join("repo_a");
+        let b = base.join("repo_b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("f.txt"), "x").unwrap();
+
+        let roots = vec![a.clone(), b.clone()];
+        assert!(resolve_within_roots(b.join("f.txt").to_str().unwrap(), &roots).is_ok());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn no_root_configured_is_an_error() {
+        assert!(resolve_within_roots("/etc/passwd", &[]).is_err());
+    }
+
 
     #[test]
     fn glob_star_stays_within_segment() {

