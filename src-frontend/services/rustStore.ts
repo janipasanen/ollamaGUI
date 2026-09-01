@@ -62,6 +62,35 @@ export function mirrorToDisk(key: string, json: string): void {
   pending.set(key, { timer, json });
 }
 
+/**
+ * Delete the mirror file for `key` and report whether it is gone (#596).
+ *
+ * Awaitable on purpose, unlike mirrorToDisk: secure erase must not report
+ * success until the disk is actually clean. It also cancels any pending
+ * debounced write for the key first — otherwise a mirror scheduled moments
+ * before the erase would land afterwards and resurrect the data this call
+ * exists to destroy.
+ *
+ * Returns true outside Tauri, where there is no mirror to clear.
+ */
+export async function clearDisk(key: string): Promise<boolean> {
+  const prev = pending.get(key);
+  if (prev) {
+    clearTimeout(prev.timer);
+    pending.delete(key);
+  }
+  const invoke = await tauri();
+  if (!invoke) return true;
+  try {
+    await invoke('clear_store', { key });
+    return true;
+  } catch {
+    // Surfaced to the caller: claiming "securely erased" while data survives
+    // is the harm this whole path is about.
+    return false;
+  }
+}
+
 /** Read the last mirrored payload for `key`, or null when there is none
  *  (never persisted, or Tauri unavailable). */
 export async function loadFromDisk(key: string): Promise<string | null> {

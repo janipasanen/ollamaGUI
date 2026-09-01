@@ -270,10 +270,16 @@ export function parseSessionImport(text: string): ChatSession[] {
   } catch {
     throw new Error('Invalid JSON');
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error('Expected an array of sessions');
-  }
-  return parsed.map((entry, i) => {
+  // Accept a single session as well as a list (#598). `/save` and
+  // `/export json` both write ONE bare session object, so every snapshot and
+  // every exported file failed to load with "Expected an array of sessions" —
+  // the round-trip was broken in both directions.
+  //
+  // Fixed in the reader, deliberately, rather than by wrapping the writers:
+  // files written by earlier builds are already bare objects, and a
+  // writer-only fix would strand every one of them while looking correct.
+  const list: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  return list.map((entry, i) => {
     if (!entry || typeof entry !== 'object') {
       throw new Error(`Session #${i} is not an object`);
     }

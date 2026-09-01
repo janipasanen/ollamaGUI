@@ -47,6 +47,7 @@ import { estimateConversationTokens, estimateTokens, formatTokenCount, formatCos
 import { validateMcpServer, isNonEmptySubmission, validateImageAttachments } from './services/requestValidation';
 import { formatErrorLine } from './services/errorMessages';
 import { secureWipeAll } from './services/secureStorage';
+import { clearDisk } from './services/rustStore';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
@@ -8147,22 +8148,40 @@ ${lines.join('\n')}`;
                  <div>
                    <label className={`block text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Privacy &amp; data</label>
                    <button
-                     onClick={() => {
+                     onClick={async () => {
                        // Typed confirmation (#549 rank 15): confirm() made the most
                        // destructive action in the app a single misclick away.
                        const typed = window.prompt('Securely erase ALL local data (chats, settings, MCP servers)? This cannot be undone.\n\nType ERASE to confirm:');
                        if (typed !== 'ERASE') return;
                        const wiped = secureWipeAll();
-                       notify(`Securely erased ${wiped.length} stored item${wiped.length === 1 ? '' : 's'}.`);
                        setSessions([]); setFolders([]); setMessages([]); setCurrentSessionId(null);
                        setMcpServers([]);
+                       // The disk mirror must go too (#596). Clearing only
+                       // localStorage left every chat, project and folder in
+                       // <app_data_dir>/store, and an empty localStorage is
+                       // exactly the condition that makes boot hydration
+                       // restore them — so "securely erased" was followed by
+                       // everything reappearing on the next launch.
+                       const cleared = await Promise.all(
+                         ['sessions', 'folders', 'projects'].map(k => clearDisk(k)),
+                       );
+                       if (cleared.every(Boolean)) {
+                         notify(`Securely erased ${wiped.length} stored item${wiped.length === 1 ? '' : 's'}.`);
+                       } else {
+                         // Never claim success while data survives: that is the
+                         // whole harm this path is about.
+                         notify('Erase incomplete — some data could not be removed from disk.');
+                       }
                      }}
                      className={`text-xs px-3 py-1.5 rounded border transition-colors ${dark ? 'border-red-800 text-red-400 hover:bg-red-950/40' : 'border-red-300 text-red-600 hover:bg-red-50'}`}
                    >
                      Securely erase all local data
                    </button>
                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
-                     Overwrites then removes every stored item. Secrets (tokens) already live in the OS keychain; chat history can be encrypted at rest with AES-GCM via secureStorage.
+                     Overwrites then removes every stored item, including the on-disk copy used to restore
+                     chats at startup. Connection, OpenAPI and image-generation API keys are stored locally
+                     and are removed by this action; MCP tokens live in the OS keychain. Chat history can be
+                     encrypted at rest with AES-GCM via secureStorage.
                    </p>
                  </div>
               </div>

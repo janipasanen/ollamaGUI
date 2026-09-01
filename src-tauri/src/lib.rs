@@ -2334,6 +2334,29 @@ fn store_file_read(base: &std::path::Path, key: &str) -> Result<Option<String>, 
     }
 }
 
+/// Pure IO helper: delete `<base>/store/<key>.json`. A missing file is success
+/// — the caller wants it gone, and it is.
+///
+/// Deleting beats mirroring `"[]"` for secure erase (#596): an empty mirror is
+/// still a file on disk, and the whole point of that button is that nothing
+/// remains.
+fn store_file_remove(base: &std::path::Path, key: &str) -> Result<(), String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    match std::fs::remove_file(base.join("store").join(format!("{key}.json"))) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn clear_store(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_remove(&base, &key)
+}
+
 #[tauri::command]
 async fn persist_store(app: tauri::AppHandle, key: String, json: String) -> Result<(), String> {
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -2436,6 +2459,7 @@ pub fn run() {
             // Durable store mirror for sessions/projects/folders
             persist_store,
             load_store,
+            clear_store,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2572,6 +2596,31 @@ mod tests {
     #[test]
     fn no_root_configured_is_an_error() {
         assert!(resolve_within_roots("/etc/passwd", &[]).is_err());
+    }
+
+    #[test]
+    fn store_file_remove_deletes_the_mirror() {
+        // Secure erase must leave nothing on disk (#596): an empty mirror is
+        // still a file, and boot hydration restores from whatever is there.
+        let base = scratch("store_remove");
+        super::store_file_write(&base, "sessions", "[{\"id\":\"a\"}]").unwrap();
+        assert!(super::store_file_read(&base, "sessions").unwrap().is_some());
+
+        super::store_file_remove(&base, "sessions").unwrap();
+        assert!(super::store_file_read(&base, "sessions").unwrap().is_none());
+        assert!(!base.join("store").join("sessions.json").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn store_file_remove_is_idempotent_and_key_checked() {
+        let base = scratch("store_remove_edge");
+        // Already gone is success — the caller wants it absent, and it is.
+        assert!(super::store_file_remove(&base, "never_written").is_ok());
+        // The path-traversal guard applies here as it does to read/write.
+        assert!(super::store_file_remove(&base, "../escape").is_err());
+        std::fs::remove_dir_all(&base).ok();
     }
 
 
