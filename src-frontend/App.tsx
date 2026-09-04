@@ -52,7 +52,15 @@ import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
-import { closeAllPanels } from './components/PanelShell';
+import PanelShell, { closeAllPanels, togglePanel, isPanelOpen } from './components/PanelShell';
+// Imported for their side effect as much as their value: each module registers
+// itself with panelRegistry at load, which is what puts it in the dock (#623).
+import './components/BrowserPane';
+import { registerTerminalPanel } from './components/TerminalPanel';
+
+// BrowserPane registers itself at module load; TerminalPanel exposes a
+// registrar instead, so it has to be called or the panel never appears (#623).
+registerTerminalPanel();
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
 import { useModalFocus } from './components/useModalFocus';
@@ -2254,6 +2262,20 @@ const App: React.FC = () => {
         e.preventDefault();
         setChatSearchOpen(prev => !prev);
         setChatSearchIndex(0);
+        return;
+      }
+
+      // Panel toggles work while typing (#623): wanting the browser or the
+      // terminal mid-compose is the normal case, and Ctrl+F above already
+      // establishes that modified shortcuts survive the typing guard.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        togglePanel('browser');
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        togglePanel('terminal');
         return;
       }
 
@@ -4649,6 +4671,11 @@ ${lines.join('\n')}`;
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+\\', run: () => setIsSidebarOpen(prev => !prev) },
     { id: 'open-settings', label: 'Open Settings', hint: 'Ctrl+,', run: () => setIsSettingsOpen(true) },
     { id: 'show-help', label: 'Show Keyboard Shortcuts', hint: '?', run: () => setShowHelp(true) },
+    // Browser and terminal panels (#623). The palette is where power features
+    // live under the minimal-UI contract, so this is their primary affordance.
+    { id: 'toggle-browser', label: 'Toggle Browser Panel', hint: 'Ctrl+Shift+B', run: () => togglePanel('browser') },
+    { id: 'toggle-terminal', label: 'Toggle Terminal Panel', hint: 'Ctrl+Shift+J', run: () => togglePanel('terminal') },
+    { id: 'close-panels', label: 'Close All Panels', run: () => closeAllPanels() },
     { id: 'autonomy-plan', label: 'Set Autonomy: Plan', run: () => { const s = { ...autonomySettings, level: 'plan' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
     { id: 'autonomy-ask', label: 'Set Autonomy: Ask', run: () => { const s = { ...autonomySettings, level: 'ask' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
     { id: 'autonomy-auto', label: 'Set Autonomy: Auto', run: () => { const s = { ...autonomySettings, level: 'auto' as AutonomyLevel }; setAutonomySettings(s); saveAutonomySettings(s); } },
@@ -4923,7 +4950,10 @@ ${lines.join('\n')}`;
         </div>
       </div>
 
-      {/* Main Chat Area - Responsive: full width on mobile, adjusts for sidebar on desktop */}
+      {/* Main Chat Area, docked (#623). PanelShell owns the split between the
+          chat column and the browser/terminal panels; it renders nothing extra
+          until a panel is actually open, so the default view is unchanged. */}
+      <PanelShell dark={dark}>
       <div className={`flex-1 flex flex-col relative overflow-hidden ${
         isMobile && isSidebarOpen && !zenMode ? 'ml-64' : ''
       }`}>
@@ -8763,6 +8793,7 @@ ${lines.join('\n')}`;
         })()}
 
     </div>
+    </PanelShell>
 
 
 

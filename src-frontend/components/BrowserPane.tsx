@@ -34,6 +34,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 // services-relative vantage point; the physically-correct paths are used here.
 import { browserSession, browserBus, isLocalhostUrl } from '../services/browser';
 import { panelRegistry } from './PanelShell';
+import { instrumentWindow } from '../services/browserInstrument';
 import { openPreview, setBoundsPreview, reloadPreview, closePreview } from '../services/browserPreview';
 import { getChromiumStatus, downloadChromium, needsChromiumPrompt, type ChromiumStatus } from '../services/browserChromium';
 
@@ -452,7 +453,16 @@ export default function BrowserPane({ dark }: BrowserPaneProps) {
               data-iframe-key={iframeKey}
               src={navUrl}
               title="preview"
-              onLoad={() => setIframeLoading(false)}
+              onLoad={(e) => {
+                setIframeLoading(false);
+                // Same-origin (localhost) pages let us observe their traffic and
+                // errors directly (#624, #626). A cross-origin frame throws on
+                // contentWindow access — expected, and not worth surfacing.
+                try {
+                  const win = (e.currentTarget as HTMLIFrameElement).contentWindow;
+                  if (win) instrumentWindow(win);
+                } catch { /* cross-origin: no instrumentation available */ }
+              }}
               className="w-full h-full border-0"
             />
           </>

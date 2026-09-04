@@ -147,7 +147,7 @@ describe('Model switcher below the composer (#544)', () => {
   });
 });
 
-describe('Minimal header (no top-right buttons, no right dock)', () => {
+describe('Minimal header (no top-right buttons, docks closed by default)', () => {
   it('has no buttons in the header on desktop', async () => {
     render(<App />);
     await screen.findByRole('button', { name: /New project from a folder/i });
@@ -155,10 +155,15 @@ describe('Minimal header (no top-right buttons, no right dock)', () => {
     expect(header.querySelectorAll('button').length).toBe(0);
   });
 
-  it('never renders a side dock', async () => {
+  it('renders no dock chrome until a panel is opened', async () => {
+    // The browser/terminal dock exists again (#623) — it was dead code before —
+    // but the minimal-UI contract still holds where it matters: a fresh window
+    // shows the shell and nothing else. No tab strip, no dividers, no dock.
     render(<App />);
     await screen.findByRole('button', { name: /New project from a folder/i });
+    expect(document.querySelector('[data-testid="panel-shell"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="side-dock"]')).toBeNull();
-    expect(document.querySelector('[data-testid="panel-shell"]')).toBeNull();
+    expect(document.querySelector('[data-testid="bottom-dock"]')).toBeNull();
+    expect(document.querySelector('[data-testid="side-divider"]')).toBeNull();
   });
 });

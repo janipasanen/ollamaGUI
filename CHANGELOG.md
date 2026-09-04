@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+#### Built-in browser and terminal panels (#623, #624, #625, #626)
+The browser and terminal open and close beside the chat, the way Claude and
+ChatGPT desktop do it. `PanelShell`, `BrowserPane` and `TerminalPanel` were all
+fully implemented but the dock was dropped from `App.tsx` in the UI
+simplification, so none of it could be reached — the feature existed only as
+dead code. It is wired up again, with the minimal-UI contract intact where it
+matters: a fresh window renders no dock chrome at all until a panel is asked
+for, via the command palette or **Ctrl/Cmd+Shift+B** (browser) and
+**Ctrl/Cmd+Shift+J** (terminal). Open panels persist across restarts.
+
+- **Network traffic is recorded and readable by the agent** (`browser_read_network`).
+  The browser could report console output but had no network visibility at all,
+  which is most of the value of driving a page: "why did the login fail" and
+  "what did the API return" are network questions. Requests, responses,
+  statuses, durations and failures are captured from `fetch` and
+  `XMLHttpRequest`, filterable by URL, method, status class (`4xx`/`5xx`) and
+  failed-only. Bodies are off by default — one JSON response can be larger than
+  the whole context window.
+- **Credentials never enter the log.** `Authorization`, `Cookie`, `Set-Cookie`
+  and API-key headers are redacted at *record* time, not on read: anything in
+  the buffer can reach the model context and from there the provider, so the
+  value must never be stored at all.
+- **Page errors have their own channel** (`browser_read_errors`): uncaught
+  exceptions and unhandled rejections, with stacks, kept apart from ordinary
+  console noise where they used to be buried.
+- The recorder reads response bodies from a **clone**, so instrumentation can
+  never consume the body the page itself is waiting for.
+
+
+### Added
 #### Nothing is pre-configured; providers are listed in the sidebar (#563, #566)
 A fresh install now contacts no model server at all and opens empty. The local
 Ollama daemon is added the same way as any other provider, so "no providers

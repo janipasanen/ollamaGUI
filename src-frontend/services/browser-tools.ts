@@ -22,9 +22,11 @@
  * tests stand in a fake without importing the real Tauri runtime.
  */
 
-import { toolRegistry } from './tools';
+import { toolRegistry, truncateToolContent } from './tools';
 import { browserSession, browserBus, isLocalhostUrl } from './browser';
 import { parseSnapshotRefs, updateSessionSnapshot } from './browserSnapshot';
+import { getNetworkEntries } from './browserNetwork';
+import { getPageErrors, clearPageErrors } from './browserErrors';
 
 // ---------------------------------------------------------------------------
 // Test seam
@@ -285,6 +287,101 @@ export function registerBrowserTools(
     },
     readOnly: true,
     execute: async (p) => tauriInvoke('browser_cdp_read_console', { clear: !!p.clear }),
+  });
+
+  // ── browser_read_network ─────────────────────────────────────────────────
+  // Read-only: the recorded request/response log (#625). This is what makes
+  // "why did the login fail" answerable — the console rarely says.
+  //
+  // Bodies are OFF by default: a single JSON response can be larger than the
+  // whole context window, and the model usually needs status codes and URLs,
+  // not payloads. Sensitive headers were already redacted at record time.
+  toolRegistry.registerTool({
+    name: 'browser_read_network',
+    description:
+      'Read network requests the page made: method, URL, status, duration, and failures. '
+      + 'Use it to check API calls, form submissions and login POSTs. '
+      + 'Set include_body only when the payload actually matters.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: { type: 'string', description: 'Case-insensitive substring match on the URL.' },
+        method: { type: 'string', description: 'Only this HTTP method, e.g. POST.' },
+        status: { type: 'string', description: 'Exact code (404) or class (4xx, 5xx).' },
+        failed_only: { type: 'boolean', description: 'Only requests that never completed.' },
+        include_body: { type: 'boolean', description: 'Include request/response bodies (large).' },
+        limit: { type: 'number', description: 'Newest N entries. Default 20.' },
+      },
+    },
+    readOnly: true,
+    execute: async (p) => {
+      const entries = getNetworkEntries({
+        filter: typeof p.filter === 'string' ? p.filter : undefined,
+        method: typeof p.method === 'string' ? p.method : undefined,
+        status: (typeof p.status === 'string' || typeof p.status === 'number') ? p.status : undefined,
+        failedOnly: !!p.failed_only,
+        limit: typeof p.limit === 'number' ? p.limit : 20,
+      });
+      if (entries.length === 0) {
+        // A clear statement beats an empty array: the model otherwise cannot
+        // tell "nothing matched" from "recording is not working".
+        return { count: 0, requests: [], note: 'No matching network requests recorded.' };
+      }
+      const includeBody = !!p.include_body;
+      return {
+        count: entries.length,
+        requests: entries.map(e => ({
+          method: e.method,
+          url: e.url,
+          status: e.failed ? 'failed' : e.status,
+          failureReason: e.failureReason,
+          durationMs: e.durationMs,
+          resourceType: e.resourceType,
+          ...(includeBody
+            ? {
+                requestBody: e.requestBody ? truncateToolContent(e.requestBody) : undefined,
+                responseBody: e.responseBody ? truncateToolContent(e.responseBody) : undefined,
+              }
+            : {}),
+        })),
+      };
+    },
+  });
+
+  // ── browser_read_errors ──────────────────────────────────────────────────
+  // Read-only: uncaught exceptions and unhandled rejections (#626). Kept apart
+  // from the console channel because an error buried in a hundred log lines is
+  // the signal that matters most when a page misbehaves.
+  toolRegistry.registerTool({
+    name: 'browser_read_errors',
+    description:
+      'Read uncaught JavaScript errors and unhandled promise rejections from the page, '
+      + 'separately from ordinary console output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Newest N errors. Default 20.' },
+        clear: { type: 'boolean', description: 'Clear the error buffer after reading.' },
+      },
+    },
+    readOnly: true,
+    execute: async (p) => {
+      const limit = typeof p.limit === 'number' ? p.limit : 20;
+      const errors = getPageErrors(limit);
+      if (p.clear) clearPageErrors();
+      if (errors.length === 0) return { count: 0, errors: [], note: 'No page errors recorded.' };
+      return {
+        count: errors.length,
+        errors: errors.map(e => ({
+          message: e.message,
+          source: e.source,
+          line: e.line,
+          column: e.column,
+          kind: e.kind,
+          stack: e.stack ? truncateToolContent(e.stack) : undefined,
+        })),
+      };
+    },
   });
 
   // ── browser_wait_for ─────────────────────────────────────────────────────
