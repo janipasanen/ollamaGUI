@@ -6,7 +6,7 @@
  * ask: did the POST happen, what status came back, what failed, and did we
  * avoid putting their session cookie into the model's context.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   recordRequest, recordResponse, recordFailure, getNetworkEntries,
   redactHeaders, capBody, statusMatches, summarizeEntry, clearNetwork,
@@ -16,6 +16,8 @@ import {
   recordPageError, getPageErrors, clearPageErrors, attachPageErrorListeners, MAX_ERRORS,
 } from '../services/browserErrors';
 import { instrumentWindow } from '../services/browserInstrument';
+import { registerBrowserTools, _mocks as toolMocks, _resetEngineNetworkMerge } from '../services/browser-tools';
+import { toolRegistry } from '../services/tools';
 
 beforeEach(() => { _resetNetworkForTests(); clearPageErrors(); });
 
@@ -240,5 +242,77 @@ describe('clearNetwork', () => {
     recordRequest({ method: 'GET', url: 'https://x' });
     clearNetwork();
     expect(getNetworkEntries()).toHaveLength(0);
+  });
+});
+
+// ── External pages via the Chromium engine (#628) ────────────────────────────
+
+describe('browser_read_network merges the engine log (#628)', () => {
+  beforeEach(() => {
+    _resetNetworkForTests();
+    _resetEngineNetworkMerge();
+    toolMocks.invoke = null;
+  });
+  afterEach(() => { toolMocks.invoke = null; });
+
+  async function readNetwork(args: Record<string, unknown> = {}) {
+    registerBrowserTools(async () => true);
+    return toolRegistry.getTool('browser_read_network')!.execute(args) as any;
+  }
+
+  it('includes requests only the engine saw', async () => {
+    // The fetch/XHR patch cannot reach a cross-origin page; without this merge
+    // an external login flow reports no traffic at all.
+    toolMocks.invoke = async (cmd: string) => {
+      if (cmd === 'browser_cdp_read_network') {
+        return [
+          { request_id: 'r1', method: 'POST', url: 'https://site/login', status: 302, status_text: 'Found' },
+          { request_id: 'r2', method: 'GET', url: 'https://site/home', status: 200 },
+        ];
+      }
+      return undefined;
+    };
+    const out = await readNetwork();
+    expect(out.count).toBe(2);
+    expect(out.requests.map((r: any) => r.url)).toEqual(['https://site/login', 'https://site/home']);
+    expect(out.requests[0].status).toBe(302);
+  });
+
+  it('carries an engine failure through as failed', async () => {
+    toolMocks.invoke = async (cmd: string) =>
+      cmd === 'browser_cdp_read_network'
+        ? [{ request_id: 'r3', method: 'GET', url: 'https://site/x', failure: 'net::ERR_CONNECTION_REFUSED' }]
+        : undefined;
+    const out = await readNetwork({ failed_only: true });
+    expect(out.count).toBe(1);
+    expect(out.requests[0].status).toBe('failed');
+    expect(out.requests[0].failureReason).toContain('ERR_CONNECTION_REFUSED');
+  });
+
+  it('does not duplicate engine rows across repeated reads', async () => {
+    toolMocks.invoke = async (cmd: string) =>
+      cmd === 'browser_cdp_read_network'
+        ? [{ request_id: 'r4', method: 'GET', url: 'https://site/once', status: 200 }]
+        : undefined;
+    await readNetwork();
+    const second = await readNetwork();
+    expect(second.count).toBe(1);
+  });
+
+  it('still reports locally-recorded traffic when no engine is running', async () => {
+    // The command throws with no engine; the local recorder is the whole answer.
+    toolMocks.invoke = async () => { throw new Error('Engine not started'); };
+    const id = recordRequest({ method: 'GET', url: 'http://localhost:5173/api' });
+    recordResponse(id, { status: 200 });
+    const out = await readNetwork();
+    expect(out.count).toBe(1);
+    expect(out.requests[0].url).toBe('http://localhost:5173/api');
+  });
+
+  it('says so plainly when nothing matched', async () => {
+    toolMocks.invoke = async () => [];
+    const out = await readNetwork({ filter: 'nothing-matches-this' });
+    expect(out.count).toBe(0);
+    expect(out.note).toMatch(/No matching network requests/i);
   });
 });

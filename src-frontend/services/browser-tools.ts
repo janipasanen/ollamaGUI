@@ -25,7 +25,7 @@
 import { toolRegistry, truncateToolContent } from './tools';
 import { browserSession, browserBus, isLocalhostUrl } from './browser';
 import { parseSnapshotRefs, updateSessionSnapshot } from './browserSnapshot';
-import { getNetworkEntries } from './browserNetwork';
+import { getNetworkEntries, recordRequest, recordResponse, recordFailure } from './browserNetwork';
 import { getPageErrors, clearPageErrors } from './browserErrors';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,43 @@ async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): 
   if (_mocks.invoke) return _mocks.invoke(cmd, args) as Promise<T>;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<T>(cmd, args);
+}
+
+/**
+ * Pull the Chromium engine's network log into the shared buffer.
+ *
+ * Best-effort: with no engine running (the common case — local previews use the
+ * iframe) the command errors and we simply keep the locally-recorded entries.
+ * Engine rows are keyed by CDP request id so repeated calls do not duplicate
+ * them.
+ */
+const _seenEngineRequests = new Set<string>();
+async function mergeEngineNetwork(): Promise<void> {
+  try {
+    const rows = await tauriInvoke<any[]>('browser_cdp_read_network', {});
+    if (!Array.isArray(rows)) return;
+    for (const r of rows) {
+      const key = String(r.request_id ?? r.requestId ?? '');
+      if (!key || _seenEngineRequests.has(key)) continue;
+      _seenEngineRequests.add(key);
+      const id = recordRequest({
+        method: String(r.method ?? 'GET'),
+        url: String(r.url ?? ''),
+        resourceType: 'document',
+      });
+      if (r.failure) recordFailure(id, String(r.failure));
+      else if (r.status != null) {
+        recordResponse(id, { status: Number(r.status), statusText: r.status_text ?? r.statusText });
+      }
+    }
+  } catch {
+    // No engine running: the local recorder is the whole answer.
+  }
+}
+
+/** Test seam: forget which engine rows have been merged. */
+export function _resetEngineNetworkMerge(): void {
+  _seenEngineRequests.clear();
 }
 
 /**
@@ -315,13 +352,19 @@ export function registerBrowserTools(
     },
     readOnly: true,
     execute: async (p) => {
-      const entries = getNetworkEntries({
+      const query = {
         filter: typeof p.filter === 'string' ? p.filter : undefined,
         method: typeof p.method === 'string' ? p.method : undefined,
         status: (typeof p.status === 'string' || typeof p.status === 'number') ? p.status : undefined,
         failedOnly: !!p.failed_only,
         limit: typeof p.limit === 'number' ? p.limit : 20,
-      });
+      };
+      // Two sources, one answer (#628). The fetch/XHR patch only reaches
+      // same-origin pages; the Chromium engine sees every request a real
+      // browser makes, which is what external sites and login flows need.
+      // Merging here keeps the model from having to know which is which.
+      await mergeEngineNetwork();
+      const entries = getNetworkEntries(query);
       if (entries.length === 0) {
         // A clear statement beats an empty array: the model otherwise cannot
         // tell "nothing matched" from "recording is not working".

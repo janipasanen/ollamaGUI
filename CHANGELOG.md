@@ -35,6 +35,18 @@ for, via the command palette or **Ctrl/Cmd+Shift+B** (browser) and
   console noise where they used to be buried.
 - The recorder reads response bodies from a **clone**, so instrumentation can
   never consume the body the page itself is waiting for.
+- **External sites are covered too** (#628). The `fetch`/`XHR` patch only
+  reaches same-origin pages, which excluded every real site a login flow
+  targets. The Chromium engine now enables the CDP `Network` domain and pumps
+  `requestWillBeSent` / `responseReceived` / `loadingFailed` into a bounded
+  ring; `browser_read_network` merges both sources so the model never has to
+  know which surface a page is on. URLs are credential-stripped before storage
+  — a token in a query string is as sensitive as one in a header.
+- **`browser_read_console` works at all now** (#629). It had never returned
+  anything on the Chromium path: the ring existed and the tool drained it, but
+  the engine's event task was `while handler.next().await.is_some() {}` — every
+  event discarded, so nothing was ever recorded. To the model that reads as
+  "the page logged nothing" rather than "this is not wired up".
 
 
 ### Added
