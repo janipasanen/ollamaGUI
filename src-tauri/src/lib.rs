@@ -937,7 +937,10 @@ async fn mlx_server_status() -> Result<MlxServerStatus, String> {
 // 32-byte key in a sibling 0600 file. Plaintext secrets never touch disk.
 
 use aes_gcm::{Aes256Gcm, Nonce, Key};
-use aes_gcm::aead::{Aead, KeyInit, OsRng, AeadCore};
+// aes-gcm 0.11 removed the re-exported OsRng and AeadCore::generate_nonce.
+// Nonces now come from the `Generate` trait, which draws from the system RNG
+// via the crate's default `getrandom` feature.
+use aes_gcm::aead::{Aead, KeyInit, Generate};
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -970,7 +973,7 @@ fn secret_fallback_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
             if k.len() == 32 { return Ok(k); }
         }
     }
-    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let key = <Key<Aes256Gcm> as Generate>::generate();
     std::fs::write(&path, hex_encode(key.as_slice())).map_err(|e| e.to_string())?;
     restrict_perms(&path);
     Ok(key.to_vec())
@@ -1001,7 +1004,7 @@ fn secret_entry_key(service: &str, key: &str) -> String {
 fn secret_fallback_set(app: &tauri::AppHandle, service: &str, key: &str, value: &str) -> Result<(), String> {
     let kbytes = secret_fallback_key(app)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = <Nonce<_> as Generate>::generate();
     let ct = cipher.encrypt(&nonce, value.as_bytes()).map_err(|e| e.to_string())?;
     let mut map = secret_fallback_load(app);
     map.insert(secret_entry_key(service, key), format!("{}:{}", hex_encode(&nonce), hex_encode(&ct)));
@@ -1874,8 +1877,8 @@ struct DocumentContent {
 /// `paragraph_tags` emit a newline after they close.
 fn extract_xml_text(
     xml_bytes: &[u8],
-    include_local: &[&[u8]],
-    paragraph_local: &[&[u8]],
+    include_local: &[&str],
+    paragraph_local: &[&str],
 ) -> String {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -1906,9 +1909,9 @@ fn extract_xml_text(
                 }
             }
             Ok(Event::Text(ref e)) if depth > 0 => {
-                if let Ok(t) = e.xml10_content() {
-                    output.push_str(&t);
-                }
+                // quick-xml 0.42 returns Cow<str> directly; decoding no longer
+                // has a failure mode to branch on.
+                output.push_str(&e.xml10_content());
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -1950,18 +1953,18 @@ fn read_zip_entries_prefix(path: &str, prefix: &str) -> Result<Vec<Vec<u8>>, Str
 fn extract_docx_text(path: &str) -> Result<String, String> {
     let xml = read_zip_entry(path, "word/document.xml")?;
     // <w:t> holds text runs; <w:p> is a paragraph
-    Ok(extract_xml_text(&xml, &[b"t"], &[b"p"]))
+    Ok(extract_xml_text(&xml, &["t"], &["p"]))
 }
 
 fn extract_xlsx_text(path: &str) -> Result<String, String> {
     // Shared strings file
     let ss_xml = read_zip_entry(path, "xl/sharedStrings.xml").unwrap_or_default();
-    let shared = extract_xml_text(&ss_xml, &[b"t"], &[b"si"]);
+    let shared = extract_xml_text(&ss_xml, &["t"], &["si"]);
     // Sheet data
     let sheets = read_zip_entries_prefix(path, "xl/worksheets/sheet")?;
     let mut out = shared;
     for s in sheets {
-        out.push_str(&extract_xml_text(&s, &[b"v", b"t"], &[b"row"]));
+        out.push_str(&extract_xml_text(&s, &["v", "t"], &["row"]));
     }
     Ok(out)
 }
@@ -1971,7 +1974,7 @@ fn extract_pptx_text(path: &str) -> Result<String, String> {
     let mut out = String::new();
     for s in slides {
         // <a:t> is DrawingML text; <a:p> is a paragraph
-        out.push_str(&extract_xml_text(&s, &[b"t"], &[b"p"]));
+        out.push_str(&extract_xml_text(&s, &["t"], &["p"]));
         out.push('\n');
     }
     Ok(out)
@@ -1979,7 +1982,7 @@ fn extract_pptx_text(path: &str) -> Result<String, String> {
 
 fn extract_odt_text(path: &str) -> Result<String, String> {
     let xml = read_zip_entry(path, "content.xml")?;
-    Ok(extract_xml_text(&xml, &[b"p", b"h", b"span"], &[b"p", b"h"]))
+    Ok(extract_xml_text(&xml, &["p", "h", "span"], &["p", "h"]))
 }
 
 fn detect_format(path: &str) -> &'static str {

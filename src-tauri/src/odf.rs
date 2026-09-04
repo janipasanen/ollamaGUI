@@ -157,7 +157,6 @@ fn collect_text_runs(content_xml: &str) -> Result<Vec<TextRun>, String> {
                 // `e` borrows the still-escaped slice; unescape for matching.
                 let unescaped = e
                     .xml10_content()
-                    .map_err(|err| format!("XML unescape error: {err}"))?
                     .into_owned();
                 if !unescaped.is_empty() {
                     runs.push(TextRun {
