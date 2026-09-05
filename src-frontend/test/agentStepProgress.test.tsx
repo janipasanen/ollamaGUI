@@ -8,6 +8,11 @@ import App from '../App';
 
 beforeEach(() => {
   localStorage.clear();
+  // Agentic mode is derived: an active project with a bound folder turns tools on.
+  localStorage.setItem('ollama_gui_projects', JSON.stringify([
+    { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+  ]));
+  localStorage.setItem('ollama_gui_active_project', 'proj_t');
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
@@ -30,11 +35,8 @@ describe('Agentic step progress badge (#398)', () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
-
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
+    // Agentic mode is already active via the folder-bound project (beforeEach).
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'Hi' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {

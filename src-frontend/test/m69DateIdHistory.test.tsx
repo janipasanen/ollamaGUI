@@ -1,6 +1,8 @@
 /**
- * M69: Date-grouped sidebar (#330), /id command (#331),
- *      prompt history navigation Alt+Up/Alt+Down (#332).
+ * M69: /id command (#331), prompt history navigation Alt+Up/Alt+Down (#332).
+ * (#330 date-grouped sidebar labels — Pinned/Today/Yesterday/etc. — were
+ * removed with the project-first sidebar rewrite; only a removal guard
+ * remains.)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -44,51 +46,30 @@ const streamFetch = (reply: string) =>
     return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
   });
 
-// ── #330 Date-grouped conversation list ──────────────────────────────────────
+// ── #330 Date-grouped conversation list — REMOVED ────────────────────────────
+// The sidebar no longer renders Pinned/Today/Yesterday/Previous 7 Days/Older
+// date-bucket labels in any form; the feature has no replacement surface.
+// Guard against the removed chrome regressing back in.
 
-describe('Date-grouped conversation list (#330)', () => {
-  it('shows Today / Yesterday / Previous 7 Days / Older section labels', async () => {
+describe('Date-bucket labels are gone from the sidebar (#330 removed)', () => {
+  it('renders session rows without any date-bucket section labels', async () => {
     const now = Date.now();
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 'today', title: 'Today chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 1000 },
       { id: 'yesterday', title: 'Yesterday chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - DAY - 1000 },
-      { id: 'prev7', title: 'Prev7 chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 4 * DAY },
-      { id: 'older', title: 'Older chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 60 * DAY },
+      { id: 'pinned', title: 'Pinned chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 60 * DAY, pinned: true },
     ]));
     global.fetch = emptyModels();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Today chat')).toBeInTheDocument(), { timeout: 3000 });
-    expect(screen.getByText('Today')).toBeInTheDocument();
-    expect(screen.getByText('Yesterday')).toBeInTheDocument();
-    expect(screen.getByText('Previous 7 Days')).toBeInTheDocument();
-    expect(screen.getByText('Older')).toBeInTheDocument();
-  });
-
-  it('shows a Pinned section label above pinned sessions', async () => {
-    const now = Date.now();
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify([
-      { id: 'p1', title: 'Pinned chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 1000, pinned: true },
-      { id: 't1', title: 'Normal chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 2000 },
-    ]));
-    global.fetch = emptyModels();
-    render(<App />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Load session: Pinned chat' })).toBeInTheDocument(), { timeout: 3000 });
-    expect(screen.getByText('Pinned')).toBeInTheDocument();
-  });
-
-  it('does not show date labels when sorted by name', async () => {
-    const now = Date.now();
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify([
-      { id: 'today', title: 'Today chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 1000 },
-      { id: 'older', title: 'Older chat', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: now - 60 * DAY },
-    ]));
-    localStorage.setItem('ollama_gui_sort_mode', 'name');
-    global.fetch = emptyModels();
-    render(<App />);
-    await waitFor(() => expect(screen.getByText('Today chat')).toBeInTheDocument(), { timeout: 3000 });
-    // When sorted by name, no date-bucket labels should appear
+    expect(screen.getByText('Yesterday chat')).toBeInTheDocument();
+    // Pinned rows render as "📌 <title>", so query by the row's aria-label.
+    expect(screen.getByRole('button', { name: 'Load session: Pinned chat' })).toBeInTheDocument();
     expect(screen.queryByText('Today')).not.toBeInTheDocument();
+    expect(screen.queryByText('Yesterday')).not.toBeInTheDocument();
+    expect(screen.queryByText('Previous 7 Days')).not.toBeInTheDocument();
     expect(screen.queryByText('Older')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
   });
 });
 

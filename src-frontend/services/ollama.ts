@@ -27,6 +27,11 @@ export interface Message {
   isError?: boolean;
   /** True when the user cancelled generation mid-stream (#303). */
   wasCancelled?: boolean;
+  /** End-of-run summary card appended after an agentic run (#549 rank 9). */
+  runSummary?: boolean;
+  /** OpenAI-compatible tool-result correlation id (#551): required by strict
+   *  servers (LM Studio, vLLM) to pair a role:'tool' message with its call. */
+  tool_call_id?: string;
 }
 
 export interface OllamaResponse {
@@ -320,6 +325,83 @@ export async function modelSupportsVision(
 /** Clear the vision capability cache (useful in tests). */
 export function clearVisionCache(): void {
   _visionCache.clear();
+}
+
+// ── Model capabilities: native context length + tool support ────────────────
+//
+// /api/show reports the model's trained context window (model_info key ending
+// in ".context_length") and, on Ollama ≥0.4, a `capabilities` array including
+// 'tools'. Both feed the auto-sized num_ctx and the agentic-model guidance —
+// shipping a fixed 4096 into agent runs silently evicted the user's goal.
+
+export interface ModelCapabilities {
+  /** Trained context window, or null when /api/show is unavailable. */
+  contextLength: number | null;
+  /** True when the model advertises tool-calling support; null = unknown. */
+  tools: boolean | null;
+}
+
+const _capsCache = new Map<string, ModelCapabilities>();
+
+export async function getModelCapabilities(
+  modelName: string,
+  endpoint = 'http://localhost:11434',
+  apiKey?: string,
+): Promise<ModelCapabilities> {
+  // Key on endpoint AND name: the same tag ("llama3") can be served by the
+  // local daemon and by a remote Ollama with different weights and a
+  // different context window, so a name-only key returned one server's
+  // answer for the other.
+  const cacheKey = `${endpoint} ${modelName}`;
+  const cached = _capsCache.get(cacheKey);
+  if (cached) return cached;
+
+  const result: ModelCapabilities = { contextLength: null, tools: null };
+  try {
+    const res = await fetch(`${endpoint}/api/show`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Authenticated remotes reject an unauthenticated probe with 401,
+        // which would look identical to "model unknown" (#493).
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({ model: modelName }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const info = data.model_info ?? {};
+      const ctxKey = Object.keys(info).find(k => k.endsWith('.context_length'));
+      const ctx = ctxKey ? Number(info[ctxKey]) : NaN;
+      if (Number.isFinite(ctx) && ctx > 0) result.contextLength = ctx;
+      if (Array.isArray(data.capabilities)) result.tools = data.capabilities.includes('tools');
+    }
+  } catch { /* network error — leave unknowns */ }
+
+  _capsCache.set(cacheKey, result);
+  return result;
+}
+
+/** Clear the capabilities cache (useful in tests). */
+export function clearCapabilitiesCache(): void {
+  _capsCache.clear();
+}
+
+/**
+ * The context window to actually request: the model's native limit capped by
+ * a RAM-derived budget, never below the 4096 floor. Agentic runs get the full
+ * budget; plain chat stays leaner so small machines aren't pushed into swap.
+ */
+export function autoNumCtx(
+  caps: ModelCapabilities | null,
+  totalRamBytes: number | null,
+  agentic: boolean,
+): number {
+  const gb = totalRamBytes ? totalRamBytes / 1024 ** 3 : 8;
+  const ramBudget = gb >= 24 ? 32768 : gb >= 16 ? 16384 : gb >= 8 ? 8192 : 4096;
+  const budget = agentic ? ramBudget : Math.min(ramBudget, 8192);
+  const modelMax = caps?.contextLength ?? budget;
+  return Math.max(4096, Math.min(modelMax, budget));
 }
 
 // ── Cloud models (#485) ──────────────────────────────────────────────────────

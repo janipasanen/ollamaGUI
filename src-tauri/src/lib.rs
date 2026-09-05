@@ -37,8 +37,8 @@ struct CliOutput {
 /// explicit user-approval modal for every command not already on the session
 /// allow-list before it ever calls this command (the same approval-gated model
 /// as Claude Code's shell tool). Do NOT rely on this function to filter
-/// commands. See `run_cli_command` below for the alternative allow/deny-list
-/// executor (not currently wired to the frontend).
+/// commands. `run_cli_command` below carries allow/deny lists, but it is
+/// unreachable from the UI and is not a fallback — see its doc.
 #[tauri::command]
 async fn run_cli(
     command: String,
@@ -562,13 +562,22 @@ async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
 /// Hardened CLI executor that enforces [`CLI_ALLOWLIST`]/[`CLI_DENYLIST`] before
 /// running a command.
 ///
-/// NOTE (#410): this is NOT currently wired to the frontend — the removal of
-/// `CliToolWrapper` in #223 left the live agentic path on `run_cli` (which is
-/// user-approval-gated; see its doc). This command and its allow/deny lists are
-/// retained as an opt-in hardened alternative for callers that want static
-/// command filtering instead of interactive approval. It stays registered so the
-/// IPC contract remains available; re-point the `run_shell_command` tool at it
-/// to switch to list-based enforcement.
+/// NOT A SECURITY BOUNDARY FOR THIS APP, and not reachable from the UI (#609).
+/// The live agentic path is `run_cli`; nothing in src-frontend calls this. Read
+/// the lists below as documentation of THIS command only — `sudo` and `rm` are
+/// NOT blocked for the agent, and a reader who assumes otherwise from seeing
+/// `CLI_DENYLIST` in this file is being misled, which is why this note replaced
+/// the previous one.
+///
+/// The earlier suggestion to "re-point `run_shell_command` at it" is not
+/// actionable and should not be attempted: this command takes a program plus
+/// argv and spawns WITHOUT a shell, so it cannot run the pipes, `&&` and
+/// redirects the agentic loop depends on — and its first-token denylist could
+/// never see an `rm` nested inside an `sh -c` string anyway.
+///
+/// The real boundary is the frontend approval modal plus the two-scope session
+/// allowlist in services/tools.ts (exact command by default; program scope only
+/// when explicitly chosen, and never for a line containing shell operators).
 #[tauri::command]
 async fn run_cli_command(
     request: CliCommandRequest,
@@ -928,7 +937,10 @@ async fn mlx_server_status() -> Result<MlxServerStatus, String> {
 // 32-byte key in a sibling 0600 file. Plaintext secrets never touch disk.
 
 use aes_gcm::{Aes256Gcm, Nonce, Key};
-use aes_gcm::aead::{Aead, KeyInit, OsRng, AeadCore};
+// aes-gcm 0.11 removed the re-exported OsRng and AeadCore::generate_nonce.
+// Nonces now come from the `Generate` trait, which draws from the system RNG
+// via the crate's default `getrandom` feature.
+use aes_gcm::aead::{Aead, KeyInit, Generate};
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -961,7 +973,7 @@ fn secret_fallback_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
             if k.len() == 32 { return Ok(k); }
         }
     }
-    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let key = <Key<Aes256Gcm> as Generate>::generate();
     std::fs::write(&path, hex_encode(key.as_slice())).map_err(|e| e.to_string())?;
     restrict_perms(&path);
     Ok(key.to_vec())
@@ -992,7 +1004,7 @@ fn secret_entry_key(service: &str, key: &str) -> String {
 fn secret_fallback_set(app: &tauri::AppHandle, service: &str, key: &str, value: &str) -> Result<(), String> {
     let kbytes = secret_fallback_key(app)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = <Nonce<_> as Generate>::generate();
     let ct = cipher.encrypt(&nonce, value.as_bytes()).map_err(|e| e.to_string())?;
     let mut map = secret_fallback_load(app);
     map.insert(secret_entry_key(service, key), format!("{}:{}", hex_encode(&nonce), hex_encode(&ct)));
@@ -1059,6 +1071,36 @@ async fn get_system_memory() -> Result<SystemMemory, String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ─── Filesystem path validation (#550) ───────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathCheck {
+    exists: bool,
+    is_dir: bool,
+    readable: bool,
+}
+
+/// Pure metadata probe behind `path_exists` — split out so the unit tests can
+/// call it without a Tauri runtime. `readable` mirrors whether `metadata()`
+/// succeeds: a path we cannot stat is a path we cannot use.
+fn check_path_metadata(path: &str) -> PathCheck {
+    match std::fs::metadata(path) {
+        Ok(meta) => PathCheck { exists: true, is_dir: meta.is_dir(), readable: true },
+        Err(_) => PathCheck { exists: false, is_dir: false, readable: false },
+    }
+}
+
+/// Validate a filesystem path from the backend (#550): the frontend used to
+/// guess from strings; now the OS answers. Runs on a blocking thread because
+/// `metadata()` on a stale network mount can stall.
+#[tauri::command]
+async fn path_exists(path: String) -> Result<PathCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || check_path_metadata(&path))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ─── Terminal streaming commands (#87) ───────────────────────────────────────
@@ -1195,6 +1237,29 @@ struct FsDirEntry {
 /// Returns the canonical absolute path on success.
 fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
     let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
+    resolve_within_roots(path, &roots)
+}
+
+/// The sandbox check, separated from the global so it can be unit-tested.
+///
+/// SECURITY (#607): this must resolve symlinks, not just normalise `..`
+/// lexically. `std::fs` follows symlinks; a lexical check does not. With a
+/// workspace containing `link -> $HOME`, `link/.ssh/id_rsa` normalised to
+/// `<root>/link/.ssh/id_rsa`, passed `starts_with(root)`, and was read — and
+/// `read_file` is read-only, so it never prompts at ANY autonomy level. Such
+/// links occur routinely in cloned repos and node_modules link farms, so no
+/// planted file was needed.
+///
+/// Symlinks that stay inside a root are ACCEPTED: pnpm stores, monorepo
+/// package links and node_modules/.bin are all legitimate, and rejecting every
+/// symlink would break real workspaces. Only a target that leaves every root
+/// is refused.
+///
+/// Fixing this also removes a class of false rejections: the roots were
+/// canonicalised but candidates were not, so a legitimate path arriving
+/// through a symlinked ancestor (macOS `/tmp` -> `/private/tmp`, `/Volumes`
+/// aliases) failed the check despite being inside the root.
+fn resolve_within_roots(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let primary = roots
         .first()
         .ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
@@ -1206,13 +1271,57 @@ fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
     } else {
         primary.join(&candidate)
     };
-    // Normalize without requiring existence (for new files)
     let normalized = normalize_path(&abs);
+    let resolved = canonicalize_existing_prefix(&normalized);
+
     // A project may span several repositories (#492): accept any configured root.
-    if !roots.iter().any(|r| normalized.starts_with(r)) {
+    if !roots.iter().any(|r| resolved.starts_with(r)) {
+        // Name the resolved target: "outside the workspace" is baffling for a
+        // path that looks local until you know it is a link.
+        if resolved != normalized {
+            return Err(format!(
+                "Path '{}' resolves to '{}', which is outside the workspace root(s).",
+                path,
+                resolved.display()
+            ));
+        }
         return Err(format!("Path '{}' is outside the workspace root(s).", path));
     }
-    Ok(normalized)
+    Ok(resolved)
+}
+
+/// Canonicalise as much of `path` as exists, then re-append the rest verbatim.
+///
+/// A plain `canonicalize()` fails for a file being created, which is why the
+/// original code skipped it entirely. Walking up to the nearest existing
+/// ancestor keeps new-file writes working while still resolving every symlink
+/// on the part of the path that does exist — which is where an escape lives.
+fn canonicalize_existing_prefix(path: &PathBuf) -> PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.clone();
+    while let Some(parent) = cursor.parent().map(PathBuf::from) {
+        match cursor.file_name() {
+            Some(name) => trailing.push(name.to_os_string()),
+            None => break,
+        }
+        if let Ok(c) = parent.canonicalize() {
+            let mut out = c;
+            for part in trailing.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        cursor = parent;
+    }
+    // Nothing on the path exists (or the root itself is gone): fall back to the
+    // lexical form. It is still checked against the roots by the caller.
+    path.clone()
 }
 
 /// Lexically normalize a path (resolve `..` without hitting the filesystem).
@@ -1431,9 +1540,13 @@ async fn search_files(
     include_glob: Option<String>,
     max_results: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    let root = {
+    // Walk EVERY configured root, not just the primary (#541). A project may
+    // span several repositories; searching only roots[0] made symbols in the
+    // others look nonexistent even though read_file on the same path worked.
+    let roots = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        if guard.is_empty() { return Err("No workspace root set.".to_string()); }
+        guard.clone()
     };
     let max = max_results.unwrap_or(200).min(2000);
     let case_sensitive = case_sensitive.unwrap_or(false);
@@ -1451,31 +1564,43 @@ async fn search_files(
             _ => None,
         };
         let mut hits: Vec<SearchHit> = Vec::new();
-        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
-        });
-        for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
-            let rel = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            if let Some(ref inc) = include {
-                if !inc.is_match(&rel) { continue; }
-            }
-            let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
-            for (idx, line) in content.lines().enumerate() {
-                if matcher.is_match(line) {
-                    hits.push(SearchHit {
-                        file: rel.clone(),
-                        line: (idx as u32) + 1,
-                        text: line.chars().take(400).collect(),
-                    });
-                    if hits.len() >= max { return Ok(hits); }
+        // The cap applies across the combined walk, not per root.
+        for (root_idx, root) in roots.iter().enumerate() {
+            let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+                !(e.file_type().is_dir()
+                    && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            });
+            for entry in walker {
+                let entry = match entry { Ok(e) => e, Err(_) => continue };
+                if !entry.file_type().is_file() { continue; }
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Some(ref inc) = include {
+                    if !inc.is_match(&rel) { continue; }
+                }
+                // Primary root keeps workspace-relative paths (unchanged for
+                // single-root projects); secondary roots report ABSOLUTE paths,
+                // which resolve_workspace_path also accepts — so every hit can
+                // be fed straight back into read_file regardless of its repo.
+                let reported = if root_idx == 0 {
+                    rel
+                } else {
+                    entry.path().to_string_lossy().replace('\\', "/")
+                };
+                let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
+                for (idx, line) in content.lines().enumerate() {
+                    if matcher.is_match(line) {
+                        hits.push(SearchHit {
+                            file: reported.clone(),
+                            line: (idx as u32) + 1,
+                            text: line.chars().take(400).collect(),
+                        });
+                        if hits.len() >= max { return Ok(hits); }
+                    }
                 }
             }
         }
@@ -1489,30 +1614,41 @@ async fn search_files(
 /// file paths, capped at `max_results`.
 #[tauri::command]
 async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<String>, String> {
-    let root = {
+    // Every configured root, not just the primary (#541) — see search_files.
+    let roots = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        if guard.is_empty() { return Err("No workspace root set.".to_string()); }
+        guard.clone()
     };
     let max = max_results.unwrap_or(500).min(5000);
     tauri::async_runtime::spawn_blocking(move || {
         let re = regex::Regex::new(&glob_to_regex(&pattern)).map_err(|e| format!("Invalid glob: {e}"))?;
         let mut out: Vec<String> = Vec::new();
-        let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
-        });
-        for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
-            let rel = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            if re.is_match(&rel) {
-                out.push(rel);
-                if out.len() >= max { break; }
+        'roots: for (root_idx, root) in roots.iter().enumerate() {
+            let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+                !(e.file_type().is_dir()
+                    && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            });
+            for entry in walker {
+                let entry = match entry { Ok(e) => e, Err(_) => continue };
+                if !entry.file_type().is_file() { continue; }
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                // The glob is matched against the root-relative path in every
+                // repo, so `src/**/*.ts` means the same thing in each; only the
+                // REPORTED path differs (absolute for secondary roots).
+                if re.is_match(&rel) {
+                    out.push(if root_idx == 0 {
+                        rel
+                    } else {
+                        entry.path().to_string_lossy().replace('\\', "/")
+                    });
+                    if out.len() >= max { break 'roots; }
+                }
             }
         }
         out.sort();
@@ -1741,8 +1877,8 @@ struct DocumentContent {
 /// `paragraph_tags` emit a newline after they close.
 fn extract_xml_text(
     xml_bytes: &[u8],
-    include_local: &[&[u8]],
-    paragraph_local: &[&[u8]],
+    include_local: &[&str],
+    paragraph_local: &[&str],
 ) -> String {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -1773,9 +1909,9 @@ fn extract_xml_text(
                 }
             }
             Ok(Event::Text(ref e)) if depth > 0 => {
-                if let Ok(t) = e.xml10_content() {
-                    output.push_str(&t);
-                }
+                // quick-xml 0.42 returns Cow<str> directly; decoding no longer
+                // has a failure mode to branch on.
+                output.push_str(&e.xml10_content());
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -1817,18 +1953,18 @@ fn read_zip_entries_prefix(path: &str, prefix: &str) -> Result<Vec<Vec<u8>>, Str
 fn extract_docx_text(path: &str) -> Result<String, String> {
     let xml = read_zip_entry(path, "word/document.xml")?;
     // <w:t> holds text runs; <w:p> is a paragraph
-    Ok(extract_xml_text(&xml, &[b"t"], &[b"p"]))
+    Ok(extract_xml_text(&xml, &["t"], &["p"]))
 }
 
 fn extract_xlsx_text(path: &str) -> Result<String, String> {
     // Shared strings file
     let ss_xml = read_zip_entry(path, "xl/sharedStrings.xml").unwrap_or_default();
-    let shared = extract_xml_text(&ss_xml, &[b"t"], &[b"si"]);
+    let shared = extract_xml_text(&ss_xml, &["t"], &["si"]);
     // Sheet data
     let sheets = read_zip_entries_prefix(path, "xl/worksheets/sheet")?;
     let mut out = shared;
     for s in sheets {
-        out.push_str(&extract_xml_text(&s, &[b"v", b"t"], &[b"row"]));
+        out.push_str(&extract_xml_text(&s, &["v", "t"], &["row"]));
     }
     Ok(out)
 }
@@ -1838,7 +1974,7 @@ fn extract_pptx_text(path: &str) -> Result<String, String> {
     let mut out = String::new();
     for s in slides {
         // <a:t> is DrawingML text; <a:p> is a paragraph
-        out.push_str(&extract_xml_text(&s, &[b"t"], &[b"p"]));
+        out.push_str(&extract_xml_text(&s, &["t"], &["p"]));
         out.push('\n');
     }
     Ok(out)
@@ -1846,7 +1982,7 @@ fn extract_pptx_text(path: &str) -> Result<String, String> {
 
 fn extract_odt_text(path: &str) -> Result<String, String> {
     let xml = read_zip_entry(path, "content.xml")?;
-    Ok(extract_xml_text(&xml, &[b"p", b"h", b"span"], &[b"p", b"h"]))
+    Ok(extract_xml_text(&xml, &["p", "h", "span"], &["p", "h"]))
 }
 
 fn detect_format(path: &str) -> &'static str {
@@ -2157,6 +2293,85 @@ async fn web_search(
     }
 }
 
+// ─── Durable store mirror (sessions / projects / folders) ────────────────────
+//
+// Chat sessions, projects, and folders live in localStorage, which the WebView
+// can evict and the user can clear. `persist_store` mirrors each payload to
+// <app_data_dir>/store/<key>.json; `load_store` hydrates it back at boot when
+// localStorage comes up empty (see App.tsx loadInitialData). Writes are atomic:
+// the payload goes to a temp file in the SAME directory first, then a rename
+// replaces the previous copy — a crash mid-write can never truncate the last
+// good snapshot. Keys are restricted to [a-z0-9_-]+ so a hostile or buggy
+// caller can never traverse outside the store directory.
+
+fn valid_store_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Pure IO helper: atomically write `<base>/store/<key>.json`. Testable with a
+/// tempdir base — the #[tauri::command] wrappers only add app_data_dir.
+fn store_file_write(base: &std::path::Path, key: &str, json: &str) -> Result<(), String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    let dir = base.join("store");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{key}.json.tmp"));
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, dir.join(format!("{key}.json"))).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pure IO helper: read `<base>/store/<key>.json`, `None` when never persisted.
+fn store_file_read(base: &std::path::Path, key: &str) -> Result<Option<String>, String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    match std::fs::read_to_string(base.join("store").join(format!("{key}.json"))) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Pure IO helper: delete `<base>/store/<key>.json`. A missing file is success
+/// — the caller wants it gone, and it is.
+///
+/// Deleting beats mirroring `"[]"` for secure erase (#596): an empty mirror is
+/// still a file on disk, and the whole point of that button is that nothing
+/// remains.
+fn store_file_remove(base: &std::path::Path, key: &str) -> Result<(), String> {
+    if !valid_store_key(key) {
+        return Err(format!("invalid store key: {key:?} (allowed: [a-z0-9_-]+)"));
+    }
+    match std::fs::remove_file(base.join("store").join(format!("{key}.json"))) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn clear_store(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_remove(&base, &key)
+}
+
+#[tauri::command]
+async fn persist_store(app: tauri::AppHandle, key: String, json: String) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_write(&base, &key, &json)
+}
+
+#[tauri::command]
+async fn load_store(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    store_file_read(&base, &key)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2168,6 +2383,7 @@ pub fn run() {
             set_workspace_roots,
             get_workspace_roots,
             get_system_memory,
+            path_exists,
             secret_set,
             secret_get,
             secret_delete,
@@ -2239,10 +2455,15 @@ pub fn run() {
             browser_engine::browser_cdp_screenshot,
             browser_engine::browser_cdp_eval,
             browser_engine::browser_cdp_read_console,
+            browser_engine::browser_cdp_read_network,
             browser_engine::browser_cdp_wait_for,
             browser_engine::browser_cdp_assert,
             fetch_url,
             web_search,
+            // Durable store mirror for sessions/projects/folders
+            persist_store,
+            load_store,
+            clear_store,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2250,7 +2471,162 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{glob_to_regex, is_skip_dir};
+    use super::{glob_to_regex, is_skip_dir, resolve_within_roots};
+    use std::path::PathBuf;
+
+    /// A scratch dir under the OS temp dir, canonicalised the way the real
+    /// roots are (macOS /tmp is itself a symlink to /private/tmp).
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("ollamagui_test_{}", name));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base.canonicalize().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_out_of_workspace_is_refused() {
+        // #607: the check was lexical, so `<root>/link/secret.txt` passed
+        // starts_with(root) while std::fs happily followed the link out.
+        let base = scratch("escape");
+        let root = base.join("ws");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "private").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let roots = vec![root.clone()];
+        let err = resolve_within_roots(
+            root.join("link/secret.txt").to_str().unwrap(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside the workspace"), "got: {}", err);
+        // The message names where it actually landed — "outside the workspace"
+        // is baffling for a path that looks local until you know it is a link.
+        assert!(err.contains("resolves to"), "got: {}", err);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_staying_inside_workspace_is_allowed() {
+        // node_modules/.bin, pnpm stores and monorepo package links are all
+        // symlinks; refusing every link would break real workspaces.
+        let base = scratch("internal");
+        let root = base.join("ws");
+        let real = root.join("packages/core");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("index.ts"), "export {}").unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("node_modules/core")).unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots(
+            root.join("node_modules/core/index.ts").to_str().unwrap(),
+            &roots,
+        )
+        .expect("internal symlink must be allowed");
+        assert!(resolved.starts_with(&root));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn new_file_in_workspace_resolves_before_it_exists() {
+        // canonicalize() alone fails for a file being created, which is why
+        // the original code skipped it; the fix must not break writes.
+        let base = scratch("newfile");
+        let root = base.join("ws");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots(
+            root.join("src/brand_new.ts").to_str().unwrap(),
+            &roots,
+        )
+        .expect("a not-yet-created file inside the root must resolve");
+        assert!(resolved.starts_with(&root));
+        assert!(resolved.ends_with("brand_new.ts"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn parent_traversal_is_still_refused() {
+        let base = scratch("traversal");
+        let root = base.join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(base.join("outside.txt"), "x").unwrap();
+
+        let roots = vec![root.clone()];
+        assert!(resolve_within_roots("../outside.txt", &roots).is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_the_primary_root() {
+        let base = scratch("relative");
+        let root = base.join("ws");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), "x").unwrap();
+
+        let roots = vec![root.clone()];
+        let resolved = resolve_within_roots("src/a.ts", &roots).unwrap();
+        assert_eq!(resolved, root.join("src/a.ts").canonicalize().unwrap());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_second_root_is_accepted() {
+        // A project may span several repositories (#492).
+        let base = scratch("multiroot");
+        let a = base.join("repo_a");
+        let b = base.join("repo_b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("f.txt"), "x").unwrap();
+
+        let roots = vec![a.clone(), b.clone()];
+        assert!(resolve_within_roots(b.join("f.txt").to_str().unwrap(), &roots).is_ok());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn no_root_configured_is_an_error() {
+        assert!(resolve_within_roots("/etc/passwd", &[]).is_err());
+    }
+
+    #[test]
+    fn store_file_remove_deletes_the_mirror() {
+        // Secure erase must leave nothing on disk (#596): an empty mirror is
+        // still a file, and boot hydration restores from whatever is there.
+        let base = scratch("store_remove");
+        super::store_file_write(&base, "sessions", "[{\"id\":\"a\"}]").unwrap();
+        assert!(super::store_file_read(&base, "sessions").unwrap().is_some());
+
+        super::store_file_remove(&base, "sessions").unwrap();
+        assert!(super::store_file_read(&base, "sessions").unwrap().is_none());
+        assert!(!base.join("store").join("sessions.json").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn store_file_remove_is_idempotent_and_key_checked() {
+        let base = scratch("store_remove_edge");
+        // Already gone is success — the caller wants it absent, and it is.
+        assert!(super::store_file_remove(&base, "never_written").is_ok());
+        // The path-traversal guard applies here as it does to read/write.
+        assert!(super::store_file_remove(&base, "../escape").is_err());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
 
     #[test]
     fn glob_star_stays_within_segment() {
@@ -2291,6 +2667,46 @@ mod tests {
         assert!(is_skip_dir(".git"));
         assert!(is_skip_dir("target"));
         assert!(!is_skip_dir("src"));
+    }
+
+    #[test]
+    fn path_check_reports_real_directory() {
+        // A directory that genuinely exists: temp_dir + a freshly created child.
+        let dir = std::env::temp_dir().join("ollamagui_path_check_dir_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let check = super::check_path_metadata(dir.to_str().unwrap());
+        assert!(check.exists, "created dir should exist");
+        assert!(check.is_dir, "created dir should be a directory");
+        assert!(check.readable, "created dir should be readable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_check_reports_missing_path() {
+        let check = super::check_path_metadata("/definitely/not/a/real/path/ollamagui_550");
+        assert!(!check.exists);
+        assert!(!check.is_dir);
+        assert!(!check.readable);
+    }
+
+    #[test]
+    fn path_check_file_exists_but_is_not_dir() {
+        let file = std::env::temp_dir().join("ollamagui_path_check_file_test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let check = super::check_path_metadata(file.to_str().unwrap());
+        assert!(check.exists);
+        assert!(!check.is_dir, "a plain file must not report is_dir");
+        assert!(check.readable);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn path_check_serializes_camel_case_for_js() {
+        // platform.ts reads `isDir` — the serde rename must hold (#550).
+        let json = serde_json::to_value(super::check_path_metadata("/")).unwrap();
+        assert!(json.get("isDir").is_some());
+        assert!(json.get("exists").is_some());
+        assert!(json.get("readable").is_some());
     }
 
     #[test]
@@ -2387,5 +2803,78 @@ mod tests {
         use base64::Engine;
         let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
         assert_eq!(dec, data);
+    }
+
+    // ── Durable store mirror ────────────────────────────────────────────────
+
+    /// Fresh per-test base dir (stands in for app_data_dir).
+    fn store_test_base(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ollamagui_store_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn store_round_trip_and_missing_key() {
+        let base = store_test_base("round_trip");
+        // Never-persisted key reads back as None, not an error.
+        assert_eq!(super::store_file_read(&base, "sessions").unwrap(), None);
+        super::store_file_write(&base, "sessions", r#"[{"id":"s1"}]"#).unwrap();
+        assert_eq!(
+            super::store_file_read(&base, "sessions").unwrap().as_deref(),
+            Some(r#"[{"id":"s1"}]"#)
+        );
+        // Keys are independent files.
+        assert_eq!(super::store_file_read(&base, "projects").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_atomic_overwrite_leaves_no_temp_file() {
+        let base = store_test_base("overwrite");
+        super::store_file_write(&base, "sessions", "old-payload").unwrap();
+        super::store_file_write(&base, "sessions", "new-payload").unwrap();
+        assert_eq!(
+            super::store_file_read(&base, "sessions").unwrap().as_deref(),
+            Some("new-payload")
+        );
+        // The rename must consume the temp file — only <key>.json remains.
+        let names: Vec<String> = std::fs::read_dir(base.join("store"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["sessions.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_rejects_traversal_and_malformed_keys() {
+        let base = store_test_base("bad_keys");
+        for bad in ["../evil", "a/b", "a\\b", "", "Sessions", "key.json", "a b", "café"] {
+            assert!(
+                super::store_file_write(&base, bad, "x").is_err(),
+                "write should reject key {bad:?}"
+            );
+            assert!(
+                super::store_file_read(&base, bad).is_err(),
+                "read should reject key {bad:?}"
+            );
+        }
+        // Nothing may have been created for rejected keys.
+        assert!(!base.exists(), "rejected writes must not create files");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn store_key_validator_accepts_expected_names() {
+        assert!(super::valid_store_key("sessions"));
+        assert!(super::valid_store_key("projects"));
+        assert!(super::valid_store_key("folders"));
+        assert!(super::valid_store_key("a-b_c123"));
+        assert!(!super::valid_store_key("../x"));
+        assert!(!super::valid_store_key(""));
     }
 }

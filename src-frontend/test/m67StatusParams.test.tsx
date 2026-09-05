@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 let origFetch: typeof global.fetch;
 
 beforeEach(() => {
   origFetch = global.fetch;
   localStorage.clear();
+  // #566: nothing is pre-configured now, so these specs add the provider.
+  seedLocalOllama();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
 });
@@ -19,71 +22,39 @@ afterEach(() => {
 const emptyModelsFetch = () =>
   vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
-// ── #324 Ollama connection status indicator ──────────────────────────────────
+// ── Connection status: sidebar Providers panel (#324, moved by #563) ─────────
+// The header's single Ollama dot is gone. With several providers configurable
+// it could only ever describe one of them, so status is stated per provider in
+// the sidebar — as text, not just colour, so it is available to screen readers.
 
-describe('Ollama connection status indicator (#324)', () => {
-  it('renders a status dot with an accessible label', async () => {
+describe('provider connection status (#563)', () => {
+  it('lists the configured provider with its status', async () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
-    await waitFor(() => {
-      expect(screen.getByLabelText('Ollama connection status')).toBeInTheDocument();
-    });
+    expect(await screen.findByText('Providers', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByText(/^Local Ollama: /)).toBeInTheDocument();
   });
 
-  it('shows connected (green) after models load successfully', async () => {
+  it('no longer renders the header status dot', async () => {
     global.fetch = emptyModelsFetch();
     render(<App />);
-    await waitFor(() => {
-      const dot = screen.getByLabelText('Ollama connection status');
-      expect(dot.className).toContain('bg-emerald-500');
-    });
+    await screen.findByText('Providers', {}, { timeout: 4000 });
+    expect(screen.queryByLabelText('Ollama connection status')).not.toBeInTheDocument();
   });
 
-  it('shows disconnected (red) when the model fetch fails', async () => {
+  it('reports a provider that cannot be reached', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('connection refused'));
     render(<App />);
-    const dot = await screen.findByLabelText('Ollama connection status');
-    await waitFor(() => {
-      expect(dot.className).toContain('bg-red-500');
-    });
+    // Never fetched and never tested reads as unknown, not as broken; pressing
+    // Test is what turns it into a definite verdict.
+    const status = await screen.findByText(/^Local Ollama: /, {}, { timeout: 4000 });
+    expect(status.textContent).toMatch(/Unknown|Not reachable/);
   });
 });
 
-// ── #325 Generation parameters badge in header ───────────────────────────────
-
-describe('Generation parameters badge (#325)', () => {
-  it('renders the badge with default temperature and context', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    const badge = await screen.findByLabelText('Generation parameters');
-    expect(badge.textContent).toContain('T:def');
-    expect(badge.textContent).toContain('CTX:4096');
-  });
-
-  it('updates the badge after /temp sets a value', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    await screen.findByLabelText('Generation parameters');
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/temp 0.3' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => {
-      const badge = screen.getByLabelText('Generation parameters');
-      expect(badge.textContent).toContain('T:0.3');
-    });
-  });
-
-  it('updates the badge after /ctx sets a value', async () => {
-    global.fetch = emptyModelsFetch();
-    render(<App />);
-    await screen.findByLabelText('Generation parameters');
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/ctx 16384' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => {
-      const badge = screen.getByLabelText('Generation parameters');
-      expect(badge.textContent).toContain('CTX:16384');
-    });
-  });
-});
+// #325 (generation-parameters badge in the header) was removed with the header
+// toolbar in the UI simplification — no badge surface exists anymore. The
+// effective /temp and /ctx values are still asserted via /params below.
 
 // ── #326 /params slash command ───────────────────────────────────────────────
 

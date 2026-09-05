@@ -19,7 +19,7 @@ export const ACCENTS: Record<string, string> = {
   cyan: '#0891b2',
 };
 
-export const DEFAULT_THEME: ThemeSettings = { mode: 'dark', accent: ACCENTS.blue, density: 'cozy' };
+export const DEFAULT_THEME: ThemeSettings = { mode: 'light', accent: ACCENTS.blue, density: 'cozy' };
 
 const KEY = 'ollama_gui_theme_v2';
 const LEGACY_KEY = 'ollama_gui_theme';
@@ -56,7 +56,7 @@ export function resolveDark(mode: ThemeMode): boolean {
     try {
       return window.matchMedia('(prefers-color-scheme: dark)').matches;
     } catch {
-      return true; // default dark when matchMedia is unavailable
+      return false; // default light when matchMedia is unavailable
     }
   }
   return mode === 'dark';

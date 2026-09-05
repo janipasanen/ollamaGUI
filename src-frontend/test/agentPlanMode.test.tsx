@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 import { toolRegistry } from '../services/tools';
+import { registerPlanTool, _resetPlanStore } from '../services/planStore';
 
 function toolCall(name: string, args: Record<string, unknown> = {}) {
   return JSON.stringify({
@@ -31,18 +32,35 @@ const PLAN = [{ step: 'Do the thing', status: 'in_progress' }];
 beforeEach(() => {
   localStorage.clear();
   localStorage.setItem('ollama_gui_agent_autonomy', JSON.stringify({
-    level: 'plan', maxIterations: 20, readOnly: false, smartApprove: false,
+    level: 'plan', maxIterations: 20, readOnly: false,
   }));
+  // Agentic mode is derived: active project with a bound folder → tools on.
+  localStorage.setItem('ollama_gui_projects', JSON.stringify([
+    { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+  ]));
+  localStorage.setItem('ollama_gui_active_project', 'proj_t');
+  // The agentic toolFilter (#549 rank 3) sends only core + MCP + custom tool
+  // names; anything else is blocked at execution time. Listing mutate_tool as
+  // a custom tool puts its (bare) name in the filter — the executable stub is
+  // registered directly on the registry below.
+  localStorage.setItem('custom_tools', JSON.stringify([
+    { id: 'ct_mutate', name: 'mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} }, code: 'return { ok: true };', enabled: true },
+  ]));
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
+  // App registers update_plan in an async init effect; sending immediately
+  // after render can race it. Pre-register (idempotent) so the read-only
+  // update_plan call never hits the approval gate, and reset stale plan state.
+  _resetPlanStore();
+  registerPlanTool();
   toolRegistry.registerTool({
-    name: 'mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} },
+    name: 'custom__mutate_tool', description: 'mutates state', parameters: { type: 'object', properties: {} },
     execute: async () => ({ ok: true }),
   });
 });
 
 afterEach(() => {
-  toolRegistry.unregisterTool('mutate_tool');
+  toolRegistry.unregisterTool('custom__mutate_tool');
 });
 
 describe('Plan-mode gating (#408)', () => {
@@ -53,19 +71,17 @@ describe('Plan-mode gating (#408)', () => {
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
         if (chatCalls === 1) return streamOnce(toolCall('update_plan', { plan: PLAN }));
-        if (chatCalls === 2) return streamOnce(toolCall('mutate_tool'));
-        if (chatCalls === 3) return streamOnce(toolCall('mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCall('custom__mutate_tool'));
+        if (chatCalls === 3) return streamOnce(toolCall('custom__mutate_tool'));
         return streamOnce(finalLine('plan done'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     // update_plan (read-only) runs without prompting; the first mutating tool
@@ -94,18 +110,16 @@ describe('Plan-mode gating (#408)', () => {
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
         if (chatCalls === 1) return streamOnce(toolCall('update_plan', { plan: PLAN }));
-        if (chatCalls === 2) return streamOnce(toolCall('mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCall('custom__mutate_tool'));
         return streamOnce(finalLine('plan denied'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
@@ -130,18 +144,16 @@ describe('Plan-mode edit-before-approve (#409)', () => {
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
         if (chatCalls === 1) return streamOnce(toolCall('update_plan', { plan: [{ step: 'Original step', status: 'in_progress' }] }));
-        if (chatCalls === 2) return streamOnce(toolCall('mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCall('custom__mutate_tool'));
         return streamOnce(finalLine('edited done'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
@@ -175,18 +187,16 @@ describe('Cancel during plan-approval wait (#410)', () => {
       if (u.includes('/api/chat') || u.includes('generate')) {
         chatCalls++;
         if (chatCalls === 1) return streamOnce(toolCall('update_plan', { plan: PLAN }));
-        if (chatCalls === 2) return streamOnce(toolCall('mutate_tool'));
+        if (chatCalls === 2) return streamOnce(toolCall('custom__mutate_tool'));
         return streamOnce(finalLine('should not reach'));
       }
       return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Toggle tool calling' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'go' } });
+    // Agentic mode already on via the bound project; type into the composer.
+    fireEvent.change(screen.getByLabelText('Type your message here'), { target: { value: 'go' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {

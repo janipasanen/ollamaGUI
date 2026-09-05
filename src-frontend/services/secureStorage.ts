@@ -122,9 +122,44 @@ export function secureWipe(key: string, store: Storage = localStorage): void {
 }
 
 /**
+ * Every localStorage key the app owns that does NOT start with one of the
+ * wipe prefixes (#597).
+ *
+ * The prefix pass alone missed these, and three of them hold plaintext API
+ * keys — `model_connections` (LM Studio / vLLM / OpenAI tokens),
+ * `openapi_servers`, `imagegen_config` — so "securely erase all local data"
+ * left live credentials behind on a machine the user believed was clean.
+ * `stt_config` and `voice_settings` can carry third-party config too.
+ *
+ * Keep this in sync when adding a STORAGE_KEY constant; the guard test in
+ * secureStorage.test.ts fails on a key that matches neither this list nor a
+ * known prefix.
+ */
+export const APP_STORAGE_KEYS: string[] = [
+  'model_connections',
+  'openapi_servers',
+  'imagegen_config',
+  'custom_tools',
+  'custom_functions',
+  'model_presets',
+  'active_preset_id',
+  'stt_config',
+  'voice_settings',
+  // Folder-trust decisions (#608). These grant a repository the right to write
+  // the agent's system prompt, so "erase all local data" must revoke them —
+  // leaving them behind would silently re-trust folders on a machine the user
+  // believes they have cleaned.
+  'trusted_folders',
+];
+
+/**
  * Wipe all app data (chat history, sessions, config) from a store. Used by a
- * "clear all data securely" action. Only clears keys with the app prefix unless
- * `all` is true.
+ * "clear all data securely" action.
+ *
+ * Clears keys matching `prefixes` PLUS the explicitly enumerated
+ * APP_STORAGE_KEYS. The prefix pass stays because `ollama_gui_*` keys are
+ * created dynamically and enumerating them all would be brittle; the list
+ * exists because several real keys carry no prefix at all.
  */
 export function secureWipeAll(prefixes: string[] = ['ollama_gui_', 'mcp_'], store: Storage = localStorage): string[] {
   const wiped: string[] = [];
@@ -132,6 +167,9 @@ export function secureWipeAll(prefixes: string[] = ['ollama_gui_', 'mcp_'], stor
   for (let i = 0; i < store.length; i++) {
     const k = store.key(i);
     if (k && prefixes.some(p => k.startsWith(p))) keys.push(k);
+  }
+  for (const k of APP_STORAGE_KEYS) {
+    if (store.getItem(k) !== null && !keys.includes(k)) keys.push(k);
   }
   for (const k of keys) {
     secureWipe(k, store);

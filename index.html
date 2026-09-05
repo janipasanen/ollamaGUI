@@ -4,11 +4,145 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Ollama GUI</title>
   </head>
 
   <body>
     <div id="root"></div>
+
+    <!-- Boot failure reporter.
+         A parse error in the bundle (or any throw before React mounts) leaves
+         #root empty and paints nothing at all — the "white page" users report,
+         with no clue as to the cause. The app's React error boundary cannot
+         help here: it lives inside the module graph that failed to load. This
+         inline script runs first, has no dependencies, and turns that silence
+         into a readable message.
+
+         There is deliberately no <style> block and no markup for the overlay:
+         a static <style> would make Tauri add a nonce to style-src, and per
+         CSP3 a nonce makes the 'unsafe-inline' in tauri.conf.json's policy be
+         IGNORED — which would break every stylesheet the app injects at
+         runtime (mermaid's, most visibly) in the packaged build. Everything
+         below is built and styled from script, which no style-src rule
+         governs. -->
+    <script>
+      (function () {
+        var shown = false;
+
+        // Once React has put anything in #root the app is running, and its own
+        // error boundary owns every later failure. Reporting here after that
+        // point would blank a working UI over something survivable — a lazy
+        // chunk that 404s, a rejected fetch — which is strictly worse than the
+        // problem this reporter exists to solve.
+        function appAlive() {
+          var root = document.getElementById('root');
+          return !!(root && root.childElementCount > 0);
+        }
+
+        function show(detail, hint) {
+          if (shown || appAlive() || !document.body) return;
+          shown = true;
+
+          var box = document.createElement('div');
+          box.id = 'boot-error';
+          box.setAttribute('role', 'alert');
+          var s = box.style;
+          s.position = 'fixed';
+          s.top = '0'; s.right = '0'; s.bottom = '0'; s.left = '0';
+          s.zIndex = '2147483647';
+          s.padding = '2.5rem 2rem';
+          s.overflow = 'auto';
+          s.background = '#18181b';
+          s.color = '#e4e4e7';
+          s.font = '14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+          var h = document.createElement('h1');
+          h.textContent = 'Ollama GUI could not start';
+          h.style.fontSize = '1.1rem';
+          h.style.margin = '0 0 .75rem';
+
+          var p = document.createElement('p');
+          p.id = 'boot-error-hint';
+          p.textContent = hint;
+          p.style.margin = '0 0 .75rem';
+          p.style.maxWidth = '40rem';
+          p.style.color = '#a1a1aa';
+
+          var pre = document.createElement('pre');
+          pre.id = 'boot-error-detail';
+          pre.textContent = detail;
+          pre.style.whiteSpace = 'pre-wrap';
+          pre.style.wordBreak = 'break-word';
+          pre.style.background = '#27272a';
+          pre.style.borderRadius = '.5rem';
+          pre.style.padding = '.75rem';
+          pre.style.maxWidth = '40rem';
+          pre.style.fontSize = '12px';
+          pre.style.color = '#fca5a5';
+
+          box.appendChild(h);
+          box.appendChild(p);
+          box.appendChild(pre);
+          document.body.appendChild(box);
+        }
+
+        // NOTE: no `capture: true` here, and an explicit target check. A failed
+        // <img>/<link>/<script> load fires an 'error' event that only reaches
+        // window during the CAPTURE phase, carries no .message, and is not a
+        // boot failure at all — catching those is what made a missing icon
+        // render as "Unknown error" over a perfectly working app.
+        window.addEventListener('error', function (e) {
+          if (!e) return;
+          // A resource-load failure targets the ELEMENT that failed; a real
+          // script error targets the window. Test for "is this an element?"
+          // rather than "is target === window": the identity check is not
+          // reliable across realms (it is already false under jsdom), and
+          // nodeType says exactly what we mean.
+          if (e.target && e.target.nodeType === 1) return;
+          if (!e.message) return;
+          // A SyntaxError before any module executes means the JavaScript
+          // itself could not be parsed — on macOS that is almost always a
+          // WebKit too old for the syntax the bundle was built with.
+          var isSyntax = /SyntaxError|Unexpected|Invalid regular expression/i.test(e.message);
+          show(
+            e.message + (e.filename ? '\n' + e.filename + ':' + e.lineno : ''),
+            isSyntax
+              ? 'This build needs a newer macOS than this Mac provides (macOS 13.3 / Safari 16.4 or later). The app could not read its own code.'
+              : 'The interface failed to load. The error below is the reason.'
+          );
+        });
+
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason;
+          show(String((r && r.message) || r || 'Unhandled promise rejection'),
+               'Something failed while starting up.');
+        });
+
+        // Nothing threw, but nothing rendered either — catches a silent failure
+        // that never surfaces as an error event. appAlive() inside show() is
+        // what keeps a merely slow boot from tripping this, and the timer is
+        // cleared as soon as the app mounts so it cannot fire over a live UI.
+        var noRender = window.setTimeout(function () {
+          show('The app bundle loaded but rendered nothing within 20 seconds.',
+               'The interface did not start. Reopening the app usually clears this.');
+        }, 20000);
+
+        // Stop watching the moment React mounts: a healthy app should not carry
+        // a pending failure timer for its whole lifetime.
+        if (typeof MutationObserver === 'function') {
+          var root = document.getElementById('root');
+          if (root) {
+            var mo = new MutationObserver(function () {
+              if (!appAlive()) return;
+              window.clearTimeout(noRender);
+              mo.disconnect();
+            });
+            mo.observe(root, { childList: true });
+          }
+        }
+      })();
+    </script>
+
     <script type="module" src="/src-frontend/main.tsx"></script>
   </body>
 </html>

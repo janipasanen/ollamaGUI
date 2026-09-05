@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   loadSettings, saveSettings, getAutonomyLevel, setAutonomyLevel,
   getMaxIterations, setMaxIterations, isReadOnlyMode, setReadOnlyMode,
-  isSmartApproveEnabled, setSmartApproveEnabled,
   isPlanMode, shouldAskBeforeToolUse, isBlockedByReadOnlyMode,
   IterationCounter,
   type AutonomyLevel,
@@ -23,10 +22,6 @@ describe('defaults (#88)', () => {
 
   it('defaults readOnly to false', () => {
     expect(isReadOnlyMode()).toBe(false);
-  });
-
-  it('defaults smartApprove to false', () => {
-    expect(isSmartApproveEnabled()).toBe(false);
   });
 });
 
@@ -54,17 +49,12 @@ describe('maxIterations (#89)', () => {
   });
 });
 
-describe('readOnly + smartApprove (#146)', () => {
+describe('readOnly (#146)', () => {
   it('setReadOnlyMode persists the flag', () => {
     setReadOnlyMode(true);
     expect(isReadOnlyMode()).toBe(true);
     setReadOnlyMode(false);
     expect(isReadOnlyMode()).toBe(false);
-  });
-
-  it('setSmartApproveEnabled persists the flag', () => {
-    setSmartApproveEnabled(true);
-    expect(isSmartApproveEnabled()).toBe(true);
   });
 });
 
@@ -79,39 +69,28 @@ describe('isPlanMode (#88)', () => {
   });
 });
 
-describe('shouldAskBeforeToolUse (#88, #146)', () => {
-  it('ask level + non-readOnly tool → ask', () => {
+describe('shouldAskBeforeToolUse (#88, #549 audit rank 2)', () => {
+  it('read-only tools NEVER prompt, at any level', () => {
+    for (const level of ['plan', 'ask', 'auto'] as AutonomyLevel[]) {
+      setAutonomyLevel(level);
+      expect(shouldAskBeforeToolUse(true)).toBe(false);
+    }
+  });
+
+  it('ask level + mutating tool → ask', () => {
     setAutonomyLevel('ask');
-    setSmartApproveEnabled(false);
     expect(shouldAskBeforeToolUse(false)).toBe(true);
   });
 
-  it('ask level + readOnly tool + smartApprove → skip ask', () => {
-    setAutonomyLevel('ask');
-    setSmartApproveEnabled(true);
-    expect(shouldAskBeforeToolUse(true)).toBe(false);
-  });
-
-  it('ask level + readOnly tool but no smartApprove → ask', () => {
-    setAutonomyLevel('ask');
-    setSmartApproveEnabled(false);
-    expect(shouldAskBeforeToolUse(true)).toBe(true);
+  it('plan level + mutating tool → ask', () => {
+    setAutonomyLevel('plan');
+    expect(shouldAskBeforeToolUse(false)).toBe(true);
   });
 
   it('auto level → never ask', () => {
     setAutonomyLevel('auto');
     expect(shouldAskBeforeToolUse(false)).toBe(false);
     expect(shouldAskBeforeToolUse(true)).toBe(false);
-  });
-
-  it('plan level + readOnly tool → skip ask (read-only is safe)', () => {
-    setAutonomyLevel('plan');
-    expect(shouldAskBeforeToolUse(true)).toBe(false);
-  });
-
-  it('plan level + non-readOnly tool → ask', () => {
-    setAutonomyLevel('plan');
-    expect(shouldAskBeforeToolUse(false)).toBe(true);
   });
 });
 

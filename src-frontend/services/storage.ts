@@ -1,5 +1,6 @@
 import { Message } from './ollama';
 import type { BranchState } from './branching';
+import { mirrorToDisk } from './rustStore';
 
 export interface ChatSession {
   id: string;
@@ -16,6 +17,9 @@ export interface ChatSession {
   branchState?: BranchState;
   // Projects (#92)
   projectId?: string;
+  /** Per-session working directory (#550): where this session's agent works.
+   *  Unset = the project's primary folder. Survives session switches. */
+  workingDir?: string;
 }
 
 // ─── Projects (#92) ───────────────────────────────────────────────────────────
@@ -55,6 +59,12 @@ const SESSIONS_KEY = 'ollama_gui_sessions';
 const FOLDERS_KEY = 'ollama_gui_folders';
 const PROJECTS_KEY = 'ollama_gui_projects';
 
+// Disk-mirror keys (Rust writes <app_data_dir>/store/<key>.json). App.tsx
+// hydrates localStorage from these at boot when the store is missing.
+export const DISK_SESSIONS_KEY = 'sessions';
+export const DISK_FOLDERS_KEY = 'folders';
+export const DISK_PROJECTS_KEY = 'projects';
+
 /** Ensure organization fields exist on legacy sessions. */
 function migrate(s: any): ChatSession {
   return {
@@ -84,15 +94,23 @@ export const storage = {
     } else {
       sessions.unshift(session);
     }
+    const json = JSON.stringify(sessions);
+    let result: { ok: true } | { ok: false; error: 'quota' };
     try {
-      localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
-      return { ok: true };
+      localStorage.setItem(SESSIONS_KEY, json);
+      result = { ok: true };
     } catch (e) {
       if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-        return { ok: false, error: 'quota' };
+        result = { ok: false, error: 'quota' };
+      } else {
+        result = { ok: true }; // unexpected error — treat as non-fatal
       }
-      return { ok: true }; // unexpected error — treat as non-fatal
     }
+    // Mirror to disk even on the quota path: localStorage may be full, but the
+    // Rust store still takes the payload, so no messages are lost while the
+    // quota banner is showing.
+    mirrorToDisk(DISK_SESSIONS_KEY, json);
+    return result;
   },
   /** Merge a partial update into a session (used for pin/archive/tags/folder). */
   updateSession: (id: string, patch: Partial<ChatSession>): void => {
@@ -100,14 +118,21 @@ export const storage = {
     const index = sessions.findIndex(s => s.id === id);
     if (index === -1) return;
     sessions[index] = { ...sessions[index], ...patch };
-    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* quota */ }
+    const json = JSON.stringify(sessions);
+    try { localStorage.setItem(SESSIONS_KEY, json); } catch { /* quota */ }
+    mirrorToDisk(DISK_SESSIONS_KEY, json); // disk still takes it on quota
   },
   deleteSession: (id: string) => {
     const sessions = storage.getSessions().filter(s => s.id !== id);
-    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* quota */ }
+    const json = JSON.stringify(sessions);
+    try { localStorage.setItem(SESSIONS_KEY, json); } catch { /* quota */ }
+    mirrorToDisk(DISK_SESSIONS_KEY, json);
   },
   clearAll: () => {
     localStorage.removeItem(SESSIONS_KEY);
+    // Keep the disk mirror in sync so boot hydration doesn't resurrect
+    // deliberately cleared chats.
+    mirrorToDisk(DISK_SESSIONS_KEY, '[]');
   },
 
   // ─── Folders (#133) ──────────────────────────────────────────────────────
@@ -124,15 +149,21 @@ export const storage = {
     const folders = storage.getFolders();
     const index = folders.findIndex(f => f.id === folder.id);
     if (index > -1) folders[index] = folder; else folders.push(folder);
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+    const json = JSON.stringify(folders);
+    localStorage.setItem(FOLDERS_KEY, json);
+    mirrorToDisk(DISK_FOLDERS_KEY, json);
   },
   deleteFolder: (id: string): void => {
+    const foldersJson = JSON.stringify(storage.getFolders().filter(f => f.id !== id));
+    // Detach sessions from the removed folder.
+    const sessions = storage.getSessions().map(s => s.folderId === id ? { ...s, folderId: undefined } : s);
+    const sessionsJson = JSON.stringify(sessions);
     try {
-      localStorage.setItem(FOLDERS_KEY, JSON.stringify(storage.getFolders().filter(f => f.id !== id)));
-      // Detach sessions from the removed folder.
-      const sessions = storage.getSessions().map(s => s.folderId === id ? { ...s, folderId: undefined } : s);
-      localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+      localStorage.setItem(FOLDERS_KEY, foldersJson);
+      localStorage.setItem(SESSIONS_KEY, sessionsJson);
     } catch { /* quota */ }
+    mirrorToDisk(DISK_FOLDERS_KEY, foldersJson);
+    mirrorToDisk(DISK_SESSIONS_KEY, sessionsJson);
   },
 
   // ─── Projects (#92) ────────────────────────────────────────────────────────
@@ -150,15 +181,21 @@ export const storage = {
     const projects = storage.getProjects();
     const index = projects.findIndex(p => p.id === project.id);
     if (index > -1) projects[index] = project; else projects.unshift(project);
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+    const json = JSON.stringify(projects);
+    localStorage.setItem(PROJECTS_KEY, json);
+    mirrorToDisk(DISK_PROJECTS_KEY, json);
   },
   deleteProject: (id: string): void => {
+    const projectsJson = JSON.stringify(storage.getProjects().filter(p => p.id !== id));
+    // Detach sessions from the deleted project.
+    const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
+    const sessionsJson = JSON.stringify(sessions);
     try {
-      localStorage.setItem(PROJECTS_KEY, JSON.stringify(storage.getProjects().filter(p => p.id !== id)));
-      // Detach sessions from the deleted project.
-      const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
-      localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+      localStorage.setItem(PROJECTS_KEY, projectsJson);
+      localStorage.setItem(SESSIONS_KEY, sessionsJson);
     } catch { /* quota */ }
+    mirrorToDisk(DISK_PROJECTS_KEY, projectsJson);
+    mirrorToDisk(DISK_SESSIONS_KEY, sessionsJson);
   },
 };
 
@@ -233,10 +270,16 @@ export function parseSessionImport(text: string): ChatSession[] {
   } catch {
     throw new Error('Invalid JSON');
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error('Expected an array of sessions');
-  }
-  return parsed.map((entry, i) => {
+  // Accept a single session as well as a list (#598). `/save` and
+  // `/export json` both write ONE bare session object, so every snapshot and
+  // every exported file failed to load with "Expected an array of sessions" —
+  // the round-trip was broken in both directions.
+  //
+  // Fixed in the reader, deliberately, rather than by wrapping the writers:
+  // files written by earlier builds are already bare objects, and a
+  // writer-only fix would strand every one of them while looking correct.
+  const list: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  return list.map((entry, i) => {
     if (!entry || typeof entry !== 'object') {
       throw new Error(`Session #${i} is not an object`);
     }

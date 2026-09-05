@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
@@ -6,21 +6,23 @@ import App from '../App';
 describe('App Component', () => {
   it('renders the main chat interface', () => {
     render(<App />);
-    expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
+    // The "Ollama GUI" h1 is gone — the rail now starts with the "+ New"
+    // button and the composer is the centerpiece.
+    expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/Message Ollama\.\.\./i)).toBeInTheDocument();
   });
 
-  it('toggles sidebar when menu button is clicked', () => {
+  it('toggles sidebar with Ctrl+\\', () => {
     render(<App />);
-    const menuButton = screen.getByRole('button', { name: /Toggle sidebar/i });
 
-    // Sidebar heading is visible initially
-    expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
+    // The rail is open by default on desktop; anchor on the sidebar search
+    // input since the "Ollama GUI" heading no longer exists.
+    const sidebar = screen.getByLabelText('Search conversations').closest('div.transition-all');
+    expect(sidebar).not.toHaveClass('w-0');
 
-    fireEvent.click(menuButton);
+    fireEvent.keyDown(window, { key: '\\', ctrlKey: true });
 
     // After collapse the sidebar container has w-0
-    const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div.transition-all');
     expect(sidebar).toHaveClass('w-0');
   });
 
@@ -47,12 +49,14 @@ describe('App Component', () => {
     expect(screen.getByPlaceholderText(/Search conversations/i)).toBeInTheDocument();
   });
 
-  it('shows export and import buttons in sidebar', () => {
+  it('exposes export and import of all chats via the command palette', () => {
+    // The sidebar Export/Import buttons are gone — the feature moved to the
+    // command palette ("Export All Chats (JSON)" / "Import Chats (JSON)").
     render(<App />);
-    // Exact match: the per-chat "Export conversation as Markdown" toolbar
-    // button (#256) also matches /Export/i, so scope to the sidebar label.
-    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    fireEvent.change(screen.getByLabelText('Command palette search'), { target: { value: 'Chats (JSON)' } });
+    expect(screen.getByText('Export All Chats (JSON)')).toBeInTheDocument();
+    expect(screen.getByText('Import Chats (JSON)')).toBeInTheDocument();
   });
 
   it('shows attach button in input area', () => {
@@ -198,14 +202,15 @@ describe('App Component', () => {
     it('Cmd/Ctrl+\\ should toggle sidebar', () => {
       render(<App />);
 
-      expect(screen.getByText(/History/i)).toBeInTheDocument();
+      // No "History" heading any more — anchor on the sidebar search input.
+      const sidebar = screen.getByLabelText('Search conversations').closest('div.transition-all');
+      expect(sidebar).not.toHaveClass('w-0');
 
       fireEvent.keyDown(window, { key: '\\', metaKey: true });
-      const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div.transition-all');
       expect(sidebar).toHaveClass('w-0');
 
       fireEvent.keyDown(window, { key: '\\', metaKey: true });
-      expect(screen.getByText(/History/i)).toBeInTheDocument();
+      expect(sidebar).not.toHaveClass('w-0');
     });
 
     it('Escape should close settings when open', () => {
@@ -234,8 +239,8 @@ describe('App Component', () => {
 
       expect(screen.queryByRole('heading', { name: /Keyboard Shortcuts/i })).not.toBeInTheDocument();
 
-      const helpButton = screen.getByRole('button', { name: /Show keyboard shortcuts/i });
-      fireEvent.click(helpButton);
+      // The header no longer carries a help button (#546); "?" still opens it.
+      fireEvent.keyDown(window, { key: '?' });
 
       expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/i })).toBeInTheDocument();
       expect(screen.getByText(/Ctrl\+K/i)).toBeInTheDocument();
@@ -245,18 +250,25 @@ describe('App Component', () => {
 
     it('responsive design handles different screen sizes', () => {
       render(<App />);
-      
-      // Initially should have desktop layout
-      expect(screen.getByText(/\+ New Chat/i)).toBeInTheDocument();
+
+      // Initially should have desktop layout: "+ New" button and Settings.
+      expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /⚙️ Settings/i })).toBeInTheDocument();
-      
+
+      const sidebar = screen.getByLabelText('Search conversations').closest('div.transition-all');
+      expect(sidebar).not.toHaveClass('w-0');
+
       // Simulate mobile viewport
       global.innerWidth = 600;
       fireEvent.resize(window);
-      
+
       // On mobile, sidebar should be collapsed by default
-      const sidebar = screen.getByRole('heading', { name: /Ollama GUI/i }).closest('div');
       expect(sidebar).toHaveClass('w-0');
+
+      // Crossing back to desktop width REOPENS the rail automatically (#545).
+      global.innerWidth = 1024;
+      fireEvent.resize(window);
+      expect(sidebar).not.toHaveClass('w-0');
     });
   });
 });
@@ -269,28 +281,33 @@ describe('App Component', () => {
       global.innerWidth = 1024;
     });
 
-    it('panel toggle buttons expose aria-pressed', () => {
-      render(<App />);
-      const browserToggle = screen.getByRole('button', { name: 'Toggle browser preview' });
-      expect(browserToggle).toHaveAttribute('aria-pressed', 'false');
+    afterEach(() => {
+      localStorage.removeItem('ollama_gui_projects');
+      localStorage.removeItem('ollama_gui_active_project');
     });
 
-    it('agentic-mode switch exposes role=switch and aria-checked', () => {
-      render(<App />);
-      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-      const sw = screen.getByRole('switch', { name: 'Toggle tool calling' });
-      expect(sw).toHaveAttribute('aria-checked', 'false');
-    });
+    // The header panel-toggle buttons (browser/terminal/files/…) were removed
+    // with the docked panels themselves, so their aria-pressed test is gone.
+
+    // The Settings "Agentic Mode" toggle was deleted — agentic mode is now
+    // derived from the active project having a bound folder, so the
+    // role=switch/aria-checked test for it is gone.
 
     it('autonomy level buttons expose aria-pressed for the active level', () => {
+      // Agentic mode is derived: bind a project folder and activate it, which
+      // renders the Plan/Ask/Auto control next to the model select below the
+      // composer (it is no longer in Settings).
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+      ]));
+      localStorage.setItem('ollama_gui_active_project', 'proj_t');
       render(<App />);
-      fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+      expect(screen.getByRole('group', { name: 'Autonomy level' })).toBeInTheDocument();
       // Default autonomy level is 'ask' (#88).
-      const askBtn = screen.getAllByRole('button').find(b => b.textContent === 'ask');
-      expect(askBtn).toBeTruthy();
-      expect(askBtn!.getAttribute('aria-pressed')).toBe('true');
-      const planBtn = screen.getAllByRole('button').find(b => b.textContent === 'plan');
-      expect(planBtn!.getAttribute('aria-pressed')).toBe('false');
+      const askBtn = screen.getByRole('button', { name: 'Set autonomy: ask' });
+      expect(askBtn.getAttribute('aria-pressed')).toBe('true');
+      const planBtn = screen.getByRole('button', { name: 'Set autonomy: plan' });
+      expect(planBtn.getAttribute('aria-pressed')).toBe('false');
     });
   });
 

@@ -9,6 +9,10 @@ on:
 jobs:
   build:
     strategy:
+      # One OS hiccup (e.g. a timing-flaky UI test on a slow Windows runner)
+      # used to cancel the other two builds mid-compile, turning a single
+      # flake into a triple-red run. Let each OS finish and report honestly.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -35,7 +39,11 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Run tests
-        run: npm test
+        # --retry=2: parity with playwright.config.ts `retries: 2`. The jsdom
+        # UI suites are timing-sensitive on loaded runners (windows-latest
+        # flaked a different file each run); a real regression still fails
+        # three times deterministically, so the gate stays honest.
+        run: npm test -- --retry=2
 
       - name: Build Frontend
         run: npm run build

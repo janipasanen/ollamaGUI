@@ -33,7 +33,7 @@ describe('Command palette integration (#251)', () => {
 
   it('the keyboard-shortcuts overlay lists the Command Palette entry', () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Show keyboard shortcuts/i }));
+    fireEvent.keyDown(window, { key: '?' });
     expect(screen.getByText('Command Palette')).toBeInTheDocument();
     expect(screen.getByText('Ctrl+P')).toBeInTheDocument();
   });

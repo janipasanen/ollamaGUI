@@ -11,6 +11,7 @@
 //! and helpers are unit-tested independently.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use chromiumoxide::cdp::browser_protocol::accessibility::GetFullAxTreeParams;
@@ -25,7 +26,7 @@ use lazy_static::lazy_static;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::ax::{self, ConsoleRing};
+use crate::ax::{self, ConsoleRing, NetworkEntry, NetworkRing};
 
 /// One live engine: the browser, its background event-handler task, the active
 /// page, and the latest snapshot ref map (invalidated on every new snapshot).
@@ -34,7 +35,8 @@ struct Engine {
     page: chromiumoxide::Page,
     handler: tokio::task::JoinHandle<()>,
     refs: HashMap<String, i64>,
-    console: ConsoleRing,
+    console: Arc<Mutex<ConsoleRing>>,
+    network: Arc<Mutex<NetworkRing>>,
 }
 
 lazy_static! {
@@ -42,6 +44,7 @@ lazy_static! {
 }
 
 const CONSOLE_CAP: usize = 1000;
+const NETWORK_CAP: usize = 500;
 
 #[derive(Serialize)]
 pub struct NavResult {
@@ -92,12 +95,26 @@ pub async fn browser_engine_start(headless: Option<bool>) -> Result<(), String> 
         .await
         .map_err(|e| format!("Failed to open page: {e}"))?;
 
+    // The Network domain is off by default; without this no request events
+    // are delivered at all (#628).
+    let _ = page
+        .execute(chromiumoxide::cdp::browser_protocol::network::EnableParams::default())
+        .await;
+    let _ = page
+        .execute(chromiumoxide::cdp::js_protocol::runtime::EnableParams::default())
+        .await;
+
+    let console = Arc::new(Mutex::new(ConsoleRing::new(CONSOLE_CAP)));
+    let network = Arc::new(Mutex::new(NetworkRing::new(NETWORK_CAP)));
+    spawn_event_pumps(&page, console.clone(), network.clone()).await;
+
     *slot = Some(Engine {
         browser,
         page,
         handler: handle,
         refs: HashMap::new(),
-        console: ConsoleRing::new(CONSOLE_CAP),
+        console,
+        network,
     });
     Ok(())
 }
@@ -111,6 +128,88 @@ pub async fn browser_engine_stop() -> Result<(), String> {
         engine.handler.abort();
     }
     Ok(())
+}
+
+/// Subscribe to the CDP event streams and feed the rings (#628, #629).
+///
+/// Each listener owns its own task because `event_listener` yields one typed
+/// stream per event kind. The rings are behind `Arc<Mutex<…>>` so the pumps and
+/// the read commands can touch them independently — the engine mutex is held
+/// across `await`s elsewhere, and blocking these pumps on it would drop events.
+async fn spawn_event_pumps(
+    page: &chromiumoxide::Page,
+    console: Arc<Mutex<ConsoleRing>>,
+    network: Arc<Mutex<NetworkRing>>,
+) {
+    use chromiumoxide::cdp::browser_protocol::network::{
+        EventLoadingFailed, EventRequestWillBeSent, EventResponseReceived,
+    };
+    use chromiumoxide::cdp::js_protocol::runtime::EventConsoleApiCalled;
+
+    if let Ok(mut ev) = page.event_listener::<EventRequestWillBeSent>().await {
+        let ring = network.clone();
+        tokio::task::spawn(async move {
+            while let Some(e) = ev.next().await {
+                ring.lock().await.push_request(
+                    e.request_id.inner().clone(),
+                    e.request.method.clone(),
+                    // Strip credentials from the URL before it is stored: query
+                    // tokens are exactly as sensitive as an auth header.
+                    ax::strip_query_credentials(&e.request.url),
+                );
+            }
+        });
+    }
+
+    if let Ok(mut ev) = page.event_listener::<EventResponseReceived>().await {
+        let ring = network.clone();
+        tokio::task::spawn(async move {
+            while let Some(e) = ev.next().await {
+                ring.lock().await.complete(
+                    e.request_id.inner(),
+                    e.response.status,
+                    &e.response.status_text,
+                    &e.response.mime_type,
+                );
+            }
+        });
+    }
+
+    if let Ok(mut ev) = page.event_listener::<EventLoadingFailed>().await {
+        let ring = network.clone();
+        tokio::task::spawn(async move {
+            while let Some(e) = ev.next().await {
+                ring.lock().await.fail(e.request_id.inner(), &e.error_text);
+            }
+        });
+    }
+
+    if let Ok(mut ev) = page.event_listener::<EventConsoleApiCalled>().await {
+        let ring = console.clone();
+        tokio::task::spawn(async move {
+            while let Some(e) = ev.next().await {
+                // Render each argument's value; CDP sends structured
+                // RemoteObjects rather than the formatted line the devtools
+                // console shows.
+                let line = e
+                    .args
+                    .iter()
+                    .map(|a| {
+                        a.value
+                            .as_ref()
+                            .map(|v| match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            })
+                            .or_else(|| a.description.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ring.lock().await.push(line);
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,15 +341,28 @@ pub async fn browser_cdp_eval(expression: String) -> Result<String, String> {
     serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
+/// Read the captured network log (optionally clearing it).
+///
+/// This is the external-site half of `browser_read_network` (#628): the
+/// frontend's fetch/XHR patch only reaches same-origin pages, while this path
+/// sees every request the real browser makes.
+#[tauri::command]
+pub async fn browser_cdp_read_network(clear: Option<bool>) -> Result<Vec<NetworkEntry>, String> {
+    let slot = ENGINE.lock().await;
+    let engine = slot.as_ref().ok_or_else(|| "Engine not started".to_string())?;
+    let mut ring = engine.network.lock().await;
+    Ok(if clear.unwrap_or(false) { ring.drain() } else { ring.entries() })
+}
+
 /// Drain the captured console ring buffer (optionally without clearing).
 #[tauri::command]
 pub async fn browser_cdp_read_console(clear: Option<bool>) -> Result<Vec<ConsoleEntry>, String> {
     let mut slot = ENGINE.lock().await;
     let engine = slot.as_mut().ok_or("Engine not started")?;
     let lines = if clear.unwrap_or(true) {
-        engine.console.drain()
+        engine.console.lock().await.drain()
     } else {
-        engine.console.lines()
+        engine.console.lock().await.lines()
     };
     Ok(lines.into_iter().map(|text| ConsoleEntry { text }).collect())
 }

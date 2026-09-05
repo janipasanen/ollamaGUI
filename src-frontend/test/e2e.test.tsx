@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import App from '../App';
 import { toolRegistry } from '../services/tools';
 import { storage, type ChatSession } from '../services/storage';
+import { seedLocalOllama } from './helpers/providers';
 
 describe('End-to-End Tests', () => {
   beforeAll(() => {
@@ -24,6 +25,8 @@ describe('End-to-End Tests', () => {
   beforeEach(() => {
     // Clear localStorage to prevent server state bleeding between tests
     localStorage.clear();
+    // #566: nothing is pre-configured now, so this spec adds the provider.
+    seedLocalOllama();
     // Restore desktop viewport so header buttons are visible
     Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
     window.dispatchEvent(new Event('resize'));
@@ -45,9 +48,12 @@ describe('End-to-End Tests', () => {
     it('should render the main chat interface', () => {
       render(<App />);
 
-      expect(screen.getByText('Ollama GUI')).toBeInTheDocument();
+      // Minimal Ollama-style shell: composer + Send, "+ New" chat button and
+      // conversation search in the sidebar (the "Ollama GUI" h1 is gone).
       expect(screen.getByPlaceholderText('Message Ollama...')).toBeInTheDocument();
       expect(screen.getByText('Send')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Start new chat' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Search conversations')).toBeInTheDocument();
     });
 
     it('should send and receive messages', async () => {
@@ -90,11 +96,18 @@ describe('End-to-End Tests', () => {
     });
 
     it('should create and switch between chat sessions', async () => {
+      // "+ New" now opens a project picker menu (when projects exist); choosing
+      // "No project" starts the fresh chat that the old "+ New Chat" button did.
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_e2e', name: 'e2e-proj', workspaceRoot: '', instructions: '', createdAt: 1 },
+      ]));
       render(<App />);
 
       const input = screen.getByPlaceholderText('Message Ollama...');
       fireEvent.change(input, { target: { value: 'First message' } });
-      fireEvent.click(screen.getByText('+ New Chat'));
+      fireEvent.click(screen.getByRole('button', { name: 'Start new chat' }));
+      const menu = await screen.findByRole('menu', { name: 'New chat in project' });
+      fireEvent.click(within(menu).getByRole('menuitem', { name: /No project/ }));
 
       expect(screen.queryByText('First message')).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText('Message Ollama...')).toHaveValue('');
@@ -123,22 +136,37 @@ describe('End-to-End Tests', () => {
       expect(systemPromptInput).toHaveValue('New system prompt');
     });
 
-    it('should toggle agentic mode', async () => {
+    it('derives agentic mode from the active project folder (toggle removed)', async () => {
+      // Agentic mode is no longer a Settings toggle — it is ON exactly when
+      // the active project has a bound folder. Seed one before render.
+      localStorage.setItem('ollama_gui_projects', JSON.stringify([
+        { id: 'proj_t', name: 'proj', workspaceRoot: '/tmp/ws', workspaceRoots: ['/tmp/ws'], instructions: '', createdAt: 1700000000000 },
+      ]));
+      localStorage.setItem('ollama_gui_active_project', 'proj_t');
       render(<App />);
+
+      // Agentic mode is active: the composer switches to the goal placeholder
+      // (query by the stable aria-label, which is the same in both modes)…
+      const input = screen.getByLabelText('Type your message here');
+      expect(input).toHaveAttribute('placeholder', 'Describe the goal for this session…');
+      // …and the Plan/Ask/Auto autonomy control renders next to the model
+      // select below the composer (it moved out of Settings).
+      expect(screen.getByRole('group', { name: 'Autonomy level' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Set autonomy: auto' })).toBeInTheDocument();
+
+      // The old Settings toggle and its section are gone.
       fireEvent.click(screen.getByText('⚙️ Settings'));
-
-      // The toggle button is next to the "Enable tool calling" label
-      const toggleSection = screen.getByText('Enable tool calling').closest('div')!;
-      // The agentic toggle is an accessible switch (role=switch) (#234).
-      const toggleButton = within(toggleSection).getByRole('switch');
-      fireEvent.click(toggleButton);
-
-      expect(screen.getByText('Enabled')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Toggle tool calling')).not.toBeInTheDocument();
+      expect(screen.queryByText('Enable tool calling')).not.toBeInTheDocument();
     });
   });
 
   describe('MCP Server Management', () => {
-    it('should add and manage MCP servers', async () => {
+    // These four MCP tests drive the full App + Settings overlay, which lands
+    // around 4s each in isolation on the slower externals-drive Mac runner and
+    // exceeds the 5s default when the whole file runs — same slow-runner
+    // pattern as the MCP connection-errors test below (#426).
+    it('should add and manage MCP servers', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -161,7 +189,7 @@ describe('End-to-End Tests', () => {
       });
     });
 
-    it('catalog: selecting a connector variant pre-fills the add form (#108)', async () => {
+    it('catalog: selecting a connector variant pre-fills the add form (#108)', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -176,7 +204,7 @@ describe('End-to-End Tests', () => {
       expect(screen.getByDisplayValue('GITHUB_PERSONAL_ACCESS_TOKEN')).toBeInTheDocument();
     });
 
-    it('catalog: selecting the archived Postgres variant shows a security warning (#108)', async () => {
+    it('catalog: selecting the archived Postgres variant shows a security warning (#108)', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
       fireEvent.click(screen.getByText(/📚 Catalog/));
@@ -185,7 +213,7 @@ describe('End-to-End Tests', () => {
       expect(screen.getByText(/SQL-injection|deprecated|read-only/i)).toBeInTheDocument();
     });
 
-    it('should connect to MCP servers', async () => {
+    it('should connect to MCP servers', { timeout: 20_000 }, async () => {
       render(<App />);
       fireEvent.click(screen.getByText('⚙️ Settings'));
 
@@ -243,11 +271,17 @@ describe('End-to-End Tests', () => {
 
       render(<App />);
 
-      const menuButton = screen.getByText('⋯');
-      fireEvent.click(menuButton);
+      // Sidebar starts collapsed on mobile (w-0 container).
+      const sidebar = document.querySelector('div.transition-all') as HTMLElement;
+      expect(sidebar.className).toContain('w-0');
 
-      // After clicking, sidebar should be visible (toggled open)
-      expect(screen.getByRole('heading', { name: /Ollama GUI/i })).toBeInTheDocument();
+      // The ⋯ menu now opens an action menu; "Show sidebar" toggles it open.
+      fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Show sidebar' }));
+
+      await waitFor(() => {
+        expect((document.querySelector('div.transition-all') as HTMLElement).className).toContain('w-64');
+      });
     });
   });
 
@@ -283,13 +317,15 @@ describe('End-to-End Tests', () => {
       });
     });
 
-    it('renames a session inline (#52)', async () => {
+    it('renames a session inline via the right-click context menu (#52)', async () => {
       seedSession('s-ren', 'Old name');
       render(<App />);
-      const title = screen.getByText('Old name');
-      const row = title.closest('div')!.parentElement!;
-      fireEvent.click(within(row).getByTitle('Rename'));
-      const input = within(row).getByLabelText('Rename conversation') as HTMLInputElement;
+      // The hover Rename button is gone — Rename now lives in the row's
+      // right-click context menu, which opens the same inline rename input.
+      const row = screen.getByRole('button', { name: 'Load session: Old name' });
+      fireEvent.contextMenu(row);
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+      const input = await screen.findByLabelText('Rename conversation') as HTMLInputElement;
       fireEvent.change(input, { target: { value: 'New name' } });
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => {
@@ -322,7 +358,11 @@ describe('End-to-End Tests', () => {
       }, { timeout: 3000 });
     });
 
-    it('should handle MCP connection errors', async () => {
+    // Drives the whole App through add-server -> connect -> error rendering, so
+    // it is the slowest case in this file. It lands around 3.3s on the Ubuntu
+    // runner but exceeded the 5s default on the slower Windows runner (measured
+    // 5154ms), failing the build on a timeout rather than an assertion.
+    it('should handle MCP connection errors', { timeout: 20_000 }, async () => {
       // Deterministically fail the MCP HTTP connect: the previous global fetch
       // mock returned {ok:true} for every URL, so the connect sometimes
       // "succeeded" (green) instead of erroring — making the test flaky and not
@@ -379,9 +419,12 @@ describe('End-to-End Tests', () => {
     it('should have proper ARIA attributes', () => {
       render(<App />);
 
-      // The header settings button (gear icon, no text) has a title attribute
-      const headerSettingsBtn = screen.getByTitle('Settings (Ctrl+,)');
-      expect(headerSettingsBtn).toBeInTheDocument();
+      // The header has no buttons and no connection dot anymore (#563):
+      // reachability moved to the sidebar's Providers panel, where it is
+      // stated per provider as text rather than colour alone.
+      expect(screen.queryByLabelText('Ollama connection status')).not.toBeInTheDocument();
+      expect(screen.getByText('Providers')).toBeInTheDocument();
+      expect(screen.getByLabelText('Select AI model')).toBeInTheDocument();
     });
 
     it('composer input and Send button expose aria-labels (#33)', () => {
@@ -392,12 +435,16 @@ describe('End-to-End Tests', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
     });
 
-    it('sidebar session actions have descriptive aria-labels (#33)', () => {
+    it('sidebar session actions have descriptive aria-labels (#33)', async () => {
       storage.saveSession({ id: 'a11y', title: 'Accessible chat', messages: [], createdAt: Date.now(), model: 'llama3' });
       render(<App />);
-      // Icon-only buttons are labelled with the action + session title.
+      // The row itself and its only remaining icon-only hover button (✕) are
+      // labelled with the action + session title.
+      expect(screen.getByRole('button', { name: 'Load session: Accessible chat' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Delete session: Accessible chat/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Rename session: Accessible chat/i })).toBeInTheDocument();
+      // Rename moved to the right-click context menu (accessible menuitem).
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'Load session: Accessible chat' }));
+      expect(await screen.findByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
     });
   });
 });

