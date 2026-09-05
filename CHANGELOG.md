@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+#### Project rules from an untrusted folder no longer write the system prompt (#608)
+Opening a cloned repository was enough to let that repository author the
+agent's instructions: `AGENTS.md`/`CLAUDE.md` was read from the workspace root
+and injected into the SYSTEM message, where most models treat it as
+outranking the user. With shell, filesystem, git and browser tools in the app,
+a hostile file's payoff is full local compromise — and nothing showed the user
+what had been loaded.
+
+- **The folder must be trusted first.** A rules file found in an untrusted
+  folder raises a banner with a preview and a Trust/Not now choice; until then
+  it stays out of the prompt. The folder still opens and its git/FS tools still
+  register, so it remains usable while untrusted.
+- **Trust is keyed on the canonical folder path**, not a hash of the file.
+  Hash-keying would re-prompt on every edit to your own `AGENTS.md` — in the
+  repo you are actively developing — and an approval treadmill trains people to
+  click through without reading, which is worse than no prompt. This matches
+  VS Code, Claude Code and Cursor. The record persists: trusting a folder is a
+  durable judgment about a location, unlike the session-scoped CLI allowlists.
+- **Secure erase revokes trust** (`trusted_folders` joins `APP_STORAGE_KEYS`),
+  so a machine the user has cleaned does not silently re-trust repositories.
+
+Two fixes that apply whether or not a folder is trusted:
+- **The rules file is capped at 16k characters**, requested as a bounded read
+  rather than trimmed after the fact. An oversized file previously ate the
+  context window silently, discoverable only by running `/tokens` and
+  wondering where the budget went. The truncation is stated in the injected
+  text so the model knows its instructions were cut.
+- **The delimiter states provenance**: the block is labelled as coming from a
+  file in the opened repository, explicitly not as instructions from the user,
+  with an instruction to ignore any attempt inside it to override them. The
+  trust gate limits *when* the text is injected; this limits how much authority
+  it carries once it is.
+
+
 ### Added
 #### Built-in browser and terminal panels (#623, #624, #625, #626)
 The browser and terminal open and close beside the chat, the way Claude and

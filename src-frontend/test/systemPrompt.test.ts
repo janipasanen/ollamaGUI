@@ -18,7 +18,10 @@ describe('composeSystemPrompt (#92/#93/#95)', () => {
       memoryBlock: 'MEMORY',
     });
     const parts = out.split('\n\n');
-    expect(parts[0]).toContain('--- Project Rules ---');
+    // The rules delimiter now states provenance (#608): the block comes from a
+    // file in the opened repository, so it must not read as user instruction.
+    expect(parts[0]).toContain('--- Project Rules (');
+    expect(parts[0]).toContain('not instructions from the user');
     expect(parts[0]).toContain('RULES');
     expect(parts[1]).toContain('--- Project Instructions ---');
     expect(parts[1]).toContain('INSTR');

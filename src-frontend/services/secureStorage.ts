@@ -145,6 +145,11 @@ export const APP_STORAGE_KEYS: string[] = [
   'active_preset_id',
   'stt_config',
   'voice_settings',
+  // Folder-trust decisions (#608). These grant a repository the right to write
+  // the agent's system prompt, so "erase all local data" must revoke them —
+  // leaving them behind would silently re-trust folders on a machine the user
+  // believes they have cleaned.
+  'trusted_folders',
 ];
 
 /**

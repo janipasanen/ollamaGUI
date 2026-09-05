@@ -155,6 +155,7 @@ import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
+import { isFolderTrusted, trustFolder } from './services/folderTrust';
 import { initOpenApiServers } from './services/openapiTools';
 import { registerWorkspaceRagTools } from './services/workspaceRag';
 import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
@@ -755,6 +756,8 @@ const App: React.FC = () => {
     const p = projects.find(x => x.id === activeProjectId);
     return !!p && projectRoots(p).length > 0;
   }, [projects, activeProjectId]);
+  /** A rules file found in an untrusted folder, awaiting the user's decision (#608). */
+  const [pendingRulesTrust, setPendingRulesTrust] = useState<{ root: string; preview: string } | null>(null);
   const [pendingApproval, setPendingApproval] = useState<{
     command: string;
     cwd?: string;
@@ -2020,6 +2023,17 @@ const App: React.FC = () => {
           return openWorkspaceRoots(roots).then(() => {
             setWorkspaceWarning(null);
             registerGitTools(roots[0]);
+            // Project rules go into the SYSTEM message, so a repository we
+            // have not been told to trust does not get to write it (#608).
+            // The folder still opens and git/FS tools still register — only
+            // the injected text waits for a decision.
+            if (!isFolderTrusted(roots[0])) {
+              setProjectRulesContent(null);
+              return loadProjectRules(roots[0]).then(found => {
+                if (found) setPendingRulesTrust({ root: roots[0], preview: found.slice(0, 400) });
+              });
+            }
+            setPendingRulesTrust(null);
             return loadProjectRules(roots[0]).then(setProjectRulesContent);
           });
         })
@@ -3456,7 +3470,7 @@ ${fileList}` },
               generated = generated.trim();
               if (!generated) { showStatusBanner('Could not generate AGENTS.md — try again or write one manually'); return; }
               await writeFile(`${wsRoot.replace(/\/$/, '')}/AGENTS.md`, generated);
-              void loadProjectRules(wsRoot).then(setProjectRulesContent);
+              if (isFolderTrusted(wsRoot)) void loadProjectRules(wsRoot).then(setProjectRulesContent);
               showStatusBanner('AGENTS.md created — project rules loaded');
             } catch (err) {
               showStatusBanner(`Failed to create AGENTS.md: ${formatErrorLine(err)}`);
@@ -5500,6 +5514,43 @@ ${lines.join('\n')}`;
               aria-label="Choose a new working folder"
               className="shrink-0 px-2 py-0.5 rounded border border-current hover:opacity-80"
             >Choose folder…</button>
+          </div>
+        )}
+
+        {/* Project-rules trust prompt (#608). A rules file was found in a
+            folder the user has not trusted; it stays out of the system prompt
+            until they say otherwise. Modelled on the workspace-warning banner
+            so it adds no new surface. */}
+        {pendingRulesTrust && (
+          <div
+            className={`mx-4 mb-2 rounded-lg px-3 py-2 text-xs border ${dark ? 'bg-amber-900/30 border-amber-800 text-amber-200' : 'bg-amber-50 border-amber-300 text-amber-800'}`}
+            role="alert"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate" title={pendingRulesTrust.root}>
+                ⚠ This folder has a project rules file that would be added to the AI's instructions.
+              </span>
+              <span className="shrink-0 flex gap-1">
+                <button
+                  onClick={() => {
+                    const root = pendingRulesTrust.root;
+                    trustFolder(root);
+                    setPendingRulesTrust(null);
+                    void loadProjectRules(root).then(setProjectRulesContent);
+                  }}
+                  aria-label="Trust this folder and load its project rules"
+                  className="px-2 py-0.5 rounded border border-current hover:opacity-80"
+                >Trust folder</button>
+                <button
+                  onClick={() => setPendingRulesTrust(null)}
+                  aria-label="Keep project rules out of the system prompt"
+                  className="px-2 py-0.5 rounded border border-current hover:opacity-80"
+                >Not now</button>
+              </span>
+            </div>
+            <pre className={`mt-1 max-h-20 overflow-auto whitespace-pre-wrap font-mono text-[10px] ${dark ? 'text-amber-300/80' : 'text-amber-900/70'}`}>
+              {pendingRulesTrust.preview}
+            </pre>
           </div>
         )}
 
