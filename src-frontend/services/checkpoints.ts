@@ -5,14 +5,14 @@
  * the current content of every file it will touch. A one-click "Rewind"
  * restores all captured files to their state at checkpoint time.
  *
- * Checkpoints are kept in sessionStorage (ephemeral — they do NOT survive page
- * reloads). This mirrors the CLI pattern where checkpoints are session-local.
+ * Checkpoints are kept in an in-memory session store with a best-effort
+ * sessionStorage mirror. The memory store is authoritative because browser
+ * storage can reject large snapshots at any time.
  */
 
 import { readFile } from './fileTools';
 import { proposeEdits } from './diffReview';
 import { toolRegistry } from './tools';
-import { safeSessionSetItem } from './platform';
 
 export interface Checkpoint {
   id: string;
@@ -23,17 +23,69 @@ export interface Checkpoint {
 }
 
 const STORAGE_KEY = 'ollama_gui_checkpoints';
+const MAX_CHECKPOINTS = 50;
+
+// sessionStorage is only a mirror: a quota failure must not make a checkpoint
+// disappear during the current session. The cap keeps the in-memory fallback
+// bounded while retaining the most recent checkpoints.
+const checkpointMemory = new Map<string, Checkpoint>();
+let memoryHydrated = false;
+
+function orderAndCap(checkpoints: Checkpoint[]): Checkpoint[] {
+  const retained = checkpoints
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, MAX_CHECKPOINTS);
+
+  if (retained.length !== checkpoints.length) {
+    checkpointMemory.clear();
+    retained.forEach((checkpoint) => checkpointMemory.set(checkpoint.id, checkpoint));
+  }
+
+  return retained;
+}
 
 function loadAll(): Checkpoint[] {
-  try {
-    return JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]');
-  } catch {
-    return [];
+  if (!memoryHydrated) {
+    memoryHydrated = true;
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]');
+      if (Array.isArray(stored)) {
+        stored.forEach((checkpoint) => {
+          if (checkpoint && typeof checkpoint.id === 'string') {
+            checkpointMemory.set(checkpoint.id, checkpoint as Checkpoint);
+          }
+        });
+      }
+    } catch {
+      // A malformed or inaccessible mirror must not hide the in-memory store.
+    }
   }
+
+  return orderAndCap([...checkpointMemory.values()]);
 }
 
 function saveAll(checkpoints: Checkpoint[]): void {
-  safeSessionSetItem(STORAGE_KEY, JSON.stringify(checkpoints));
+  memoryHydrated = true;
+  checkpointMemory.clear();
+  checkpoints.slice(0, MAX_CHECKPOINTS).forEach((checkpoint) => {
+    checkpointMemory.set(checkpoint.id, checkpoint);
+  });
+
+  // Keep trimming the oldest mirror entry until the browser accepts the
+  // snapshot. The authoritative memory copy remains complete up to the cap.
+  let mirror = orderAndCap([...checkpointMemory.values()]);
+  while (true) {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(mirror));
+      return;
+    } catch {
+      if (mirror.length === 0) {
+        try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* best effort */ }
+        return;
+      }
+      mirror = mirror.slice(0, -1);
+    }
+  }
 }
 
 function makeId(): string {
@@ -79,7 +131,9 @@ export function deleteCheckpoint(id: string): void {
 
 /** Clear all checkpoints (used in tests and on session end). */
 export function clearCheckpoints(): void {
-  sessionStorage.removeItem(STORAGE_KEY);
+  memoryHydrated = true;
+  checkpointMemory.clear();
+  try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* best effort */ }
 }
 
 /**
@@ -105,7 +159,13 @@ export function registerCheckpointTools(): void {
     execute: async (args: unknown) => {
       const { paths, label } = args as { paths: string[]; label: string };
       const ckpt = await createCheckpoint(paths, label);
-      return `Checkpoint '${ckpt.label}' created (id=${ckpt.id}), captured ${paths.length} file(s).`;
+      const requestedPaths = [...new Set(paths)];
+      const capturedPaths = new Set(Object.keys(ckpt.files));
+      const skippedPaths = requestedPaths.filter(path => !capturedPaths.has(path));
+      const skipped = skippedPaths.length > 0
+        ? `; skipped (unreadable): ${skippedPaths.join(', ')}`
+        : '';
+      return `Checkpoint '${ckpt.label}' created (id=${ckpt.id}), captured ${capturedPaths.size} of ${requestedPaths.length} file(s)${skipped}.`;
     },
   });
 
