@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   createCheckpoint, listCheckpoints, getCheckpoint, deleteCheckpoint,
-  clearCheckpoints, rewindToCheckpoint,
+  clearCheckpoints, rewindToCheckpoint, registerCheckpointTools,
 } from '../services/checkpoints';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { setBatchReviewCallback, clearBatchReviewCallback, clearDiffReviewCallback, type PendingEdit } from '../services/diffReview';
+import { toolRegistry } from '../services/tools';
 
 const FILE_A = '/w/src/app.ts';
 const FILE_B = '/w/src/utils.ts';
@@ -60,6 +61,43 @@ describe('createCheckpoint (#91)', () => {
     const list = listCheckpoints();
     expect(list[0].label).toBe('second');
     expect(list[1].label).toBe('first');
+  });
+
+  it('keeps the checkpoint usable when sessionStorage rejects the snapshot', async () => {
+    const fs = { [FILE_A]: 'original content' };
+    makeFilesystem(fs);
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+
+    try {
+      const checkpoint = await createCheckpoint([FILE_A], 'quota fallback');
+      fs[FILE_A] = 'modified content';
+
+      expect(getCheckpoint(checkpoint.id)).toEqual(checkpoint);
+      await expect(rewindToCheckpoint(checkpoint.id)).resolves.toEqual([FILE_A]);
+      expect(fs[FILE_A]).toBe('original content');
+    } finally {
+      Storage.prototype.setItem = originalSetItem;
+    }
+  });
+
+  it('reports captured and skipped paths from the create tool', async () => {
+    const fs = { [FILE_A]: 'captured' };
+    makeFilesystem(fs);
+    registerCheckpointTools();
+
+    try {
+      const tool = toolRegistry.getTool('create_checkpoint');
+      const result = await tool?.execute({
+        paths: [FILE_A, '/w/missing.ts'],
+        label: 'partial capture',
+      });
+
+      expect(result).toContain('captured 1 of 2 file(s)');
+      expect(result).toContain('skipped (unreadable): /w/missing.ts');
+    } finally {
+      toolRegistry.unregisterTool('create_checkpoint');
+    }
   });
 });
 
