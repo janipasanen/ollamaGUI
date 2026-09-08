@@ -65,8 +65,10 @@
  */
 import { uuid } from './uuid';
 import { makeQwenStreamFilter } from './qwenDialect';
+import { mirrorToDisk } from './rustStore';
 
 const STORAGE_KEY = 'model_connections';
+export const DISK_CONNECTIONS_KEY = 'connections';
 
 export type ConnectionKind = 'openai' | 'ollama' | 'vllm';
 
@@ -169,6 +171,8 @@ export function loadConnections(): ModelConnection[] {
 
 export function saveConnections(conns: ModelConnection[]): void {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conns)); } catch { /* quota */ }
+  // Mirror to disk even on the quota path so connections are not lost on WebView eviction.
+  mirrorToDisk(DISK_CONNECTIONS_KEY, JSON.stringify(conns));
 }
 
 /**

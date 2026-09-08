@@ -149,13 +149,25 @@ export const storage = {
       return [];
     }
   },
-  saveFolder: (folder: Folder): void => {
+  saveFolder: (folder: Folder): { ok: true } | { ok: false; error: 'quota' } => {
     const folders = storage.getFolders();
     const index = folders.findIndex(f => f.id === folder.id);
     if (index > -1) folders[index] = folder; else folders.push(folder);
     const json = JSON.stringify(folders);
-    localStorage.setItem(FOLDERS_KEY, json);
+    let result: { ok: true } | { ok: false; error: 'quota' };
+    try {
+      localStorage.setItem(FOLDERS_KEY, json);
+      result = { ok: true };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        result = { ok: false, error: 'quota' };
+      } else {
+        result = { ok: true }; // unexpected error — treat as non-fatal
+      }
+    }
+    // Mirror to disk even on the quota path so the folder is not lost.
     mirrorToDisk(DISK_FOLDERS_KEY, json);
+    return result;
   },
   deleteFolder: (id: string): void => {
     const foldersJson = JSON.stringify(storage.getFolders().filter(f => f.id !== id));
@@ -181,13 +193,25 @@ export const storage = {
       return [];
     }
   },
-  saveProject: (project: Project): void => {
+  saveProject: (project: Project): { ok: true } | { ok: false; error: 'quota' } => {
     const projects = storage.getProjects();
     const index = projects.findIndex(p => p.id === project.id);
     if (index > -1) projects[index] = project; else projects.unshift(project);
     const json = JSON.stringify(projects);
-    localStorage.setItem(PROJECTS_KEY, json);
+    let result: { ok: true } | { ok: false; error: 'quota' };
+    try {
+      localStorage.setItem(PROJECTS_KEY, json);
+      result = { ok: true };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        result = { ok: false, error: 'quota' };
+      } else {
+        result = { ok: true }; // unexpected error — treat as non-fatal
+      }
+    }
+    // Mirror to disk even on the quota path so the project is not lost.
     mirrorToDisk(DISK_PROJECTS_KEY, json);
+    return result;
   },
   deleteProject: (id: string): void => {
     const projectsJson = JSON.stringify(storage.getProjects().filter(p => p.id !== id));
@@ -286,4 +310,117 @@ export function parseSessionImport(text: string): ChatSession[] {
     if (!Array.isArray(s.messages)) throw new Error(`Session #${i} is missing a messages array`);
     return migrate(s);
   });
+}
+
+// ─── Backup envelope (#604) ─────────────────────────────────────────────────
+
+/**
+ * Import envelope types for versioned backups (#604).
+ */
+export interface BackupEnvelope {
+  version: number;
+  sessions: Record<string, unknown>[];
+  folders?: Folder[];
+  projects?: Project[];
+}
+
+/**
+ * Parse a backup file — accepts both the new versioned envelope { version, sessions, ... }
+ * and a legacy bare array of sessions.  Returns a fully typed envelope; legacy arrays
+ * are mapped to { sessions, folders: [], projects: [] }.
+ *
+ * @throws {Error} if the text is not valid JSON, or if the envelope is missing the
+ *   sessions key (for versioned format).
+ */
+export function parseBackupImport(text: string): { sessions: ChatSession[]; folders: Folder[]; projects: Project[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Invalid JSON');
+  }
+
+  // Legacy: bare array of sessions
+  if (Array.isArray(parsed)) {
+    const sessions = parsed.map((entry, i) => {
+      if (!entry || typeof entry !== 'object') {
+        throw new Error(`Session #${i} is not an object`);
+      }
+      const s = entry as Record<string, unknown>;
+      if (typeof s.id !== 'string') throw new Error(`Session #${i} is missing a string id`);
+      if (!Array.isArray(s.messages)) throw new Error(`Session #${i} is missing a messages array`);
+      return migrate(s);
+    });
+    return { sessions, folders: [], projects: [] };
+  }
+
+  // Versioned envelope: must have sessions and a numeric version
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Expected an object with sessions array');
+  }
+  const env = parsed as Record<string, unknown>;
+  if (!Array.isArray(env.sessions)) {
+    throw new Error('Missing "sessions" key in backup');
+  }
+  if (typeof env.version !== 'number') {
+    throw new Error('Missing "version" in backup envelope');
+  }
+
+  const sessions = env.sessions.map((entry, i) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`Session #${i} is not an object`);
+    }
+    const s = entry as Record<string, unknown>;
+    if (typeof s.id !== 'string') throw new Error(`Session #${i} is missing a string id`);
+    if (!Array.isArray(s.messages)) throw new Error(`Session #${i} is missing a messages array`);
+    return migrate(s);
+  });
+
+  // Folders: pass through as-is if valid array
+  const folders: Folder[] = (env.folders && Array.isArray(env.folders))
+    ? env.folders.filter((f: unknown): f is Folder => f !== null && f !== undefined && typeof f === 'object' && 'id' in f && 'name' in f)
+    : [];
+
+  // Projects: pass through as-is if valid array
+  const projects: Project[] = (env.projects && Array.isArray(env.projects))
+    ? env.projects.filter((p: unknown): p is Project => p !== null && p !== undefined && typeof p === 'object' && 'id' in p && 'name' in p && 'workspaceRoot' in p)
+    : [];
+
+  return { sessions, folders, projects };
+}
+
+/**
+ * Batch-import sessions: merge by id, do ONE setItem + ONE mirrorToDisk.
+ * Returns { ok: true } or { ok: false, error: 'quota' } to let callers
+ * report accurately whether all writes succeeded.
+ *
+ * This replaces the quadratic `forEach(s => saveSession(s))` pattern
+ * with a single JSON write, and is used by both the file import dialog
+ * and the /load command.  The caller remains responsible for calling
+ * `setSessions(storage.getSessions())` to update React state after success.
+ */
+export function importSessions(sessions: ChatSession[]): { ok: true } | { ok: false; error: 'quota' } {
+  const existing = storage.getSessions();
+  const existingIds = new Set(existing.map(s => s.id));
+  // Only add new sessions (skip duplicates by id)
+  const merged = [...existing];
+  for (const s of sessions) {
+    if (!existingIds.has(s.id)) {
+      merged.unshift(s);
+    }
+  }
+  const json = JSON.stringify(merged);
+  let result: { ok: true } | { ok: false; error: 'quota' };
+  try {
+    localStorage.setItem(SESSIONS_KEY, json);
+    result = { ok: true };
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+      result = { ok: false, error: 'quota' };
+    } else {
+      result = { ok: true }; // unexpected error — treat as non-fatal
+    }
+  }
+  mirrorToDisk(DISK_SESSIONS_KEY, json);
+  return result;
 }

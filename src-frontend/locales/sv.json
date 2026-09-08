@@ -239,5 +239,6 @@
   "settings.status_banner_model": "Modell",
   "settings.status_banner_workspace": "Arbetsmapp",
   "settings.status_banner_messages": "Meddelanden",
-  "settings.status_banner_ollama": "Ollama"
+  "settings.status_banner_ollama": "Ollama",
+  "sidebar.archived": "Archived"
 }

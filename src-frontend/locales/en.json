@@ -239,5 +239,6 @@
   "settings.status_banner_model": "Model",
   "settings.status_banner_workspace": "Workspace",
   "settings.status_banner_messages": "Messages",
-  "settings.status_banner_ollama": "Ollama"
+  "settings.status_banner_ollama": "Ollama",
+  "sidebar.archived": "Archived"
 }

@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { mirrorMock } = vi.hoisted(() => ({ mirrorMock: vi.fn() }));
+vi.mock('../services/rustStore', () => ({
+  mirrorToDisk: mirrorMock,
+  loadFromDisk: vi.fn().mockResolvedValue(null),
+  hasTauri: () => false,
+  _clearPendingMirrors: vi.fn(),
+}));
+
 import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
@@ -792,5 +801,49 @@ describe('testLmStudioConnection (G4)', () => {
     const result = await testLmStudioConnection(conn);
     expect(result.success).toBe(false);
     expect(result.error).toContain('connect ECONNREFUSED');
+  });
+});
+
+// ── #602: model connections must be mirrored to disk ──────────────────────────
+
+describe('connection disk mirror (#602)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mirrorMock.mockClear();
+  });
+
+  it('saveConnections mirrors to disk', () => {
+    const conns: ModelConnection[] = [
+      { id: 'c1', name: 'Test', kind: 'ollama', baseUrl: 'http://localhost:11434', enabled: true },
+    ];
+    saveConnections(conns);
+    expect(mirrorMock).toHaveBeenLastCalledWith('connections', localStorage.getItem('model_connections'));
+  });
+
+  it('saveConnections mirrors even on localStorage quota', () => {
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    const conns: ModelConnection[] = [
+      { id: 'c2', name: 'Test2', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true },
+    ];
+    saveConnections(conns);
+    // localStorage throws, but mirror still gets called with the payload.
+    expect(mirrorMock).toHaveBeenCalledTimes(1);
+    const [key, json] = mirrorMock.mock.calls[0];
+    expect(key).toBe('connections');
+    const parsed = JSON.parse(json) as ModelConnection[];
+    expect(parsed[0].name).toBe('Test2');
+
+    spy.mockRestore();
+  });
+
+  it('updateConnection also mirrors via saveConnections', () => {
+    saveConnections([{ id: 'c3', name: 'Orig', kind: 'ollama', baseUrl: 'http://x', enabled: true }]);
+    mirrorMock.mockClear();
+    updateConnection('c3', { name: 'Updated' });
+    expect(mirrorMock).toHaveBeenLastCalledWith('connections', localStorage.getItem('model_connections'));
+    const parsed = JSON.parse(mirrorMock.mock.calls[0][1]) as ModelConnection[];
+    expect(parsed[0].name).toBe('Updated');
   });
 });

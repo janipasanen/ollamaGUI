@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   createCheckpoint, listCheckpoints, getCheckpoint, deleteCheckpoint,
-  clearCheckpoints, rewindToCheckpoint,
+  clearCheckpoints, rewindToCheckpoint, registerCheckpointTools,
 } from '../services/checkpoints';
+import { toolRegistry } from '../services/tools';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { setBatchReviewCallback, clearBatchReviewCallback, clearDiffReviewCallback, type PendingEdit } from '../services/diffReview';
 
@@ -173,5 +174,69 @@ describe('rewindToCheckpoint — diff-review gate (#432)', () => {
     expect(restored).toHaveLength(2);
     expect(fs[FILE_A]).toBe('orig');
     expect(fs[FILE_B]).toBe('orig-b');
+  });
+});
+// ── #603: sessionStorage quota resilience and skipped-path reporting ──────────
+
+describe('sessionStorage quota resilience (#603)', () => {
+  beforeEach(() => {
+    clearCheckpoints();
+    fileMocks.invoke = null;
+  });
+
+  afterEach(() => {
+    clearCheckpoints();
+    fileMocks.invoke = null;
+  });
+
+  it('in-memory survives when sessionStorage quota fails', async () => {
+    makeFilesystem({ [FILE_A]: 'v1', [FILE_B]: 'v2' });
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    // Quota fails but checkpoint is created in-memory.
+    const ckpt = await createCheckpoint([FILE_A, FILE_B], 'quota-test');
+    // In-memory list still has it.
+    expect(listCheckpoints()).toHaveLength(1);
+    // getCheckpoint resolves from memory.
+    expect(getCheckpoint(ckpt.id)?.label).toBe('quota-test');
+    // rewindToCheckpoint still works.
+    const restored = await rewindToCheckpoint(ckpt.id);
+    expect(restored).toContain(FILE_A);
+    spy.mockRestore();
+  });
+
+  it('createCheckpoint reports actual captured count', async () => {
+    makeFilesystem({ [FILE_A]: 'v1', [FILE_B]: 'v2' });
+    registerCheckpointTools();
+    const tool = toolRegistry.getTool('create_checkpoint');
+    expect(tool).toBeDefined();
+    const result = await tool!.execute({ paths: [FILE_A, FILE_B], label: 'count-test' });
+    expect(result).toContain('captured 2 of 2 file(s)');
+  });
+
+  it('createCheckpoint reports skipped files', async () => {
+    makeFilesystem({ [FILE_A]: 'v1' });
+    registerCheckpointTools();
+    const tool = toolRegistry.getTool('create_checkpoint');
+    const result = await tool!.execute({ paths: [FILE_A, '/w/missing.ts'], label: 'skip-test' });
+    expect(result).toContain('captured 1 of 2 file(s)');
+    expect(result).toContain('skipped (unreadable): /w/missing.ts');
+  });
+
+  it('evicts oldest checkpoints when MAX_CHECKPOINTS is exceeded', async () => {
+    makeFilesystem({});
+    // Create 25 checkpoints (MAX_CHECKPOINTS is 20).
+    for (let i = 0; i < 25; i++) {
+      await createCheckpoint([FILE_A], `ckpt-${i}`);
+    }
+    const list = listCheckpoints();
+    expect(list).toHaveLength(20);
+    // Oldest checkpoint (ckpt-0) should have been evicted.
+    expect(list).toHaveLength(20);
+    // Newest at index 0, oldest at index 19.  25 created, 5 evicted (ckpt-0..4),
+    // so ckpt-5..ckpt-24 remain.
+    expect(list[0].label).toBe('ckpt-24');
+    expect(list[19].label).toBe('ckpt-5');
   });
 });

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, 
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
 import { uuid } from './services/uuid';
-import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport, parseBackupImport, importSessions } from './services/storage';
 import { loadFromDisk, hasTauri } from './services/rustStore';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
@@ -1155,7 +1155,7 @@ const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME)
   // every unrelated render (#32).
   const filteredSessions = React.useMemo(() => sortSessions(
     searchSessions(sessions, searchQuery, folders)
-      .filter(s => (showArchived ? !!s.archived : !s.archived))
+      .filter(s => !s.archived || showArchived)
       .filter(s => folderFilter === null || s.folderId === folderFilter)
       // Filter by tag (#306): null = no tag filter
       .filter(s => tagFilter === null || (s.tags ?? []).includes(tagFilter))
@@ -1175,6 +1175,12 @@ const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME)
     [visibleSessions],
   );
   const sessionsForProject = (projectId: string) => visibleSessions.filter(s => s.projectId === projectId);
+
+  // Archived sessions (shown in a collapsed "Archived" group when toggle is on).
+  const archivedSessions = React.useMemo(
+    () => filteredSessions.filter(s => s.archived).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)),
+    [filteredSessions],
+  );
 
   // Conversation token estimate, memoized so it only recomputes when the
   // messages or current draft change (#32, #62).
@@ -1476,6 +1482,15 @@ const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME)
               // effect runs — refresh it with the recovered list.
               setProjects(storage.getProjects());
             }
+          }
+          // Connection keys are mirrored to disk, so restore them on eviction.
+          if (!localStorage.getItem('model_connections')) {
+            const disk = await loadFromDisk('connections');
+            if (disk) localStorage.setItem('model_connections', disk);
+            // React state initialises from localStorage at first render,
+            // before this async effect — sync it here so the UI shows
+            // restored connections without a manual reload.
+            setConnections(loadConnections());
           }
         }
       } catch { /* hydration is best-effort */ }
@@ -2872,11 +2887,17 @@ const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME)
 
   // M5 Issue 19: Export/import conversations
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(storage.getSessions(), null, 2)], { type: 'application/json' });
+    const backup = {
+      version: 1,
+      sessions: storage.getSessions(),
+      folders: storage.getFolders(),
+      projects: storage.getProjects(),
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const href = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = href;
-    a.download = 'ollama_gui_sessions.json';
+    a.download = 'ollama_gui_backup.json';
     a.click();
     URL.revokeObjectURL(href);
   };
@@ -2937,12 +2958,40 @@ const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME)
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const imported = parseSessionImport(ev.target?.result as string);
-        imported.forEach(s => storage.saveSession(s));
-        setSessions(storage.getSessions());
-        alert(`Imported ${imported.length} conversation(s).`);
+        const backup = parseBackupImport(ev.target?.result as string);
+        
+        // Restore folders first (sessions reference them by id)
+        if (backup.folders.length > 0) {
+          backup.folders.forEach(f => storage.saveFolder(f));
+          setFolders(storage.getFolders());
+        }
+        
+        // Restore projects next (sessions reference them by id)
+        if (backup.projects.length > 0) {
+          // Merge: only import projects that don't already exist locally
+          const localProjectIds = new Set(storage.getProjects().map(p => p.id));
+          const newProjects = backup.projects.filter(p => !localProjectIds.has(p.id));
+          newProjects.forEach(p => storage.saveProject(p));
+          setProjects(storage.getProjects());
+          
+          // Remap imported sessions to new project ids if they reference deleted projects
+          // (already handled by filter above — only non-duplicate project ids are imported)
+        }
+        
+        // Import sessions using batch import
+        if (backup.sessions.length > 0) {
+          const result = importSessions(backup.sessions);
+          if (result.ok === false && result.error === 'quota') {
+            showStatusBanner('Import stopped — storage is full');
+            setStorageWarning(true);
+          }
+          setSessions(storage.getSessions());
+        }
+        
+        const total = backup.sessions.length;
+        showStatusBanner(total > 0 ? `Imported ${total} conversation(s)` : 'No conversations in file');
       } catch {
-        alert('Invalid session file — expected JSON array of sessions.');
+        alert('Invalid backup file — expected JSON array or versioned envelope.');
       }
     };
     reader.readAsText(file);
@@ -3525,6 +3574,14 @@ ${block}`;
           showStatusBanner(wasArchived ? 'Unarchived conversation' : 'Archived conversation');
           return;
         }
+        if (result.action === 'archived') {
+          setShowArchived(prev => {
+            const next = !prev;
+            showStatusBanner(next ? 'Showing archived conversations' : 'Hiding archived conversations');
+            return next;
+          });
+          return;
+        }
         if (result.action === 'tag') {
           const arg = (result.arg ?? '').trim();
           if (!arg) { showStatusBanner('Usage: /tag <name>'); return; }
@@ -3826,11 +3883,16 @@ ${lines.join('\n')}`;
           void (async () => {
             try {
               const raw = await readFile(fullPath);
-              const parsed = parseSessionImport(raw);
-              if (parsed.length === 0) { showStatusBanner(`No conversations found in "${arg}"`); return; }
-              parsed.forEach(s => storage.saveSession(s));
+              const parsed = parseBackupImport(raw);
+              if (parsed.sessions.length === 0) { showStatusBanner(`No conversations found in "${arg}"`); return; }
+              const result = importSessions(parsed.sessions);
               setSessions(storage.getSessions());
-              loadSession(parsed[0]);
+              if (result.ok === false && result.error === 'quota') {
+                showStatusBanner(`Could not load "${arg}" — storage is full`);
+                setStorageWarning(true);
+                return;
+              }
+              loadSession(parsed.sessions[0]);
               showStatusBanner(`Loaded conversation "${arg}"`);
             } catch (err) {
               showStatusBanner(`Could not load "${arg}": ${formatErrorLine(err)}`);
@@ -4687,7 +4749,7 @@ ${lines.join('\n')}`;
     { id: 'toggle-zen', label: 'Toggle Zen/Focus Mode', hint: 'Ctrl+Shift+Z', run: () => toggleZenMode() },
     { id: 'copy-conversation', label: 'Copy Conversation as Markdown', run: () => { void handleCopyMarkdown(); } },
     { id: 'export-conversation', label: 'Export Conversation as Markdown', run: () => handleExportMarkdown() },
-    { id: 'export-chats', label: 'Export All Chats (JSON)', run: () => handleExport() },
+    { id: 'export-chats', label: 'Export All Chats and Projects (JSON)', run: () => handleExport() },
     { id: 'import-chats', label: 'Import Chats (JSON)', run: () => importInputRef.current?.click() },
     { id: 'regenerate', label: 'Regenerate Last Reply', hint: 'Ctrl+R', run: () => regenerateLastResponse() },
     { id: 'copy-last-reply', label: 'Copy Last Reply', hint: 'Ctrl+Shift+C', run: () => {
@@ -4708,6 +4770,7 @@ ${lines.join('\n')}`;
     } },
     { id: 'next-convo', label: 'Next Conversation', hint: 'Ctrl+]', run: () => switchConversationRef.current(1) },
     { id: 'prev-convo', label: 'Previous Conversation', hint: 'Ctrl+[', run: () => switchConversationRef.current(-1) },
+    { id: 'toggle-archived', label: 'Show/Hide Archived Chats', run: () => setShowArchived(prev => { const next = !prev; showStatusBanner(next ? 'Showing archived' : 'Hiding archived'); return next; }) },
     { id: 'zoom-in', label: 'Zoom In', hint: 'Ctrl+=', run: () => { adjustFontScale(0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
     { id: 'zoom-out', label: 'Zoom Out', hint: 'Ctrl+-', run: () => { adjustFontScale(-0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
     { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); safeSetItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },
@@ -4927,6 +4990,14 @@ ${lines.join('\n')}`;
             <>
               <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.chats')}</p>
               {unscopedSessions.map(s => renderSessionRow(s))}
+            </>
+          )}
+
+          {/* Archived conversations — visible when toggle is on */}
+          {showArchived && archivedSessions.length > 0 && (
+            <>
+              <p className={`text-xs uppercase font-semibold mt-3 mb-1 px-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('sidebar.archived')}</p>
+              {archivedSessions.map(s => renderSessionRow(s))}
             </>
           )}
         </div>

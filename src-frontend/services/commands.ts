@@ -157,7 +157,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version' | 'connections'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'archived' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version' | 'connections'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -183,6 +183,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'copy') return { kind: 'builtin', action: 'copy', arg: args };
     if (cmd.name === 'pin') return { kind: 'builtin', action: 'pin' };
     if (cmd.name === 'archive') return { kind: 'builtin', action: 'archive' };
+    if (cmd.name === 'archived') return { kind: 'builtin', action: 'archived' };
     if (cmd.name === 'tag') return { kind: 'builtin', action: 'tag', arg: args };
     if (cmd.name === 'duplicate') return { kind: 'builtin', action: 'duplicate' };
     if (cmd.name === 'title') return { kind: 'builtin', action: 'title' };

@@ -93,3 +93,50 @@ describe('storage disk mirror', () => {
     expect(mirrorMock).toHaveBeenCalledWith('sessions', '[]');
   });
 });
+
+describe('saveFolder / saveProject mirror (#601)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mirrorMock.mockClear();
+  });
+
+  it('saveFolder mirrors on normal save', () => {
+    storage.saveFolder({ id: 'f1', name: 'Work', order: 0 });
+    expect(mirrorMock).toHaveBeenLastCalledWith('folders', localStorage.getItem('ollama_gui_folders'));
+  });
+
+  it('saveProject mirrors on normal save', () => {
+    storage.saveProject({ id: 'p1', name: 'Proj', workspaceRoot: '', instructions: '', createdAt: 1 });
+    expect(mirrorMock).toHaveBeenLastCalledWith('projects', localStorage.getItem('ollama_gui_projects'));
+  });
+
+  it('saveFolder STILL mirrors when localStorage is full', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+
+    const result = storage.saveFolder({ id: 'f2', name: 'Home', order: 1 });
+    expect(result).toEqual({ ok: false, error: 'quota' });
+    expect(mirrorMock).toHaveBeenCalledTimes(1);
+    const [key, json] = mirrorMock.mock.calls[mirrorMock.mock.calls.length - 1];
+    expect(key).toBe('folders');
+    expect(JSON.parse(json).length).toBe(1); // the folder just saved
+
+    setItem.mockRestore();
+  });
+
+  it('saveProject STILL mirrors when localStorage is full', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+
+    const result = storage.saveProject({ id: 'p2', name: 'Proj2', workspaceRoot: '', instructions: '', createdAt: 2 });
+    expect(result).toEqual({ ok: false, error: 'quota' });
+    expect(mirrorMock).toHaveBeenCalledTimes(1);
+    const [key, json] = mirrorMock.mock.calls[mirrorMock.mock.calls.length - 1];
+    expect(key).toBe('projects');
+    expect(JSON.parse(json).length).toBe(1); // the project just saved
+
+    setItem.mockRestore();
+  });
+});
