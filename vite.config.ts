@@ -27,6 +27,23 @@ const maxWorkers = Math.max(
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Pin the browser floor. Vite's default is the moving target
+    // `baseline-widely-available`, so a Vite upgrade can raise the minimum
+    // WebKit under us with no diff to review — and the failure mode is the
+    // worst one available: a parse error in the boot chunk renders a blank
+    // window, not an error.
+    //
+    // safari16.4 is the honest floor TODAY, and it is set by dependencies we
+    // cannot transpile around, not by preference:
+    //   - remark-gfm (mdast-util-gfm-autolink-literal) ships a RegExp
+    //     lookbehind, which is an ECMAScript Early Error on older engines and
+    //     cannot be down-levelled by any bundler.
+    //   - Tailwind v4's output uses @property / oklch() / color-mix().
+    // Safari 16.4 ships with macOS 13.3, which is what tauri.conf.json
+    // declares as minimumSystemVersion. Keep the two in sync.
+    target: ['safari16.4', 'chrome111', 'edge111', 'firefox114'],
+  },
   test: {
     environment: 'jsdom',
     globals: true,
@@ -35,5 +52,9 @@ export default defineConfig({
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     pool: 'forks',
     maxWorkers,
+    // CI retries live on the CI command line (build.yml passes --retry=2),
+    // NOT here: an env-conditional `retry` in this config empirically wedges
+    // local fork-worker startup on macOS (vitest 4.1.10) — workers time out
+    // before running a single test.
   },
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from '../App';
-import { loadAutoCommitEdits } from '../services/autoCommit';
+import { loadAutoCommitEdits, saveAutoCommitEdits } from '../services/autoCommit';
 
 let origFetch: typeof global.fetch;
 
@@ -17,18 +17,20 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('Auto-commit edits setting (#401)', () => {
-  it('renders a toggle that persists the setting when flipped on', async () => {
+describe('Auto-commit edits setting (#401, default-on contract)', () => {
+  it('defaults to enabled without any Settings toggle (toggle removed)', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
     render(<App />);
-    expect(loadAutoCommitEdits()).toBe(false);
-
-    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
-    const sw = screen.getByRole('switch', { name: 'Auto-commit edits' });
-    expect(sw).toHaveAttribute('aria-checked', 'false');
-
-    fireEvent.click(sw);
-    expect(screen.getByRole('switch', { name: 'Auto-commit edits' })).toHaveAttribute('aria-checked', 'true');
+    // Auto-commit is on by default — it is the undo mechanism for autonomous edits.
     expect(loadAutoCommitEdits()).toBe(true);
+
+    // The Settings toggle was removed; the switch must no longer render.
+    fireEvent.click(screen.getByRole('button', { name: /⚙️ Settings/i }));
+    expect(screen.queryByRole('switch', { name: 'Auto-commit edits' })).not.toBeInTheDocument();
+  });
+
+  it('an explicit stored false still disables auto-commit', () => {
+    saveAutoCommitEdits(false);
+    expect(loadAutoCommitEdits()).toBe(false);
   });
 });

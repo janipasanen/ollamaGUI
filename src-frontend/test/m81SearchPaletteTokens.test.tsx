@@ -83,13 +83,18 @@ describe('Chat search term highlighting (#366)', () => {
 // ── #367: Command palette missing actions ─────────────────────────────────────
 
 describe('Command palette has all major actions (#367)', () => {
-  it('includes Toggle Theme, Toggle Zen Mode, and Toggle Artifacts', () => {
+  it('includes Toggle Theme, Toggle Zen Mode, and the new temporary-chat/export entries', () => {
+    // Panel toggles (Artifacts etc.) were removed with the right dock; the
+    // palette gained New Temporary Chat and the chat export/import actions.
     render(<App />);
     fireEvent.keyDown(window, { key: 'p', metaKey: true });
     const palette = screen.getByRole('dialog', { name: /Command palette/i });
     expect(palette).toHaveTextContent('Toggle Theme');
     expect(palette).toHaveTextContent('Toggle Zen/Focus Mode');
-    expect(palette).toHaveTextContent('Toggle Artifacts Panel');
+    expect(palette).toHaveTextContent('New Temporary Chat');
+    expect(palette).toHaveTextContent('Export All Chats (JSON)');
+    expect(palette).toHaveTextContent('Import Chats (JSON)');
+    expect(palette).not.toHaveTextContent('Toggle Artifacts Panel');
   });
 
   it('includes Regenerate, Copy Last Reply, and Scroll to Latest', () => {
@@ -115,20 +120,30 @@ describe('Command palette has all major actions (#367)', () => {
 });
 
 // ── #368: Token estimate in composer footer ────────────────────────────────────
+// The word/char/token counter line was removed in the UI simplification; the
+// info line below the composer now shows "≈ N tokens" (conversation + current
+// draft) next to the context budget, and is always present.
 
 describe('Composer token estimate (#368)', () => {
-  it('shows an estimated token count alongside word/char count', () => {
+  const ESTIMATE_TITLE = 'Approximate token usage for this conversation (and current draft)';
+
+  it('counts the current draft into the ≈ tokens line under the composer', () => {
     render(<App />);
+    const estimate = screen.getByTitle(ESTIMATE_TITLE);
+    expect(estimate.textContent).toMatch(/≈ 0 tokens/);
+
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: 'Hello world this is a test message' } });
-
-    const footer = screen.getByText(/words · .* chars · ~.* tokens/);
-    expect(footer).toBeInTheDocument();
-    expect(footer.textContent).toMatch(/~\d+ tokens/);
+    expect(screen.getByTitle(ESTIMATE_TITLE).textContent).toMatch(/≈ [1-9]\d* tokens/);
   });
 
-  it('does not show the word/char/token counter when the input is empty', () => {
+  it('drops back to zero when the draft is cleared', () => {
     render(<App />);
-    expect(screen.queryByText(/words · .* chars · ~.* tokens/)).not.toBeInTheDocument();
+    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: 'Hello world' } });
+    expect(screen.getByTitle(ESTIMATE_TITLE).textContent).toMatch(/≈ [1-9]\d* tokens/);
+
+    fireEvent.change(composer, { target: { value: '' } });
+    expect(screen.getByTitle(ESTIMATE_TITLE).textContent).toMatch(/≈ 0 tokens/);
   });
 });

@@ -42,16 +42,22 @@ describe('/pin slash command (#282)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
 
-    const sessionBtn = screen.getAllByRole('button', { name: /Load session: /i })[0];
     fireEvent.change(composer, { target: { value: '/pin' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Pinned conversation')).toBeInTheDocument();
-    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.block')?.textContent ?? '')).toContain('📌'));
+    // The nested sidebar row shows a 📌 prefix on the title while pinned.
+    await waitFor(() => {
+      const row = screen.getAllByRole('button', { name: /Load session: /i })[0];
+      expect(row.textContent).toContain('📌');
+    });
 
     fireEvent.change(composer, { target: { value: '/pin' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Unpinned conversation')).toBeInTheDocument();
-    await waitFor(() => expect((sessionBtn.querySelector('.truncate.text-sm.block')?.textContent ?? '')).not.toContain('📌'));
+    await waitFor(() => {
+      const row = screen.getAllByRole('button', { name: /Load session: /i })[0];
+      expect(row.textContent).not.toContain('📌');
+    });
   });
 });
 
@@ -71,5 +77,7 @@ describe('/archive slash command (#283)', () => {
     fireEvent.change(composer, { target: { value: '/archive' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Archived conversation')).toBeInTheDocument();
+    // Archived sessions disappear from the sidebar (no Archived toggle anymore).
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Load session: /i })).not.toBeInTheDocument());
   });
 });

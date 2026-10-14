@@ -44,11 +44,19 @@ describe('/folder slash command (#288)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Moved conversation to folder "Work"')).toBeInTheDocument();
 
-    // A "Work" folder chip now exists, and the session is filed under it.
-    // Query by title, not a loose /Work/i name: the header's workspace chip is
-    // also a button whose label contains "work" ("No workspace folder open").
-    const folderChip = screen.getByTitle(/^Folder: Work\b/);
-    fireEvent.click(folderChip);
+    // Folder chips are gone from the sidebar; the folder lives on in storage
+    // and the session is filed under it.
+    const folders = JSON.parse(localStorage.getItem('ollama_gui_folders') ?? '[]') as Array<{ id: string; name: string }>;
+    const work = folders.find(f => f.name === 'Work');
+    expect(work).toBeTruthy();
+    const sessions = JSON.parse(localStorage.getItem('ollama_gui_sessions') ?? '[]') as Array<{ folderId?: string }>;
+    expect(sessions.some(s => s.folderId === work!.id)).toBe(true);
+
+    // The surviving UI surface: sidebar search matches folder names.
+    const search = screen.getByLabelText('Search conversations');
+    fireEvent.change(search, { target: { value: 'zzz-no-match' } });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Load session: /i })).not.toBeInTheDocument());
+    fireEvent.change(search, { target: { value: 'Work' } });
     await waitFor(() => expect(screen.getByRole('button', { name: /Load session: /i })).toBeInTheDocument());
   });
 

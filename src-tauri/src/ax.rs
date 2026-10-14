@@ -511,6 +511,109 @@ pub const CONSOLE_RING_CAP: usize = 10_000;
 /// of how noisy the page is. Drained by the (deferred) `browser_cdp_read_console`
 /// command. Constructed with [`ConsoleRing::new`] (custom cap) or
 /// [`ConsoleRing::default`] (the 10k [`CONSOLE_RING_CAP`]).
+/// Sensitive header names, lower-cased. Values are replaced before an entry is
+/// stored, not when it is read: anything in this ring can reach the model
+/// context and from there the provider, so the value must never be kept.
+pub const SENSITIVE_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+];
+
+/// One recorded HTTP exchange from the CDP `Network` domain (#628).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NetworkEntry {
+    /// CDP request id — how a response is matched to its request.
+    pub request_id: String,
+    pub method: String,
+    pub url: String,
+    pub status: Option<i64>,
+    pub status_text: Option<String>,
+    pub mime_type: Option<String>,
+    /// Set when the request never produced a response.
+    pub failure: Option<String>,
+}
+
+/// Replace the value of any credential-bearing header.
+pub fn redact_header(name: &str, value: &str) -> String {
+    if SENSITIVE_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+        "<redacted>".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Bounded log of network exchanges, mirroring [`ConsoleRing`].
+///
+/// Entries are created when a request goes out and completed in place when the
+/// response (or failure) arrives, so a caller always sees one row per request
+/// rather than two half-rows to correlate.
+pub struct NetworkRing {
+    cap: usize,
+    buf: VecDeque<NetworkEntry>,
+}
+
+impl NetworkRing {
+    pub fn new(cap: usize) -> Self {
+        NetworkRing { cap: cap.max(1), buf: VecDeque::new() }
+    }
+
+    /// Record an outgoing request, evicting the oldest at capacity.
+    pub fn push_request(&mut self, request_id: impl Into<String>, method: impl Into<String>, url: impl Into<String>) {
+        if self.buf.len() >= self.cap {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(NetworkEntry {
+            request_id: request_id.into(),
+            method: method.into(),
+            url: url.into(),
+            status: None,
+            status_text: None,
+            mime_type: None,
+            failure: None,
+        });
+    }
+
+    /// Complete a request with its response. Unknown ids are ignored: the
+    /// request may have been evicted, and a response with no request is not
+    /// worth inventing a row for.
+    pub fn complete(&mut self, request_id: &str, status: i64, status_text: &str, mime_type: &str) {
+        if let Some(e) = self.buf.iter_mut().rev().find(|e| e.request_id == request_id) {
+            e.status = Some(status);
+            e.status_text = Some(status_text.to_string());
+            e.mime_type = Some(mime_type.to_string());
+        }
+    }
+
+    /// Complete a request that failed before any response.
+    pub fn fail(&mut self, request_id: &str, error_text: &str) {
+        if let Some(e) = self.buf.iter_mut().rev().find(|e| e.request_id == request_id) {
+            e.failure = Some(error_text.to_string());
+        }
+    }
+
+    pub fn entries(&self) -> Vec<NetworkEntry> {
+        self.buf.iter().cloned().collect()
+    }
+
+    pub fn drain(&mut self) -> Vec<NetworkEntry> {
+        let out = self.entries();
+        self.buf.clear();
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+}
+
 pub struct ConsoleRing {
     cap: usize,
     buf: VecDeque<String>,
@@ -796,5 +899,83 @@ mod tests {
         assert_eq!(outline, expected);
         assert_eq!(resolve_ref(&refs, "e1"), Some(7));
         assert_eq!(resolve_ref(&refs, "e2"), Some(8));
+    }
+}
+
+#[cfg(test)]
+mod network_ring_tests {
+    use super::{redact_header, NetworkRing, SENSITIVE_HEADERS};
+
+    #[test]
+    fn records_a_request_and_completes_it() {
+        let mut ring = NetworkRing::new(10);
+        ring.push_request("req-1", "POST", "https://example.com/login");
+        ring.complete("req-1", 200, "OK", "application/json");
+        let e = &ring.entries()[0];
+        assert_eq!(e.method, "POST");
+        assert_eq!(e.status, Some(200));
+        assert_eq!(e.mime_type.as_deref(), Some("application/json"));
+        assert!(e.failure.is_none());
+    }
+
+    #[test]
+    fn records_a_failure_without_a_status() {
+        let mut ring = NetworkRing::new(10);
+        ring.push_request("req-2", "GET", "https://down.example.com/");
+        ring.fail("req-2", "net::ERR_CONNECTION_REFUSED");
+        let e = &ring.entries()[0];
+        assert_eq!(e.failure.as_deref(), Some("net::ERR_CONNECTION_REFUSED"));
+        assert!(e.status.is_none());
+    }
+
+    #[test]
+    fn is_bounded_and_drops_oldest_first() {
+        let mut ring = NetworkRing::new(3);
+        for i in 0..5 {
+            ring.push_request(format!("r{i}"), "GET", format!("https://x/{i}"));
+        }
+        let urls: Vec<String> = ring.entries().into_iter().map(|e| e.url).collect();
+        assert_eq!(urls, vec!["https://x/2", "https://x/3", "https://x/4"]);
+    }
+
+    #[test]
+    fn completing_an_unknown_request_is_a_no_op() {
+        // The request may have been evicted; inventing a row for a response
+        // with no request would be worse than dropping it.
+        let mut ring = NetworkRing::new(2);
+        ring.complete("never-seen", 200, "OK", "text/html");
+        ring.fail("never-seen", "boom");
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn drain_empties_the_ring() {
+        let mut ring = NetworkRing::new(4);
+        ring.push_request("a", "GET", "https://x/1");
+        assert_eq!(ring.drain().len(), 1);
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn redacts_credential_headers_case_insensitively() {
+        assert_eq!(redact_header("Authorization", "Bearer sk-secret"), "<redacted>");
+        assert_eq!(redact_header("COOKIE", "session=abc"), "<redacted>");
+        assert_eq!(redact_header("Set-Cookie", "session=abc"), "<redacted>");
+        // Non-sensitive headers survive: the content type is useful.
+        assert_eq!(redact_header("Content-Type", "application/json"), "application/json");
+        assert!(SENSITIVE_HEADERS.contains(&"x-api-key"));
+    }
+
+    #[test]
+    fn matches_the_most_recent_request_for_a_reused_id() {
+        // CDP ids are unique per page load, but a redirect chain can reuse one;
+        // completing the newest row is the correct reading.
+        let mut ring = NetworkRing::new(10);
+        ring.push_request("dup", "GET", "https://x/first");
+        ring.push_request("dup", "GET", "https://x/second");
+        ring.complete("dup", 302, "Found", "text/html");
+        let entries = ring.entries();
+        assert!(entries[0].status.is_none());
+        assert_eq!(entries[1].status, Some(302));
     }
 }

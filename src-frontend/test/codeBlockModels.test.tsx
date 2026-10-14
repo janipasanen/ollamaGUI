@@ -5,9 +5,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
+import { seedLocalOllama } from './helpers/providers';
 
 beforeEach(() => {
   localStorage.clear();
+    // #566: nothing is pre-configured now, so this spec adds the provider.
+    seedLocalOllama();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
@@ -42,9 +45,18 @@ describe('Collapsible code blocks (#312)', () => {
     fireEvent.click(screen.getByText('Send'));
     // Wait for content to appear
     await waitFor(() => expect(document.body.textContent).toContain('Line of code'), { timeout: 5000 });
-    const showAllBtn = await screen.findByRole('button', { name: /Show all/ }, { timeout: 5000 });
-    fireEvent.click(showAllBtn);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument(), { timeout: 2000 });
+    await screen.findByRole('button', { name: /Show all/ }, { timeout: 5000 });
+    // Wait for the stream to fully finish (the Cancel button flips back to
+    // Send) so the click below targets a settled DOM node.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument(), { timeout: 5000 });
+    // The markdown `components` mapping is memoized now, so post-stream App
+    // re-renders no longer remount CodeBlock; the retry loop is kept as a
+    // belt-and-braces guard against unrelated render races on slow runners.
+    await waitFor(() => {
+      const showAll = screen.queryByRole('button', { name: /Show all/ });
+      if (showAll) fireEvent.click(showAll);
+      expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument();
+    }, { timeout: 5000 });
   });
 });
 

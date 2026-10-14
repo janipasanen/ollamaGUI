@@ -15,15 +15,20 @@ const CFG = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
 } as McpServerConfig);
 
 // Capture the Authorization header from the outgoing request; return a 200 result.
+// Answers initialize spec-shaped: the transport now auto-runs the initialize
+// handshake (lifecycle §Initialization) before a first non-initialize request.
 function captureHeaderMock(captured: { auth?: string }, status = 200) {
   return async (_cmd: string, args: any) => {
     captured.auth = args.request.headers.Authorization;
     const req = JSON.parse(args.request.body);
+    const result = req.method === 'initialize'
+      ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } }
+      : { tools: [] };
     return {
       success: status < 400,
       status,
       headers: {},
-      body: JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { tools: [] } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: req.id ?? null, result }),
     };
   };
 }

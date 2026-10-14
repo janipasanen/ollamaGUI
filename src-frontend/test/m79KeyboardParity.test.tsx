@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
-import { toolRegistry, cliAllowlist, _cliMocks } from '../services/tools';
+import { toolRegistry, cliAllowlist, cliBinaryAllowlist, _cliMocks } from '../services/tools';
 
 let origFetch: typeof global.fetch;
 
@@ -9,6 +9,7 @@ beforeEach(() => {
   origFetch = global.fetch;
   localStorage.clear();
   cliAllowlist.clear();
+  cliBinaryAllowlist.clear();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });
   window.dispatchEvent(new Event('resize'));
   global.fetch = vi.fn().mockImplementation(async (url: string) => {
@@ -37,6 +38,7 @@ afterEach(() => {
   localStorage.clear();
   _cliMocks.invoke = null;
   cliAllowlist.clear();
+  cliBinaryAllowlist.clear();
   delete (window as any).__TAURI_INTERNALS__;
 });
 
@@ -108,7 +110,7 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     expect(result).toMatchObject({ error: 'Command denied by user.' });
   });
 
-  it('A always-approves and adds the command to the allowlist', async () => {
+  it('A always-approves and remembers the exact command, not the program', async () => {
     render(<App />);
     await waitFor(() => expect(toolRegistry.getTool('run_shell_command')).toBeDefined(), { timeout: 3000 });
     const promise = toolRegistry.getTool('run_shell_command')!.execute({ command: 'echo always-test' });
@@ -122,6 +124,12 @@ describe('CLI approval modal keyboard shortcuts (#361)', () => {
     }, { timeout: 3000 });
     const result = await promise;
     expect(result).toMatchObject({ exit_code: 0 });
+    // The bare-key shortcut grants the NARROWEST scope (#606): a stray
+    // keystroke must not be able to widen the boundary beyond the command on
+    // screen. Program scope ('echo' covering every later echo …) exists, but
+    // only behind its own deliberate button.
     expect(cliAllowlist.has('echo always-test')).toBe(true);
+    expect(cliAllowlist.has('echo')).toBe(false);
+    expect(cliBinaryAllowlist.has('echo')).toBe(false);
   });
 });

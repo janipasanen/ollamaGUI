@@ -10,8 +10,8 @@
  * readOnly mode (#146) — when true, any tool without `readOnly: true` in its
  * definition is blocked, regardless of autonomy level.
  *
- * SmartApprove (#146) — when true (in 'ask' level), read-only tools are
- * approved automatically; only mutating tools prompt the user.
+ * Read-only tools NEVER prompt, at any level: reading a file cannot damage
+ * anything, and prompting for reads made "autonomous" runs a modal treadmill.
  */
 
 export type AutonomyLevel = 'plan' | 'ask' | 'auto';
@@ -20,7 +20,6 @@ export interface AgentAutonomySettings {
   level: AutonomyLevel;
   maxIterations: number;
   readOnly: boolean;
-  smartApprove: boolean;
 }
 
 const STORAGE_KEY = 'ollama_gui_agent_autonomy';
@@ -29,7 +28,6 @@ const DEFAULTS: AgentAutonomySettings = {
   level: 'ask',
   maxIterations: 20,
   readOnly: false,
-  smartApprove: false,
 };
 
 export function loadSettings(): AgentAutonomySettings {
@@ -70,14 +68,6 @@ export function setReadOnlyMode(on: boolean): void {
   saveSettings({ readOnly: on });
 }
 
-export function isSmartApproveEnabled(): boolean {
-  return loadSettings().smartApprove;
-}
-
-export function setSmartApproveEnabled(on: boolean): void {
-  saveSettings({ smartApprove: on });
-}
-
 // ── Plan mode helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -94,15 +84,9 @@ export function isPlanMode(): boolean {
  * @param toolIsReadOnly  True if the tool's `readOnly` flag is set.
  */
 export function shouldAskBeforeToolUse(toolIsReadOnly: boolean): boolean {
-  const settings = loadSettings();
-  if (settings.level === 'auto') return false;
-  if (settings.level === 'ask') {
-    // SmartApprove: skip the prompt for read-only tools
-    if (settings.smartApprove && toolIsReadOnly) return false;
-    return true;
-  }
-  // plan — execution proceeds step-by-step; ask before each non-read-only step
-  return !toolIsReadOnly;
+  // Reading never prompts — only mutating tools are gated, and only below 'auto'.
+  if (toolIsReadOnly) return false;
+  return loadSettings().level !== 'auto';
 }
 
 /**

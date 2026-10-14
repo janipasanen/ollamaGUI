@@ -1,40 +1,79 @@
 // MCP (Model Context Protocol) Client Implementation
-// https://github.com/ollama/mcp
+// Spec: https://modelcontextprotocol.io/specification/2025-06-18
 
 import { TauriMcpStdioTransport } from './mcp-tauri';
-import { McpHttpTransport } from './mcp-http';
+import { McpHttpTransport, McpReauthRequiredError } from './mcp-http';
 import { checkRateLimit } from './rateLimiter';
 
-/**
- * Extract a human-readable error detail from a non-ok MCP HTTP response (#461).
- * MCP servers speak JSON-RPC, so errors may arrive as `{"error":{"message":"…"}}`
- * even on non-ok HTTP status codes. Falls back to `statusText` when the body
- * is absent, non-JSON, or has no error field.
- */
-async function mcpHttpErrorDetail(response: Response): Promise<string> {
-  let detail = response.statusText;
-  try {
-    const body = await response.json();
-    if (body?.error) {
-      if (typeof body.error === 'string') detail = body.error;
-      else if (typeof body.error.message === 'string') detail = body.error.message;
-    } else if (typeof body?.message === 'string') {
-      detail = body.message;
-    }
-  } catch {
-    // Body is not JSON or cannot be consumed — keep statusText.
-  }
-  return detail;
-}
-
-// MCP protocol handshake constants (spec 2025-06-18).
+// MCP protocol handshake constants (spec 2025-06-18, basic/lifecycle).
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
+
+/**
+ * Protocol versions this client can operate. Lifecycle §Version Negotiation:
+ * the client MUST send a version it supports (SHOULD be its latest); if the
+ * server counter-offers a different version the client either accepts it (when
+ * supported) or SHOULD disconnect. The wire shape of everything this client
+ * uses (initialize, tools/list, tools/call, notifications/initialized) is
+ * identical across these three revisions.
+ */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
 export const MCP_CLIENT_INFO = { name: 'Ollama GUI', version: '0.1.0' };
-const MCP_INITIALIZE_PARAMS = {
+
+/**
+ * initialize params (lifecycle §Initialization): latest protocolVersion,
+ * capabilities, clientInfo{name,version}. `capabilities` is intentionally
+ * empty — this client implements none of the optional client features
+ * (roots / sampling / elicitation), and lifecycle §Capability Negotiation
+ * says to only advertise capabilities that are actually supported.
+ */
+export const MCP_INITIALIZE_PARAMS = {
   protocolVersion: MCP_PROTOCOL_VERSION,
   capabilities: {},
   clientInfo: MCP_CLIENT_INFO,
 };
+
+/**
+ * JSON-RPC 2.0 error surfaced from an MCP server, preserving the error
+ * object's `code` and `data` instead of flattening to the message string
+ * (JSON-RPC 2.0 §5.1 / MCP tools §Error Handling "Protocol Errors").
+ */
+export class McpJsonRpcError extends Error {
+  constructor(public code: number, message: string, public data?: any) {
+    super(message);
+    this.name = 'McpJsonRpcError';
+  }
+}
+
+/**
+ * Validate the server's initialize response version (lifecycle §Version
+ * Negotiation). The server either echoes the requested version or
+ * counter-offers its own latest; if we don't support the offered version the
+ * client SHOULD disconnect — callers must treat a throw here as fatal for the
+ * connection. Returns the negotiated version string.
+ */
+export function negotiateProtocolVersion(initializeResult: any): string {
+  const offered = initializeResult?.protocolVersion;
+  if (typeof offered !== 'string' || !MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(offered)) {
+    throw new Error(
+      `Unsupported MCP protocol version from server: ${offered ?? '(missing)'} — ` +
+      `client supports ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(', ')}`
+    );
+  }
+  return offered;
+}
+
+/**
+ * Flatten the text items of a tools/call result `content` array
+ * (spec server/tools §Tool Result) into a single string.
+ */
+export function extractMcpToolResultText(result: any): string {
+  const items = Array.isArray(result?.content) ? result.content : [];
+  return items
+    .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
+    .map((c: any) => c.text)
+    .join('\n');
+}
 
 /** Default per-request timeout for stdio MCP servers (#446). */
 const MCP_DEFAULT_TIMEOUT_MS = 30_000;
@@ -125,6 +164,12 @@ export class McpStdioClient {
   private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void; timer?: ReturnType<typeof setTimeout> }> = new Map();
   private eventListeners: Map<string, ((data: any) => void)[]> = new Map();
   private isClosed: boolean = false;
+  /** True once the initialize handshake completed and notifications/initialized was sent. */
+  private initialized: boolean = false;
+  /** Protocol version agreed during initialize (lifecycle §Version Negotiation). */
+  private negotiatedProtocolVersion: string | null = null;
+  /** Server capabilities from the initialize result (lifecycle §Capability Negotiation). */
+  private serverCapabilities: Record<string, any> | null = null;
 
   constructor(private config: McpServerConfig) {}
 
@@ -157,6 +202,10 @@ export class McpStdioClient {
       await this.initialize();
     } catch (error) {
       console.error(`[MCP] Failed to connect via Tauri: ${error}`);
+      // Lifecycle §Version Negotiation: on an unsupported version (or any
+      // failed handshake) the client SHOULD disconnect — reap the spawned
+      // child process instead of leaving a half-initialized connection.
+      try { await this.disconnect(); } catch { /* best-effort cleanup */ }
       throw new Error(`Failed to connect to MCP server: ${error}`);
     }
   }
@@ -171,6 +220,12 @@ export class McpStdioClient {
           const response = await TauriMcpStdioTransport.readResponse(this.tauriClient);
           if (response) {
             this.handleStdoutData(response);
+            // Yield to the macrotask queue between reads. Without this the
+            // loop can run as a pure microtask chain (read resolves →
+            // continuation → read …), starving timers and any pending
+            // disconnect — which manifested as unbounded allocation when a
+            // reader kept returning data.
+            await new Promise(resolve => setTimeout(resolve, 0));
           } else {
             await new Promise(resolve => setTimeout(resolve, 100));
           }
@@ -197,7 +252,9 @@ export class McpStdioClient {
           const pendingRequest = this.pendingRequests.get(message.id);
           if (pendingRequest) {
             if (message.error) {
-              pendingRequest.reject(new Error(message.error.message));
+              // JSON-RPC 2.0 error pass-through: preserve code + data
+              // (tools §Error Handling "Protocol Errors"), not just message.
+              pendingRequest.reject(new McpJsonRpcError(message.error.code, message.error.message, message.error.data));
             } else {
               pendingRequest.resolve(message.result);
             }
@@ -265,22 +322,61 @@ export class McpStdioClient {
     };
 
     const result = await this.sendRequest(request);
-    // Per spec, confirm readiness with a fire-and-forget notification before tools/list.
+
+    // Lifecycle §Version Negotiation: accept the server's counter-offer when
+    // supported, otherwise fail (connect() disconnects on throw).
+    this.negotiatedProtocolVersion = negotiateProtocolVersion(result);
+    this.serverCapabilities = result?.capabilities ?? null;
+
+    // Lifecycle §Initialization: after a successful initialize response the
+    // client MUST send notifications/initialized before normal operations.
     await this.sendNotification('notifications/initialized');
+    this.initialized = true;
     return result;
   }
 
-  async listTools(): Promise<McpTool[]> {
-    const request: McpRequest = {
-      jsonrpc: '2.0',
-      id: this.getNextRequestId(),
-      method: 'tools/list',
-    };
-
-    const result = await this.sendRequest(request);
-    return normalizeToolsList(result);
+  /** Negotiated protocol version (null before initialize completes). */
+  getNegotiatedProtocolVersion(): string | null {
+    return this.negotiatedProtocolVersion;
   }
 
+  /** Server capabilities from initialize (null before initialize completes). */
+  getServerCapabilities(): Record<string, any> | null {
+    return this.serverCapabilities;
+  }
+
+  async listTools(): Promise<McpTool[]> {
+    // Lifecycle §Capability Negotiation / Operation: only use capabilities
+    // that were successfully negotiated — a server that did not declare
+    // `tools` must not be sent tools/list.
+    if (this.serverCapabilities && !this.serverCapabilities.tools) {
+      console.warn(`[MCP] Server ${this.config.name} did not declare the tools capability; skipping tools/list`);
+      return [];
+    }
+
+    // server/utilities/pagination: follow nextCursor until exhausted.
+    const all: McpTool[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page++) { // hard cap guards against cursor loops
+      const request: McpRequest = {
+        jsonrpc: '2.0',
+        id: this.getNextRequestId(),
+        method: 'tools/list',
+        ...(cursor !== undefined ? { params: { cursor } } : {}),
+      };
+      const result = await this.sendRequest(request);
+      all.push(...normalizeToolsList(result));
+      cursor = typeof result?.nextCursor === 'string' && result.nextCursor !== '' ? result.nextCursor : undefined;
+      if (cursor === undefined) break;
+    }
+    return all;
+  }
+
+  /**
+   * tools/call. Returns the raw result object; a result with `isError: true`
+   * is a *tool execution* error (server/tools §Error Handling) and resolves
+   * normally — only JSON-RPC protocol errors reject.
+   */
   async callTool(toolName: string, params: any): Promise<any> {
     const request: McpRequest = {
       jsonrpc: '2.0',
@@ -313,6 +409,12 @@ export class McpStdioClient {
 
     if (!this.tauriClient) {
       throw new Error('MCP Tauri client not initialized');
+    }
+
+    // Lifecycle §Initialization: the client SHOULD NOT send requests other
+    // than pings before the server has responded to initialize.
+    if (!this.initialized && request.method !== 'initialize' && request.method !== 'ping') {
+      throw new Error(`MCP request ${request.method} attempted before initialize handshake completed`);
     }
 
     const timeoutMs = this.config.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
@@ -380,139 +482,71 @@ export class McpStdioClient {
 }
 
 export class McpHttpClient {
-  private sessionId: string;
-  private authToken: string | null = null;
+  constructor(private config: McpServerConfig) {}
 
-  constructor(private config: McpServerConfig) {
-    this.sessionId = `http_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  }
-
+  /**
+   * Connect = run the full initialize handshake through the Streamable HTTP
+   * transport (lifecycle §Initialization): spec-shaped initialize params
+   * (protocolVersion + capabilities + clientInfo), version negotiation,
+   * Mcp-Session-Id capture, then notifications/initialized. The previous
+   * implementation posted a non-spec `{capabilities:{tool_calls:true}}` probe
+   * via raw fetch and never completed the handshake.
+   */
   async connect(): Promise<void> {
     if (!this.config.url) {
       throw new Error('No URL specified for HTTP MCP server');
     }
 
-    // Test connection
     try {
-      const response = await fetch(this.config.url, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            capabilities: {
-              tool_calls: true,
-            }
-          }
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP MCP connection failed: ${await mcpHttpErrorDetail(response)}`);
-      }
-
-      const result = await response.json();
-      if (result.error) {
-        throw new Error(`MCP initialization error: ${result.error.message}`);
-      }
-
+      await McpHttpTransport.initializeSession(this.config);
+      await McpHttpTransport.initialize(this.config.id);
       console.log(`[MCP HTTP] Connected to ${this.config.name}`);
     } catch (error) {
       console.error(`[MCP HTTP] Connection failed: ${error}`);
-      throw new Error(`Failed to connect to HTTP MCP server: ${error}`);
+      // Drop the half-open session so a retry re-negotiates from scratch.
+      McpHttpTransport.closeSession(this.config.id);
+      if (error instanceof McpReauthRequiredError) throw error; // keep typed re-auth signal
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to connect to HTTP MCP server: ${detail}`);
     }
-  }
-
-  private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
-
-    // Add authentication if configured
-    if (this.config.auth?.token) {
-      if (this.config.auth.type === 'bearer') {
-        headers['Authorization'] = `Bearer ${this.config.auth.token}`;
-      } else if (this.config.auth.type === 'basic') {
-        // In a real app, you'd base64 encode username:password
-        headers['Authorization'] = `Basic ${btoa(`token:${this.config.auth.token}`)}`;
-      }
-    }
-
-    return headers;
   }
 
   async initialize(): Promise<any> {
-    const request: McpRequest = {
-      jsonrpc: '2.0',
-      id: this.getNextRequestId(),
-      method: 'initialize',
-      params: MCP_INITIALIZE_PARAMS,
-    };
-
-    const result = await this.sendRequest(request);
-    // Notify readiness (HTTP transport posts it without awaiting a JSON-RPC response).
-    await McpHttpTransport.sendNotification(this.config.id, 'notifications/initialized');
-    return result;
+    await McpHttpTransport.initializeSession(this.config);
+    return McpHttpTransport.initialize(this.config.id);
   }
 
   async listTools(): Promise<McpTool[]> {
-    const request: McpRequest = {
-      jsonrpc: '2.0',
-      id: this.getNextRequestId(),
-      method: 'tools/list',
-    };
-
-    const result = await this.sendRequest(request);
-    return normalizeToolsList(result);
+    this.checkRate();
+    await McpHttpTransport.initializeSession(this.config);
+    // Pagination + tools-capability gating live in the transport.
+    return McpHttpTransport.listTools(this.config.id);
   }
 
+  /**
+   * tools/call. Returns the raw result object; a result with `isError: true`
+   * is a *tool execution* error (server/tools §Error Handling) and resolves
+   * normally — only JSON-RPC protocol errors reject.
+   */
   async callTool(toolName: string, params: any): Promise<any> {
-    const request: McpRequest = {
-      jsonrpc: '2.0',
-      id: this.getNextRequestId(),
-      method: 'tools/call',
-      params: {
-        name: toolName,
-        arguments: params,
-      }
-    };
-
-    return this.sendRequest(request);
+    this.checkRate();
+    await McpHttpTransport.initializeSession(this.config);
+    return McpHttpTransport.callTool(this.config.id, toolName, params);
   }
 
-  private requestIdCounter: number = 1;
-
-  private getNextRequestId(): number {
-    return this.requestIdCounter++;
-  }
-
-  private async sendRequest(request: McpRequest): Promise<any> {
-    if (!this.config.url) {
-      throw new Error('MCP HTTP URL not configured');
-    }
-
-    // Guard against runaway request storms to a single MCP endpoint (#35).
+  /** Guard against runaway request storms to a single MCP endpoint (#35). */
+  private checkRate(): void {
     const limit = checkRateLimit(`mcp-http:${this.config.id}`, 'mcp-http');
     if (!limit.allowed) {
       throw new Error(`MCP request rate limit reached — retry in ${Math.ceil(limit.retryAfterMs / 1000)}s.`);
     }
-
-    try {
-      // Initialize the HTTP transport session if not already done
-      await McpHttpTransport.initializeSession(this.config);
-
-      // Send the request using the HTTP transport
-      return await McpHttpTransport.sendRequest(this.config.id, request);
-    } catch (error) {
-      console.error(`[MCP HTTP] Request failed: ${error}`);
-      throw new Error(`MCP request failed: ${error}`);
-    }
   }
 
   async disconnect(): Promise<void> {
+    // Transports §Session Management: clients that no longer need a session
+    // SHOULD send an HTTP DELETE with the Mcp-Session-Id (best-effort; servers
+    // MAY answer 405).
+    await McpHttpTransport.terminateSession(this.config.id);
     console.log(`[MCP HTTP] Disconnected from ${this.config.name}`);
   }
 

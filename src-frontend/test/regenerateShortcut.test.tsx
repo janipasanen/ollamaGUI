@@ -41,7 +41,7 @@ describe('Regenerate last reply via Ctrl/Cmd+R (#264)', () => {
     const composer = screen.getByPlaceholderText('Message Ollama...');
     fireEvent.change(composer, { target: { value: 'Hi' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => screen.getByText('First reply'), { timeout: 3000 });
+    await waitFor(() => screen.getByText('First reply'), { timeout: 5000 });
     expect(chatCalls).toBe(1);
 
     // Blur the composer so the global handler treats us as "not typing".

@@ -22,7 +22,10 @@ describe('formatError (#30)', () => {
   it('maps model-not-found', () => {
     const e = formatError(new Error('model "llama3" not found, try pulling it'), 'ollama');
     expect(e.title).toMatch(/not available/i);
-    expect(e.detail).toMatch(/pull/i);
+    // GUI-first copy (#549 rank 4): point at the switcher/Settings download,
+    // never at a terminal command or a nonexistent panel.
+    expect(e.detail).toMatch(/switcher|download/i);
+    expect(e.detail).not.toMatch(/panel/i);
   });
 
   it('maps auth errors', () => {

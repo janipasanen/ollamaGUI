@@ -30,7 +30,7 @@ function makeStdioMock(tools: Array<{ name: string; description: string }>) {
       if (!last) return null;
       last._done = true;
       let result: any;
-      if (last.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'mock', version: '0' } };
+      if (last.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'mock', version: '0' } };
       else if (last.method === 'tools/list') result = { tools: tools.map(t => ({ ...t, inputSchema: { type: 'object', properties: {} } })) };
       else if (last.method === 'tools/call') result = { content: [{ type: 'text', text: JSON.stringify({ echo: (last.params?.arguments as any)?.message ?? 'ok' }) }] };
       else result = {};
@@ -45,7 +45,7 @@ function makeHttpMock(tools: Array<{ name: string; description: string }>) {
   return async (_cmd: string, args: any) => {
     const req = JSON.parse(args.request.body);
     let result: any;
-    if (req.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'mock-http', version: '0' } };
+    if (req.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'mock-http', version: '0' } };
     else if (req.method === 'tools/list') result = { tools: tools.map(t => ({ ...t, inputSchema: { type: 'object', properties: {} } })) };
     else if (req.method === 'tools/call') result = { content: [{ type: 'text', text: 'called' }] };
     else if (req.method === 'notifications/initialized') result = {};

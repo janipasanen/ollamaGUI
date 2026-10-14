@@ -85,7 +85,9 @@ const EDIT_TOOLS = new Set(['write_file', 'apply_edit', 'apply_patch']);
 const AUTO_VERIFY_KEY = 'ollama_gui_auto_verify_edits';
 
 export function isAutoVerifyEnabled(): boolean {
-  try { return localStorage.getItem(AUTO_VERIFY_KEY) === 'true'; } catch { return false; }
+  // Default ON: verification after edits is what makes autonomous runs
+  // trustworthy; an explicit 'false' still disables it.
+  try { return localStorage.getItem(AUTO_VERIFY_KEY) !== 'false'; } catch { return true; }
 }
 export function setAutoVerifyEnabled(on: boolean): void {
   try { localStorage.setItem(AUTO_VERIFY_KEY, on ? 'true' : 'false'); } catch { /* ignore */ }
@@ -199,8 +201,17 @@ export function registerDevTools(): void {
       },
     },
     execute: async (params: Record<string, unknown>) => {
-      const command = (params.command as string) || getTestCommand();
-      return runDevCommand(command);
+      const override = params.command as string | undefined;
+      // A model-supplied command is an arbitrary shell string — route it
+      // through the same approval policy as run_shell_command so 'auto' runs
+      // cannot open an unaudited shell path. The configured defaults are
+      // user-chosen and stay silent.
+      if (override) {
+        const { requestCliApproval } = await import('./tools');
+        const approved = await requestCliApproval(override);
+        if (!approved) return { ok: false, error: 'Command denied by user.' };
+      }
+      return runDevCommand(override || getTestCommand());
     },
   });
 
@@ -217,8 +228,13 @@ export function registerDevTools(): void {
       },
     },
     execute: async (params: Record<string, unknown>) => {
-      const command = (params.command as string) || getCheckCommand();
-      return runDevCommand(command);
+      const override = params.command as string | undefined;
+      if (override) {
+        const { requestCliApproval } = await import('./tools');
+        const approved = await requestCliApproval(override);
+        if (!approved) return { ok: false, error: 'Command denied by user.' };
+      }
+      return runDevCommand(override || getCheckCommand());
     },
   });
 }

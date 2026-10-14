@@ -111,14 +111,16 @@ describe('Copy-diff button in DiffReviewModal (#370)', () => {
     expect(copied).toContain('+B');
   });
 
-  it('shows "Copied" feedback after clicking', () => {
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn() }, writable: true, configurable: true });
+  // The tick now waits for the clipboard write to resolve rather than claiming
+  // success immediately (#524), so this assertion is asynchronous.
+  it('shows "Copied" feedback after clicking', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn().mockResolvedValue(undefined) }, writable: true, configurable: true });
 
     render(<DiffReviewModal edit={edit} dark={true} onResolve={() => {}} />);
     const copyBtn = screen.getByLabelText('Copy diff to clipboard');
     expect(copyBtn.textContent).toContain('Copy diff');
     fireEvent.click(copyBtn);
-    expect(copyBtn.textContent).toContain('Copied');
+    await waitFor(() => expect(copyBtn.textContent).toContain('Copied'));
   });
 });
 

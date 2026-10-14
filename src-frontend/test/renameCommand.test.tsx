@@ -44,7 +44,9 @@ describe('/rename slash command (#269)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(await screen.findByText('Renamed conversation to "Project Sync Notes"')).toBeInTheDocument();
-    expect(screen.getByText('Project Sync Notes')).toBeInTheDocument();
+    // The new title shows both as the header session title and on the sidebar
+    // row — assert the sidebar row specifically (the intent of this test).
+    expect(screen.getByRole('button', { name: 'Load session: Project Sync Notes' })).toBeInTheDocument();
   });
 
   it('shows a usage hint when called with no argument', async () => {

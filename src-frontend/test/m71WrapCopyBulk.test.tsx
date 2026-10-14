@@ -1,9 +1,11 @@
 /**
  * M71: Code word-wrap toggle (#336), /copy txt (#337),
- *      bulk selection & bulk archive/delete (#338).
+ *      archive/delete of sessions (#338 — the bulk-select bar was removed with
+ *      the project-first sidebar rewrite; archive and delete survive on the
+ *      per-session right-click context menu, so the tests target that surface).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '../App';
 
 let origFetch: typeof global.fetch;
@@ -125,10 +127,13 @@ describe('/copy txt slash command (#337)', () => {
   });
 });
 
-// ── #338 Bulk selection & bulk archive/delete ────────────────────────────────
+// ── #338 Archive/delete via the session context menu ─────────────────────────
+// The bulk-select bar (☑ Select / Archive / Delete) was removed with the
+// project-first sidebar rewrite. Archive and delete survive per session on the
+// right-click context menu; these tests cover that surface instead.
 
-describe('Bulk selection & bulk archive/delete (#338)', () => {
-  it('enters select mode and shows checkboxes on session rows', async () => {
+describe('Archive & delete via session context menu (#338, bulk-select removed)', () => {
+  it('no longer offers a bulk select mode', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 's1', title: 'Bulk A', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 1000 },
       { id: 's2', title: 'Bulk B', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 2000 },
@@ -136,34 +141,29 @@ describe('Bulk selection & bulk archive/delete (#338)', () => {
     global.fetch = emptyModels();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Bulk A')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Enter bulk select mode'));
-    expect(screen.getByLabelText('Select session: Bulk A')).toBeInTheDocument();
-    expect(screen.getByLabelText('Select session: Bulk B')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter bulk select mode')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Select session: Bulk A')).not.toBeInTheDocument();
   });
 
-  it('selects sessions and bulk-archives them', async () => {
+  it('archives a session from the right-click context menu and hides it from the list', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 's1', title: 'Archive A', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 1000 },
       { id: 's2', title: 'Archive B', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 2000 },
-      { id: 's3', title: 'Archive C', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 3000 },
     ]));
     global.fetch = emptyModels();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Archive A')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Enter bulk select mode'));
-    fireEvent.click(screen.getByLabelText('Select session: Archive A'));
-    fireEvent.click(screen.getByLabelText('Select session: Archive B'));
-    expect(screen.getByText('2 selected')).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('Bulk archive selected'));
-    // After archiving, the sessions leave the active list and select mode exits
-    await waitFor(() => expect(screen.queryByLabelText('Select session: Archive A')).not.toBeInTheDocument(), { timeout: 3000 });
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Load session: Archive A' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }));
+    // Archived sessions leave the active list (no Archived toggle anymore).
+    await waitFor(() => expect(screen.queryByText('Archive A')).not.toBeInTheDocument(), { timeout: 3000 });
+    expect(screen.getByText('Archive B')).toBeInTheDocument();
     const stored = JSON.parse(localStorage.getItem('ollama_gui_sessions') ?? '[]');
     expect(stored.find((s: any) => s.id === 's1').archived).toBe(true);
-    expect(stored.find((s: any) => s.id === 's2').archived).toBe(true);
-    expect(stored.find((s: any) => s.id === 's3').archived).not.toBe(true);
+    expect(stored.find((s: any) => s.id === 's2').archived).not.toBe(true);
   });
 
-  it('bulk-deletes selected sessions after confirmation', async () => {
+  it('deletes a session from the context menu after confirming the dialog', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 's1', title: 'Delete A', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 1000 },
       { id: 's2', title: 'Delete B', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 2000 },
@@ -171,30 +171,31 @@ describe('Bulk selection & bulk archive/delete (#338)', () => {
     global.fetch = emptyModels();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Delete A')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Enter bulk select mode'));
-    fireEvent.click(screen.getByLabelText('Select session: Delete A'));
-    fireEvent.click(screen.getByLabelText('Select session: Delete B'));
-    fireEvent.click(screen.getByLabelText('Bulk delete selected'));
-    // Confirmation dialog appears
-    expect(await screen.findByText('Delete 2 conversations?')).toBeInTheDocument();
-    // The dialog has two "Delete" buttons (bulk + single if open). Click the bulk confirm Delete button.
-    const deleteButtons = screen.getAllByRole('button', { name: 'Delete' });
-    fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Load session: Delete A' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    // Confirmation dialog appears; confirm.
+    const dialog = await screen.findByRole('dialog', { name: 'Delete chat confirmation' });
+    expect(within(dialog).getByText(/"Delete A"/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(screen.queryByText('Delete A')).not.toBeInTheDocument(), { timeout: 3000 });
     const stored = JSON.parse(localStorage.getItem('ollama_gui_sessions') ?? '[]');
-    expect(stored.length).toBe(0);
+    expect(stored.map((s: any) => s.id)).toEqual(['s2']);
   });
 
-  it('cancels select mode without changes', async () => {
+  it('cancelling the delete confirmation leaves the session intact', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 's1', title: 'Cancel A', messages: [{ role: 'user', content: 'hi' }], model: 'llama3', createdAt: 1000 },
     ]));
     global.fetch = emptyModels();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Cancel A')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Enter bulk select mode'));
-    fireEvent.click(screen.getByLabelText('Exit bulk select mode'));
-    expect(screen.queryByLabelText('Select session: Cancel A')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Enter bulk select mode')).toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Load session: Cancel A' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete chat confirmation' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete chat confirmation' })).not.toBeInTheDocument());
+    expect(screen.getByText('Cancel A')).toBeInTheDocument();
+    const stored = JSON.parse(localStorage.getItem('ollama_gui_sessions') ?? '[]');
+    expect(stored.length).toBe(1);
   });
 });

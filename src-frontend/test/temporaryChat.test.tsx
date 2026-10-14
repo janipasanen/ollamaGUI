@@ -22,6 +22,13 @@ function mockChat() {
   }) as any;
 }
 
+// The sidebar "Start temporary chat" button is gone — the feature now lives in
+// the command palette (Ctrl+P → "New Temporary Chat").
+function startTemporaryChatViaPalette() {
+  fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+  fireEvent.click(screen.getByText('New Temporary Chat'));
+}
+
 describe('Temporary chat (#134)', () => {
   beforeEach(() => { localStorage.clear(); mockChat(); });
   afterEach(() => vi.restoreAllMocks());
@@ -29,7 +36,7 @@ describe('Temporary chat (#134)', () => {
   it('does not persist to storage and shows the banner', async () => {
     const saveSpy = vi.spyOn(storage, 'saveSession');
     render(<App />);
-    fireEvent.click(screen.getByLabelText('Start temporary chat'));
+    startTemporaryChatViaPalette();
     expect(screen.getByText(/won't be saved/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'hello' } });
@@ -42,7 +49,7 @@ describe('Temporary chat (#134)', () => {
 
   it('"Save this chat" promotes to a persisted session exactly once', async () => {
     render(<App />);
-    fireEvent.click(screen.getByLabelText('Start temporary chat'));
+    startTemporaryChatViaPalette();
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
     await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument());
@@ -56,7 +63,7 @@ describe('Temporary chat (#134)', () => {
   it('Discard drops the temporary chat without persisting', async () => {
     const saveSpy = vi.spyOn(storage, 'saveSession');
     render(<App />);
-    fireEvent.click(screen.getByLabelText('Start temporary chat'));
+    startTemporaryChatViaPalette();
     fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
     await waitFor(() => expect(screen.getByText('hi')).toBeInTheDocument());

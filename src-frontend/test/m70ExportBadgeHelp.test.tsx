@@ -1,6 +1,7 @@
 /**
- * M70: /export txt (#333), per-session model badge (#334),
- *      slash command reference in help overlay (#335).
+ * M70: /export txt (#333), slash command reference in help overlay (#335).
+ * (#334 per-session model badge was removed with the project-first sidebar
+ * rewrite — session rows are title-only now; only a removal guard remains.)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -62,10 +63,12 @@ describe('/export txt slash command (#333)', () => {
   });
 });
 
-// ── #334 Per-session model badge ─────────────────────────────────────────────
+// ── #334 Per-session model badge — REMOVED ───────────────────────────────────
+// Session rows no longer carry model/message-count badges in any form.
+// Guard against the removed chrome regressing back in.
 
-describe('Per-session model badge (#334)', () => {
-  it('renders the model name in the session row', async () => {
+describe('Per-session model badge is gone (#334 removed)', () => {
+  it('renders the session row without a model badge', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify([
       { id: 's1', title: 'Badge chat', messages: [{ role: 'user', content: 'Hi' }], model: 'mistral:7b', createdAt: 1000 },
     ]));
@@ -75,20 +78,9 @@ describe('Per-session model badge (#334)', () => {
       const btns = screen.getAllByRole('button', { name: /Load session: Badge chat/i });
       expect(btns.length).toBeGreaterThan(0);
     }, { timeout: 3000 });
-    expect(screen.getByText('mistral:7b')).toBeInTheDocument();
-  });
-
-  it('shows a tooltip title with the model name', async () => {
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify([
-      { id: 's1', title: 'Tooltip chat', messages: [{ role: 'user', content: 'Hi' }], model: 'qwen2.5', createdAt: 1000 },
-    ]));
-    global.fetch = emptyModels();
-    render(<App />);
-    await waitFor(() => {
-      const btns = screen.getAllByRole('button', { name: /Load session: Tooltip chat/i });
-      expect(btns.length).toBeGreaterThan(0);
-    }, { timeout: 3000 });
-    expect(screen.getByText('qwen2.5').getAttribute('title')).toBe('Model: qwen2.5');
+    const row = screen.getAllByRole('button', { name: /Load session: Badge chat/i })[0];
+    expect(row.textContent).not.toContain('mistral:7b');
+    expect(document.querySelector('[title="Model: mistral:7b"]')).toBeNull();
   });
 });
 

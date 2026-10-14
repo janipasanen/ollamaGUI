@@ -14,10 +14,13 @@ import { getWorkspaceRoot } from './fileTools';
 const SETTING_KEY = 'ollama_gui_auto_commit_edits';
 
 export function loadAutoCommitEdits(): boolean {
+  // Default ON: auto-commits are the undo mechanism for autonomous edits
+  // (revertible via /gitundo) and are non-fatal outside git repos. An explicit
+  // stored 'false' still disables them.
   try {
-    return JSON.parse(localStorage.getItem(SETTING_KEY) ?? 'false') === true;
+    return JSON.parse(localStorage.getItem(SETTING_KEY) ?? 'true') === true;
   } catch {
-    return false;
+    return true;
   }
 }
 

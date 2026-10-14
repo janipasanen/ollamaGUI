@@ -432,34 +432,42 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
                     dark ? 'border-zinc-700 bg-zinc-800/50' : 'border-zinc-200 bg-zinc-50'
                   }`}
                 >
+                  {/* Close used to be a <span role="button"> nested inside the
+                      tab button (#511): invalid nesting and not focusable, so a
+                      panel could not be closed from the tab strip by keyboard.
+                      It is a sibling button now. */}
                   {openSide.map((p) => {
                     const active = p.id === activeSide.id;
                     return (
-                      <button
+                      <div
                         key={p.id}
-                        role="tab"
-                        aria-selected={active}
-                        data-testid={`side-tab-${p.id}`}
-                        onClick={() => setActiveSideId(p.id)}
-                        className={`group flex items-center gap-1 px-2.5 py-1 text-xs rounded-md whitespace-nowrap transition-colors ${
+                        className={`group flex items-center gap-1 pl-2.5 pr-1 py-1 text-xs rounded-md whitespace-nowrap transition-colors ${
                           active
                             ? dark ? 'bg-zinc-700 text-zinc-100' : 'bg-white text-zinc-900 shadow-sm'
                             : dark ? 'text-zinc-400 hover:bg-zinc-700/50' : 'text-zinc-500 hover:bg-zinc-200'
                         }`}
                       >
-                        {p.icon && <span aria-hidden>{p.icon}</span>}
-                        <span>{p.title}</span>
-                        <span
-                          role="button"
+                        <button
+                          role="tab"
+                          aria-selected={active}
+                          data-testid={`side-tab-${p.id}`}
+                          onClick={() => setActiveSideId(p.id)}
+                          className="flex items-center gap-1 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                        >
+                          {p.icon && <span aria-hidden>{p.icon}</span>}
+                          <span>{p.title}</span>
+                        </button>
+                        <button
+                          type="button"
                           aria-label={`Close ${p.title}`}
-                          onClick={(e) => { e.stopPropagation(); closePanel(p.id); }}
-                          className={`ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${
+                          onClick={() => closePanel(p.id)}
+                          className={`ml-0.5 px-0.5 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-opacity ${
                             dark ? 'hover:text-red-400' : 'hover:text-red-500'
                           }`}
                         >
                           ✕
-                        </span>
-                      </button>
+                        </button>
+                      </div>
                     );
                   })}
                 </div>

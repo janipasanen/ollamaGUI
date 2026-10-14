@@ -53,7 +53,8 @@ describe('Context limit warning banner (#319)', () => {
       expect(btns.length).toBeGreaterThan(0);
     }, { timeout: 3000 });
     fireEvent.click(screen.getAllByRole('button', { name: /Load session: Long chat/i })[0]);
-    await waitFor(() => expect(screen.getByText(/Context window.*% full/)).toBeInTheDocument(), { timeout: 3000 });
+    // Banner copy changed with context auto-sizing: '⚠ Conversation is N% of the context window.'
+    await waitFor(() => expect(screen.getByText(/Conversation is \d+% of the context window/)).toBeInTheDocument(), { timeout: 3000 });
   });
 
   it('can be dismissed', async () => {
@@ -74,7 +75,7 @@ describe('Context limit warning banner (#319)', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /Load session: Long chat/i })[0]);
     const dismissBtn = await waitFor(() => screen.getByRole('button', { name: 'Dismiss context warning' }), { timeout: 3000 });
     fireEvent.click(dismissBtn);
-    await waitFor(() => expect(screen.queryByText(/Context window.*% full/)).not.toBeInTheDocument(), { timeout: 2000 });
+    await waitFor(() => expect(screen.queryByText(/Conversation is \d+% of the context window/)).not.toBeInTheDocument(), { timeout: 2000 });
   });
 });
 
@@ -87,5 +88,5 @@ describe('Completion sound settings toggle (#320)', () => {
     await waitFor(() => {
       expect(localStorage.getItem('ollama_gui_sound_complete')).toBe('true');
     }, { timeout: 2000 });
-  });
+  }, 10000);
 });

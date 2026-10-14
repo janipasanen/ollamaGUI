@@ -1,22 +1,12 @@
 /**
- * Continue generation (#303), per-message export (#304), and /compact (#305).
+ * Continue generation (#303) and /compact (#305).
+ * Per-message export (#304, the ⬇ download button) was removed in the UI
+ * rewrite with no replacement surface; per-message Markdown copying survives
+ * in the message context menu and is covered by copyMessageMarkdown.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
-
-function modelsThenStream(chunks: string[]) {
-  return vi.fn().mockImplementation((url: unknown) => {
-    const u = String(url);
-    if (u.includes('/api/chat') || u.includes('generate')) {
-      const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
-      chunks.forEach(c => reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from(c) }));
-      reader.read.mockResolvedValueOnce({ done: true, value: undefined });
-      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
-    }
-    return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
-  });
-}
 
 beforeEach(() => {
   localStorage.clear();
@@ -47,17 +37,6 @@ describe('Continue generation button (#303)', () => {
     }, { timeout: 3000 });
     fireEvent.click(screen.getAllByRole('button', { name: /Load session: Test/i })[0]);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Continue generation' })).toBeInTheDocument(), { timeout: 3000 });
-  });
-});
-
-describe('Per-message export button (#304)', () => {
-  it('shows a Download button on each assistant message', async () => {
-    global.fetch = modelsThenStream(['{"message":{"content":"Hello there"}}\n']);
-    render(<App />);
-    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: 'Hi' } });
-    fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(document.body.textContent).toContain('Hello there'), { timeout: 3000 });
-    expect(screen.getByRole('button', { name: 'Download message as Markdown' })).toBeInTheDocument();
   });
 });
 

@@ -19,7 +19,11 @@ afterEach(() => {
 });
 
 describe('autoCommit setting (#401)', () => {
-  it('defaults to false', () => {
+  it('defaults to true (auto-commit is the undo mechanism for autonomous edits)', () => {
+    expect(loadAutoCommitEdits()).toBe(true);
+  });
+  it('an explicit stored false disables it', () => {
+    saveAutoCommitEdits(false);
     expect(loadAutoCommitEdits()).toBe(false);
   });
   it('round-trips the setting', () => {

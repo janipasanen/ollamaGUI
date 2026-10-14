@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
-import { storage, type Project } from '../services/storage';
+import FileTreePanel, { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 import { _mocks as fileMocks } from '../services/fileTools';
-import { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 
 let origFetch: typeof global.fetch;
 
@@ -102,6 +101,9 @@ describe('/prompt composed system prompt preview (#376)', () => {
 });
 
 // ── #377: Copy-path action in file tree ────────────────────────────────────────
+// The App no longer mounts any side-dock panels (the files-panel header button
+// is gone), but the copy-path action still lives in the FileTreePanel
+// component itself — so this is now a component-level test.
 
 describe('Copy-path action in file tree (#377)', () => {
   it('copies a file path to the clipboard when the copy button is clicked', async () => {
@@ -114,10 +116,7 @@ describe('Copy-path action in file tree (#377)', () => {
       { name: 'README.md', path: '/ws/repo/README.md', is_dir: false, size: 100, modified_ms: null },
     ];
 
-    render(<App />);
-    // Open the files panel
-    const filesBtn = await screen.findByRole('button', { name: /files panel/i });
-    fireEvent.click(filesBtn);
+    render(<FileTreePanel dark={false} />);
 
     // Wait for the file tree to render
     await waitFor(() => {

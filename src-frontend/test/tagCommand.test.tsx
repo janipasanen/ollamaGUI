@@ -43,8 +43,17 @@ describe('/tag slash command (#285)', () => {
     fireEvent.change(composer, { target: { value: '/tag work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('Tagged conversation with "work"')).toBeInTheDocument();
-    // The tag chip is rendered in the sidebar.
-    expect(screen.getByText('work')).toBeInTheDocument();
+
+    // Tag chips are gone from the sidebar rows; the tag persists on the
+    // session and is reachable through sidebar search, which matches tags.
+    const sessions = JSON.parse(localStorage.getItem('ollama_gui_sessions') ?? '[]') as Array<{ tags?: string[] }>;
+    expect(sessions.some(s => (s.tags ?? []).includes('work'))).toBe(true);
+
+    const search = screen.getByLabelText('Search conversations');
+    fireEvent.change(search, { target: { value: 'zzz-no-match' } });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Load session: /i })).not.toBeInTheDocument());
+    fireEvent.change(search, { target: { value: 'work' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Load session: /i })).toBeInTheDocument());
   });
 
   it('shows a usage hint with no argument', async () => {

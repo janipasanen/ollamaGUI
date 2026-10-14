@@ -20,7 +20,9 @@ function stdioStub(cmd: string, args: any): any {
     const { id, method } = _stubPending;
     _stubPending = null;
     let result: any = {};
-    if (method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'stub', version: '0.0.0' } };
+    // Declares the tools capability so the stubbed tools/list is reachable
+    // (the client gates tools/list on the negotiated capabilities).
+    if (method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'stub', version: '0.0.0' } };
     else if (method === 'tools/list') result = { tools: [] };
     else if (method === 'tools/call') result = { content: [] };
     return JSON.stringify({ jsonrpc: '2.0', id, result });

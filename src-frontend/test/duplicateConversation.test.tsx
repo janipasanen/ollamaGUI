@@ -46,7 +46,7 @@ describe('Duplicate conversation (#286)', () => {
     expect(screen.getByRole('button', { name: /Load session: Copy of /i })).toBeInTheDocument();
   });
 
-  it('the sidebar 📑 button duplicates a session', async () => {
+  it('the sidebar right-click context menu duplicates a session', async () => {
     const storage = (await import('../services/storage')).storage;
     storage.saveSession({
       id: 's1', title: 'Seed Chat', createdAt: 1, model: 'llama3',
@@ -57,7 +57,10 @@ describe('Duplicate conversation (#286)', () => {
     render(<App />);
     await waitFor(() => expect(screen.getByRole('button', { name: /Load session: Seed Chat/i })).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /Duplicate session: Seed Chat/i }));
+    // The per-session hover 📑 button is gone — Duplicate now lives in the
+    // session row's right-click context menu.
+    fireEvent.contextMenu(screen.getByRole('button', { name: /Load session: Seed Chat/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Load session: Copy of Seed Chat/i })).toBeInTheDocument());
   });
 });

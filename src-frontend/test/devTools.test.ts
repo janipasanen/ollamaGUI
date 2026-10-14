@@ -1,18 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { parseRunOutput, registerDevTools, getTestCommand, getCheckCommand, makePostEditVerifyHook, reviewDiffText } from '../services/devTools';
-import { toolRegistry, _cliMocks } from '../services/tools';
+import { toolRegistry, _cliMocks, setAllowCliWithoutApprovalUi } from '../services/tools';
 import { setWorkspaceRoot, clearWorkspaceRoot, _mocks as fsMocks } from '../services/fileTools';
 
 beforeEach(() => {
   _cliMocks.invoke = null;
   fsMocks.invoke = null;
   clearWorkspaceRoot();
+  // requestCliApproval now denies when no approval UI is registered (#609).
+  // These specs exercise the command path itself, not the approval gate, so
+  // they opt in explicitly rather than relying on a fail-open default.
+  setAllowCliWithoutApprovalUi(true);
 });
 
 afterEach(() => {
   _cliMocks.invoke = null;
   fsMocks.invoke = null;
   clearWorkspaceRoot();
+  setAllowCliWithoutApprovalUi(false);
 });
 
 describe('parseRunOutput (#423/#424)', () => {

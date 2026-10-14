@@ -19,7 +19,9 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('Per-message Copy-as-Markdown (#268)', () => {
+// The per-message ⎘ hover button is gone; Copy-as-Markdown now lives in the
+// message right-click context menu.
+describe('Per-message Copy-as-Markdown (#268, via context menu)', () => {
   it('copies the assistant reply as Markdown to the clipboard', async () => {
     global.fetch = vi.fn().mockImplementation(async (url: string) => {
       if (String(url).includes('/api/chat')) {
@@ -45,7 +47,12 @@ describe('Per-message Copy-as-Markdown (#268)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy message as Markdown' }));
+    // Right-click the assistant message to open its context menu.
+    fireEvent.contextMenu(screen.getByText('Hello there'));
+    const menu = await screen.findByRole('menu', { name: 'Message actions' });
+    expect(menu).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy as Markdown' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain('## Assistant');

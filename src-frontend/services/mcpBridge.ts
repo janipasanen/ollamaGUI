@@ -7,7 +7,7 @@
  * - Individual McpTool.enabled === false skips that tool.
  */
 
-import { mcpServerManager } from './mcp';
+import { mcpServerManager, extractMcpToolResultText } from './mcp';
 import { McpServerConfig } from './mcpConfig';
 import { toolRegistry } from './tools';
 
@@ -51,7 +51,19 @@ export async function registerMcpTools(
       execute: async (params) => {
         const c = mcpServerManager.getActiveConnection(server.id);
         if (!c) throw new Error(`MCP server ${server.name} not connected`);
-        return c.callTool(tool.name, params);
+        const result = await c.callTool(tool.name, params);
+        // Spec server/tools §Error Handling: `isError: true` marks a *tool
+        // execution* error reported inside the result — it is NOT a transport/
+        // protocol failure, so it must not throw. Surface it as an explicit
+        // error payload (with the flattened text content) so the model sees a
+        // clear failure instead of an opaque content array.
+        if (result && typeof result === 'object' && result.isError === true) {
+          return {
+            isError: true,
+            error: extractMcpToolResultText(result) || 'MCP tool execution failed',
+          };
+        }
+        return result;
       },
     });
     registered.push(name);

@@ -46,7 +46,10 @@ afterEach(() => {
 });
 
 function sendCommand(cmd: string) {
-  const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+  // Query by aria-label: the placeholder differs between plain chat
+  // ('Message Ollama...') and agentic mode ('Describe the goal for this
+  // session…', active whenever the project has a bound folder).
+  const composer = screen.getByLabelText('Type your message here') as HTMLTextAreaElement;
   fireEvent.change(composer, { target: { value: cmd } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 }
@@ -71,7 +74,9 @@ describe('/commit stages all and commits with a generated message (#357)', () =>
     gitMocks.invoke = gitInvoke;
 
     render(<App />);
-    fireEvent.click(await screen.findByText('📂 Repo'));
+    // Project rows carry aria-label = project name; clicking sets it active
+    // (and with it the workspace root used by /commit).
+    fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
 
     sendCommand('/commit');
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Committed abc123: Fix parser bug/), { timeout: 3000 });
@@ -89,7 +94,9 @@ describe('/commit stages all and commits with a generated message (#357)', () =>
     };
 
     render(<App />);
-    fireEvent.click(await screen.findByText('📂 Repo'));
+    // Project rows carry aria-label = project name; clicking sets it active
+    // (and with it the workspace root used by /commit).
+    fireEvent.click(await screen.findByRole('button', { name: 'Repo' }));
 
     sendCommand('/commit');
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Nothing to commit/), { timeout: 3000 });
@@ -118,7 +125,12 @@ describe('/tests runs the suite and feeds failures to the model (#359)', () => {
     render(<App />);
     sendCommand('/tests npm test');
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Tests failed \(exit 1\)/), { timeout: 3000 });
-    expect(await screen.findByText(/following tests are failing/i, { selector: 'p' })).toBeInTheDocument();
+    // Re-query inside waitFor: the markdown body re-renders while the mocked
+    // reply streams in, so a node grabbed once can be swapped out (detached)
+    // before the assertion runs.
+    await waitFor(() => {
+      expect(screen.getByText(/following tests are failing/i, { selector: 'p' })).toBeInTheDocument();
+    }, { timeout: 3000 });
   });
 
   it('refuses with no command', async () => {

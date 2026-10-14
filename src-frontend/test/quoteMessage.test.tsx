@@ -16,7 +16,9 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('Quote message into the composer (#284)', () => {
+// The hover ❝ Quote button is gone; quoting now happens through the message
+// right-click context menu ("Quote into composer").
+describe('Quote message into the composer (#284, via context menu)', () => {
   it('inserts the assistant reply as a quoted draft', async () => {
     global.fetch = vi.fn().mockImplementation(async (url: string) => {
       if (String(url).includes('/api/chat')) {
@@ -41,7 +43,8 @@ describe('Quote message into the composer (#284)', () => {
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
     expect(composer.value).toBe('');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Quote response' }));
+    fireEvent.contextMenu(screen.getByText('Hello there'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Quote into composer' }));
     expect(composer.value).toContain('> Hello there');
   });
 
@@ -69,7 +72,8 @@ describe('Quote message into the composer (#284)', () => {
     await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
 
     fireEvent.change(composer, { target: { value: 'My follow-up' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Quote response' }));
+    fireEvent.contextMenu(screen.getByText('Hello there'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Quote into composer' }));
     expect(composer.value).toContain('My follow-up');
     expect(composer.value).toContain('> Hello there');
   });

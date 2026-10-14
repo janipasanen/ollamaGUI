@@ -151,7 +151,8 @@ export function removeCustomTool(id: string): void {
   saveCustomTools(all.filter(x => x.id !== id));
 }
 
-function toolNameFor(t: CustomTool): string {
+/** Registry name for a custom tool — custom tools register as `custom__<name>`. */
+export function toolNameFor(t: CustomTool): string {
   return `custom__${t.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 }
 

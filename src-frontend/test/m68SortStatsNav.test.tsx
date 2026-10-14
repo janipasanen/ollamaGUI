@@ -1,6 +1,8 @@
 /**
- * M68: Sidebar sort selector (#327), /stats command (#328),
- *      keyboard arrow navigation in conversation list (#329).
+ * M68: Conversation-list ordering (#327 — the sort selector UI was removed in
+ *      the project-first sidebar rewrite; the list still defaults to
+ *      newest-first), /stats command (#328), keyboard arrow navigation in
+ *      conversation list (#329).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -24,64 +26,25 @@ const seedSessions = [
   { id: 'm1', title: 'Mango chat', messages: [{ role: 'user', content: 'x' }, { role: 'user', content: 'y' }], model: 'llama3', createdAt: 2000 },
 ];
 
-// ── #327 Sort selector ───────────────────────────────────────────────────────
+// ── #327 Conversation-list ordering ──────────────────────────────────────────
+// The Recent/Name/Messages sort buttons were removed with the project-first
+// sidebar rewrite. The list still defaults to newest-first; assert that and
+// that the old sort chrome is gone.
 
-describe('Conversation-list sort selector (#327)', () => {
-  it('renders sort buttons for recent, name, and messages', async () => {
+describe('Conversation-list ordering (#327, sort selector removed)', () => {
+  it('orders sessions newest first by default and renders no sort buttons', async () => {
     localStorage.setItem('ollama_gui_sessions', JSON.stringify(seedSessions));
     render(<App />);
     await waitFor(() => expect(screen.getByText('Zebra chat')).toBeInTheDocument(), { timeout: 3000 });
-    expect(screen.getByLabelText('Sort by recent')).toBeInTheDocument();
-    expect(screen.getByLabelText('Sort by name')).toBeInTheDocument();
-    expect(screen.getByLabelText('Sort by messages')).toBeInTheDocument();
-  });
-
-  it('defaults to recent (newest first)', async () => {
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(seedSessions));
-    render(<App />);
-    await waitFor(() => expect(screen.getByLabelText('Sort by recent')).toBeInTheDocument(), { timeout: 3000 });
     const rows = screen.getAllByRole('button', { name: /Load session:/i });
     expect(rows.map(r => r.getAttribute('aria-label'))).toEqual([
       'Load session: Apple chat',
       'Load session: Mango chat',
       'Load session: Zebra chat',
     ]);
-  });
-
-  it('reorders alphabetically when Name is selected', async () => {
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(seedSessions));
-    render(<App />);
-    await waitFor(() => expect(screen.getByLabelText('Sort by name')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Sort by name'));
-    const rows = screen.getAllByRole('button', { name: /Load session:/i });
-    expect(rows.map(r => r.getAttribute('aria-label'))).toEqual([
-      'Load session: Apple chat',
-      'Load session: Mango chat',
-      'Load session: Zebra chat',
-    ]);
-    expect(screen.getByLabelText('Sort by name')).toHaveAttribute('aria-pressed', 'true');
-    expect(localStorage.getItem('ollama_gui_sort_mode')).toBe('name');
-  });
-
-  it('reorders by message count when Messages is selected', async () => {
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(seedSessions));
-    render(<App />);
-    await waitFor(() => expect(screen.getByLabelText('Sort by messages')).toBeInTheDocument(), { timeout: 3000 });
-    fireEvent.click(screen.getByLabelText('Sort by messages'));
-    const rows = screen.getAllByRole('button', { name: /Load session:/i });
-    expect(rows.map(r => r.getAttribute('aria-label'))).toEqual([
-      'Load session: Apple chat',
-      'Load session: Mango chat',
-      'Load session: Zebra chat',
-    ]);
-    expect(localStorage.getItem('ollama_gui_sort_mode')).toBe('messages');
-  });
-
-  it('restores saved sort mode from localStorage on load', async () => {
-    localStorage.setItem('ollama_gui_sessions', JSON.stringify(seedSessions));
-    localStorage.setItem('ollama_gui_sort_mode', 'name');
-    render(<App />);
-    await waitFor(() => expect(screen.getByLabelText('Sort by name')).toHaveAttribute('aria-pressed', 'true'), { timeout: 3000 });
+    expect(screen.queryByLabelText('Sort by recent')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Sort by name')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Sort by messages')).not.toBeInTheDocument();
   });
 });
 

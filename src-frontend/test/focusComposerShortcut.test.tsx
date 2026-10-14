@@ -24,9 +24,10 @@ describe('Focus composer via Ctrl/Cmd+L (#265)', () => {
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     // Wait for the initial-load autofocus to settle, then move focus elsewhere.
     await waitFor(() => expect(composer).toBeInTheDocument());
-    const sidebarToggle = screen.getByRole('button', { name: 'Toggle sidebar' });
-    sidebarToggle.focus();
-    expect(document.activeElement).toBe(sidebarToggle);
+    // The desktop hamburger is gone (#545); park focus on another real control.
+    const other = screen.getByRole('button', { name: /New project from a folder/i });
+    other.focus();
+    expect(document.activeElement).toBe(other);
 
     fireEvent.keyDown(window, { key: 'l', ctrlKey: true });
     expect(document.activeElement).toBe(composer);

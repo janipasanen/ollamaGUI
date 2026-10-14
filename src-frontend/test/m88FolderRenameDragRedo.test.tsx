@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
-import { storage, type ChatSession, type Folder } from '../services/storage';
+import { storage } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
-import { _mocks as fileTreeMocks } from '../components/FileTreePanel';
+import FileTreePanel, { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 
 let origFetch: typeof global.fetch;
 
@@ -43,39 +43,14 @@ function sendCommand(cmd: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 }
 
-// ── #387: Rename folder ───────────────────────────────────────────────────────
-
-describe('Rename folder (#387)', () => {
-  it('renames a folder via the ✏️ button', async () => {
-    const folder: Folder = { id: 'f_work', name: 'Work', order: 0 };
-    storage.saveFolder(folder);
-
-    render(<App />);
-    expect(screen.getByTitle(/Folder: Work/)).toBeInTheDocument();
-
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('Team');
-    fireEvent.click(screen.getByLabelText('Rename folder: Work'));
-
-    await waitFor(() => expect(screen.getByTitle(/Folder: Team/)).toBeInTheDocument());
-    expect(screen.queryByTitle(/Folder: Work/)).not.toBeInTheDocument();
-    expect(storage.getFolders()[0].name).toBe('Team');
-    promptSpy.mockRestore();
-  });
-
-  it('is a no-op when the prompt is cancelled', async () => {
-    const folder: Folder = { id: 'f_keep', name: 'Keep', order: 0 };
-    storage.saveFolder(folder);
-
-    render(<App />);
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('');
-    fireEvent.click(screen.getByLabelText('Rename folder: Keep'));
-    expect(screen.getByTitle(/Folder: Keep/)).toBeInTheDocument();
-    expect(storage.getFolders()[0].name).toBe('Keep');
-    promptSpy.mockRestore();
-  });
-});
+// #387 (Rename folder via the sidebar ✏️ button) is gone: the new project-first
+// sidebar removed folder chips and the rename-folder button entirely, with no
+// replacement surface, so those tests were deleted.
 
 // ── #388: Drag a file from the file tree into the composer to pin it ──────────
+// The dock is gone from the new UI (App never mounts panels), but the composer
+// dropzone still accepts text/file-path drops and FileTreePanel still sets that
+// payload on dragStart — mount App and the panel side by side.
 
 describe('Drag file from tree into composer (#388)', () => {
   it('pins a file dragged from the file tree onto the composer', async () => {
@@ -85,7 +60,7 @@ describe('Drag file from tree into composer (#388)', () => {
     ];
 
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /files panel/i }));
+    render(<FileTreePanel dark={false} />);
     await waitFor(() => expect(screen.getByText('main.ts')).toBeInTheDocument(), { timeout: 8000 });
 
     // Shared dataTransfer mock: dragStart stores, drop reads.

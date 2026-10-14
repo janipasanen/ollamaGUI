@@ -161,7 +161,7 @@ pub fn surgical_replace_runs(
     part_xml: &str,
     find: &str,
     replace: &str,
-    run_tag: &[u8],
+    run_tag: &str,
 ) -> Result<String, String> {
     if find.is_empty() {
         return Err("surgical edit: 'find' must not be empty".to_string());
@@ -194,10 +194,10 @@ pub fn surgical_replace_runs(
                     }
                     Event::Text(t) if pending_run_start.is_some() => {
                         let start_idx = pending_run_start.take().unwrap();
-                        let decoded = t
-                            .xml10_content()
-                            .map_err(|e| format!("surgical edit: xml decode: {e}"))?
-                            .into_owned();
+                        // quick-xml 0.42: xml10_content() returns Cow<str>
+                        // directly rather than a Result — decoding no longer
+                        // has a failure mode to propagate here.
+                        let decoded = t.xml10_content().into_owned();
                         let char_start = logical.chars().count();
                         logical.push_str(&decoded);
                         runs.push(RunText {
@@ -380,7 +380,7 @@ pub fn docx_surgical_edit(file_bytes: &[u8], find: &str, replace: &str) -> Resul
             let xml = String::from_utf8(std::mem::take(data_bytes))
                 .map_err(|e| format!("{DOCX_MAIN} utf8: {e}"))?;
             // local-name 't' covers <w:t>.
-            let new_xml = surgical_replace_runs(&xml, find, replace, b"t")?;
+            let new_xml = surgical_replace_runs(&xml, find, replace, "t")?;
             *data_bytes = new_xml.into_bytes();
             edited = true;
         }
@@ -407,7 +407,7 @@ pub fn pptx_replace_text(file_bytes: &[u8], find: &str, replace: &str) -> Result
                 Ok(s) => s,
                 Err(e) => return Err(format!("{name} utf8: {e}")),
             };
-            match surgical_replace_runs(&xml, find, replace, b"t") {
+            match surgical_replace_runs(&xml, find, replace, "t") {
                 Ok(new_xml) => {
                     *data_bytes = new_xml.into_bytes();
                     slides_changed += 1;
@@ -495,12 +495,10 @@ fn extract_run_text(xml_bytes: &[u8]) -> String {
     let mut in_t = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"t" => in_t = true,
-            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"t" => in_t = false,
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == "t" => in_t = true,
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == "t" => in_t = false,
             Ok(Event::Text(ref e)) if in_t => {
-                if let Ok(t) = e.xml10_content() {
-                    out.push_str(&t);
-                }
+                out.push_str(&e.xml10_content());
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -633,7 +631,7 @@ pub fn xlsx_replace_text(file_bytes: &[u8], find: &str, replace: &str) -> Result
         if name == "xl/sharedStrings.xml" {
             let xml = String::from_utf8(std::mem::take(data_bytes))
                 .map_err(|e| format!("{name} utf8: {e}"))?;
-            let new_xml = surgical_replace_runs(&xml, find, replace, b"t")?;
+            let new_xml = surgical_replace_runs(&xml, find, replace, "t")?;
             *data_bytes = new_xml.into_bytes();
             edited = true;
         }
@@ -660,15 +658,15 @@ pub fn xlsx_replace_text(file_bytes: &[u8], find: &str, replace: &str) -> Result
 /// Strip an XML attribute key's namespace prefix, e.g. `r:id` → `id`,
 /// `sheetId` → `sheetId`. quick-xml with default (no namespace expansion)
 /// config returns raw keys, so we compare on the local part.
-fn attr_local(key: &[u8]) -> &[u8] {
-    match key.iter().position(|&b| b == b':') {
+fn attr_local(key: &str) -> &str {
+    match key.find(':') {
         Some(i) => &key[i + 1..],
         None => key,
     }
 }
 
 /// Read a named attribute from a start tag as an unescaped `String`.
-fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
+fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Option<String> {
     for a in e.attributes().flatten() {
         if attr_local(a.key.as_ref()) == name {
             return a.normalized_value(quick_xml::XmlVersion::default()).ok().map(|v| v.into_owned());
@@ -728,11 +726,11 @@ fn resolve_worksheet_part(
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf).map_err(|e| format!("workbook.xml: {e}"))? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheet" => {
-                let name = attr_value(&e, b"name").unwrap_or_default();
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "sheet" => {
+                let name = attr_value(&e, "name").unwrap_or_default();
                 // `r:id` (the relationship id) — not `sheetId`, which is a
                 // different, unrelated ordering field.
-                let rid = attr_value(&e, b"id").unwrap_or_default();
+                let rid = attr_value(&e, "id").unwrap_or_default();
                 sheets.push((name, rid));
             }
             Event::Eof => break,
@@ -758,9 +756,9 @@ fn resolve_worksheet_part(
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf).map_err(|e| format!("workbook rels: {e}"))? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
-                if attr_value(&e, b"Id").as_deref() == Some(r_id.as_str()) {
-                    target = attr_value(&e, b"Target");
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
+                if attr_value(&e, "Id").as_deref() == Some(r_id.as_str()) {
+                    target = attr_value(&e, "Target");
                 }
             }
             Event::Eof => break,
@@ -826,9 +824,9 @@ fn collect_keep_attrs(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, Str
     let mut keep: Vec<(String, String)> = Vec::new();
     for a in e.attributes().flatten() {
         let local = attr_local(a.key.as_ref());
-        if local != b"r" && local != b"t" {
+        if local != "r" && local != "t" {
             keep.push((
-                String::from_utf8_lossy(local).into_owned(),
+                local.to_string(),
                 a.normalized_value(quick_xml::XmlVersion::default())
                     .map(|v| v.into_owned())
                     .unwrap_or_default(),
@@ -851,8 +849,8 @@ fn rewrite_cell_in_row(
     // be a normal `<c>…</c>` (Start) or a self-closing `<c/>` (Empty).
     let has_cell = raw.iter().any(|ev| match ev {
         Event::Start(e) | Event::Empty(e) => {
-            e.local_name().as_ref() == b"c"
-                && attr_value(e, b"r").as_deref() == Some(target_ref)
+            e.local_name().as_ref() == "c"
+                && attr_value(e, "r").as_deref() == Some(target_ref)
         }
         _ => false,
     });
@@ -867,15 +865,15 @@ fn rewrite_cell_in_row(
             match raw_iter.next().ok_or("row ended before <c>")? {
                 // Self-closing `<c r="A1"/>`: replace the single Empty event
                 // with the full new cell (Start…End). No body to skip.
-                Event::Empty(e) if e.local_name().as_ref() == b"c"
-                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                Event::Empty(e) if e.local_name().as_ref() == "c"
+                    && attr_value(&e, "r").as_deref() == Some(target_ref) =>
                 {
                     let keep = collect_keep_attrs(&e);
                     out.extend(make_cell_events(target_ref, value, &keep)?);
                     break;
                 }
-                Event::Start(e) if e.local_name().as_ref() == b"c"
-                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                Event::Start(e) if e.local_name().as_ref() == "c"
+                    && attr_value(&e, "r").as_deref() == Some(target_ref) =>
                 {
                     let keep = collect_keep_attrs(&e);
                     // Skip the original cell body up to and including </c>.
@@ -978,13 +976,13 @@ fn edit_worksheet_cell(xml: &[u8], cell: &str, value: &str) -> Result<Vec<u8>, S
             break;
         }
         match ev {
-            Event::Start(e) if e.local_name().as_ref() == b"sheetData" => {
+            Event::Start(e) if e.local_name().as_ref() == "sheetData" => {
                 in_sheetdata = true;
                 writer
                     .write_event(Event::Start(e.to_owned()))
                     .map_err(|e| format!("worksheet write: {e}"))?;
             }
-            Event::End(e) if e.local_name().as_ref() == b"sheetData" => {
+            Event::End(e) if e.local_name().as_ref() == "sheetData" => {
                 if !target_row_seen {
                     for rev in make_row_events(target_row, &target_ref, value)? {
                         writer
@@ -997,7 +995,7 @@ fn edit_worksheet_cell(xml: &[u8], cell: &str, value: &str) -> Result<Vec<u8>, S
                     .write_event(Event::End(e.to_owned()))
                     .map_err(|e| format!("worksheet write: {e}"))?;
             }
-            Event::Start(e) if in_sheetdata && e.local_name().as_ref() == b"row" => {
+            Event::Start(e) if in_sheetdata && e.local_name().as_ref() == "row" => {
                 let row_start = e.to_owned();
                 let (row_events, is_target) =
                     capture_row(&mut reader, row_start, &target_ref, target_row, value)?;
@@ -1031,7 +1029,7 @@ fn capture_row(
     value: &str,
 ) -> Result<(Vec<Event<'static>>, bool), String> {
     let is_target =
-        attr_value(&row_start, b"r").and_then(|s| s.parse::<u32>().ok()) == Some(target_row);
+        attr_value(&row_start, "r").and_then(|s| s.parse::<u32>().ok()) == Some(target_row);
     let mut raw: Vec<Event<'static>> = Vec::new();
     raw.push(Event::Start(row_start));
     let mut depth = 1i32;
@@ -1080,33 +1078,33 @@ fn extract_cell(
             .map_err(|e| format!("worksheet read: {e}"))?
         {
             Event::Start(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
-                if depth > 0 && loc == b"c" && attr_value(&e, b"r").as_deref() == Some(target) {
+                let ln = e.local_name(); let loc: &str = ln.as_ref();
+                if depth > 0 && loc == "c" && attr_value(&e, "r").as_deref() == Some(target) {
                     in_target = true;
                     cell_depth = depth;
-                    t_attr = attr_value(&e, b"t");
-                } else if in_target && loc == b"v" {
+                    t_attr = attr_value(&e, "t");
+                } else if in_target && loc == "v" {
                     capture_v = true;
-                } else if in_target && loc == b"is" {
+                } else if in_target && loc == "is" {
                     capture_is = true;
                 }
                 depth += 1;
             }
             Event::Text(t) => {
                 if capture_v {
-                    v_text = Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                    v_text = Some(t.xml10_content().into_owned());
                 } else if capture_is {
                     is_text =
-                        Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                        Some(t.xml10_content().into_owned());
                 }
             }
             Event::End(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
-                if loc == b"v" {
+                let ln = e.local_name(); let loc: &str = ln.as_ref();
+                if loc == "v" {
                     capture_v = false;
-                } else if loc == b"is" {
+                } else if loc == "is" {
                     capture_is = false;
-                } else if in_target && loc == b"c" && depth - 1 == cell_depth {
+                } else if in_target && loc == "c" && depth - 1 == cell_depth {
                     in_target = false;
                     return Ok((t_attr, v_text, is_text));
                 }
@@ -1137,8 +1135,8 @@ fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, S
         buf.clear();
         match reader.read_event_into(&mut buf).map_err(|e| format!("sharedStrings: {e}"))? {
             Event::Start(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
-                if loc == b"si" {
+                let ln = e.local_name(); let loc: &str = ln.as_ref();
+                if loc == "si" {
                     in_si = true;
                     si_depth = depth;
                     current.clear();
@@ -1146,11 +1144,11 @@ fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, S
                 depth += 1;
             }
             Event::Text(t) if in_si => {
-                current.push_str(&t.xml10_content().map_err(|e| format!("decode: {e}"))?);
+                current.push_str(&t.xml10_content());
             }
             Event::End(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
-                if in_si && loc == b"si" && depth - 1 == si_depth {
+                let ln = e.local_name(); let loc: &str = ln.as_ref();
+                if in_si && loc == "si" && depth - 1 == si_depth {
                     if count == idx {
                         return Ok(current);
                     }
@@ -1446,7 +1444,7 @@ mod tests {
     fn surgical_clean_unique_match() {
         // "Hello world" lives in one run; a unique find should rewrite cleanly.
         let xml = r#"<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>"#;
-        let out = surgical_replace_runs(xml, "world", "there", b"t").expect("ok");
+        let out = surgical_replace_runs(xml, "world", "there", "t").expect("ok");
         assert!(out.contains("Hello there"));
         assert!(!out.contains("world"));
     }
@@ -1456,7 +1454,7 @@ mod tests {
         // "Hello" is fragmented across two runs ("Hel" + "lo"). Coalescing must
         // recover it; the replacement goes into the first run, the rest blanked.
         let xml = r#"<w:p><w:r><w:t>Hel</w:t></w:r><w:r><w:t>lo world</w:t></w:r></w:p>"#;
-        let out = surgical_replace_runs(xml, "Hello", "Hi", b"t").expect("ok across runs");
+        let out = surgical_replace_runs(xml, "Hello", "Hi", "t").expect("ok across runs");
         // Re-extract the visible text — should read "Hi world".
         let visible = extract_run_text(out.as_bytes());
         assert_eq!(visible, "Hi world");
@@ -1465,7 +1463,7 @@ mod tests {
     #[test]
     fn surgical_absent_match_errors_no_change() {
         let xml = r#"<w:p><w:r><w:t>Hello world</w:t></w:r></w:p>"#;
-        let err = surgical_replace_runs(xml, "zzz", "x", b"t").unwrap_err();
+        let err = surgical_replace_runs(xml, "zzz", "x", "t").unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
 
@@ -1473,7 +1471,7 @@ mod tests {
     fn surgical_ambiguous_match_errors_no_change() {
         // "ab" twice in coalesced text -> ambiguous.
         let xml = r#"<w:p><w:r><w:t>ab cd ab</w:t></w:r></w:p>"#;
-        let err = surgical_replace_runs(xml, "ab", "x", b"t").unwrap_err();
+        let err = surgical_replace_runs(xml, "ab", "x", "t").unwrap_err();
         assert!(err.contains("ambiguous"), "got: {err}");
     }
 
