@@ -150,6 +150,9 @@ export const APP_STORAGE_KEYS: string[] = [
   // leaving them behind would silently re-trust folders on a machine the user
   // believes they have cleaned.
   'trusted_folders',
+  // Role -> model assignments (#630). Not secret, but they name private
+  // connection ids, and "erase everything" should mean everything.
+  'agent_roles',
 ];
 
 /**

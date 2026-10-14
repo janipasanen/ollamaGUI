@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+#### Agent roles: choose the model for organizer, developer, reviewer and writer (#654)
+Settings → Agent roles assigns a model to each role. A role can be a local
+Ollama model, an Ollama Cloud model, or any connection (remote Ollama, LM Studio,
+vLLM). An unset role uses the model selected in the composer, so nothing is
+required for the app to work.
+
+With an **organizer** set, agent runs are orchestrated: the organizer's model
+drives the loop but can only read, plan and `delegate_to_role`. All edits happen
+in role sub-agents running on their own models, possibly on different servers.
+Tool scope is the real boundary rather than the prompt: the reviewer has no
+write tools, the organizer has no write or shell tools, and no delegated role
+can delegate further. A role that fails or returns nothing is reported to the
+organizer instead of coming back as silence.
+
+### Fixed
+- **Ollama Cloud and token-protected remote Ollama now work in agent mode.** The
+  agent loop never sent an `Authorization` header, so a connection with an API
+  key returned 401 for agent runs even though plain chat worked.
+- **Storage (#599, #600, #601):** a corrupt sessions value is no longer mirrored
+  over the good disk backup; chats written while over quota keep reaching disk
+  and are restored on restart; folder and project saves no longer silently
+  vanish on a quota error.
+
 ### Security
 #### Project rules from an untrusted folder no longer write the system prompt (#608)
 Opening a cloned repository was enough to let that repository author the

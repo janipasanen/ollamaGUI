@@ -99,7 +99,17 @@ export const sv: Record<string, string> = {
   "welcome.subtitleProject": "Beskriv målet för den här sessionen — agenten arbetar i din projektmapp tills det är nått.",
   "welcome.opening": "Öppnar…",
   "composer.stopListening": "Sluta lyssna",
-  "composer.sendHint": "Skriv ett meddelande eller bifoga en bild först"
+  "composer.sendHint": "Skriv ett meddelande eller bifoga en bild först",
+  "roles.title": "Agentroller",
+  "roles.hint": "Välj vilken modell som spelar varje roll. Oinställda roller använder modellen som valts i meddelanderutan. Modeller kan vara lokala (Ollama, LM Studio, vLLM) eller Ollama Cloud.",
+  "roles.organizer": "Organisatör",
+  "roles.developer": "Utvecklare",
+  "roles.reviewer": "Granskare",
+  "roles.writer": "Skribent",
+  "roles.modelFor": "Modell för {role}",
+  "roles.useSelected": "Använd vald modell",
+  "roles.group.ollama": "Ollama (lokal och moln)",
+  "roles.organizerActive": "När en organisatör är vald planerar agentkörningar och delegerar till de andra rollerna i stället för att redigera filer direkt."
 };
 
 export default sv;

@@ -10,6 +10,13 @@ export interface AgenticChatOptions {
   messages: Message[];
   maxIterations?: number;
   endpoint?: string;
+  /**
+   * Bearer token for the endpoint. Needed for Ollama Cloud used directly
+   * (ollama.com) and for token-protected remote Ollama servers; without it the
+   * agent loop sent unauthenticated requests and got 401 on exactly the
+   * connections that had a key configured.
+   */
+  apiKey?: string;
   /** Abort signal — checked at iteration boundaries so Stop button works in agentic mode. */
   signal?: AbortSignal;
   /** Ollama generation options (num_ctx, temperature, …) applied to every turn. */
@@ -58,6 +65,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     messages,
     maxIterations = 5,
     endpoint = 'http://localhost:11434/api/chat',
+    apiKey,
     signal,
     options: genOptions,
     format,
@@ -120,7 +128,10 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify(requestBody),
         ...(signal ? { signal } : {}),
       });

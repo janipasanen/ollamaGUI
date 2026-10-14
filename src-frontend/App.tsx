@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS, getModelCapabilities, autoNumCtx, type ModelCapabilities } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
+import { ChatSession, Folder, Project, storage, sessionsReadStatus, sessionsAreStale, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
 import { loadFromDisk, hasTauri } from './services/rustStore';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
@@ -156,6 +156,8 @@ import { shouldIgnoreEnterShortcut } from './components/keyboardScope';
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
 import { isFolderTrusted, trustFolder } from './services/folderTrust';
+import { Role, ROLES, RoleModels, loadRoleModels, saveRoleModels, organizerEnabled, ROLE_PROMPTS, ROLE_TOOLS, DELEGATE_ROLES } from './services/roles';
+import { runRole } from './services/roleAgents';
 import { initOpenApiServers } from './services/openapiTools';
 import { registerWorkspaceRagTools } from './services/workspaceRag';
 import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
@@ -853,10 +855,18 @@ const App: React.FC = () => {
    * them fail outright for LM Studio models, whose names that daemon has
    * never heard of.
    */
+  // Which model plays which role (#630). Held in a ref as well because the
+  // delegate_to_role tool is registered once at boot and must read live values.
+  const [roleModels, setRoleModels] = useState<RoleModels>(() => loadRoleModels());
+  const roleModelsRef = useRef<RoleModels>(roleModels);
+  roleModelsRef.current = roleModels;
+  const resolveRoutingRef = useRef<(id: string) => any>(() => ({}));
+  const selectedModelRef = useRef<string>('');
   const agentRoutingRef = useRef<{
     model: string;
     endpoint: string;
     conn?: ModelConnection;
+    apiKey?: string;
     // Seeded with an absolute local endpoint so the value is usable even in
     // the window before the syncing effect below first runs.
   }>({ model, endpoint: `${ollamaBaseUrl}/api/chat` });
@@ -1221,6 +1231,8 @@ const App: React.FC = () => {
       endpoint: conn?.kind === 'ollama'
         ? `${conn.baseUrl.replace(/\/$/, '')}/api/chat`
         : url('/api/chat'),
+      // Ollama Cloud used directly, or a token-protected remote Ollama.
+      apiKey: conn?.kind === 'ollama' ? conn.apiKey : undefined,
       // Present for every OpenAI-dialect server (LM Studio, vLLM, …), which
       // need their own loop.
       conn: isOpenAiCompatible(conn?.kind) ? conn : undefined,
@@ -1231,6 +1243,8 @@ const App: React.FC = () => {
   // agentRoutingRef's declaration for why sub-agents cannot read state here.
   useEffect(() => {
     agentRoutingRef.current = resolveAgentRouting(model);
+    resolveRoutingRef.current = resolveAgentRouting;
+    selectedModelRef.current = model;
   }, [model, connections, connectedModels, ollamaBaseUrl]);
 
 
@@ -1495,9 +1509,23 @@ const App: React.FC = () => {
       // before the first storage reads).
       try {
         if (hasTauri()) {
-          if (!localStorage.getItem('ollama_gui_sessions')) {
+          // Hydrate when the key is absent OR unreadable (#599). A corrupt
+          // value used to read as "no sessions", so the good disk copy was
+          // never consulted and the first save overwrote it. A successful
+          // read still wins — disk never beats live data.
+          // Also hydrate when the last quota failure left localStorage behind
+          // the disk copy (#600): over quota the key is present but stale, so
+          // the newer, complete disk payload was silently discarded on restart.
+          if (!localStorage.getItem('ollama_gui_sessions')
+              || sessionsReadStatus() === 'unreadable'
+              || sessionsAreStale()) {
             const disk = await loadFromDisk('sessions');
-            if (disk) localStorage.setItem('ollama_gui_sessions', disk);
+            if (disk) {
+              localStorage.setItem('ollama_gui_sessions', disk);
+              // Sessions state initialises before this effect runs; refresh it
+              // with the recovered history, as the projects branch does.
+              setSessions(storage.getSessions());
+            }
           }
           if (!localStorage.getItem('ollama_gui_folders')) {
             const disk = await loadFromDisk('folders');
@@ -1661,6 +1689,35 @@ const App: React.FC = () => {
       registerDocumentTools();
       initCustomTools();
       registerImageGenTool(() => loadImageGenConfig());
+      // delegate_to_role (#630): the organizer's only way to get work done. Runs
+      // the role on ITS configured model — which may live on a different server
+      // than the organizer's — with that role's prompt and tool scope.
+      toolRegistry.registerTool({
+        name: 'delegate_to_role',
+        description: 'Delegate a self-contained task to a team role: developer (implements and tests), reviewer (inspects without modifying anything), or writer (documentation). The role cannot see this conversation, so include everything it needs. Returns the role\'s final report.',
+        parameters: {
+          type: 'object',
+          properties: {
+            role: { type: 'string', enum: [...DELEGATE_ROLES], description: 'developer, reviewer or writer.' },
+            task: { type: 'string', description: 'A complete, self-contained task description.' },
+          },
+          required: ['role', 'task'],
+        },
+        execute: async (params: { role: Role; task: string }) => {
+          const available = toolRegistry.getAllTools().map(t => t.name);
+          return runRole(params.role, params.task, {
+            roleModels: roleModelsRef.current,
+            selectedModel: selectedModelRef.current,
+            resolveRouting: (id: string) => resolveRoutingRef.current(id),
+            availableTools: available,
+            runOllama: agenticChatStream,
+            runOpenAi: openaiAgenticChatStream,
+            onApprovalNeeded: createApprovalGate(),
+            signal: abortControllerRef.current?.signal,
+            onProgress: (role, status) => setAgentStatus(`${role}: ${status}`),
+          });
+        },
+      });
       // Register spawn_subagent tool (#104) — isolated sub-agent with scoped context
       toolRegistry.registerTool({
         name: 'spawn_subagent',
@@ -1702,6 +1759,7 @@ const App: React.FC = () => {
               messages: subMessages,
               maxIterations: 3,
               endpoint: routing.endpoint,
+              apiKey: routing.apiKey,
               toolFilter,
               // Propagate the parent run's abort (#549 audit rank 8): without
               // it, Stop could not unwind a hung sub-agent.
@@ -1760,6 +1818,7 @@ const App: React.FC = () => {
                 ] as Message[],
                 maxIterations: 3,
                 endpoint: routing.endpoint,
+                apiKey: routing.apiKey,
                 toolFilter,
                 signal: abortControllerRef.current?.signal,
                 onApprovalNeeded: createApprovalGate(),
@@ -4119,7 +4178,13 @@ ${lines.join('\n')}`;
     try {
       // Which server + model name this run targets. Shared with sub-agents
       // through resolveAgentRouting so the two can never drift (#551).
-      const routing = resolveAgentRouting(activeModel);
+      // With an organizer configured, an agentic run is ORCHESTRATED (#630):
+      // the organizer's model drives the loop, but it can only read, plan and
+      // delegate — all edits happen in role sub-agents on their own models.
+      const organizerModel = isAgenticMode && organizerEnabled(roleModelsRef.current)
+        ? roleModelsRef.current.organizer!
+        : null;
+      const routing = resolveAgentRouting(organizerModel ?? activeModel);
       const endpoint = routing.endpoint;
 
       if (isAgenticMode) {
@@ -4129,8 +4194,11 @@ ${lines.join('\n')}`;
         setAgentStatus('Thinking…');
         const agenticOptions: AgenticChatOptions = {
           model: routing.model,
-          messages: chatHistory,
+          messages: organizerModel
+            ? [{ role: 'system', content: ROLE_PROMPTS.organizer } as Message, ...chatHistory]
+            : chatHistory,
           endpoint,
+          apiKey: routing.apiKey,
           maxIterations: autonomySettings.maxIterations,
           signal: abortControllerRef.current?.signal,
           options: sendOptions,
@@ -4157,11 +4225,13 @@ ${lines.join('\n')}`;
           // Send the task-relevant core toolset plus user-added tools instead
           // of every registration (#549 audit rank 3): ~60 tool definitions
           // per request could fill a small context window on their own.
-          toolFilter: [
-            ...CORE_AGENT_TOOLS,
-            ...mcpServers.flatMap(s => getRegisteredToolNames(s)),
-            ...customTools.map(t => toolNameFor(t)),
-          ].filter(n => !disabledTools.has(n)),
+          toolFilter: (organizerModel
+            ? ROLE_TOOLS.organizer
+            : [
+              ...CORE_AGENT_TOOLS,
+              ...mcpServers.flatMap(s => getRegisteredToolNames(s)),
+              ...customTools.map(t => toolNameFor(t)),
+            ]).filter(n => !disabledTools.has(n)),
           // Plan/ask autonomy gate (#88/#89/#189), shared with sub-agents (#476)
           onApprovalNeeded: createApprovalGate(),
           onAssistantMessage: (message) => {
@@ -5557,7 +5627,10 @@ ${lines.join('\n')}`;
         {/* Storage quota warning */}
         {storageWarning && (
           <div className="mx-4 mb-2 flex items-center justify-between rounded-lg bg-amber-900/60 border border-amber-700 px-3 py-2 text-xs text-amber-200">
-            <span>⚠️ Chat history is nearly full. Export and delete old conversations to free space.</span>
+            {/* Says what actually happened and what it costs (#600): "nearly
+                full" understated it, and never mentioned that new chats were
+                no longer reaching browser storage. */}
+            <span>⚠️ Chat history storage is full. New chats are saved to disk only — export or delete old conversations to restore normal saving.</span>
             <button aria-label="Dismiss storage warning" onClick={() => setStorageWarning(false)} className="ml-3 text-amber-400 hover:text-amber-200">✕</button>
           </div>
         )}
@@ -6499,6 +6572,52 @@ ${lines.join('\n')}`;
                      })}
                    </div>
                  </div>
+
+                {/* Agent roles (#630): which model plays organizer, developer,
+                    reviewer and writer. Unset = the model selected in the
+                    composer. Any model works: local Ollama, Ollama Cloud, or a
+                    connection (remote Ollama, LM Studio, vLLM). */}
+                <div data-testid="role-settings">
+                  <label className={`text-sm font-medium block mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                    {t('roles.title')}
+                  </label>
+                  <p className={`text-[10px] mb-2 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{t('roles.hint')}</p>
+                  {ROLES.map(r => (
+                    <div key={r} className="flex items-center gap-2 mb-1">
+                      <span className={`text-xs w-20 shrink-0 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>{t(`roles.${r}`)}</span>
+                      <select
+                        aria-label={t('roles.modelFor', { role: t(`roles.${r}`) })}
+                        value={roleModels[r] ?? ''}
+                        onChange={e => {
+                          const next = { ...roleModels };
+                          if (e.target.value) next[r] = e.target.value; else delete next[r];
+                          setRoleModels(next);
+                          saveRoleModels(next);
+                        }}
+                        className={`flex-1 min-w-0 border rounded px-2 py-1 text-xs ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
+                      >
+                        <option value="">{t('roles.useSelected')}</option>
+                        {models.length > 0 && (
+                          <optgroup label={t('roles.group.ollama')}>
+                            {models.map(m => (
+                              <option key={m.name} value={m.name}>{m.cloud ? `☁ ${m.name}` : m.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {connections.filter(c => connectedModels.some(m => m.connectionId === c.id)).map(c => (
+                          <optgroup key={c.id} label={c.name}>
+                            {connectedModels.filter(m => m.connectionId === c.id).map(m => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                  {organizerEnabled(roleModels) && (
+                    <p className={`text-[10px] mt-1 ${dark ? 'text-amber-400' : 'text-amber-700'}`}>{t('roles.organizerActive')}</p>
+                  )}
+                </div>
 
                 {/* Interface language (#564). English is the default; the
                     selector names each language in itself so a user who

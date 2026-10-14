@@ -102,7 +102,17 @@ export const en = {
   "welcome.subtitleProject": "Describe the goal for this session — the agent works in your project folder until it's reached.",
   "welcome.opening": "Opening…",
   "composer.stopListening": "Stop listening",
-  "composer.sendHint": "Type a message or attach an image first"
+  "composer.sendHint": "Type a message or attach an image first",
+  "roles.title": "Agent roles",
+  "roles.hint": "Choose which model plays each part. Unset roles use the model selected in the composer. Models can be local (Ollama, LM Studio, vLLM) or Ollama Cloud.",
+  "roles.organizer": "Organizer",
+  "roles.developer": "Developer",
+  "roles.reviewer": "Reviewer",
+  "roles.writer": "Writer",
+  "roles.modelFor": "Model for {role}",
+  "roles.useSelected": "Use the selected model",
+  "roles.group.ollama": "Ollama (local and cloud)",
+  "roles.organizerActive": "With an organizer set, agent runs plan and delegate to the other roles instead of editing files directly."
 } as const;
 
 export type TranslationKey = keyof typeof en;
