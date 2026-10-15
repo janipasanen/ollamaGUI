@@ -17,15 +17,21 @@ if (!URL.createObjectURL) {
 }
 
 // jsdom doesn't implement scrollIntoView
-window.HTMLElement.prototype.scrollIntoView = vi.fn();
+if (typeof window !== 'undefined') {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+}
 
-// Mock fetch for all tests — individual tests can override via vi.spyOn / mockResolvedValue
-global.fetch = vi.fn().mockResolvedValue({
-  ok: true,
-  json: async () => ({ models: [] }),
-  body: null,
-  text: async () => '',
-});
+// Mock fetch for all tests under jsdom — individual tests can override via
+// vi.spyOn / mockResolvedValue. Skip entirely in the Node environment (used by
+// the OPENAI_LIVE integration tests) so real streaming fetch is preserved.
+if (typeof window !== 'undefined') {
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ models: [] }),
+    body: null,
+    text: async () => '',
+  });
+}
 
 // Mock Tauri invoke for CLI tool
 const mockInvoke = vi.fn().mockImplementation(async (cmd: string, args: any) => {
