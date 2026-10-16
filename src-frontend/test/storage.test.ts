@@ -142,4 +142,22 @@ describe('storage corrupted localStorage (#454)', () => {
     expect(() => storage.deleteSession('s1')).not.toThrow();
     spy.mockRestore();
   });
+
+  it('saveFolder does not throw when localStorage is full (#595)', () => {
+    storage.saveFolder({ id: 'f1', name: 'F', order: 0 });
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    expect(() => storage.saveFolder({ id: 'f1', name: 'F', order: 0 })).not.toThrow();
+    spy.mockRestore();
+  });
+
+  it('saveProject does not throw when localStorage is full (#595)', () => {
+    storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 });
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    expect(() => storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 })).not.toThrow();
+    spy.mockRestore();
+  });
 });

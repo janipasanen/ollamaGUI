@@ -124,7 +124,7 @@ export const storage = {
     const folders = storage.getFolders();
     const index = folders.findIndex(f => f.id === folder.id);
     if (index > -1) folders[index] = folder; else folders.push(folder);
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+    try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders)); } catch { /* quota */ }
   },
   deleteFolder: (id: string): void => {
     try {
@@ -150,7 +150,7 @@ export const storage = {
     const projects = storage.getProjects();
     const index = projects.findIndex(p => p.id === project.id);
     if (index > -1) projects[index] = project; else projects.unshift(project);
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* quota */ }
   },
   deleteProject: (id: string): void => {
     try {
