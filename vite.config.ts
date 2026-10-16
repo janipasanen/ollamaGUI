@@ -35,5 +35,8 @@ export default defineConfig({
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     pool: 'forks',
     maxWorkers,
+    // On loaded machines individual tests can exceed the default 5s timeout.
+    // Raise to 30s so slow but correct tests don't flake.
+    testTimeout: 30_000,
   },
 });

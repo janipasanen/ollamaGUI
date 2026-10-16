@@ -69,6 +69,7 @@ import WelcomeScreen from './components/WelcomeScreen';
 import WorkspaceChip from './components/WorkspaceChip';
 import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
 import NoWorkspaceHint from './components/NoWorkspaceHint';
+import { SkillsManager } from './components/SkillsManager';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
@@ -137,6 +138,7 @@ import {
 import { registerHook, makeReadOnlyHook, registerPostToolUseHook, makeSecretsRedactHook } from './services/toolHooks';
 import { getEnabledToolFilter, listToolStatuses, setToolEnabled, loadDisabledTools } from './services/toolConfig';
 import { registerMemoryTools } from './services/crossSessionMemory';
+import { registerSkillsTools, composeSkillBlock, recordToolSequence } from './services/skills';
 import { registerPythonTool } from './services/pyodide';
 import { registerCheckpointTools } from './services/checkpoints';
 import { registerTerminalTool } from './services/terminal';
@@ -777,6 +779,7 @@ const App: React.FC = () => {
   // Prompt library (#97)
   const [prompts, setPrompts] = useState<SavedPrompt[]>(() => loadPrompts());
   const [showPromptPicker, setShowPromptPicker] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptBody, setNewPromptBody] = useState('');
 
@@ -1253,6 +1256,8 @@ const App: React.FC = () => {
       registerPostToolUseHook('builtin:auto-verify-edits', makePostEditVerifyHook(isAutoVerifyEnabled));
       // Cross-session memory tools (#95/#178) — memory_set/get/list/delete
       registerMemoryTools();
+      // Skills & self-learning (#670) — learn_skill / list_skills / note_skill
+      registerSkillsTools();
       // In-browser Python execution via Pyodide (#128/#179)
       registerPythonTool();
       // File-state checkpoints (#91/#180) — create_checkpoint / rewind_checkpoint
@@ -3414,6 +3419,9 @@ ${lines.join('\n')}`;
       rulesFileContent: projectRulesContent ?? undefined,
       projectInstructions: activeProject?.instructions,
       memoryBlock: memBlock || undefined,
+      // Skills & self-learning (#670): inject relevant/auto-captured skills so
+      // the model knows what procedures exist and how the tools should be used.
+      skillsBlock: composeSkillBlock(text, activeProjectId ?? undefined) || undefined,
     });
 
     // Apply filter inlets before dispatch (#127)
@@ -3547,6 +3555,10 @@ ${lines.join('\n')}`;
         // Use agentic loop with tool calling
         let agenticReasoning = '';
         let agenticGenStats: GenStats | undefined;
+        let captureSuccess = true;
+        // Tool-call names (ordered) captured from this run, used by the
+        // self-learning hook in onComplete (#670).
+        const capturedToolCalls: string[] = [];
         setAgentStatus('Thinking…');
         const agentStream = agenticChatStream({
           model: selectedConnectedModel?.name ?? model,
@@ -3557,7 +3569,10 @@ ${lines.join('\n')}`;
           options: genOptions,
           format,
           onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
-          onMaxIterations: () => setAgentHitMax(true),
+          onMaxIterations: () => {
+            captureSuccess = false;
+            setAgentHitMax(true);
+          },
           // Clean abort handling (#405): a user-initiated Stop during an
           // agentic fetch marks the partial assistant reply as cancelled
           // (parity with the normal streaming cancel-keep-partial #303)
@@ -3607,11 +3622,15 @@ ${lines.join('\n')}`;
           },
           onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
-            setAgentStatus(`Running: ${toolCallName(toolCall)}`);
+            const name = toolCallName(toolCall);
+            setAgentStatus(`Running: ${name}`);
             // Feed the agent-activity timeline (#432).
             try {
               const args = (toolCall as any).function?.arguments ?? (toolCall as any).arguments;
-              pushActivity('call', toolCallName(toolCall), args ? JSON.stringify(args) : undefined);
+              pushActivity('call', name, args ? JSON.stringify(args) : undefined);
+              // Self-learning: record tool order so this run can become a
+              // reusable skill in onComplete (#670).
+              capturedToolCalls.push(name);
             } catch { /* non-fatal */ }
             setMessages(prev => [
               ...prev,
@@ -3638,6 +3657,9 @@ ${lines.join('\n')}`;
             setIsLoading(false);
             setAgentStatus(null);
             setAgentStep(null);
+            // Self-learning: record a completed tool sequence so the harness can
+            // auto-capture a reusable skill (#670). Non-fatal.
+            try { if (capturedToolCalls.length > 0) recordToolSequence(text, capturedToolCalls, captureSuccess); } catch { /* non-fatal */ }
             // Intentionally do NOT reset agentHitMax here: a max-iterations
             // stop sets it via onMaxIterations and the "Continue agent" button
             // (#403) must remain visible after the run completes. sendMessage
@@ -5594,6 +5616,15 @@ ${lines.join('\n')}`;
                  )}
                </div>
              )}
+
+             {/* Skills & self-learning (#670) */}
+             <button
+               type="button"
+               title="Skills (auto-captured & manual)"
+               aria-label="Open skills manager"
+               onClick={() => setShowSkills(s => !s)}
+               className={`px-3 py-3 rounded-xl transition-colors ${dark ? 'bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-400' : 'bg-white border border-zinc-300 hover:bg-zinc-100 text-zinc-500'}`}
+             >🧠</button>
 
              {/* @-mention file autocomplete dropdown (#86/#183) */}
              {atSuggestions.length > 0 && (

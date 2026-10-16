@@ -22,6 +22,8 @@ export interface SystemPromptOptions {
   projectInstructions?: string;
   /** Formatted memory block from composeMemoryBlock() (#95) */
   memoryBlock?: string;
+  /** Formatted skills block from composeSkillBlock() (#670) */
+  skillsBlock?: string;
 }
 
 export function composeSystemPrompt(opts: SystemPromptOptions): string {
@@ -38,6 +40,11 @@ export function composeSystemPrompt(opts: SystemPromptOptions): string {
   }
   if (opts.memoryBlock?.trim()) {
     parts.push(opts.memoryBlock.trim());
+  }
+  // Skills are injected after memory so the model sees concrete "how to"
+  // procedures alongside the raw memory facts (#670).
+  if (opts.skillsBlock?.trim()) {
+    parts.push(opts.skillsBlock.trim());
   }
   parts.push(opts.systemPrompt);
 
