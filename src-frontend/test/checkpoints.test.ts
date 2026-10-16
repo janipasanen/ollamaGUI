@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   createCheckpoint, listCheckpoints, getCheckpoint, deleteCheckpoint,
-  clearCheckpoints, rewindToCheckpoint,
+  clearCheckpoints, rewindToCheckpoint, registerCheckpointTools,
 } from '../services/checkpoints';
+import { toolRegistry } from '../services/tools';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { setBatchReviewCallback, clearBatchReviewCallback, clearDiffReviewCallback, type PendingEdit } from '../services/diffReview';
 
@@ -173,5 +174,64 @@ describe('rewindToCheckpoint — diff-review gate (#432)', () => {
     expect(restored).toHaveLength(2);
     expect(fs[FILE_A]).toBe('orig');
     expect(fs[FILE_B]).toBe('orig-b');
+  });
+});
+
+// ── #603: authoritative in-memory store + tool-result wording ──────────────
+
+describe('authoritative in-memory store (#603)', () => {
+  let origSetItem: typeof Storage.prototype.setItem;
+  beforeEach(() => {
+    clearCheckpoints();
+    origSetItem = Storage.prototype.setItem;
+  });
+  afterEach(() => { Storage.prototype.setItem = origSetItem; });
+
+  it('create → list → rewind round-trips when the sessionStorage mirror rejects QuotaExceeded (#603)', async () => {
+    const fs = { [FILE_A]: 'original content' };
+    makeFilesystem(fs);
+    // Force the sessionStorage mirror to fail on every write.
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+
+    const ckpt = await createCheckpoint([FILE_A], 'persist-fail');
+    expect(ckpt.persisted).toBe(false); // mirror loss is reported, not swallowed
+
+    // Still listable and rewindable in-session via the in-memory store.
+    expect(listCheckpoints().some((c) => c.id === ckpt.id)).toBe(true);
+
+    fs[FILE_A] = 'modified content';
+    const restored = await rewindToCheckpoint(ckpt.id);
+    expect(restored).toContain(FILE_A);
+    expect(fs[FILE_A]).toBe('original content');
+  });
+
+  it('does not swallow the quota error into the tool result (#603)', async () => {
+    makeFilesystem({ [FILE_A]: 'hello' });
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    registerCheckpointTools();
+    const tool = toolRegistry.getTool('create_checkpoint');
+    const result = await tool?.execute({ paths: [FILE_A], label: 'snap' });
+    expect(result).toContain('captured 1 file(s)');
+    expect(result).toContain('not persisted across reload');
+  });
+});
+
+describe('create_checkpoint result wording (#603)', () => {
+  beforeEach(() => { clearCheckpoints(); registerCheckpointTools(); });
+
+  it('reports the actual captured count and names unreadable paths', async () => {
+    makeFilesystem({ [FILE_A]: 'hello', [FILE_B]: 'world' });
+    const tool = toolRegistry.getTool('create_checkpoint');
+    const result = await tool?.execute({ paths: [FILE_A, FILE_B, '/w/missing.ts'], label: 'snap' });
+    expect(result).toContain('captured 2 of 3 file(s)');
+    expect(result).toContain('/w/missing.ts');
+    expect(result).not.toContain('not persisted');
+  });
+
+  it('uses a plain captured count when nothing is skipped', async () => {
+    makeFilesystem({ [FILE_A]: 'hello' });
+    const tool = toolRegistry.getTool('create_checkpoint');
+    const result = await tool?.execute({ paths: [FILE_A], label: 'snap' });
+    expect(result).toMatch(/captured 1 file\(s\)\.$/);
   });
 });

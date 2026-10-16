@@ -9,14 +9,6 @@ export function safeSetItem(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* quota — non-fatal */ }
 }
 
-/**
- * Wrap sessionStorage.setItem in try/catch so QuotaExceededError doesn't crash
- * the session (#474). The value stays in memory for the current page.
- */
-export function safeSessionSetItem(key: string, value: string): void {
-  try { sessionStorage.setItem(key, value); } catch { /* quota — non-fatal */ }
-}
-
 /** Check whether an executable (docker, uvx, npx, …) is on PATH. Returns false outside Tauri. */
 export async function probeBinary(name: string): Promise<boolean> {
   try {

@@ -54,30 +54,3 @@ describe('safeSetItem (#473)', () => {
     expect(() => safeSetItem('test_key', 'test_value')).not.toThrow();
   });
 });
-
-// ── #474: safeSessionSetItem must not throw on QuotaExceededError ───────────
-
-describe('safeSessionSetItem (#474)', () => {
-  let origSetItem: typeof Storage.prototype.setItem;
-  beforeEach(() => {
-    sessionStorage.clear();
-    origSetItem = Storage.prototype.setItem;
-  });
-  afterEach(() => { Storage.prototype.setItem = origSetItem; });
-
-  it('stores a value normally', () => {
-    safeSessionSetItem('sess_key', 'sess_value');
-    expect(sessionStorage.getItem('sess_key')).toBe('sess_value');
-  });
-
-  it('does not throw on QuotaExceededError (#474)', () => {
-    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
-    expect(() => safeSessionSetItem('sess_key', 'sess_value')).not.toThrow();
-  });
-
-  it('does not throw on other DOMException (#474)', () => {
-    Storage.prototype.setItem = () => { throw new DOMException('access denied', 'SecurityError'); };
-    expect(() => safeSessionSetItem('sess_key', 'sess_value')).not.toThrow();
-  });
-});
-import { safeSessionSetItem } from '../services/platform';

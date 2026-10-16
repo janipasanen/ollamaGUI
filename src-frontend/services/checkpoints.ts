@@ -5,14 +5,17 @@
  * the current content of every file it will touch. A one-click "Rewind"
  * restores all captured files to their state at checkpoint time.
  *
- * Checkpoints are kept in sessionStorage (ephemeral — they do NOT survive page
- * reloads). This mirrors the CLI pattern where checkpoints are session-local.
+ * The authoritative store is an in-memory map, so a full sessionStorage never
+ * makes a rewind silently fail (#603): the checkpoint stays restorable for the
+ * session. The in-memory map is additionally mirrored to sessionStorage so the
+ * checkpoints survive a same-tab reload. That mirror is best-effort — on
+ * QuotaExceededError it is dropped (oldest checkpoints evicted first) and the
+ * tool result tells the agent the checkpoint is not persisted across reloads.
  */
 
 import { readFile } from './fileTools';
 import { proposeEdits } from './diffReview';
 import { toolRegistry } from './tools';
-import { safeSessionSetItem } from './platform';
 
 export interface Checkpoint {
   id: string;
@@ -20,20 +23,77 @@ export interface Checkpoint {
   createdAt: number;
   /** path → original content at checkpoint time. */
   files: Record<string, string>;
+  /** false only when the sessionStorage mirror rejected the write (#603); the
+   *  checkpoint is still restorable in this session via the in-memory store. */
+  persisted: boolean;
+  /** Request paths that were unreadable at checkpoint time (#603). */
+  skipped?: string[];
 }
 
 const STORAGE_KEY = 'ollama_gui_checkpoints';
 
-function loadAll(): Checkpoint[] {
-  try {
-    return JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
+/** Hard cap on checkpoints retained in-memory (also bounds the mirror, #603). */
+const MAX_CHECKPOINTS = 50;
+
+/**
+ * Authoritative in-memory store. The sessionStorage mirror is best-effort: on
+ * QuotaExceededError we drop it (evicting the oldest checkpoints first) so a
+ * full storage never makes a rewind silently fail (#603).
+ */
+const store = new Map<string, Checkpoint>();
+
+/**
+ * Mirror the in-memory store to sessionStorage. Returns true on success; on
+ * QuotaExceededError it evicts the oldest checkpoint(s) and retries, bounded —
+ * a fully-quota'd storage never evicts the checkpoint we just created, so the
+ * in-memory store always retains it (#603). Returns false only if nothing
+ * could be persisted; the in-memory checkpoint is still valid for the session.
+ */
+function saveAll(): boolean {
+  let attempts = 0;
+  do {
+    try {
+      // Serialize newest-first so the mirror matches creation order.
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify([...store.values()].reverse()));
+      return true;
+    } catch {
+      // Quota exceeded — evict the oldest checkpoint and retry.
+      if (store.size <= 1) return false;
+      const oldest = store.keys().next().value;
+      if (oldest !== undefined) store.delete(oldest);
+      attempts++;
+    }
+  } while (attempts < MAX_CHECKPOINTS);
+  return false;
 }
 
-function saveAll(checkpoints: Checkpoint[]): void {
-  safeSessionSetItem(STORAGE_KEY, JSON.stringify(checkpoints));
+/**
+ * All checkpoints, newest first. The in-memory store is authoritative; the
+ * sessionStorage mirror only fills gaps left by a fresh session (#603).
+ */
+function loadAll(): Checkpoint[] {
+  const result: Checkpoint[] = [...store.values()].reverse();
+  const seen = new Set(result.map((c) => c.id));
+  try {
+    for (const cp of JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]') as Checkpoint[]) {
+      if (!seen.has(cp.id)) {
+        result.push(cp);
+        seen.add(cp.id);
+      }
+    }
+  } catch {
+    /* ignore a malformed mirror */
+  }
+  return result;
+}
+
+/** Drop the oldest checkpoints until the in-memory store is within cap (#603). */
+function enforceCap(): void {
+  while (store.size > MAX_CHECKPOINTS) {
+    const oldest = store.keys().next().value;
+    if (oldest === undefined) break;
+    store.delete(oldest);
+  }
 }
 
 function makeId(): string {
@@ -41,24 +101,37 @@ function makeId(): string {
 }
 
 /**
- * Create a checkpoint by reading the current content of each path.
- * Silently skips files that cannot be read (e.g. not yet created).
+ * Create a checkpoint by reading the current content of each path, tracking
+ * which paths were unreadable so the result can name them (#603). The
+ * checkpoint is always kept in the authoritative in-memory store (#603); the
+ * sessionStorage mirror may degrade, reported via `checkpoint.persisted`.
  */
 export async function createCheckpoint(paths: string[], label: string): Promise<Checkpoint> {
   const files: Record<string, string> = {};
+  const skipped: string[] = [];
   await Promise.all(
     paths.map(async (path) => {
       try {
         files[path] = await readFile(path);
       } catch {
         // File does not exist yet — not an error, just not captured.
+        skipped.push(path);
       }
     }),
   );
-  const checkpoint: Checkpoint = { id: makeId(), label, createdAt: Date.now(), files };
-  const all = loadAll();
-  all.unshift(checkpoint);
-  saveAll(all);
+  const checkpoint: Checkpoint = {
+    id: makeId(),
+    label,
+    createdAt: Date.now(),
+    files,
+    persisted: false,
+    skipped,
+  };
+  // Keep it in the authoritative in-memory store (capped), then mirror it to
+  // sessionStorage, degrading gracefully on quota (#603).
+  store.set(checkpoint.id, checkpoint);
+  enforceCap();
+  checkpoint.persisted = saveAll();
   return checkpoint;
 }
 
@@ -72,13 +145,15 @@ export function getCheckpoint(id: string): Checkpoint | undefined {
   return loadAll().find(c => c.id === id);
 }
 
-/** Remove a checkpoint by id. */
+/** Remove a checkpoint by id (from both the in-memory store and the mirror). */
 export function deleteCheckpoint(id: string): void {
-  saveAll(loadAll().filter(c => c.id !== id));
+  store.delete(id);
+  saveAll();
 }
 
 /** Clear all checkpoints (used in tests and on session end). */
 export function clearCheckpoints(): void {
+  store.clear();
   sessionStorage.removeItem(STORAGE_KEY);
 }
 
@@ -105,7 +180,19 @@ export function registerCheckpointTools(): void {
     execute: async (args: unknown) => {
       const { paths, label } = args as { paths: string[]; label: string };
       const ckpt = await createCheckpoint(paths, label);
-      return `Checkpoint '${ckpt.label}' created (id=${ckpt.id}), captured ${paths.length} file(s).`;
+      // Report the ACTUAL captured count, naming any unreadable paths (#603).
+      const captured = Object.keys(ckpt.files).length;
+      const skipped = (ckpt.skipped ?? []).filter((p) => paths.includes(p));
+      let msg = `Checkpoint '${ckpt.label}' created (id=${ckpt.id}), captured ${captured}`;
+      if (skipped.length > 0) {
+        msg += ` of ${paths.length} file(s); skipped (unreadable): ${skipped.join(', ')}`;
+      } else {
+        msg += ` file(s)`;
+      }
+      // The in-memory store is authoritative (#603); warn only on mirror loss.
+      if (!ckpt.persisted) msg += ' (not persisted across reload)';
+      msg += '.';
+      return msg;
     },
   });
 
