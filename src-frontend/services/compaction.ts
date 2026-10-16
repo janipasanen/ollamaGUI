@@ -10,6 +10,7 @@
  */
 
 import { ollamaErrorFromResponse, type Message } from './ollama';
+import { openAiErrorFromResponse, type ModelConnection } from './connections';
 
 export interface CompactionOptions {
   /** Characters-per-token estimate for the heuristic (default 4). */
@@ -20,6 +21,9 @@ export interface CompactionOptions {
   keepRecent?: number;
   /** Async function to generate the summary (injected for testability). */
   summarizeFn?: (messages: Message[]) => Promise<string>;
+  /** Called at most once when the summarize function rejects, so a provider
+   * compaction failure is surfaced instead of swallowed (#590). */
+  onError?: (error: unknown) => void;
 }
 
 /** Cheap token-count estimate (chars / 4). */
@@ -56,9 +60,15 @@ export async function compactConversation(
 
   let summary = '';
   if (summarizeFn) {
+    let onError = options.onError;
     try {
       summary = await summarizeFn(toCompress);
-    } catch {
+    } catch (err) {
+      if (onError) {
+        onError(err);
+        // Ensure it fires at most once per session/conversation.
+        onError = undefined;
+      }
       return messages; // compaction failed non-fatally — return unchanged
     }
   } else {
@@ -103,5 +113,43 @@ export function makeSummarizeFn(
     if (!resp.ok) throw await ollamaErrorFromResponse(resp, 'Summarize failed');
     const data = await resp.json();
     return data.message?.content ?? data.response ?? '';
+  };
+}
+
+/**
+ * Build a summarization function for an OpenAI-compatible connection (#590).
+ *
+ * Routes the summarize POST to the provider's own `/v1/chat/completions`
+ * endpoint with the bare model name (not the "connId/model" selector), so
+ * pre-send compaction works on LM Studio / vLLM / remote-Ollama, not just the
+ * local daemon. The endpoint is already resolved correctly — the selector id
+ * is only stripped here.
+ */
+export function makeOpenAiSummarizeFn(
+  conn: ModelConnection,
+  model: string
+): (messages: Message[]) => Promise<string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+  const endpoint = `${conn.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
+  return async (messages: Message[]) => {
+    const transcript = messages
+      .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+      .join('\n\n');
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'Summarise the following conversation concisely, preserving key facts and decisions. Output only the summary.' },
+          { role: 'user', content: transcript },
+        ],
+        stream: false,
+      }),
+    });
+    if (!resp.ok) throw await openAiErrorFromResponse(resp, 'Summarize failed');
+    const data = await resp.json() as any;
+    return data?.choices?.[0]?.message?.content ?? '';
   };
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  estimateTokens, shouldCompact, compactConversation, makeSummarizeFn,
+  estimateTokens, shouldCompact, compactConversation, makeSummarizeFn, makeOpenAiSummarizeFn,
 } from '../services/compaction';
 import type { Message } from '../services/ollama';
 
@@ -101,6 +101,16 @@ describe('compactConversation', () => {
     expect(result).toStrictEqual(history);
   });
 
+  it('invokes onError exactly once when summarizeFn rejects (#590)', async () => {
+    const summarizeFn = vi.fn().mockRejectedValue(new Error('network error'));
+    const onError = vi.fn();
+    const history = mkHistory(20);
+    await compactConversation(history, { thresholdTokens: 100, summarizeFn, onError });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
+    // onError does not change the returned (unchanged) array.
+  });
+
   it('uses fallback summary when no summarizeFn provided', async () => {
     const history = mkHistory(20);
     const result = await compactConversation(history, { thresholdTokens: 100, keepRecent: 4 });
@@ -144,5 +154,58 @@ describe('makeSummarizeFn error handling (#459)', () => {
     const summarize = makeSummarizeFn('llama3', 'http://x/api/chat');
     const result = await summarize([msg('user', 'hi')]);
     expect(result).toBe('Summary here');
+  });
+});
+
+// ── #590: makeOpenAiSummarizeFn routes to the connection's own endpoint ───────
+
+describe('makeOpenAiSummarizeFn (#590)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('posts to the connection /v1/chat/completions with the bare model name', async () => {
+    global.fetch = vi.fn(async (url: string, init: any) => {
+      expect(url).toBe('http://lmstudio:1234/v1/chat/completions');
+      const body = JSON.parse(init.body);
+      // Bare model name, NOT a connId/model selector id.
+      expect(body.model).toBe('qwen3-coder');
+      expect(body.messages).toHaveLength(2);
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret-key');
+      expect(body.stream).toBe(false);
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: 'LM Studio summary' } }] }),
+      } as any;
+    }) as any;
+    const summarize = makeOpenAiSummarizeFn(
+      { id: 'conn-1', name: 'LM Studio', kind: 'openai', baseUrl: 'http://lmstudio:1234', apiKey: 'secret-key' } as any,
+      'qwen3-coder',
+    );
+    const result = await summarize([msg('user', 'hi'), msg('assistant', 'there')]);
+    expect(result).toBe('LM Studio summary');
+  });
+
+  it('surfaces a non-ok response body as the error', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({ error: { message: 'model "foo" not found' } }),
+    }) as any;
+    const summarize = makeOpenAiSummarizeFn(
+      { id: 'conn-1', name: 'LLM', kind: 'openai', baseUrl: 'http://lm:1234' } as any,
+      'foo',
+    );
+    await expect(summarize([msg('user', 'hi')])).rejects.toThrow('model "foo" not found');
+  });
+
+  it('returns an empty string when the response omits choices', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) } as any);
+    const summarize = makeOpenAiSummarizeFn(
+      { id: 'conn-1', name: 'LLM', kind: 'openai', baseUrl: 'http://lm:1234' } as any,
+      'foo',
+    );
+    await expect(summarize([msg('user', 'hi')])).resolves.toBe('');
   });
 });

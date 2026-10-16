@@ -8,7 +8,7 @@ import {
   loadMemory, addMemoryEntry, removeMemoryEntry, composeMemoryBlock, getRelevantEntries,
 } from './services/memory';
 import {
-  shouldCompact, compactConversation, makeSummarizeFn,
+  shouldCompact, compactConversation, makeSummarizeFn, makeOpenAiSummarizeFn,
 } from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
 import { agenticChatStream, type AgenticChatOptions } from './services/agent';
@@ -3261,6 +3261,16 @@ ${block}`;
         if (result.action === 'compact') {
           if (messages.length < 2) { showStatusBanner('Not enough messages to compact'); return; }
           if (isLoading) { showStatusBanner('Cannot compact while generating'); return; }
+          // Route compaction to the active model's own provider (#590). A
+          // connected model's selector id is "connId/model" — the summary
+          // POST must use the bare model name against the right endpoint,
+          // not local Ollama (which 404s / refuses on LM Studio, vLLM,
+          // remote Ollama).
+          const selectedConnectedModel = connectedModels.find(m => m.id === model);
+          const selectedConnection = selectedConnectedModel
+            ? connections.find(c => c.id === selectedConnectedModel.connectionId)
+            : undefined;
+          const isRemote = selectedConnection?.kind === 'ollama' && selectedConnection.baseUrl !== ollamaBaseUrl;
           void (async () => {
             showStatusBanner('Compacting conversation…');
             const summaryPrompt = 'Summarize the following conversation concisely. Preserve all key facts, decisions, code snippets, and context needed to continue the discussion. Format as a clear summary:\n\n';
@@ -3271,10 +3281,20 @@ ${block}`;
             let summary = '';
             try {
               // Cloud models are proxied by the local daemon (#483).
-              const compactEndpoint = url('/api/chat');
-              await fetchOllamaChatStream(model, summaryMessages, (chunk) => {
-                if (chunk.message?.content) summary += chunk.message.content;
-              }, compactEndpoint, false, genOptions, undefined);
+              if (selectedConnection?.kind === 'openai' || isRemote) {
+                await streamOpenAiChat(
+                  selectedConnection!,
+                  selectedConnectedModel?.name ?? model,
+                  summaryMessages,
+                  (delta) => { summary += delta; },
+                  genOptions,
+                  undefined,
+                );
+              } else {
+                await fetchOllamaChatStream(model, summaryMessages, (chunk) => {
+                  if (chunk.message?.content) summary += chunk.message.content;
+                }, url('/api/chat'), false, genOptions, undefined);
+              }
               if (!summary.trim()) { showStatusBanner('Compaction failed — empty summary'); return; }
               const compacted: Message[] = [
                 { role: 'user', content: 'Previous conversation summary (via /compact):\n\n' + summary.trim() },
@@ -3667,11 +3687,33 @@ ${lines.join('\n')}`;
       return next;
     });
 
-    // Auto-compact when history approaches context limit (#95)
+    // Auto-compact when history approaches context limit (#95).
+    // Resolve the connected model + connection for remote routing. A connected
+    // model's selector id is "connId/model"; the summarize POST must go to the
+    // model's own provider with the *bare* model name, not to local Ollama
+    // (#590), which 404s / refuses connections on LM Studio, vLLM, remote Ollama.
+    const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
+    const selectedConnection = selectedConnectedModel
+      ? connections.find(c => c.id === selectedConnectedModel.connectionId)
+      : undefined;
+
+    // #590: pick the right summarizer. OpenAI-compatible (or remote Ollama)
+    // connections summarize against their own endpoint with the bare model name;
+    // everything else uses the local daemon. `onError` surfaces a failed
+    // summarizer instead of silently dropping context.
+    const summarizeCompaction = (summaryMessages: Message[]): Promise<string> => {
+      const isRemote = selectedConnection?.kind === 'ollama' && selectedConnection.baseUrl !== ollamaBaseUrl;
+      if (selectedConnection?.kind === 'openai' || isRemote) {
+        return makeOpenAiSummarizeFn(selectedConnection!, selectedConnectedModel?.name ?? activeModel)(summaryMessages);
+      }
+      return makeSummarizeFn(activeModel, url('/api/chat'))(summaryMessages);
+    };
+
     if (autoCompact && shouldCompact(rawHistory, compactionThreshold)) {
       rawHistory = await compactConversation(rawHistory, {
         thresholdTokens: compactionThreshold,
-        summarizeFn: makeSummarizeFn(activeModel, url('/api/chat')),
+        summarizeFn: summarizeCompaction,
+        onError: err => showStatusBanner(`Compaction failed: ${formatErrorLine(err, 'generic', selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined)}`),
       });
     }
 
@@ -3687,14 +3729,6 @@ ${lines.join('\n')}`;
     // distinctly so it does not shadow the module-level isCloudModel() (#484).
     const usingCloudModel = models.some(m => m.name === activeModel && m.cloud);
 
-    // Resolve the connected model + connection for remote routing, and derive
-    // the error-guidance context. Hoisted above the try below so the catch block
-    // can reference them too — an OpenAI-compatible connection is told how to
-    // reach *its* server, not to "start Ollama" (#571/#580).
-    const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
-    const selectedConnection = selectedConnectedModel
-      ? connections.find(c => c.id === selectedConnectedModel.connectionId)
-      : undefined;
     // #571/#580: route error guidance to the real host. Any non-local connection
     // (OpenAI-compatible, or a remote Ollama host) is named by its own endpoint
     // so the user is never told to start the *local* daemon. Local Ollama keeps
