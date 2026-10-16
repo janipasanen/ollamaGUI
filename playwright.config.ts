@@ -35,9 +35,15 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {
-    command: 'npm run dev',
+    // Default: unbundled Vite dev server (`npm run dev`). With PW_TARGET=preview
+    // (#613) it instead builds and serves the production artifact, so CI boots the
+    // exact bundle users install and catches blank-window/boot-chunk failures.
+    command:
+      process.env.PW_TARGET === 'preview'
+        ? 'npm run build && npm run preview -- --port 5173 --strictPort'
+        : 'npm run dev',
     url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    reuseExistingServer: !process.env.PW_TARGET && !process.env.CI,
+    timeout: 180_000,
   },
 });

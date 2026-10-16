@@ -116,6 +116,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run Playwright E2E
         run: npm run test:e2e
+      - name: Run Playwright E2E against production bundle (#613)
+        run: PW_TARGET=preview npm run test:e2e
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
