@@ -48,7 +48,7 @@ export function formatError(
     if (context === 'ollama') {
       return {
         title: 'Cannot reach Ollama',
-        detail: 'Is Ollama running? Start it with `ollama serve`, then check the base URL in Settings (default http://localhost:11434).',
+        detail: 'Is Ollama running? Start it with `ollama serve`, then press “Test connection” under Settings → Local Ollama Endpoint to verify the URL, or press Retry on this message.',
       };
     }
     if (context === 'mcp') {

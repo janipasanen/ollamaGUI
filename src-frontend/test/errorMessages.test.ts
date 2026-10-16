@@ -5,7 +5,9 @@ describe('formatError (#30)', () => {
   it('maps connection failure for ollama with actionable guidance', () => {
     const e = formatError(new Error('Failed to fetch'), 'ollama');
     expect(e.title).toMatch(/Ollama/i);
-    expect(e.detail).toMatch(/ollama serve|base URL/i);
+    expect(e.detail).toMatch(/ollama serve|Test|Retry/i);
+    // Must not point at a removed banner or a vanished auto-reconnect.
+    expect(e.detail).not.toMatch(/banner/i);
   });
 
   it('maps connection refused for mcp', () => {
