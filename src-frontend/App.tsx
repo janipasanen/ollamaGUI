@@ -154,6 +154,8 @@ import { DiffReviewModal } from './components/DiffReviewModal';
 import { setBatchReviewCallback, clearBatchReviewCallback } from './services/diffReview';
 import { setEditAppliedCallback, clearEditAppliedCallback } from './services/diffReview';
 import { autoCommitEdit, loadAutoCommitEdits, saveAutoCommitEdits, undoLastAutoCommit } from './services/autoCommit';
+import { loadShowThinking, saveShowThinking, loadThinkingCollapsedByDefault, saveThinkingCollapsedByDefault } from './services/thinking';
+import { shouldRequestSuggestion, acceptSuggestion, suggestCompletion } from './services/promptSuggestion';
 import { DiffReviewBatchModal } from './components/DiffReviewBatchModal';
 import { ContextMenu, type ContextMenuItem } from './components/ContextMenu';
 import { registerPlanTool, getPlan, setPlan, clearPlan, subscribe as subscribePlan, type PlanItem } from './services/planStore';
@@ -536,6 +538,12 @@ const App: React.FC = () => {
   // Core chat state
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  // Inline AI prompt-completion ghost (#658).
+  const [suggestion, setSuggestion] = useState('');
+  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suggestAbortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const ghostLayerRef = useRef<HTMLDivElement | null>(null);
   const [model, setModel] = useState('llama3');
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
@@ -5730,9 +5738,23 @@ ${lines.join('\n')}`;
                  ))}
                </div>
              )}
-             <textarea
-               id="chat-input"
-               rows={1}
+             <div className="relative flex-1 w-full">
+               {/* Inline AI prompt-completion ghost (#658): mirrors the textarea content so it aligns exactly; the textarea text is transparent so only this layer renders it. */}
+               <div
+                 ref={ghostLayerRef}
+                 aria-hidden="true"
+                 className={`pointer-events-none absolute inset-0 overflow-y-auto px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                   dark ? 'text-zinc-100' : 'text-zinc-900'
+                 }`}
+               >
+                 <span>{input}</span>
+                 {suggestion && <span className={`${dark ? 'text-zinc-400' : 'text-zinc-500'} opacity-50`}>{suggestion}</span>}
+               </div>
+               <textarea
+                 ref={textareaRef}
+                 style={{ caretColor: dark ? '#f4f4f5' : '#18181b' }}
+                 id="chat-input"
+                 rows={1}
                value={input}
                onPaste={handlePaste}
                onChange={(e) => {
@@ -5742,6 +5764,8 @@ ${lines.join('\n')}`;
                  const ta = e.target;
                  ta.style.height = 'auto';
                  ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+                 // Keep the AI-completion ghost layer scrolled in sync (#658).
+                 try { if (ghostLayerRef.current) ghostLayerRef.current.scrollTop = ta.scrollTop; } catch { /* noop */ }
                  // Show slash command suggestions when input starts with /
                  if (val.startsWith('/')) {
                    const query = val.split(' ')[0];
@@ -5764,9 +5788,55 @@ ${lines.join('\n')}`;
                    setCommandSuggestions([]);
                    setAtSuggestions([]);
                    setHashSuggestions([]);
+                   // AI prompt-completion ghost (#658): clear any stale ghost,
+                   // then after a short idle debounce request a completion from
+                   // the active model's OpenAI-compatible endpoint.
+                   setSuggestion('');
+                   if (suggestTimerRef.current) { clearTimeout(suggestTimerRef.current); suggestTimerRef.current = null; }
+                   if (suggestAbortRef.current) { suggestAbortRef.current.abort(); suggestAbortRef.current = null; }
+                   if (shouldRequestSuggestion(val)) {
+                     const cm = connectedModels.find(m => m.id === model);
+                     const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
+                     const base = (conn?.kind === 'openai' && conn.baseUrl) ? conn.baseUrl : ollamaBaseUrl;
+                     const url = `${String(base).replace(/\/$/, '')}/v1/chat/completions`;
+                     const suggestionModel = cm?.name ?? model;
+                     const controller = new AbortController();
+                     suggestAbortRef.current = controller;
+                     suggestTimerRef.current = setTimeout(() => {
+                       void (async () => {
+                         for await (const part of suggestCompletion({
+                           url, apiKey: conn?.apiKey, model: suggestionModel, prompt: val, signal: controller.signal,
+                         })) {
+                           setSuggestion(part);
+                         }
+                       })();
+                     }, 400);
+                   }
                  }
                }}
                onKeyDown={(e) => {
+                 // Accept inline AI suggestion on Tab (#658) — takes priority over indent navigation.
+                 if (e.key === 'Tab' && suggestion && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+                   e.preventDefault();
+                   const next = acceptSuggestion(input, suggestion);
+                   if (suggestAbortRef.current) { suggestAbortRef.current.abort(); suggestAbortRef.current = null; }
+                   if (suggestTimerRef.current) { clearTimeout(suggestTimerRef.current); suggestTimerRef.current = null; }
+                   setSuggestion('');
+                   setInput(next);
+                   setTimeout(() => {
+                     const ta = e.currentTarget as HTMLTextAreaElement;
+                     ta.selectionStart = ta.selectionEnd = next.length;
+                     ta.focus();
+                   }, 0);
+                   return;
+                 }
+                 // Dismiss inline AI suggestion on Escape or cursor movement.
+                 if (suggestion && (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                   if (suggestAbortRef.current) { suggestAbortRef.current.abort(); suggestAbortRef.current = null; }
+                   if (suggestTimerRef.current) { clearTimeout(suggestTimerRef.current); suggestTimerRef.current = null; }
+                   setSuggestion('');
+                   if (e.key === 'Escape') return;
+                 }
                  // @-mention keyboard nav (#183)
                  if (atSuggestions.length > 0) {
                    if (e.key === 'ArrowDown') { e.preventDefault(); setAtSelected(s => Math.min(s + 1, atSuggestions.length - 1)); return; }
@@ -5881,10 +5951,11 @@ ${lines.join('\n')}`;
                }}
                placeholder="Message Ollama..."
                aria-label="Type your message here"
-               className={`flex-1 border rounded-xl px-4 py-3 resize-none max-h-40 overflow-y-auto leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                 dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'
+               className={`border rounded-xl px-4 py-3 resize-none max-h-40 overflow-y-auto leading-relaxed text-transparent bg-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                 dark ? 'border-zinc-700' : 'border-zinc-300'
                }`}
              ></textarea>
+             </div>
              {/* Many-models extra-model picker (#126) */}
              {[...models, ...connectedModels].length > 1 && (
                <select
