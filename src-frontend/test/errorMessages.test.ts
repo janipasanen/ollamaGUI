@@ -63,3 +63,32 @@ describe('formatError (#30)', () => {
     expect(line).toMatch(/Cannot reach Ollama —/);
   });
 });
+
+describe('openai-compatible error context (#571/#580)', () => {
+  const conn = { label: 'My LM Studio', baseUrl: 'http://127.0.0.1:1234' };
+
+  it('network failure names the host, never "start Ollama"', () => {
+    const e = formatError(new Error('Failed to fetch'), 'openai-compatible', conn);
+    expect(e.title).toMatch(/LM Studio/);
+    expect(e.detail).toContain('http://127.0.0.1:1234');
+    expect(e.detail).not.toMatch(/ollama serve|Ollama isn't running/i);
+  });
+
+  it('network failure without a provider falls back to generic labels', () => {
+    const e = formatError(new Error('connection refused'), 'openai-compatible');
+    expect(e.title).toMatch(/Cannot reach the model server/);
+    expect(e.detail).toMatch(/Providers panel/);
+  });
+
+  it('model-not-found says it is not loaded on the server, not the Ollama panel', () => {
+    const e = formatError(new Error('model "llama3" not found'), 'openai-compatible', conn);
+    expect(e.title).toMatch(/not available on/);
+    expect(e.detail).toMatch(/not loaded/);
+    expect(e.detail).not.toMatch(/Model Management panel|ollama pull/i);
+  });
+
+  it('formatErrorLine opens with the host name', () => {
+    const line = formatErrorLine(new Error('Failed to fetch'), 'openai-compatible', conn);
+    expect(line).toMatch(/Cannot reach My LM Studio/);
+  });
+});

@@ -3673,12 +3673,18 @@ ${lines.join('\n')}`;
     // distinctly so it does not shadow the module-level isCloudModel() (#484).
     const usingCloudModel = models.some(m => m.name === activeModel && m.cloud);
 
+    // Resolve the connected model + connection for remote routing, and derive
+    // the error-guidance context. Hoisted above the try below so the catch block
+    // can reference them too — an OpenAI-compatible connection is told how to
+    // reach *its* server, not to "start Ollama" (#571/#580).
+    const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
+    const selectedConnection = selectedConnectedModel
+      ? connections.find(c => c.id === selectedConnectedModel.connectionId)
+      : undefined;
+    const errCtx = selectedConnection?.kind === 'openai' ? 'openai-compatible' : (usingCloudModel ? 'ollama-cloud' : 'ollama');
+    const errProv = selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
+
     try {
-      // Resolve the connected model + connection for remote routing.
-      const selectedConnectedModel = connectedModels.find(m => m.id === activeModel);
-      const selectedConnection = selectedConnectedModel
-        ? connections.find(c => c.id === selectedConnectedModel.connectionId)
-        : undefined;
       // Pick the chat endpoint: remote Ollama connection > local Ollama.
       // Cloud models are NOT a separate host — the local daemon proxies them
       // after `ollama signin` (#483), so they use the same endpoint as local.
@@ -3902,7 +3908,7 @@ ${lines.join('\n')}`;
           onError: (error) => {
             setMessages(prev => [
               ...prev,
-              { role: 'assistant', content: formatErrorLine(error, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true },
+              { role: 'assistant', content: formatErrorLine(error, errCtx, errProv), isError: true },
             ]);
             setIsLoading(false);
             setAgentStatus(null);
@@ -4135,7 +4141,7 @@ ${lines.join('\n')}`;
             // Network/server failure — roll back partial message
             setMessages(prev => {
               const withoutPartial = prev.slice(0, -1);
-              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true }] as Message[];
+              return [...withoutPartial, { role: 'assistant', content: formatErrorLine(streamError, errCtx, errProv), isError: true }] as Message[];
             });
           }
         }
@@ -4145,7 +4151,7 @@ ${lines.join('\n')}`;
     } catch (error) {
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', content: formatErrorLine(error, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true },
+        { role: 'assistant', content: formatErrorLine(error, errCtx, errProv), isError: true },
       ]);
       setIsLoading(false);
     } finally {
@@ -4317,6 +4323,10 @@ ${lines.join('\n')}`;
     const ollamaModelName = selectedConnectedModel?.name ?? model;
     let continuedContent = '';
     let contGenStats: GenStats | undefined;
+    // Error guidance routed to the real host (#571/#580).
+    const contCtx = selectedConnection?.kind === 'openai' ? 'openai-compatible' : (usingCloudModel ? 'ollama-cloud' : 'ollama');
+    const contProv = selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
+
     try {
       await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
         if (chunk.message?.content) {
@@ -4350,7 +4360,7 @@ ${lines.join('\n')}`;
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n' + formatErrorLine(streamError, usingCloudModel ? 'ollama-cloud' : 'ollama'), isError: true, wasCancelled: false }] as Message[];
+            return [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent + '\n\n' + formatErrorLine(streamError, contCtx, contProv), isError: true, wasCancelled: false }] as Message[];
           }
           return prev;
         });

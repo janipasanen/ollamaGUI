@@ -22,11 +22,15 @@ function raw(err: unknown): string {
 
 /**
  * Map an error from any layer (fetch, Ollama API, Tauri command) to a friendly
- * title + actionable detail. `context` tunes the guidance (e.g. 'ollama', 'mcp').
+ * title + actionable detail. `context` tunes the guidance (e.g. 'ollama',
+ * 'mcp', 'openai-compatible'); `provider` names the user's actual connection so
+ * an OpenAI-compatible (LM Studio / vLLM / remote Ollama) host is never told to
+ * "start Ollama" (#571/#580).
  */
 export function formatError(
   err: unknown,
-  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' = 'generic',
+  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' | 'openai-compatible' = 'generic',
+  provider?: { label: string; baseUrl: string },
 ): FriendlyError {
   const msg = raw(err);
   const lower = msg.toLowerCase();
@@ -57,6 +61,14 @@ export function formatError(
         detail: 'Check the server URL and that the server is running, then try connecting again.',
       };
     }
+    if (context === 'openai-compatible') {
+      // The host is an LM Studio / vLLM / remote connection (not local Ollama),
+      // so the "run ollama serve" fix is actively wrong (#571).
+      return {
+        title: 'Cannot reach ' + (provider?.label ?? 'the model server'),
+        detail: 'Nothing answered at ' + (provider?.baseUrl ?? 'the configured endpoint') + '. Check that server is running and reachable, then re-test it in the Providers panel.',
+      };
+    }
     return { title: 'Connection failed', detail: 'The service could not be reached. Check that it is running and the URL is correct.' };
   }
 
@@ -72,6 +84,14 @@ export function formatError(
 
   // Model not found
   if (lower.includes('model') && (lower.includes('not found') || lower.includes('no such') || lower.includes('try pulling'))) {
+    if (context === 'openai-compatible') {
+      // A missing model on LM Studio / vLLM isn't pulled from local Ollama —
+      // it has to be loaded on that host (issue #571).
+      return {
+        title: 'Model not available on ' + (provider?.label ?? 'the model server'),
+        detail: 'That model is not loaded on ' + (provider?.label ?? 'the server') + '. Load it there and re-test the connection, or pick a model that is available.',
+      };
+    }
     return {
       title: 'Model not available',
       detail: 'That model is not installed. Pull it from the Model Management panel (e.g. `ollama pull llama3`) or pick another model.',
@@ -110,8 +130,9 @@ export function formatError(
 /** Convenience: a single-line string form, e.g. for inline chat error bubbles. */
 export function formatErrorLine(
   err: unknown,
-  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' = 'generic',
+  context: 'ollama' | 'ollama-cloud' | 'mcp' | 'cli' | 'generic' | 'openai-compatible' = 'generic',
+  provider?: { label: string; baseUrl: string },
 ): string {
-  const { title, detail } = formatError(err, context);
+  const { title, detail } = formatError(err, context, provider);
   return `${title} — ${detail}`;
 }
