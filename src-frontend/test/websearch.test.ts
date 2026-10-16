@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loadWebSearchConfig, saveWebSearchConfig,
   webSearch, formatResultsAsContext, _mocks,
-  type WebSearchConfig, type WebSearchResult,
+  type WebSearchConfig, type WebSearchResult, type WebSearchOutcome,
 } from '../services/websearch';
 
 // Make the Tauri invoke seam controllable for error-path tests (#229).
@@ -49,29 +49,30 @@ describe('WebSearch config persistence (#121)', () => {
 });
 
 describe('webSearch with mock (#121)', () => {
-  it('returns empty array when not enabled', async () => {
-    _mocks.webSearch = async () => [{ title: 'T', url: 'u', snippet: 's' }];
+  it('returns empty results when not enabled', async () => {
+    _mocks.webSearch = async () => ({ results: [{ title: 'T', url: 'u', snippet: 's' }] });
     const cfg: WebSearchConfig = { enabled: false, provider: 'duckduckgo' };
-    const results = await webSearch('test', cfg);
-    expect(results).toEqual([]);
+    const outcome = await webSearch('test', cfg);
+    expect(outcome.results).toEqual([]);
+    expect(outcome.error).toBeUndefined();
   });
 
-  it('calls mock and returns results when enabled', async () => {
+  it('returns results when enabled', async () => {
     const mockResults: WebSearchResult[] = [
       { title: 'Result 1', url: 'https://example.com/1', snippet: 'snippet one' },
       { title: 'Result 2', url: 'https://example.com/2', snippet: 'snippet two' },
     ];
-    _mocks.webSearch = async () => mockResults;
+    _mocks.webSearch = async () => ({ results: mockResults });
     const cfg: WebSearchConfig = { enabled: true, provider: 'duckduckgo' };
-    const results = await webSearch('latest news', cfg);
-    expect(results).toHaveLength(2);
-    expect(results[0].title).toBe('Result 1');
+    const outcome = await webSearch('latest news', cfg);
+    expect(outcome.results).toHaveLength(2);
+    expect(outcome.results[0].title).toBe('Result 1');
   });
 
   it('passes query and config to the mock', async () => {
     let capturedQuery = '';
     let capturedCfg: WebSearchConfig | null = null;
-    _mocks.webSearch = async (q, c) => { capturedQuery = q; capturedCfg = c; return []; };
+    _mocks.webSearch = async (q, c) => { capturedQuery = q; capturedCfg = c; return { results: [] }; };
     const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://searx' };
     await webSearch('climate change', cfg);
     expect(capturedQuery).toBe('climate change');
@@ -85,10 +86,10 @@ describe('DuckDuckGo result parsing (#121)', () => {
     const fixture: WebSearchResult[] = [
       { title: 'OpenAI news', url: 'https://openai.com/blog', snippet: 'New model released.' },
     ];
-    _mocks.webSearch = async () => fixture;
-    const results = await webSearch('openai', { enabled: true, provider: 'duckduckgo' });
-    expect(results[0].url).toContain('openai.com');
-    expect(results[0].snippet).toBe('New model released.');
+    _mocks.webSearch = async () => ({ results: fixture });
+    const outcome = await webSearch('openai', { enabled: true, provider: 'duckduckgo' });
+    expect(outcome.results[0].url).toContain('openai.com');
+    expect(outcome.results[0].snippet).toBe('New model released.');
   });
 });
 
@@ -97,9 +98,9 @@ describe('SearXNG result parsing (#121)', () => {
     const fixture: WebSearchResult[] = [
       { title: 'SearX result', url: 'https://searx.example.com/r', snippet: 'A searxng match.' },
     ];
-    _mocks.webSearch = async () => fixture;
-    const results = await webSearch('q', { enabled: true, provider: 'searxng', searxngUrl: 'http://searx' });
-    expect(results[0].snippet).toContain('searxng');
+    _mocks.webSearch = async () => ({ results: fixture });
+    const outcome = await webSearch('q', { enabled: true, provider: 'searxng', searxngUrl: 'http://searx' });
+    expect(outcome.results[0].snippet).toContain('searxng');
   });
 });
 
@@ -127,44 +128,66 @@ describe('grounded request assembly (#121)', () => {
     const fixture: WebSearchResult[] = [
       { title: 'News', url: 'https://news.com', snippet: 'Breaking news here.' },
     ];
-    _mocks.webSearch = async () => fixture;
-    const results = await webSearch('news', { enabled: true, provider: 'duckduckgo' });
-    const block = formatResultsAsContext(results);
+    _mocks.webSearch = async () => ({ results: fixture });
+    const outcome = await webSearch('news', { enabled: true, provider: 'duckduckgo' });
+    const block = formatResultsAsContext(outcome.results);
     expect(block).toContain('Web search results');
     expect(block).toContain('News');
     expect(block).toContain('https://news.com');
   });
 });
 
-// ── Error paths (#229) ────────────────────────────────────────────────────────
+// ── Error / no-results reporting (#593) ───────────────────────────────────────
+// The whole point of #593 is that a caller can tell "the search failed"
+// (outcome.error) apart from "the search ran but found nothing"
+// (no error, empty results) so it can surface both.
 
-describe('webSearch error handling (#229)', () => {
+describe('webSearch reports outcomes (#593)', () => {
   beforeEach(() => {
     _mocks.webSearch = null;
     invokeMock.mockReset();
   });
 
-  it('returns [] when the Tauri web_search invoke rejects (graceful fallback)', async () => {
+  it('reports an error (not just []) when the command rejects', async () => {
     invokeMock.mockRejectedValueOnce(new Error('network down'));
     const cfg: WebSearchConfig = { enabled: true, provider: 'duckduckgo' };
-    const results = await webSearch('anything', cfg);
-    expect(results).toEqual([]);
+    const outcome = await webSearch('anything', cfg);
+    expect(outcome.results).toEqual([]);
+    expect(outcome.error).toBeInstanceOf(Error);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock.mock.calls[0][0]).toBe('web_search');
   });
 
-  it('does not throw when invoke rejects', async () => {
+  it('never throws on rejection — surfaces the error instead', async () => {
     invokeMock.mockRejectedValueOnce(new Error('boom'));
     const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://x' };
-    await expect(webSearch('q', cfg)).resolves.toEqual([]);
+    const outcome = await webSearch('q', cfg);
+    expect(outcome.error?.message).toBe('boom');
+  });
+
+  it('reports no error when the command succeeds', async () => {
+    invokeMock.mockResolvedValueOnce([{ title: 'T', url: 'u', snippet: 's' }]);
+    const cfg: WebSearchConfig = { enabled: true, provider: 'duckduckgo' };
+    const outcome = await webSearch('hi', cfg);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.results).toHaveLength(1);
+  });
+
+  it('reports no error for a successful but empty result set (broken scraper)', async () => {
+    invokeMock.mockResolvedValueOnce([]);
+    const cfg: WebSearchConfig = { enabled: true, provider: 'duckduckgo' };
+    const outcome = await webSearch('hi', cfg);
+    expect(outcome.results).toEqual([]);
+    expect(outcome.error).toBeUndefined();
   });
 
   it('passes provider/count/searxngUrl to the invoke args', async () => {
-    invokeMock.mockResolvedValueOnce([]);
+    invokeMock.mockResolvedValueOnce([{ title: 'T', url: 'u', snippet: 's' }]);
     const cfg: WebSearchConfig = { enabled: true, provider: 'searxng', searxngUrl: 'http://searx:8080', resultCount: 8 };
-    await webSearch('hello', cfg);
+    const outcome = await webSearch('hello', cfg);
     const args = invokeMock.mock.calls[0][1] as Record<string, unknown>;
     expect(args).toMatchObject({ query: 'hello', provider: 'searxng', count: 8, searxngUrl: 'http://searx:8080' });
+    expect(outcome.results).toHaveLength(1);
   });
 });
 

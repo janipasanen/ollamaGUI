@@ -126,10 +126,12 @@ describe('Copy-diff button in DiffReviewModal (#370)', () => {
 
 describe('/web slash command (#371)', () => {
   it('searches the web and feeds results to the model', async () => {
-    webSearchMocks.webSearch = vi.fn(async () => [
-      { title: 'Result 1', url: 'https://example.com/1', snippet: 'Snippet 1' },
-      { title: 'Result 2', url: 'https://example.com/2', snippet: 'Snippet 2' },
-    ]);
+    webSearchMocks.webSearch = vi.fn(async () => ({
+      results: [
+        { title: 'Result 1', url: 'https://example.com/1', snippet: 'Snippet 1' },
+        { title: 'Result 2', url: 'https://example.com/2', snippet: 'Snippet 2' },
+      ],
+    }));
 
     render(<App />);
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
@@ -150,7 +152,7 @@ describe('/web slash command (#371)', () => {
   });
 
   it('reports when no results are found', async () => {
-    webSearchMocks.webSearch = vi.fn(async () => []);
+    webSearchMocks.webSearch = vi.fn(async () => ({ results: [] }));
 
     render(<App />);
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
@@ -158,7 +160,20 @@ describe('/web slash command (#371)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('status')).toHaveTextContent(/No web search results/);
+      expect(screen.getByRole('status')).toHaveTextContent(/returned no results/);
+    }, { timeout: 5000 });
+  });
+
+  it('surfaces a search failure (not a silent empty state), #593', async () => {
+    webSearchMocks.webSearch = vi.fn(async () => ({ results: [], error: new Error('network down') }));
+
+    render(<App />);
+    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: '/web network failure query' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(/Web search failed/);
     }, { timeout: 5000 });
   });
 });

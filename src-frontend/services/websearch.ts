@@ -47,7 +47,7 @@ export function saveWebSearchConfig(cfg: Partial<WebSearchConfig>): void {
 // ── Test seam ─────────────────────────────────────────────────────────────────
 
 /** Test seam: set .webSearch on this object to override real Tauri invocations. */
-export const _mocks = { webSearch: null as ((query: string, cfg: WebSearchConfig) => Promise<WebSearchResult[]>) | null };
+export const _mocks = { webSearch: null as ((query: string, cfg: WebSearchConfig) => Promise<WebSearchOutcome>) | null };
 
 // ── Core search ───────────────────────────────────────────────────────────────
 
@@ -56,11 +56,25 @@ async function tauriInvoke(cmd: string, args: unknown): Promise<unknown> {
   return invoke(cmd, args as Record<string, unknown>);
 }
 
-export async function webSearch(query: string, cfg?: WebSearchConfig): Promise<WebSearchResult[]> {
-  const config = cfg ?? loadWebSearchConfig();
-  if (!config.enabled) return [];
+export interface WebSearchOutcome {
+  results: WebSearchResult[];
+  /**
+   * Set only when the underlying search command rejected (SearXNG unreachable,
+   * missing searxngUrl, JSON-parse failure, broken DuckDuckGo scraper, etc.).
+   * `undefined` means the search ran — a caller must treat an empty `results`
+   * with no `error` as a legitimate "no results" and report that separately,
+   * which is exactly the silent-failure bug #593 fixes.
+   */
+  error?: Error;
+}
 
-  if (_mocks.webSearch) return _mocks.webSearch(query, config);
+export async function webSearch(query: string, cfg?: WebSearchConfig): Promise<WebSearchOutcome> {
+  const config = cfg ?? loadWebSearchConfig();
+  if (!config.enabled) return { results: [] };
+
+  if (_mocks.webSearch) {
+    return _mocks.webSearch(query, config);
+  }
 
   try {
     const results = await tauriInvoke('web_search', {
@@ -69,10 +83,14 @@ export async function webSearch(query: string, cfg?: WebSearchConfig): Promise<W
       count: config.resultCount ?? 5,
       searxngUrl: config.searxngUrl,
     }) as WebSearchResult[];
-    return results;
+    return { results };
   } catch (e) {
-    console.warn(`[websearch] Tauri not available: ${e}`);
-    return [];
+    // Surface the honest reason instead of relabeling every failure as
+    // "Tauri not available" (#593). The Rust command returns real Err values
+    // for SearXNG-unreachable / missing-searxngUrl / JSON-parse failures.
+    const error = e instanceof Error ? e : new Error(String(e));
+    console.warn(`[websearch] search failed: ${error.message}`);
+    return { results: [], error };
   }
 }
 

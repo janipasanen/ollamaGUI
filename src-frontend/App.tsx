@@ -1450,8 +1450,8 @@ const App: React.FC = () => {
           execute: async (args: unknown) => {
             const { query, count } = args as { query: string; count?: number };
             const cfg = loadWebSearchConfig();
-            const results = await webSearch(query, { ...cfg, enabled: true, resultCount: count ?? cfg.resultCount });
-            return { results };
+            const outcome = await webSearch(query, { ...cfg, enabled: true, resultCount: count ?? cfg.resultCount });
+            return { results: outcome.results, error: outcome.error?.message };
           },
         });
       }
@@ -3043,15 +3043,27 @@ ${fileList}` },
           void (async () => {
             try {
               showStatusBanner(`Searching the web: ${arg}…`);
-              const results = await webSearch(arg, { ...webSearchConfig, enabled: true });
-              if (results.length === 0) { showStatusBanner('No web search results — check your web search settings'); return; }
-              const block = formatResultsAsContext(results);
+              const outcome = await webSearch(arg, { ...webSearchConfig, enabled: true });
+              if (outcome.error) {
+                showStatusBanner(`Web search failed — answering without sources: ${formatErrorLine(outcome.error)}`);
+                return;
+              }
+              if (outcome.results.length === 0) {
+                // Search ran but returned nothing (e.g. broken DuckDuckGo
+                // scraper returns Ok([]) — report it instead of the old
+                // "check your settings" hint, which blamed config for a
+                // scraper outage).
+                showStatusBanner('Web search returned no results — answering without sources');
+                return;
+              }
+              const block = formatResultsAsContext(outcome.results);
               const content = `Web search results for "${arg}":
 
 ${block}`;
               void sendMessage(content);
-              showStatusBanner(`Found ${results.length} result${results.length > 1 ? 's' : ''} — fed to model`);
+              showStatusBanner(`Found ${outcome.results.length} result${outcome.results.length > 1 ? 's' : ''} — fed to model`);
             } catch (err) {
+              // Only reached if sending the message itself fails.
               showStatusBanner(`Web search failed: ${formatErrorLine(err)}`);
             }
           })();
@@ -3592,8 +3604,17 @@ ${lines.join('\n')}`;
     let webSearchBlock = '';
     if (webSearchConfig.enabled && text.trim()) {
       try {
-        const results = await webSearch(text.trim(), webSearchConfig);
-        webSearchBlock = formatResultsAsContext(results);
+        const outcome = await webSearch(text.trim(), webSearchConfig);
+        if (outcome.error) {
+          // The auto-augmentation path has no chat bubble to show this, so tell
+          // the user via the banner that they are being answered without
+          // sources (#593) instead of silently feeding an ungrounded reply.
+          showStatusBanner(`Web search failed — answering without sources: ${formatErrorLine(outcome.error)}`);
+        } else if (outcome.results.length === 0) {
+          showStatusBanner('Web search returned no results — answering without sources');
+        } else {
+          webSearchBlock = formatResultsAsContext(outcome.results);
+        }
       } catch {
         // Non-fatal; proceed without search results
       }
