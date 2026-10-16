@@ -2639,16 +2639,24 @@ const App: React.FC = () => {
       promptHistoryRef.current = [...promptHistoryRef.current.filter(t => t !== text), text].slice(-50);
       historyNavIndexRef.current = promptHistoryRef.current.length;
     }
+    // Decide command/image from the RAW text before any mutation below, so a
+    // pending `#` context chip can never shift a command past its dispatch
+    // guard and turn `/clear`, `/new`, `/model`... into plain chat text (#616).
+    const trimmed = text.trimStart();
+    const isImageCmd = trimmed.startsWith('/image ');
+    const isCommand = trimmed.startsWith('/');
     // Prepend resolved # context blocks (#119/#184). Always clear them after
     // any send so stale chips don't persist across slash-command / action paths.
+    // Never prepend to a slash command: that would shift it past the dispatch
+    // guard and route it to the model instead of the command dispatcher.
     if (pendingContextBlocks.length > 0) {
-      text = pendingContextBlocks.join('\n\n') + '\n\n' + text;
+      if (!isCommand) text = pendingContextBlocks.join('\n\n') + '\n\n' + text;
       setPendingContextBlocks([]);
     }
     if (!continueMode && !text.trim() && attachedImages.length === 0) return;
 
     // Slash commands (#96) — dispatch before /image special case
-    if (text.trimStart().startsWith('/') && !text.trimStart().startsWith('/image ')) {
+    if (isCommand && !isImageCmd) {
       const result = runCommand(text.trim());
       if (result.kind === 'builtin') {
         setInput('');
@@ -3496,7 +3504,7 @@ ${lines.join('\n')}`;
     }
 
     // /image <prompt> — generate image directly without LLM (#130)
-    if (text.trimStart().startsWith('/image ')) {
+    if (isImageCmd) {
       const prompt = text.trimStart().slice('/image '.length).trim();
       if (!prompt) return;
       setInput('');
