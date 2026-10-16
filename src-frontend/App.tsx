@@ -11,7 +11,8 @@ import {
   shouldCompact, compactConversation, makeSummarizeFn,
 } from './services/compaction';
 import { toolRegistry, registerBuiltInTools, registerCliTool, cliAllowlist, persistCliAllowlist, toolCallName, runCliOnce } from './services/tools';
-import { agenticChatStream } from './services/agent';
+import { agenticChatStream, type AgenticChatOptions } from './services/agent';
+import { openAiAgenticChatStream } from './services/openAiAgent';
 import { McpServerConfig, mcpConfigStore } from './services/mcpConfig';
 import { MCP_SERVER_PRESETS, McpServerPreset, McpPresetVariant } from './services/mcpPresets';
 import {
@@ -3714,14 +3715,19 @@ ${lines.join('\n')}`;
         // self-learning hook in onComplete (#670).
         const capturedToolCalls: string[] = [];
         setAgentStatus('Thinking…');
-        const agentStream = agenticChatStream({
-          model: selectedConnectedModel?.name ?? model,
-          messages: chatHistory,
-          endpoint,
-          maxIterations: autonomySettings.maxIterations,
-          signal: abortControllerRef.current?.signal,
-          options: genOptions,
-          format,
+        // Route to the OpenAI-compatible agentic loop (#656) when the active
+        // model belongs to an OpenAI connection; otherwise use the
+        // Ollama-native loop. The callbacks are shared — both streams accept
+        // the same onToolCall/onToolResult/onApprovalNeeded contract.
+        const connForModel = connections.find(
+          (c) => c.id === selectedConnectedModel?.connectionId && c.kind === 'openai'
+        );
+        const agentCallbacks: Pick<AgenticChatOptions,
+          'onIteration' | 'onMaxIterations' | 'onCancel' | 'onApprovalNeeded'
+          | 'onAssistantMessage' | 'onAssistantReasoning' | 'onToolCall'
+          | 'onToolResult' | 'onGenStats' | 'onComplete' | 'onError'> & {
+          toolFilter?: string[];
+        } = {
           onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
           onMaxIterations: () => {
             captureSuccess = false;
@@ -3848,7 +3854,27 @@ ${lines.join('\n')}`;
             setAgentStep(null);
             setAgentHitMax(false);
           },
-        });
+        };
+        const agentStream = connForModel
+          ? openAiAgenticChatStream({
+              conn: connForModel,
+              model: selectedConnectedModel?.name ?? model,
+              messages: chatHistory,
+              maxIterations: autonomySettings.maxIterations,
+              signal: abortControllerRef.current?.signal,
+              options: genOptions,
+              ...agentCallbacks,
+            })
+          : agenticChatStream({
+              model: selectedConnectedModel?.name ?? model,
+              messages: chatHistory,
+              endpoint,
+              maxIterations: autonomySettings.maxIterations,
+              signal: abortControllerRef.current?.signal,
+              options: genOptions,
+              format,
+              ...agentCallbacks,
+            });
 
         for await (const message of agentStream) {
           // Messages are already handled by the callbacks — except the
