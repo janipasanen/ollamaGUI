@@ -3681,8 +3681,18 @@ ${lines.join('\n')}`;
     const selectedConnection = selectedConnectedModel
       ? connections.find(c => c.id === selectedConnectedModel.connectionId)
       : undefined;
-    const errCtx = selectedConnection?.kind === 'openai' ? 'openai-compatible' : (usingCloudModel ? 'ollama-cloud' : 'ollama');
-    const errProv = selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
+    // #571/#580: route error guidance to the real host. Any non-local connection
+    // (OpenAI-compatible, or a remote Ollama host) is named by its own endpoint
+    // so the user is never told to start the *local* daemon. Local Ollama keeps
+    // its existing "run ollama serve" text so nothing regresses.
+    const isRemoteOllama =
+      selectedConnection?.kind === 'ollama' && selectedConnection.baseUrl !== ollamaBaseUrl;
+    const errCtx =
+      selectedConnection?.kind === 'openai' || isRemoteOllama
+        ? 'openai-compatible'
+        : (usingCloudModel ? 'ollama-cloud' : 'ollama');
+    const errProv =
+      selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
 
     try {
       // Pick the chat endpoint: remote Ollama connection > local Ollama.
@@ -4323,9 +4333,16 @@ ${lines.join('\n')}`;
     const ollamaModelName = selectedConnectedModel?.name ?? model;
     let continuedContent = '';
     let contGenStats: GenStats | undefined;
-    // Error guidance routed to the real host (#571/#580).
-    const contCtx = selectedConnection?.kind === 'openai' ? 'openai-compatible' : (usingCloudModel ? 'ollama-cloud' : 'ollama');
-    const contProv = selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
+    // Error guidance routed to the real host (#571/#580). Any non-local
+    // connection is named by its own endpoint, never "run ollama serve".
+    const isRemoteOllama =
+      selectedConnection?.kind === 'ollama' && selectedConnection.baseUrl !== ollamaBaseUrl;
+    const contCtx =
+      selectedConnection?.kind === 'openai' || isRemoteOllama
+        ? 'openai-compatible'
+        : (usingCloudModel ? 'ollama-cloud' : 'ollama');
+    const contProv =
+      selectedConnection ? { label: selectedConnection.name, baseUrl: selectedConnection.baseUrl } : undefined;
 
     try {
       await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
