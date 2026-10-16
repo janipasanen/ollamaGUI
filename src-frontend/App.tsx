@@ -3095,6 +3095,14 @@ ${block}`;
           showStatusBanner(wasArchived ? 'Unarchived conversation' : 'Archived conversation');
           return;
         }
+        if (result.action === 'toggleArchived') {
+          // Toggle the archived-chats view (#615): the sidebar toggle button
+          // already does this, /archived and the palette make it keyboard-driven.
+          const nowArchived = showArchived;
+          setShowArchived(v => !v);
+          showStatusBanner(nowArchived ? 'Showing active chats' : 'Showing archived chats');
+          return;
+        }
         if (result.action === 'tag') {
           const arg = (result.arg ?? '').trim();
           if (!arg) { showStatusBanner('Usage: /tag <name>'); return; }
@@ -4368,6 +4376,7 @@ ${lines.join('\n')}`;
     } },
     { id: 'next-convo', label: 'Next Conversation', hint: 'Ctrl+]', run: () => switchConversationRef.current(1) },
     { id: 'prev-convo', label: 'Previous Conversation', hint: 'Ctrl+[', run: () => switchConversationRef.current(-1) },
+    { id: 'toggle-archived', label: 'Show/Hide Archived Chats', run: () => { setShowArchived(v => !v); } },
     { id: 'zoom-in', label: 'Zoom In', hint: 'Ctrl+=', run: () => { adjustFontScale(0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
     { id: 'zoom-out', label: 'Zoom Out', hint: 'Ctrl+-', run: () => { adjustFontScale(-0.1); showStatusBanner(`Zoom: ${Math.round(fontScale * 100)}%`); } },
     { id: 'zoom-reset', label: 'Reset Zoom', hint: 'Ctrl+0', run: () => { setFontScale(1); safeSetItem('ollama_gui_font_scale', '1'); showStatusBanner('Zoom reset to 100%'); } },

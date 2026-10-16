@@ -33,6 +33,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'copy', description: 'Copy the conversation as Markdown or plain text (e.g. /copy txt)', builtin: true },
   { name: 'pin', description: 'Pin or unpin the current conversation', builtin: true },
   { name: 'archive', description: 'Archive or unarchive the current conversation', builtin: true },
+  { name: 'archived', description: 'Toggle the archived-chats view (history/sidebar)', builtin: true },
   { name: 'tag', description: 'Tag the current conversation (e.g. /tag work)', builtin: true },
   { name: 'duplicate', description: 'Duplicate the current conversation', builtin: true },
   { name: 'title', description: 'Regenerate the conversation title from its content', builtin: true },
@@ -152,7 +153,7 @@ export function expandTemplate(template: string, args: string): string {
 }
 
 export type RunResult =
-  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
+  | { kind: 'builtin'; action: 'clear' | 'help' | 'model' | 'rename' | 'export' | 'new' | 'search' | 'copy' | 'pin' | 'archive' | 'toggleArchived' | 'tag' | 'duplicate' | 'title' | 'folder' | 'system' | 'temp' | 'ctx' | 'topp' | 'predict' | 'stop' | 'topk' | 'cost' | 'compact' | 'delete' | 'models' | 'pull' | 'remove' | 'params' | 'stats' | 'id' | 'merge' | 'undo' | 'redo' | 'diff' | 'reset' | 'tokens' | 'add' | 'drop' | 'files' | 'run' | 'commit' | 'unstage' | 'tests' | 'init' | 'web' | 'settings' | 'prompt' | 'cwd' | 'map' | 'memory' | 'status' | 'save' | 'load' | 'tools' | 'gitundo' | 'warm' | 'unload' | 'running' | 'version'; arg?: string }
   | { kind: 'prompt'; text: string }
   | { kind: 'unknown'; input: string }
   | { kind: 'passthrough'; text: string };
@@ -178,6 +179,7 @@ export function runCommand(input: string): RunResult {
     if (cmd.name === 'copy') return { kind: 'builtin', action: 'copy', arg: args };
     if (cmd.name === 'pin') return { kind: 'builtin', action: 'pin' };
     if (cmd.name === 'archive') return { kind: 'builtin', action: 'archive' };
+    if (cmd.name === 'archived') return { kind: 'builtin', action: 'toggleArchived' };
     if (cmd.name === 'tag') return { kind: 'builtin', action: 'tag', arg: args };
     if (cmd.name === 'duplicate') return { kind: 'builtin', action: 'duplicate' };
     if (cmd.name === 'title') return { kind: 'builtin', action: 'title' };

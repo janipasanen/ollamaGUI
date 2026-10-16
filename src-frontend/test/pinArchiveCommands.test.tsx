@@ -73,3 +73,29 @@ describe('/archive slash command (#283)', () => {
     expect(await screen.findByText('Archived conversation')).toBeInTheDocument();
   });
 });
+
+describe('/archived slash command (#615)', () => {
+  it('toggles the archived-chats view both ways', async () => {
+    global.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/chat')) return streamReply('Hello there');
+      return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
+    });
+
+    render(<App />);
+    const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
+
+    fireEvent.change(composer, { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => screen.getByText('Hello there'), { timeout: 3000 });
+
+    // First /archived: opens the archived view.
+    fireEvent.change(composer, { target: { value: '/archived' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Showing archived chats')).toBeInTheDocument();
+
+    // Second /archived: closes the view and returns to active chats.
+    fireEvent.change(composer, { target: { value: '/archived' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByText('Showing active chats')).toBeInTheDocument();
+  });
+});

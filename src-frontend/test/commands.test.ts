@@ -289,6 +289,22 @@ describe('/archive command (#283)', () => {
   });
 });
 
+describe('/archived command (#615)', () => {
+  it('is registered as a builtin command', () => {
+    expect(findCommand('archived')?.builtin).toBe(true);
+  });
+  it('returns builtin action: toggleArchived', () => {
+    const r = runCommand('/archived');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('toggleArchived');
+  });
+  it('/archive still returns action: archive (distinct from /archived)', () => {
+    const r = runCommand('/archive');
+    expect(r.kind).toBe('builtin');
+    if (r.kind === 'builtin') expect(r.action).toBe('archive');
+  });
+});
+
 // ── /tag, /duplicate, /title builtins (#285/#286/#287) ────────────────────────
 
 describe('/tag command (#285)', () => {
