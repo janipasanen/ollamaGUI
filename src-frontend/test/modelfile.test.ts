@@ -101,4 +101,18 @@ describe('createOllamaModel — progress stream (#125)', () => {
     expect(capturedBody.name).toBe('test-model');
     expect(capturedBody.modelfile).toContain('temperature 0.5');
   });
+
+  it('posts to the given endpoint and forwards custom headers (e.g. Authorization, #576)', async () => {
+    let capturedUrl: string | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (url, opts) => {
+      capturedUrl = typeof url === 'string' ? url : url.toString();
+      capturedHeaders = opts?.headers as Record<string, string>;
+      return mockStream(['{"status":"success"}']);
+    });
+    await createOllamaModel('m', 'FROM llama3.2:1b', () => {}, 'http://remote-host:11434/api/create', { Authorization: 'Bearer secret' });
+    expect(capturedUrl).toBe('http://remote-host:11434/api/create');
+    expect(capturedHeaders?.Authorization).toBe('Bearer secret');
+    expect(capturedHeaders?.['Content-Type']).toBe('application/json');
+  });
 });

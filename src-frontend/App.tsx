@@ -7982,15 +7982,19 @@ ${lines.join('\n')}`;
                       <input aria-label="New model name" placeholder="New model name (e.g. my-assistant:latest)" value={modelfileFields.name} onChange={e => {
                         const f = { ...modelfileFields, name: e.target.value };
                         setModelfileFields(f);
-                        setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
+                        setModelfilePreview(assembleModelfile({ from: (connectedModels.find(m => m.id === model)?.name ?? model), system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined, stop: f.stop || undefined, template: f.template || undefined }));
                       }}
-                        className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
+                        disabled={connectedModels.find(m => m.id === model)?.kind === 'openai'}
+                        className={`flex-1 border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'} ${connectedModels.find(m => m.id === model)?.kind === 'openai' ? 'opacity-50 cursor-not-allowed' : ''}`} />
                     </div>
-                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base: <span className="font-mono">{model}</span> (currently selected)</p>
+                    {connectedModels.find(m => m.id === model)?.kind === 'openai' && (
+                      <p className={`text-[10px] ${dark ? 'text-amber-400/80' : 'text-amber-700'}`}>Model creation is an Ollama feature — pick an Ollama model to build a Modelfile.</p>
+                    )}
+                    <p className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Base: <span className="font-mono">{(connectedModels.find(m => m.id === model)?.name ?? model)}</span> (currently selected)</p>
                     <textarea placeholder="SYSTEM prompt (optional)" rows={2} value={modelfileFields.system} onChange={e => {
                       const f = { ...modelfileFields, system: e.target.value };
                       setModelfileFields(f);
-                      setModelfilePreview(assembleModelfile({ from: model, system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined }));
+                      setModelfilePreview(assembleModelfile({ from: (connectedModels.find(m => m.id === model)?.name ?? model), system: f.system, temperature: f.temperature ? parseFloat(f.temperature) : undefined, numCtx: f.numCtx ? parseInt(f.numCtx) : undefined }));
                     }}
                       className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none resize-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                     <div className="flex gap-1.5">
@@ -8010,23 +8014,28 @@ ${lines.join('\n')}`;
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => {
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          const mf = assembleModelfile({ from: (connectedModels.find(m => m.id === model)?.name ?? model), system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
                           setModelfilePreview(mf);
                         }}
+                        disabled={connectedModels.find(m => m.id === model)?.kind === 'openai'}
                         className={`flex-1 text-xs py-1.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
                       >Preview</button>
                       <button
                         onClick={async () => {
                           if (!modelfileFields.name.trim()) { setModelfileError('Enter a model name'); return; }
-                          const mf = assembleModelfile({ from: model, system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
+                          const mf = assembleModelfile({ from: (connectedModels.find(m => m.id === model)?.name ?? model), system: modelfileFields.system || undefined, temperature: modelfileFields.temperature ? parseFloat(modelfileFields.temperature) : undefined, numCtx: modelfileFields.numCtx ? parseInt(modelfileFields.numCtx) : undefined });
                           setIsCreatingModel(true);
                           setModelfileError('');
                           setModelfileProgress('Starting…');
+                          const mfMod = connectedModels.find(m => m.id === model);
+                          const mfConn = mfMod ? connections.find(c => c.id === mfMod.connectionId) : undefined;
+                          const mfEndpoint = mfConn ? `${mfConn.baseUrl.replace(/\/$/, '')}/api/create` : url('/api/create');
+                          const mfHeaders: Record<string, string> = mfConn?.apiKey ? { Authorization: `Bearer ${mfConn.apiKey}` } : {};
                           try {
                             await createOllamaModel(modelfileFields.name.trim(), mf, (p) => {
                               setModelfileProgress(p.status ?? 'Working…');
                               if (p.error) setModelfileError(p.error);
-                            }, url('/api/create'));
+                            }, mfEndpoint, mfHeaders);
                             setModelfileProgress('✓ Model created');
                             refreshModels().catch(() => {});
                           } catch (e) {
@@ -8036,7 +8045,7 @@ ${lines.join('\n')}`;
                             setIsCreatingModel(false);
                           }
                         }}
-                        disabled={isCreatingModel}
+                        disabled={isCreatingModel || connectedModels.find(m => m.id === model)?.kind === 'openai'}
                         className="flex-1 text-xs py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-600 text-white font-semibold transition-colors"
                       >{isCreatingModel ? 'Creating…' : 'Create Model'}</button>
                     </div>

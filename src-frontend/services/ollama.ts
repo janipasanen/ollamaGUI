@@ -433,11 +433,12 @@ export async function createOllamaModel(
   name: string,
   modelfile: string,
   onProgress: (progress: { status?: string; error?: string }) => void,
-  endpoint: string = 'http://localhost:11434/api/create'
+  endpoint: string = 'http://localhost:11434/api/create',
+  headers: Record<string, string> = {},
 ): Promise<void> {
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify({ name, modelfile }),
   });
 
