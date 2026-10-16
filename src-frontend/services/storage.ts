@@ -65,6 +65,29 @@ function migrate(s: any): ChatSession {
   };
 }
 
+/**
+ * Whole-store backup: sessions, folders, and projects, versioned so future
+ * formats can be detected. Produced by {@link storage.exportBackup} and
+ * consumed by {@link storage.parseBackupImport}.
+ */
+export interface BackupEnvelope {
+  version: number;
+  sessions: ChatSession[];
+  folders: Folder[];
+  projects: Project[];
+}
+
+/**
+ * Result of an atomic batch import. `total` is the number of sessions supplied;
+ * `saved` is how many were actually persisted (equal to `total` on success, 0
+ * when the store was full); `quota` is true when the store rejected the write.
+ */
+export interface ImportResult {
+  total: number;
+  saved: number;
+  quota: boolean;
+}
+
 export const storage = {
   getSessions: (): ChatSession[] => {
     try {
@@ -120,11 +143,17 @@ export const storage = {
       return [];
     }
   },
-  saveFolder: (folder: Folder): void => {
+  saveFolder: (folder: Folder): { ok: true } | { ok: false; error: 'quota' } => {
     const folders = storage.getFolders();
     const index = folders.findIndex(f => f.id === folder.id);
     if (index > -1) folders[index] = folder; else folders.push(folder);
-    try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders)); } catch { /* quota */ }
+    try {
+      localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') return { ok: false, error: 'quota' };
+      return { ok: true }; // unexpected error — treat as non-fatal
+    }
   },
   deleteFolder: (id: string): void => {
     try {
@@ -146,11 +175,17 @@ export const storage = {
       return [];
     }
   },
-  saveProject: (project: Project): void => {
+  saveProject: (project: Project): { ok: true } | { ok: false; error: 'quota' } => {
     const projects = storage.getProjects();
     const index = projects.findIndex(p => p.id === project.id);
     if (index > -1) projects[index] = project; else projects.unshift(project);
-    try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* quota */ }
+    try {
+      localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') return { ok: false, error: 'quota' };
+      return { ok: true }; // unexpected error — treat as non-fatal
+    }
   },
   deleteProject: (id: string): void => {
     try {
@@ -159,6 +194,43 @@ export const storage = {
       const sessions = storage.getSessions().map(s => s.projectId === id ? { ...s, projectId: undefined } : s);
       localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
     } catch { /* quota */ }
+  },
+
+  // ─── Whole-store backup ────────────────────────────────────────────────────
+  /**
+   * Snapshot sessions, folders, and projects as a versioned envelope. Folders
+   * and projects carry folder structure and user-authored project instructions
+   * that a bare session list omits, so this is the full backup (#604).
+   */
+  exportBackup: (): BackupEnvelope => ({
+    version: 1,
+    sessions: storage.getSessions(),
+    folders: storage.getFolders(),
+    projects: storage.getProjects(),
+  }),
+
+  /**
+   * Merge an import into the session store in a single write. Sessions are
+   * merged by id (existing ids are overwritten by the imported record). The
+   * write is atomic, so on quota nothing is persisted. Callers restore
+   * folders and projects *before* sessions so imported project/folder ids
+   * resolve and scoped sessions stay visible (#604).
+   */
+  importSessions: (sessions: ChatSession[]): ImportResult => {
+    const imported = sessions.filter(s => s && typeof s.id === 'string');
+    const existing = storage.getSessions();
+    const byId = new Map(existing.map(s => [s.id, s]));
+    for (const incoming of imported) byId.set(incoming.id, incoming);
+    const merged = Array.from(byId.values());
+    try {
+      localStorage.setItem(SESSIONS_KEY, JSON.stringify(merged));
+      return { total: imported.length, saved: merged.length, quota: false };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        return { total: imported.length, saved: 0, quota: true };
+      }
+      throw e; // unexpected — let the caller surface it (e.g. "Invalid backup file")
+    }
   },
 };
 
@@ -245,4 +317,43 @@ export function parseSessionImport(text: string): ChatSession[] {
     if (!Array.isArray(s.messages)) throw new Error(`Session #${i} is missing a messages array`);
     return migrate(s);
   });
+}
+
+/**
+ * Parse a backup produced by {@link storage.exportBackup} — a versioned
+ * envelope `{ version, sessions, folders, projects }` — or a bare legacy
+ * session array. Returns the parsed pieces; a legacy array maps to empty
+ * folders/projects.
+ *
+ * Like {@link parseSessionImport}, it throws on invalid JSON / malformed
+ * entries; the error path lives here so the caller can report "Invalid backup
+ * file". `/load` keeps using {@link parseSessionImport} unchanged.
+ *
+ * @throws {Error} if the text is not valid JSON, an envelope, or a session array.
+ */
+export function parseBackupImport(text: string): BackupEnvelope {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Invalid JSON');
+  }
+  // Legacy: a bare session array (pre-folders/projects backups).
+  if (Array.isArray(parsed)) {
+    return { version: 1, sessions: parseSessionImport(text), folders: [], projects: [] };
+  }
+  if (!parsed || typeof parsed !== 'object' || !Object.prototype.hasOwnProperty.call(parsed, 'sessions')) {
+    throw new Error('Expected a backup envelope or an array of sessions');
+  }
+  const env = parsed as Record<string, unknown>;
+  const sessions =
+    Array.isArray(env.sessions)
+      ? parseSessionImport(JSON.stringify(env.sessions))
+      : [];
+  return {
+    version: typeof env.version === 'number' ? env.version : 1,
+    sessions,
+    folders: Array.isArray(env.folders) ? (env.folders as Folder[]) : [],
+    projects: Array.isArray(env.projects) ? (env.projects as Project[]) : [],
+  };
 }

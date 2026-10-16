@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { Message, fetchOllamaChatStream, fetchOllamaModels, pullOllamaModel, deleteOllamaModel, fetchCloudModels, SUGGESTED_MODELS, GenerationOptions, ModelInfo, assembleModelfile, createOllamaModel, computeGenStats, type GenStats, loadOllamaModel, unloadOllamaModel, fetchRunningModels, fetchOllamaVersion, loadCustomCloudModels, saveCustomCloudModels, SUGGESTED_CLOUD_MODELS } from './services/ollama';
 import { classifyFit, fitLabel, fitColor, formatBytes, SystemMemory } from './services/modelFit';
-import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport } from './services/storage';
+import { ChatSession, Folder, Project, storage, searchSessions, sortSessions, SortMode, parseSessionImport, parseBackupImport } from './services/storage';
 import { composeSystemPrompt } from './services/systemPrompt';
 import {
   MemoryEntry,
@@ -2477,11 +2477,14 @@ const App: React.FC = () => {
 
   // M5 Issue 19: Export/import conversations
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(storage.getSessions(), null, 2)], { type: 'application/json' });
+    // Export the whole store — sessions, folders, and projects — so a backup
+    // before an reinstall restores folder structure and project instructions,
+    // not just messages (#604).
+    const blob = new Blob([JSON.stringify(storage.exportBackup(), null, 2)], { type: 'application/json' });
     const href = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = href;
-    a.download = 'ollama_gui_sessions.json';
+    a.download = 'ollama_gui_backup.json';
     a.click();
     URL.revokeObjectURL(href);
   };
@@ -2540,12 +2543,27 @@ const App: React.FC = () => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const imported = parseSessionImport(ev.target?.result as string);
-        imported.forEach(s => storage.saveSession(s));
+        const backup = parseBackupImport(ev.target?.result as string);
+        // Restore folders and projects BEFORE sessions, skipping records whose
+        // id already exists locally (they belong to the current workspace's
+        // instructions). Sessions reference by id, so scoped sessions still
+        // resolve and stay visible instead of going invisible (#604).
+        const localFolderIds = new Set(storage.getFolders().map(f => f.id));
+        const localProjectIds = new Set(storage.getProjects().map(p => p.id));
+        backup.folders.filter(f => !localFolderIds.has(f.id)).forEach(f => storage.saveFolder(f));
+        backup.projects.filter(p => !localProjectIds.has(p.id)).forEach(p => storage.saveProject(p));
+        const result = storage.importSessions(backup.sessions);
         setSessions(storage.getSessions());
-        alert(`Imported ${imported.length} conversation(s).`);
+        setFolders(storage.getFolders());
+        setProjects(storage.getProjects());
+        // Report only what actually persisted (#604).
+        if (result.quota) {
+          alert(`Import failed — not enough space to save ${result.total} conversation(s).`);
+        } else {
+          alert(`Imported ${result.total} conversation(s).`);
+        }
       } catch {
-        alert('Invalid session file — expected JSON array of sessions.');
+        alert('Invalid backup file — expected a backup envelope or an array of sessions.');
       }
     };
     reader.readAsText(file);

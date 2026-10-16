@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { storage, parseSessionImport } from '../services/storage';
+import { storage, parseSessionImport, parseBackupImport } from '../services/storage';
 
 describe('Storage Service', () => {
   beforeEach(() => {
@@ -154,10 +154,128 @@ describe('storage corrupted localStorage (#454)', () => {
 
   it('saveProject does not throw when localStorage is full (#595)', () => {
     storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 });
-    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
-      throw new DOMException('quota', 'QuotaExceededError');
-    });
-    expect(() => storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 })).not.toThrow();
-    spy.mockRestore();
+    const origSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    try {
+      expect(() => storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 })).not.toThrow();
+      // On quota the write is swallowed and reports the shape (#604).
+      expect(storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '', instructions: '', createdAt: 1 })).toEqual({ ok: false, error: 'quota' });
+    } finally {
+      Storage.prototype.setItem = origSetItem;
+    }
+  });
+
+  it('saveFolder reports {ok:true} on a successful write', () => {
+    expect(storage.saveFolder({ id: 'f1', name: 'F', order: 0 })).toEqual({ ok: true });
+  });
+});
+
+
+// ── #604: whole-store backup (sessions + folders + projects) ─────────────────
+
+describe('exportBackup / parseBackupImport (#604)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('exportBackup captures sessions, folders, and projects together', () => {
+    storage.saveFolder({ id: 'f1', name: 'Docs', order: 0 });
+    storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '/w', instructions: 'sys', createdAt: 1 });
+    storage.saveSession({ id: 's1', title: 'S', messages: [], createdAt: 1, model: 'm', projectId: 'p1', folderId: 'f1' });
+    const env = storage.exportBackup();
+    expect(env.version).toBe(1);
+    expect(env.folders).toHaveLength(1);
+    expect(env.projects).toHaveLength(1);
+    expect(env.sessions).toHaveLength(1);
+  });
+
+  it('round-trips through exportBackup → parseBackupImport', () => {
+    storage.saveFolder({ id: 'f1', name: 'Docs', order: 0 });
+    storage.saveProject({ id: 'p1', name: 'P', workspaceRoot: '/w', instructions: 'sys', createdAt: 1 });
+    storage.saveSession({ id: 's1', title: 'S', messages: [], createdAt: 1, model: 'm', projectId: 'p1' });
+    const env = storage.exportBackup();
+    const parsed = parseBackupImport(JSON.stringify(env));
+    expect(parsed.folders).toHaveLength(1);
+    expect(parsed.projects).toHaveLength(1);
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0].projectId).toBe('p1');
+  });
+
+  it('parseBackupImport accepts a bare legacy session array', () => {
+    const env = parseBackupImport(JSON.stringify([
+      { id: 'a', title: 'A', messages: [], createdAt: 1, model: 'm' },
+    ]));
+    expect(env.sessions).toHaveLength(1);
+    expect(env.folders).toEqual([]);
+    expect(env.projects).toEqual([]);
+  });
+
+  it('parseBackupImport migrates organization defaults onto imported sessions', () => {
+    const env = parseBackupImport(JSON.stringify([{ id: 'a', title: 'A', messages: [], createdAt: 1, model: 'm' }]));
+    expect(env.sessions[0].tags).toEqual([]);
+    expect(env.sessions[0].pinned).toBe(false);
+    expect(env.sessions[0].archived).toBe(false);
+  });
+
+  it('parseBackupImport throws on invalid JSON', () => {
+    expect(() => parseBackupImport('{not valid json')).toThrow();
+  });
+
+  it('parseBackupImport throws on a non-envelope, non-array value', () => {
+    expect(() => parseBackupImport('42')).toThrow();
+    expect(() => parseBackupImport(JSON.stringify({ foo: 'bar' }))).toThrow();
+  });
+
+  it('parseBackupImport rejects malformed sessions inside the envelope', () => {
+    expect(() => parseBackupImport(JSON.stringify({ sessions: [{ id: 'a', createdAt: 1 }] }))).toThrow();
+  });
+});
+
+
+// ── #604: atomic batch import (#604) ──────────────────────────────────────
+
+describe('importSessions (#604)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('merges by id in a single localStorage write', () => {
+    storage.saveSession({ id: 's1', title: 'Old', messages: [], createdAt: 1, model: 'm' });
+    const origSetItem = Storage.prototype.setItem;
+    const calls = { count: 0 };
+    Storage.prototype.setItem = (...args) => {
+      calls.count++;
+      return origSetItem.apply(localStorage, args);
+    };
+    try {
+      const result = storage.importSessions([
+        { id: 's1', title: 'New', messages: [], createdAt: 2, model: 'm' },
+        { id: 's2', title: 'Added', messages: [], createdAt: 3, model: 'm' },
+      ]);
+      // One merged write, not one-per-session (no quadratic re-serialize).
+      expect(calls.count).toBe(1);
+      expect(result).toEqual({ total: 2, saved: 2, quota: false });
+      const ids = storage.getSessions().map(s => s.id).sort();
+      expect(ids).toEqual(['s1', 's2']);
+      expect(storage.getSessions().find(s => s.id === 's1')?.title).toBe('New');
+    } finally {
+      Storage.prototype.setItem = origSetItem;
+    }
+  });
+
+  it('reports quota and persists nothing when the store is full', () => {
+    const origSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    try {
+      const result = storage.importSessions([
+        { id: 's1', title: 'A', messages: [], createdAt: 1, model: 'm' },
+        { id: 's2', title: 'B', messages: [], createdAt: 2, model: 'm' },
+      ]);
+      expect(result).toEqual({ total: 2, saved: 0, quota: true });
+      // Nothing persisted — the original store is untouched.
+      expect(storage.getSessions()).toHaveLength(0);
+    } finally {
+      Storage.prototype.setItem = origSetItem;
+    }
   });
 });
