@@ -500,18 +500,42 @@ export const ToolResultBlock: React.FC<{ name?: string; content: string; dark: b
 };
 
 // Collapsible reasoning/thinking trace from Ollama reasoning models (#241).
-export const ReasoningBlock: React.FC<{ reasoning: string; dark: boolean }> = ({ reasoning, dark }) => {
+//
+// (#659) The block is a controlled disclosure: it starts collapsed by default
+// (respecting the persisted preference) and toggles via an explicit
+// "Show thinking" / "Hide thinking" affordance instead of the native
+// <details> triangle. When `show` is false the whole block is hidden.
+export const ReasoningBlock: React.FC<{
+  reasoning: string;
+  dark: boolean;
+  /** Render the block at all. When false, thinking is silenced entirely. */
+  show?: boolean;
+  /** Whether the block starts collapsed. Defaults to true. */
+  collapsedByDefault?: boolean;
+}> = ({ reasoning, dark, show = true, collapsedByDefault = true }) => {
+  const [open, setOpen] = useState(!collapsedByDefault);
   if (!reasoning.trim()) return null;
+  if (!show) return null;
   return (
-    <details className={`mb-2 rounded-lg border ${dark ? 'border-zinc-600 bg-zinc-900/40' : 'border-zinc-300 bg-zinc-50'}`}>
-      <summary className={`cursor-pointer select-none px-3 py-1.5 text-xs flex items-center gap-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+    <div className={`mb-2 rounded-lg border ${dark ? 'border-zinc-600 bg-zinc-900/40' : 'border-zinc-300 bg-zinc-50'}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        aria-label={open ? 'Hide thinking' : 'Show thinking'}
+        title={open ? 'Click to collapse the reasoning trace' : 'Click to expand the reasoning trace'}
+        className={`w-full cursor-pointer select-none px-3 py-1.5 text-xs flex items-center gap-1.5 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}
+      >
         <span aria-hidden="true">💭</span>
         <span className="font-semibold">Thinking</span>
-      </summary>
-      <div className={`px-3 pb-2 pt-1 text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
-        <MarkdownMessage content={reasoning} dark={dark} />
-      </div>
-    </details>
+        <span className={`ml-auto text-[9px] opacity-70`}>{open ? '▾ hide' : '▸ show'}</span>
+      </button>
+      {open && (
+        <div className={`px-3 pb-2 pt-1 text-xs ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+          <MarkdownMessage content={reasoning} dark={dark} />
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -557,6 +581,9 @@ const App: React.FC = () => {
   const [disabledTools, setDisabledTools] = useState<Set<string>>(() => loadDisabledTools());
   // Auto-commit after agentic edits (Aider parity, #401).
   const [autoCommitEdits, setAutoCommitEdits] = useState<boolean>(() => loadAutoCommitEdits());
+  // Reasoning/thinking display preference (#659).
+  const [showThinking, setShowThinking] = useState<boolean>(() => loadShowThinking());
+  const [thinkingCollapsedByDefault, setThinkingCollapsedByDefault] = useState<boolean>(() => loadThinkingCollapsedByDefault());
   // Auto-verify (run project checks) after agentic edits (#425).
   const [autoVerifyEdits, setAutoVerifyEdits] = useState<boolean>(() => isAutoVerifyEnabled());
   // Agentic "Continue past max-iterations" affordance (Codex/Claude parity, #403).
@@ -5122,7 +5149,7 @@ ${lines.join('\n')}`;
 
                 {/* Reasoning/thinking trace from Ollama reasoning models (#241) */}
                 {msg.role === 'assistant' && msg.reasoning && (
-                  <ReasoningBlock reasoning={msg.reasoning} dark={dark} />
+                  <ReasoningBlock reasoning={msg.reasoning} dark={dark} show={showThinking} collapsedByDefault={thinkingCollapsedByDefault} />
                 )}
 
                 {/* Inline edit (#98): show textarea when editing this user message */}
@@ -5473,7 +5500,7 @@ ${lines.join('\n')}`;
                       {reply.state === 'error' && <span className="text-[9px] text-red-400">✗</span>}
                       {reply.state === 'done' && group.chosenIndex === ri && <span className="text-[9px] text-green-400">✓ chosen</span>}
                     </div>
-                    {reply.reasoning && <ReasoningBlock reasoning={reply.reasoning} dark={dark} />}
+                    {reply.reasoning && <ReasoningBlock reasoning={reply.reasoning} dark={dark} show={showThinking} collapsedByDefault={thinkingCollapsedByDefault} />}
                     <div className={`text-sm whitespace-pre-wrap ${reply.state === 'error' ? 'text-red-400' : ''}`}>
                       {reply.state === 'error' ? reply.error : reply.content || <span className="opacity-30">Waiting…</span>}
                     </div>
@@ -6169,6 +6196,33 @@ ${lines.join('\n')}`;
                         {d}
                       </button>
                     ))}
+                  </div>
+                </div>
+
+                {/* Reasoning/thinking display (#659) */}
+                <div>
+                  <label className={`block text-sm font-medium mb-3 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Reasoning &amp; thinking</label>
+                  <div className="flex items-center gap-2 mb-3">
+                    <input
+                      type="checkbox"
+                      id="showThinking"
+                      checked={showThinking}
+                      onChange={(e) => { setShowThinking(e.target.checked); saveShowThinking(e.target.checked); }}
+                      aria-label="Show model thinking/reasoning"
+                      className="w-4 h-4 accent-blue-600"
+                    />
+                    <label htmlFor="showThinking" className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Show model thinking / reasoning traces</label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="collapseThinking"
+                      checked={thinkingCollapsedByDefault}
+                      onChange={(e) => { setThinkingCollapsedByDefault(e.target.checked); saveThinkingCollapsedByDefault(e.target.checked); }}
+                      aria-label="Collapse thinking traces by default"
+                      className="w-4 h-4 accent-blue-600"
+                    />
+                    <label htmlFor="collapseThinking" className={`text-xs ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>Collapse thinking traces by default</label>
                   </div>
                 </div>
 
