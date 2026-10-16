@@ -50,7 +50,7 @@ import { secureWipeAll } from './services/secureStorage';
 import Sources, { renderWithCitations } from './components/Sources';
 import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolResult';
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
-import { setBrowserApprovalCallback, clearBrowserApprovalCallback, allowHost } from './services/browserApproval';
+import { setBrowserApprovalCallback, clearBrowserApprovalCallback } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
@@ -847,7 +847,12 @@ const App: React.FC = () => {
   const [pendingApproval, setPendingApproval] = useState<{
     command: string;
     cwd?: string;
-    resolve: (approved: boolean) => void;
+    /**
+     * Approve the pending request. `allowSession` is set only by "Always
+     * Allow" so callers that host-allow-list (browser navigation) can persist
+     * the choice for the session; "Allow Once" resolves `true` without it.
+     */
+    resolve: (approved: boolean, allowSession?: boolean) => void;
   } | null>(null);
 
   // Plan/ask tool-approval modal (#88/#89/#189)
@@ -1589,13 +1594,22 @@ const App: React.FC = () => {
           setPendingApproval({ command: `Browser ${action}: ${detail}`, resolve });
         });
       });
-      // Browser approval callback for host allow-listing (#77/#193)
+      // Browser approval callback for host allow-listing (#77/#193).
+      // The modal threads "Always Allow" vs "Allow Once" through resolve;
+      // we only surface allowHostForSession=true for "Always Allow", letting
+      // requestBrowserApproval() do the actual allow-listing (#610). "Allow
+      // Once" approves the navigation but returns allowHostForSession=false
+      // so the host is NOT keep-allow-listed for the rest of the session.
       setBrowserApprovalCallback(async (req) => {
-        const approved = await new Promise<boolean>(resolve =>
-          setPendingApproval({ command: `Browser ${req.action}: ${req.detail}`, resolve })
-        );
-        if (approved && req.url) allowHost(req.url);
-        return { approved };
+        let forSession = false;
+        const approved = await new Promise<boolean>((resolve) => {
+          const resolveFor = (value: boolean, allowSession?: boolean) => {
+            forSession = allowSession === true;
+            resolve(value);
+          };
+          setPendingApproval({ command: `Browser ${req.action}: ${req.detail}`, resolve: resolveFor });
+        });
+        return { approved, allowHostForSession: forSession };
       });
 
       try {
@@ -2041,13 +2055,13 @@ const App: React.FC = () => {
         setPendingApproval(null);
       } else if (e.key === 'Enter' && !isButton) {
         e.preventDefault();
-        pendingApproval.resolve(true);
+        pendingApproval.resolve(true, false);
         setPendingApproval(null);
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         cliAllowlist.add(pendingApproval.command);
         persistCliAllowlist();
-        pendingApproval.resolve(true);
+        pendingApproval.resolve(true, true);
         setPendingApproval(null);
       }
     };
@@ -9203,7 +9217,7 @@ ${lines.join('\n')}`;
                   onClick={() => {
                     cliAllowlist.add(pendingApproval.command);
                     persistCliAllowlist();
-                    pendingApproval.resolve(true);
+                    pendingApproval.resolve(true, true);
                     setPendingApproval(null);
                   }}
                   className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
@@ -9214,7 +9228,7 @@ ${lines.join('\n')}`;
                 </button>
                 <button
                   onClick={() => {
-                    pendingApproval.resolve(true);
+                    pendingApproval.resolve(true, false);
                     setPendingApproval(null);
                   }}
                   className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
