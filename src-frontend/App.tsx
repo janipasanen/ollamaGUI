@@ -64,6 +64,7 @@ import { registerCheckpointPanel } from './components/CheckpointPanel';
 import { registerAgentActivityPanel } from './components/AgentActivityPanel';
 import { useModalFocus } from './components/useModalFocus';
 import { pushActivity } from './services/agentActivity';
+import { parseToolArgs, parseToolResult, renderAsStructured, prettyPrint, prettyLineCount, compactPreview, topLevelRows, isToolError, STATUS_LABEL, type ToolStatus } from './services/toolFormatting';
 import LibreOfficeOnboarding from './components/LibreOfficeOnboarding';
 import WelcomeScreen from './components/WelcomeScreen';
 import WorkspaceChip from './components/WorkspaceChip';
@@ -474,6 +475,17 @@ export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggl
   </div>
 );
 
+/**
+ * Stable key for a tool call's live status (#657). Prefers the model-provided
+ * id; Ollama models often omit ids, so we fall back to name + args preview to
+ * keep distinct calls (same name, different args) from colliding.
+ */
+function toolCallStatusKey(toolCall: any): string {
+  if (toolCall?.id) return `id:${toolCall.id}`;
+  const args = parseToolArgs(toolCall);
+  return `${toolCallName(toolCall)}:${compactPreview(args.value)}`;
+}
+
 // Collapsible tool-result block with a status header (#240).
 // Mirrors agentic GUIs (Codex/Claude) that collapse tool output behind a
 // summary showing the tool name + running/success/error state.
@@ -498,6 +510,106 @@ export const ToolResultBlock: React.FC<{ name?: string; content: string; dark: b
     </details>
   );
 };
+
+// Live status pill for a tool call (#657). A spinning dot while running, an
+// hourglass while awaiting approval, and a check/cross once the tool finishes.
+function ToolStatusIcon({ status }: { status: ToolStatus }) {
+  if (status === 'running') {
+    return <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" aria-label="running" />;
+  }
+  if (status === 'awaiting-approval') {
+    return <span className="text-amber-400" title="Awaiting approval" aria-label="awaiting approval">⏳</span>;
+  }
+  return (
+    <span className={status === 'failed' ? 'text-red-400' : 'text-emerald-400'} aria-label={status === 'failed' ? 'tool failed' : 'tool completed'}>
+      {status === 'failed' ? '✗' : '✓'}
+    </span>
+  );
+}
+
+/**
+ * Inline tool-call block (#657). Shows the tool name, a structured args
+ * preview, and its live status (running / awaiting approval / completed /
+ * failed) so an agentic run is followable right in the message stream.
+ */
+export const ToolCallBlock: React.FC<{ toolCall: any; status?: ToolStatus; dark: boolean }> = ({ toolCall, status = 'completed', dark }) => {
+  const name = toolCallName(toolCall);
+  const parsed = parseToolArgs(toolCall);
+  const argsText = parsed.ok && typeof parsed.value === 'string'
+    ? parsed.value
+    : parsed.ok && typeof parsed.value === 'object' && parsed.value !== undefined
+      ? JSON.stringify(parsed.value)
+      : '';
+  const argPreview = compactPreview(parsed.value);
+  const failed = status === 'failed';
+  return (
+    <div className={`mb-2 rounded-lg border ${failed
+      ? (dark ? 'border-red-500/40 bg-red-900/15' : 'border-red-300 bg-red-50')
+      : (dark ? 'border-blue-500/30 bg-blue-900/15' : 'border-blue-300 bg-blue-50')}`}>
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <ToolStatusIcon status={status} />
+        <span className={`font-semibold truncate ${failed ? 'text-red-400' : 'text-blue-400'}`}>{name}</span>
+        {argPreview && <span className={`flex-1 truncate opacity-70 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`} title={argsText || argPreview}>{argPreview}</span>}
+        <span className={`shrink-0 opacity-70 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{STATUS_LABEL[status]}</span>
+      </div>
+      {argsText && (
+        <details className={`rounded-b-lg border-t ${dark ? 'border-zinc-700/60' : 'border-blue-200'}`}>
+          <summary className={`px-3 py-1 text-[11px] cursor-pointer select-none ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Arguments</summary>
+          <pre className={`px-3 pb-2 pt-1 text-xs overflow-x-auto ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}><code>{argsText}</code></pre>
+        </details>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Structured inline result (#657) for JSON-returning tools. Renders the
+ * top-level key/value pairs and collapses the full pretty-printed JSON when
+ * the payload is large. Falls back to the generic markdown block for scalars.
+ */
+function StructuredResultView({ value, name, status, dark }: { value: any; name?: string; status: ToolStatus; dark: boolean }) {
+  const lines = prettyLineCount(value);
+  const defaultOpen = lines <= 16;
+  const failed = status === 'failed';
+  const rows = topLevelRows(value);
+  return (
+    <details open={defaultOpen} className={`rounded-lg border ${failed
+      ? (dark ? 'border-red-500/40' : 'border-red-300')
+      : (dark ? 'border-zinc-600' : 'border-zinc-300')}`}>
+      <summary className={`cursor-pointer select-none px-3 py-1.5 text-xs flex items-center gap-2 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+        <ToolStatusIcon status={status} />
+        <span className="font-mono font-semibold text-blue-400">{name ?? 'result'}</span>
+        <span className={`truncate opacity-70 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{compactPreview(value)}</span>
+      </summary>
+      <div className={`px-3 pb-2 pt-1 text-xs space-y-0.5 ${dark ? 'text-zinc-300' : 'text-zinc-700'}`}>
+        {rows.map((r) => (
+          <div key={r.label} className="flex gap-2">
+            <span className={`shrink-0 font-mono opacity-70`}>{r.label}: </span>
+            <span className="break-words">{compactPreview(r.value)}</span>
+          </div>
+        ))}
+        {lines > 16 && (
+          <pre className={`mt-2 px-2 py-1 rounded text-[11px] overflow-x-auto ${dark ? 'bg-zinc-900/50 text-zinc-400' : 'bg-zinc-50 text-zinc-600'}`}>
+            <code>{prettyPrint(value)}</code>
+          </pre>
+        )}
+      </div>
+    </details>
+  );
+};
+
+/**
+ * Tool-result renderer (#657): structured key/value view for JSON-returning
+ * tools, markdown for everything else. Derives the terminal status from the
+ * result content so it works for persisted (id-less) results too.
+ */
+export function ToolResultView({ name, content, dark }: { name?: string; content: string; dark: boolean }) {
+  const parsed = parseToolResult(content);
+  const status: ToolStatus = isToolError(content) ? 'failed' : 'completed';
+  return renderAsStructured(name, parsed)
+    ? <StructuredResultView value={parsed.value} name={name} status={status} dark={dark} />
+    : <ToolResultBlock name={name} content={content} dark={dark} />;
+}
 
 // Collapsible reasoning/thinking trace from Ollama reasoning models (#241).
 //
@@ -568,6 +680,10 @@ const App: React.FC = () => {
   const suggestAbortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const ghostLayerRef = useRef<HTMLDivElement | null>(null);
+  // Live tool-call status (#657): running / awaiting-approval / completed /
+  // failed, keyed by tool-call id (or name:args preview when id is absent).
+  const [toolStatus, setToolStatus] = useState<Record<string, ToolStatus>>({});
+  const runningCallsRef = useRef<Record<string, any>>({});
   const [model, setModel] = useState('llama3');
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
@@ -942,6 +1058,9 @@ const App: React.FC = () => {
         return;
       }
       setAgentStatus(`Waiting for approval: ${toolName}`);
+      // Live inline status (#657): the call is paused awaiting approval.
+      const approvalKey = Object.keys(runningCallsRef.current).find(k => toolCallName(runningCallsRef.current[k]) === toolName);
+      if (approvalKey) setToolStatus(prev => ({ ...prev, [approvalKey]: 'awaiting-approval' }));
       setPendingToolApproval({ toolName, args, resolve });
     });
 
@@ -3659,6 +3778,10 @@ ${lines.join('\n')}`;
           onToolCall: (toolCall) => {
             const name = toolCallName(toolCall);
             setAgentStatus(`Running: ${name}`);
+            // Live inline status (#657): mark the call running.
+            const callKey = toolCallStatusKey(toolCall);
+            runningCallsRef.current[callKey] = toolCall;
+            setToolStatus(prev => ({ ...prev, [callKey]: 'running' }));
             // Feed the agent-activity timeline (#432).
             try {
               const args = (toolCall as any).function?.arguments ?? (toolCall as any).arguments;
@@ -3679,6 +3802,21 @@ ${lines.join('\n')}`;
           onToolResult: (toolResult) => {
             setAgentStatus('Thinking…');
             pushActivity('result', toolResult.name, toolResult.content); // (#432)
+            // Live inline status (#657): mark the call terminal and clear it as
+            // running. Match by id when present, else by tool name.
+            let resultKey: string | undefined;
+            for (const k of Object.keys(runningCallsRef.current)) {
+              const call = runningCallsRef.current[k];
+              if (toolResult.tool_call_id && call?.id === toolResult.tool_call_id) { resultKey = k; break; }
+            }
+            if (!resultKey) {
+              resultKey = Object.keys(runningCallsRef.current).find(k => toolCallName(runningCallsRef.current[k]) === toolResult.name);
+            }
+            if (resultKey) {
+              const terminal: ToolStatus = isToolError(toolResult.content) ? 'failed' : 'completed';
+              delete runningCallsRef.current[resultKey];
+              setToolStatus(prev => ({ ...prev, [resultKey]: terminal }));
+            }
             setMessages(prev => [
               ...prev,
               {
@@ -5133,19 +5271,10 @@ ${lines.join('\n')}`;
                   </div>
                 )}
 
-                {/* Tool call rendering */}
-                {msg.tool_calls && msg.tool_calls.length > 0 && (
-                  <div className="mb-2 p-2 rounded bg-blue-900/20 border border-blue-500/30">
-                    <div className="text-xs font-mono text-blue-300 mb-1">Tool Call</div>
-                    {msg.tool_calls.map((toolCall: any, idx: number) => (
-                      <div key={idx} className="text-xs font-mono">
-                        <span className="text-yellow-300">{toolCallName(toolCall)}</span>(
-                        <span className="text-green-300">{typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : JSON.stringify(toolCall.function?.arguments ?? toolCall.arguments ?? {})}</span>
-                        )
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {/* Tool-call rendering (#657): live inline block with status + structured args */}
+                {msg.tool_calls && msg.tool_calls.length > 0 && msg.tool_calls.map((toolCall: any, idx: number) => (
+                  <ToolCallBlock key={idx} toolCall={toolCall} status={toolStatus[toolCallStatusKey(toolCall)]} dark={dark} />
+                ))}
 
                 {/* Reasoning/thinking trace from Ollama reasoning models (#241) */}
                 {msg.role === 'assistant' && msg.reasoning && (
@@ -5200,7 +5329,7 @@ ${lines.join('\n')}`;
                         </div>
                       )
                       : msg.role === 'tool'
-                        ? <ToolResultBlock name={msg.name} content={msg.content} dark={dark} />
+                        ? <ToolResultView name={msg.name} content={msg.content} dark={dark} />
                         : (() => {
                             const body = rawView[i] && msg.role === 'assistant'
                               ? <div className="whitespace-pre-wrap text-sm">{chatSearchOpen && chatSearchQuery ? highlightChildren(msg.content, chatSearchQuery) : msg.content}</div>
