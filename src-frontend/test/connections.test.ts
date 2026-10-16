@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
-  fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels,
+  fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels, probeConnection,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
   type ModelConnection,
 } from '../services/connections';
@@ -369,5 +369,99 @@ describe('streamOpenAiChat — SSE data: without space (#469)', () => {
     const chunks: string[] = [];
     await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
     expect(chunks).toEqual(['A', 'B']);
+  });
+});
+
+// ── probeConnection (#589) ────────────────────────────────────────────────────
+// A single-connection probe that keeps the reason it failed, so the UI can
+// distinguish "reachable but empty" from "down" instead of deriving reachability
+// from a model count.
+
+describe('probeConnection (#589)', () => {
+  it('reachable-but-empty OpenAI server: models [] and NO error', async () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [] }),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.models).toEqual([]);
+    expect(probe.error).toBeUndefined();
+  });
+
+  it('reachable-but-empty Ollama server: models [] and NO error', async () => {
+    const conn: ModelConnection = { id: 'ol', name: 'LAN', kind: 'ollama', baseUrl: 'http://192.168.1.5:11434', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ models: [] }),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.models).toEqual([]);
+    expect(probe.error).toBeUndefined();
+  });
+
+  it('401 OpenAI server: error carries the token hint (#589)', async () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ error: { message: 'Invalid API key provided' } }),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.error).toBeTruthy();
+    expect(probe.error).toMatch(/401/);
+    expect(probe.error).toMatch(/API key/i);
+  });
+
+  it('401 Ollama server: error mentions the token requirement', async () => {
+    const conn: ModelConnection = { id: 'ol', name: 'LAN', kind: 'ollama', baseUrl: 'http://192.168.1.5:11434', apiKey: 'tok', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({}),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.error).toMatch(/401/);
+    expect(probe.error).toMatch(/token/i);
+  });
+
+  it('404 without a body still reports the status', async () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({}),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.error).toMatch(/404/);
+  });
+
+  it('thrown fetch: error is a non-empty provider-aware message', async () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://remote:1234', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Failed to fetch'));
+    const probe = await probeConnection(conn);
+    expect(probe.error).toBeTruthy();
+    // The error names the host (openai-compatible path), not "run ollama serve".
+    expect(probe.error).toContain('LM Studio');
+  });
+
+  it('ignores the `enabled` toggle — a disabled connection is still probed (#589)', async () => {
+    const conn: ModelConnection = { id: 'off', name: 'Off', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: false };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [{ id: 'loaded' }] }),
+    } as any);
+    const probe = await probeConnection(conn);
+    expect(probe.models).toHaveLength(1);
+    expect(probe.error).toBeUndefined();
+  });
+
+  it('fetchOpenAiModels still returns [] on error (regression)', async () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('network'));
+    expect(await fetchOpenAiModels(conn)).toEqual([]);
   });
 });

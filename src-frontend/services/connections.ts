@@ -3,6 +3,8 @@
  * alongside the default Ollama server. Each connection exposes a model list;
  * all enabled connections are aggregated into one unified model selector.
  */
+import { formatErrorLine } from './errorMessages';
+
 const STORAGE_KEY = 'model_connections';
 
 export type ConnectionKind = 'openai' | 'ollama';
@@ -61,52 +63,57 @@ export function removeConnection(id: string): void {
 
 // ── Model fetching ────────────────────────────────────────────────────────────
 
-/**
- * Fetch models from an OpenAI-compatible /v1/models endpoint.
- * Returns an empty array on any error (connection may be offline).
- */
-export async function fetchOpenAiModels(conn: ModelConnection): Promise<ConnectedModel[]> {
-  try {
-    const headers: Record<string, string> = {};
-    if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
-    const res = await fetch(`${conn.baseUrl.replace(/\/$/, '')}/v1/models`, { headers });
-    if (!res.ok) return [];
-    const data = await res.json() as { data?: { id: string }[] };
-    return (data.data ?? []).map(m => ({
-      id: `${conn.id}/${m.id}`,
-      name: m.id,
-      connectionId: conn.id,
-      connectionName: conn.name,
-      kind: conn.kind,
-    }));
-  } catch {
-    return [];
-  }
+/** Result of probing a single connection: the models, plus an error when the
+ * connection could not be read. `error` is undefined whenever the server
+ * answered (even with an empty list — that is "reachable but empty"). */
+export interface ProbeResult {
+  models: ConnectedModel[];
+  error?: string;
 }
 
 /**
- * Fetch models from an Ollama /api/tags endpoint.
- * Returns an empty array on any error.
+ * Probe a single connection by reading its model list, keeping the reason when
+ * it fails. Unlike `fetchOpenAiModels`/`fetchOllamaConnectionModels` this never
+ * silently swallows a failure into `[]`, and it ignores the `enabled` toggle so
+ * an explicitly-off connection can still be tested (#589). Reachable-with-zero-
+ * models yields `error === undefined` so the UI can report "reachable but empty"
+ * rather than falsely flagging a working server as down.
  */
-export async function fetchOllamaConnectionModels(conn: ModelConnection): Promise<ConnectedModel[]> {
+export async function probeConnection(
+  conn: ModelConnection,
+  opts?: { signal?: AbortSignal },
+): Promise<ProbeResult> {
+  const { signal } = opts ?? {};
   try {
-    // Authenticated remotes — including ollama.com itself — reject an
-    // unauthenticated /api/tags with 401, which used to surface as an
-    // unexplained empty model list (#493).
     const headers: Record<string, string> = {};
     if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
-    const res = await fetch(`${conn.baseUrl.replace(/\/$/, '')}/api/tags`, { headers });
+    const base = conn.baseUrl.replace(/\/$/, '');
+    if (conn.kind === 'openai') {
+      const res = await fetch(`${base}/v1/models`, { headers, signal });
+      if (!res.ok) {
+        // OpenAI-dialect servers put the reason in the body (e.g. the missing-
+        // token message on a 401) — surface it instead of a bare status (#589).
+        const detail = await openAiErrorFromResponse(res, `HTTP ${res.status}`);
+        return { models: [], error: detail.message };
+      }
+      const data = await res.json() as { data?: { id: string }[] };
+      return { models: (data.data ?? []).map(m => ({
+        id: `${conn.id}/${m.id}`,
+        name: m.id,
+        connectionId: conn.id,
+        connectionName: conn.name,
+        kind: conn.kind,
+      })) };
+    }
+    const res = await fetch(`${base}/api/tags`, { headers, signal });
     if (!res.ok) {
-      console.warn(
-        `[connections] ${conn.name}: /api/tags returned ${res.status}` +
-        (res.status === 401 || res.status === 403
-          ? ' — this server needs an API token (set one on the connection).'
-          : ''),
-      );
-      return [];
+      const detail = res.status === 401 || res.status === 403
+        ? `HTTP ${res.status} — this server needs an API token (set one on the connection).`
+        : `HTTP ${res.status}`;
+      return { models: [], error: detail };
     }
     const data = await res.json() as { models?: any[] };
-    return (data.models ?? []).map((m: any) => ({
+    return { models: (data.models ?? []).map((m: any) => ({
       id: `${conn.id}/${m.name}`,
       name: m.name,
       connectionId: conn.id,
@@ -115,10 +122,32 @@ export async function fetchOllamaConnectionModels(conn: ModelConnection): Promis
       size: typeof m.size === 'number' ? m.size : undefined,
       quantization: m.details?.quantization_level,
       parameterSize: m.details?.parameter_size,
-    }));
-  } catch {
-    return [];
+    })) };
+  } catch (err) {
+    // A thrown fetch (offline, wrong port, CORS/origin reject) — keep the raw
+    // message via the provider-aware path (#589). Use 'openai-compatible' only
+    // when it really is one; the 'ollama' branch wrongly says "run ollama serve".
+    const ctx = conn.kind === 'openai' ? 'openai-compatible' : 'generic';
+    return { models: [], error: formatErrorLine(err, ctx, { label: conn.name, baseUrl: conn.baseUrl }) };
   }
+}
+
+/**
+ * Fetch models from an OpenAI-compatible /v1/models endpoint.
+ * Returns an empty array on any error (connection may be offline).
+ */
+export async function fetchOpenAiModels(conn: ModelConnection): Promise<ConnectedModel[]> {
+  const { models } = await probeConnection(conn);
+  return models;
+}
+
+/**
+ * Fetch models from an Ollama /api/tags endpoint.
+ * Returns an empty array on any error.
+ */
+export async function fetchOllamaConnectionModels(conn: ModelConnection): Promise<ConnectedModel[]> {
+  const { models } = await probeConnection(conn);
+  return models;
 }
 
 /** Fetch models from all enabled connections in parallel */

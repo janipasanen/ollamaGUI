@@ -38,7 +38,7 @@ import {
 import {
   ModelConnection, ConnectedModel,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
-  fetchAllConnectionModels, streamOpenAiChat,
+  fetchAllConnectionModels, probeConnection, streamOpenAiChat,
 } from './services/connections';
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
 import { performOAuthFlow, tokenStore } from './services/mcpAuth';
@@ -911,7 +911,7 @@ const App: React.FC = () => {
   const [showAddConnection, setShowAddConnection] = useState(false);
   const [newConn, setNewConn] = useState({ name: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '' });
   const [editingConnId, setEditingConnId] = useState<string | null>(null); // #419 edit affordance
-  const [connTestStatus, setConnTestStatus] = useState<Record<string, 'testing' | 'ok' | 'error'>>({});
+  const [connTestStatus, setConnTestStatus] = useState<Record<string, { state: 'testing' | 'ok' | 'empty' | 'error'; detail?: string }>>({});
   // Remote Ollama quick-add state
   const [newRemoteOllamaUrl, setNewRemoteOllamaUrl] = useState('');
   const [newRemoteOllamaName, setNewRemoteOllamaName] = useState('');
@@ -7106,22 +7106,43 @@ ${lines.join('\n')}`;
                                 <span className={`text-[9px] px-1 py-0.5 rounded ${dark ? 'bg-zinc-700 text-zinc-400' : 'bg-zinc-200 text-zinc-500'}`}>{conn.kind}</span>
                               </div>
                               <div className={`text-[10px] truncate font-mono ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{conn.baseUrl} {modelCount > 0 ? `· ${modelCount} model${modelCount !== 1 ? 's' : ''}` : ''}</div>
-                              {connTestStatus[conn.id] && (
-                                <div className={`text-[10px] ${connTestStatus[conn.id] === 'ok' ? 'text-green-400' : connTestStatus[conn.id] === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>
-                                  {connTestStatus[conn.id] === 'testing' ? 'Fetching models…' : connTestStatus[conn.id] === 'ok' ? `✓ ${modelCount} model${modelCount !== 1 ? 's' : ''} found` : '✗ Could not fetch models'}
+                              {connTestStatus[conn.id]?.state && (
+                                <div className={`text-[10px] ${
+                                  connTestStatus[conn.id]!.state === 'error' ? 'text-red-400' :
+                                  connTestStatus[conn.id]!.state === 'empty' ? 'text-amber-400' :
+                                  connTestStatus[conn.id]!.state === 'ok' ? 'text-green-400' : 'text-zinc-500'
+                                }`}>
+                                  {connTestStatus[conn.id]!.state === 'testing'
+                                    ? 'Fetching models…'
+                                    : connTestStatus[conn.id]!.detail ?? ''}
                                 </div>
                               )}
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
                               <button onClick={async () => {
-                                setConnTestStatus(s => ({ ...s, [conn.id]: 'testing' }));
-                                const all = loadConnections();
-                                const fresh = await fetchAllConnectionModels(all);
-                                setConnectedModels(fresh);
-                                const count = fresh.filter(m => m.connectionId === conn.id).length;
-                                setConnTestStatus(s => ({ ...s, [conn.id]: count > 0 ? 'ok' : 'error' }));
+                                setConnTestStatus(s => ({ ...s, [conn.id]: { state: 'testing' } }));
+                                // Probe ONLY this connection (#589) — ignore the `enabled`
+                                // toggle so a deliberately-off connection can still be
+                                // tested, and report what the server actually said instead
+                                // of deriving reachability from a model count.
+                                const controller = new AbortController();
+                                const timer = setTimeout(() => controller.abort(), 8000);
+                                try {
+                                  const probe = await probeConnection(conn, { signal: controller.signal });
+                                  clearTimeout(timer);
+                                  const models = probe.models.length;
+                                  const detail = probe.error
+                                    ? probe.error
+                                    : models > 0
+                                      ? `✓ ${models} model${models !== 1 ? 's' : ''} found`
+                                      : 'Connected — 0 models (pull or load one)';
+                                  setConnTestStatus(s => ({ ...s, [conn.id]: { state: probe.error ? 'error' : models > 0 ? 'ok' : 'empty', detail } }));
+                                } catch {
+                                  clearTimeout(timer);
+                                  setConnTestStatus(s => ({ ...s, [conn.id]: { state: 'error', detail: 'Request timed out — is the server running?' } }));
+                                }
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>
-                                {connTestStatus[conn.id] === 'testing' ? '…' : 'Test'}
+                                {connTestStatus[conn.id]?.state === 'testing' ? '…' : 'Test'}
                               </button>
                               <button aria-label={`Edit connection ${conn.name}`} onClick={() => {
                                 // #419: load the connection into the form for in-place editing.
