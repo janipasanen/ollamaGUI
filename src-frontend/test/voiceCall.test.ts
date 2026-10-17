@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { startVoiceCall, type CallState, type VoiceCallOptions, type VoiceCallCallbacks } from '../services/voiceCall';
 
 // Helper: build mock options

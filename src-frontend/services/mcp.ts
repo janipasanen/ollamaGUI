@@ -117,10 +117,6 @@ export function splitCommandLine(commandLine: string): { bin: string; args: stri
 }
 
 export class McpStdioClient {
-  private process: any = null;
-  private stdin: any = null;
-  private stdout: any = null;
-  private stderr: any = null;
   private requestIdCounter: number = 1;
   private pendingRequests: Map<number, { resolve: (value: any) => void; reject: (error: any) => void; timer?: ReturnType<typeof setTimeout> }> = new Map();
   private eventListeners: Map<string, ((data: any) => void)[]> = new Map();
@@ -214,22 +210,6 @@ export class McpStdioClient {
         console.error(`[MCP] Error parsing line: ${line}`, error);
       }
     }
-  }
-
-  private handleProcessExit(code: number): void {
-    if (this.isClosed) return;
-    this.isClosed = true;
-    
-    console.log(`[MCP] Process exited with code ${code}`);
-    
-    // Reject all pending requests
-    for (const [, pending] of this.pendingRequests) {
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(new Error(`MCP process exited with code ${code}`));
-    }
-    this.pendingRequests.clear();
-    
-    this.emitEvent('disconnect', { code });
   }
 
   private getNextRequestId(): number {
@@ -380,12 +360,7 @@ export class McpStdioClient {
 }
 
 export class McpHttpClient {
-  private sessionId: string;
-  private authToken: string | null = null;
-
-  constructor(private config: McpServerConfig) {
-    this.sessionId = `http_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  }
+  constructor(private config: McpServerConfig) {}
 
   async connect(): Promise<void> {
     if (!this.config.url) {

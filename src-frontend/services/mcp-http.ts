@@ -39,7 +39,7 @@ function stubMcpResponseBody(requestBody: unknown): string {
   return JSON.stringify({ jsonrpc: '2.0', id, result });
 }
 
-import { McpServerConfig, McpTool, McpRequest, McpResponse, McpNotification } from './mcp';
+import { McpServerConfig, McpTool, McpRequest, McpResponse } from './mcp';
 import { getValidAccessToken } from './mcpAuth';
 
 /** Thrown when an HTTP MCP server returns 401, so the UI can prompt re-authentication. */

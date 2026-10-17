@@ -17,7 +17,7 @@ function pullStream(lines: object[]): ReadableStream<Uint8Array> {
 /** Fetch mock: routes /api/pull (POST) to a stream, /api/tags (GET) to a model list. */
 function makeFetch(opts: { pullLines?: object[]; pullOk?: boolean; models?: any[] } = {}) {
   const { pullLines = [{ status: 'pulling', completed: 50, total: 100 }, { status: 'success' }], pullOk = true, models = [] } = opts;
-  return vi.fn(async (url: string, init?: RequestInit) => {
+  return vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/api/pull')) {
       if (!pullOk) return { ok: false, statusText: 'model not found', body: null } as any;

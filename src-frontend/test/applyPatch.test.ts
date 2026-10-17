@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { registerFileTools, _mocks, setWorkspaceRoot } from '../services/fileTools';
 import { clearDiffReviewCallback, setDiffReviewCallback } from '../services/diffReview';
 import { toolRegistry } from '../services/tools';
 
 beforeEach(() => {
   toolRegistry.getAllTools().forEach(t => toolRegistry.unregisterTool(t.name));
-  _mocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+  _mocks.invoke = async (cmd: string, _args: Record<string, unknown>) => {
     if (cmd === 'set_workspace_root') return undefined;
     if (cmd === 'apply_edit') return undefined;
     if (cmd === 'write_file') return undefined;

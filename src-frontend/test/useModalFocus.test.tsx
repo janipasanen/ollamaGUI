@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useModalFocus } from '../components/useModalFocus';
 
 function Harness() {

@@ -476,7 +476,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
             // context window (#396). UI keeps the full content above.
             return truncateToolContent(postHook.content);
           },
-          emit: async (tc, result, storeContent, notify) => {
+          emit: async (_tc, result, storeContent, notify) => {
             if (notify && onToolResult) {
               onToolResult(result);
             }

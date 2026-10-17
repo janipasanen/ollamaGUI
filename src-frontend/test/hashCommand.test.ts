@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { isHashTrigger, hashQuery, getAutocompleteOptions, resolveContextRef, buildContextBlock } from '../services/hashCommand';
 import { createMemoryKnowledgeDB, setKnowledgeDB } from '../services/db';
 import { setEmbedFn } from '../services/rag';

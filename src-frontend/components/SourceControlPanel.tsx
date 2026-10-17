@@ -7,7 +7,7 @@
  * uses, so the user gets a read/act view of what the agent (or they) changed.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { panelRegistry } from './PanelShell';
 import { getWorkspaceRoot } from '../services/fileTools';
 import { gitStatus, gitDiff, gitStage, gitUnstage, type GitStatus } from '../services/git';

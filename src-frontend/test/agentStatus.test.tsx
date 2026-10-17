@@ -7,19 +7,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 
-function modelsThenStream(chunks: string[]) {
-  return vi.fn().mockImplementation((url: unknown) => {
-    const u = String(url);
-    if (u.includes('/api/chat') || u.includes('generate')) {
-      const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
-      chunks.forEach(c => reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from(c) }));
-      reader.read.mockResolvedValueOnce({ done: true, value: undefined });
-      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
-    }
-    return Promise.resolve({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' });
-  });
-}
-
 beforeEach(() => {
   localStorage.clear();
   Object.defineProperty(window, 'innerWidth', { value: 1280, writable: true, configurable: true });

@@ -138,7 +138,7 @@ describe('OpenAPI tool servers (#129)', () => {
       baseUrl: 'https://custom.example.com/v2',
     });
     const calls: any[] = [];
-    _invokeImpl = (cmd, args) => {
+    _invokeImpl = (_cmd, args) => {
       calls.push(args);
       return { success: true, status: 200, body: JSON.stringify([]) };
     };
@@ -152,7 +152,7 @@ describe('OpenAPI tool servers (#129)', () => {
   it('substitutes path params into URL', () => {
     const tools = specToToolDefinitions('pet_server', PET_SPEC as any, { baseUrl: undefined });
     const calls: any[] = [];
-    _invokeImpl = (cmd, args) => { calls.push(args); return { success: true, status: 200, body: '"ok"' }; };
+    _invokeImpl = (_cmd, args) => { calls.push(args); return { success: true, status: 200, body: '"ok"' }; };
     return tools.find(t => t.name === 'pet_server__getPet')!.execute({ petId: 'abc-123' }).then(() => {
       expect(calls[0].request.url).toBe('https://pets.example.com/api/pets/abc-123');
     });
@@ -161,7 +161,7 @@ describe('OpenAPI tool servers (#129)', () => {
   it('sends requestBody as JSON', () => {
     const tools = specToToolDefinitions('pet_server', PET_SPEC as any, { baseUrl: undefined });
     const calls: any[] = [];
-    _invokeImpl = (cmd, args) => { calls.push(args); return { success: true, status: 200, body: '{"id":1}' }; };
+    _invokeImpl = (_cmd, args) => { calls.push(args); return { success: true, status: 200, body: '{"id":1}' }; };
     return tools.find(t => t.name === 'pet_server__createPet')!.execute({ name: 'Fido' }).then(result => {
       expect(calls[0].request.method).toBe('POST');
       expect(JSON.parse(calls[0].request.body)).toEqual({ name: 'Fido' });
@@ -177,7 +177,7 @@ describe('OpenAPI tool servers (#129)', () => {
       { apiKey: 'secret-key', apiKeyHeader: undefined }
     );
     const calls: any[] = [];
-    _invokeImpl = (cmd, args) => { calls.push(args); return { success: true, status: 200, body: '[]' }; };
+    _invokeImpl = (_cmd, args) => { calls.push(args); return { success: true, status: 200, body: '[]' }; };
     return tool.execute({}).then(() => {
       expect(calls[0].request.headers['Authorization']).toBe('Bearer secret-key');
     });
@@ -191,7 +191,7 @@ describe('OpenAPI tool servers (#129)', () => {
       { apiKey: 'my-token', apiKeyHeader: 'X-API-Key' }
     );
     const calls: any[] = [];
-    _invokeImpl = (cmd, args) => { calls.push(args); return { success: true, status: 200, body: '{}' }; };
+    _invokeImpl = (_cmd, args) => { calls.push(args); return { success: true, status: 200, body: '{}' }; };
     return tool.execute({}).then(() => {
       expect(calls[0].request.headers['X-API-Key']).toBe('my-token');
     });

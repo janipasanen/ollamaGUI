@@ -11,7 +11,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { panelRegistry } from './PanelShell';
-import { listWorkspaceDir, getActiveRoot, openWorkspace, removeRecentWorkspace, loadWorkspaceState, type WorkspaceState } from '../services/workspace';
+import { listWorkspaceDir, openWorkspace, loadWorkspaceState, type WorkspaceState } from '../services/workspace';
 import { pickDirectory } from '../services/platform';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import type { DirEntry } from '../services/fileTools';

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toolRegistry, type ToolCall } from '../services/tools';
 import { agenticChatStream } from '../services/agent';
-import { mcpServerManager, McpStdioClient } from '../services/mcp';
+import { mcpServerManager } from '../services/mcp';
 
 describe('Agentic Features', () => {
   beforeEach(() => {

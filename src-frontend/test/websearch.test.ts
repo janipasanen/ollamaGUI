@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loadWebSearchConfig, saveWebSearchConfig,
   webSearch, formatResultsAsContext, _mocks,
-  type WebSearchConfig, type WebSearchResult, type WebSearchOutcome,
+  type WebSearchConfig, type WebSearchResult,
 } from '../services/websearch';
 
 // Make the Tauri invoke seam controllable for error-path tests (#229).

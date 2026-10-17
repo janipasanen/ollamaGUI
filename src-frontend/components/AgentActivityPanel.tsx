@@ -7,7 +7,7 @@
  * App.tsx feeds from the agenticChatStream tool callbacks.
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { panelRegistry } from './PanelShell';
 import { listActivity, subscribeActivity, clearActivity, type AgentActivityEvent } from '../services/agentActivity';
 

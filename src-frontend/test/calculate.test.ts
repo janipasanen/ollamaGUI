@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { toolRegistry, evaluateArithmetic, registerBuiltInTools } from '../services/tools';
 
 // #612: the `calculate` tool used `new Function('return (...)')`, which could

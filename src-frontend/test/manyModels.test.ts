@@ -187,7 +187,7 @@ describe('runManyModels (#126)', () => {
     const controller = new AbortController();
     const { streamOllama } = makeStreamOllama({ 'llama3:8b': ['a'], 'mistral:7b': ['b'] });
     let firstCall = true;
-    streamOllama.mockImplementation(async (model: string) => {
+    streamOllama.mockImplementation(async (_model: string) => {
       if (firstCall) {
         firstCall = false;
         controller.abort();

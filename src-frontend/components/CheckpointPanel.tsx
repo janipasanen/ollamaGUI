@@ -8,7 +8,7 @@
  * plus a Clear-all, so the user can undo agent edits from the UI.
  */
 
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { panelRegistry } from './PanelShell';
 import { listCheckpoints, deleteCheckpoint, clearCheckpoints, rewindToCheckpoint, type Checkpoint } from '../services/checkpoints';
 

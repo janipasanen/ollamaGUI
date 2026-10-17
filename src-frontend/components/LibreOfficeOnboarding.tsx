@@ -11,7 +11,7 @@
  * null when `open` is false so it can sit unconditionally in the tree.
  */
 
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 
 export interface LibreOfficeOnboardingProps {
   open: boolean;

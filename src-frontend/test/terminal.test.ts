@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   startTerminal, killTerminal, subscribe, getSession, getSessions,
   clearTerminalSessions, _mocks,
@@ -12,7 +12,7 @@ let _sessionIdCounter = 100;
 
 function makeMocks() {
   _handlers = new Map();
-  _mocks.invoke = async (cmd, args) => {
+  _mocks.invoke = async (cmd, _args) => {
     if (cmd === 'terminal_run') {
       const id = _sessionIdCounter++;
       return id;

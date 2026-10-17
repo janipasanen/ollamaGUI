@@ -9,7 +9,7 @@ import { toolRegistry } from '../services/tools';
 const FAKE_ROOT = '/workspace';
 
 function mockFs(handlers: Record<string, unknown>) {
-  _mocks.invoke = async (cmd, args) => {
+  _mocks.invoke = async (cmd, _args) => {
     if (cmd === 'set_workspace_root') return undefined;
     if (cmd in handlers) return handlers[cmd];
     throw new Error(`Unexpected command: ${cmd}`);
@@ -54,7 +54,7 @@ describe('readFile (#82)', () => {
 describe('writeFile (#82)', () => {
   it('calls write_file with path and content', async () => {
     let captured: Record<string, unknown> = {};
-    _mocks.invoke = async (cmd, args) => { captured = args; return undefined; };
+    _mocks.invoke = async (_cmd, args) => { captured = args; return undefined; };
     await writeFile(`${FAKE_ROOT}/new.ts`, 'export {};');
     expect(captured.path).toBe(`${FAKE_ROOT}/new.ts`);
     expect(captured.content).toBe('export {};');

@@ -6,7 +6,7 @@
  * to grounded text injected as a system context message.
  */
 
-import { listCollections, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './knowledge';
+import { listCollections, getFilesForCollection } from './knowledge';
 import { retrieve, type RetrievedChunk } from './rag';
 import { getKnowledgeDB } from './db';
 import { fetchUrl, type FetchedPage } from './webfetch';

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  proposeEdit, proposeEdits, acceptEdit, getPendingEdits, clearPendingEdits,
+  proposeEdit, proposeEdits, clearPendingEdits,
   setDiffReviewCallback, clearDiffReviewCallback,
   setEditAppliedCallback, clearEditAppliedCallback,
   setBatchReviewCallback, clearBatchReviewCallback,

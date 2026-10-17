@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
-import { storage, type ChatSession, type Folder } from '../services/storage';
+import { storage, type Folder } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { _mocks as fileTreeMocks } from '../components/FileTreePanel';
 

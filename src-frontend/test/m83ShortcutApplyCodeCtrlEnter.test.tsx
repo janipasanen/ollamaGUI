@@ -73,7 +73,7 @@ describe('Apply code block to file (#373)', () => {
     const proj: Project = { id: 'repo-proj', name: 'Repo', workspaceRoot: '/ws/repo', instructions: '', createdAt: 1 };
     storage.saveProject(proj);
 
-    const writeSpy = vi.fn(async (cmd: string, args: any) => {
+    const writeSpy = vi.fn(async (cmd: string, _args: any) => {
       if (cmd === 'set_workspace_root') return undefined;
       if (cmd === 'read_file') return '';
       if (cmd === 'list_dir') return [];

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { diffScreenshots, _mocks, type DiffResult } from '../services/imageDiff';
+import { diffScreenshots, _mocks } from '../services/imageDiff';
 
 // jsdom does not implement canvas — use the _mocks.diff seam for all tests.
 

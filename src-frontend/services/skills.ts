@@ -246,7 +246,7 @@ export function autoCaptureSkill(opts: {
     ...tools.map((t, i) => `${i + 1}. ${t}` + (TOOL_REGISTRY[t] ? ` — ${TOOL_REGISTRY[t]}` : '')),
     '',
     'How these tools should be used:',
-    ...tools.map((t, i) => {
+    ...tools.map((t) => {
       const desc = TOOL_REGISTRY[t] || `${t}`;
       return `  • ${t} ${desc}`;
     }),
@@ -293,7 +293,7 @@ function extractTags(prompt: string): string[] {
 
 // ── Agent tool wiring ──────────────────────────────────────────────────────────
 
-import { toolRegistry, type ToolDefinition } from './tools';
+import { toolRegistry } from './tools';
 
 /**
  * Register the self-learning skill tools so the model can author/list skills.

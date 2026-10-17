@@ -21,7 +21,7 @@ vi.mock('../components/PanelShell', () => ({
 }));
 
 
-import TerminalPanel, { registerTerminalPanel } from '../components/TerminalPanel';
+import { registerTerminalPanel } from '../components/TerminalPanel';
 import {
   startTerminal,
   clearTerminalSessions,
@@ -38,7 +38,7 @@ beforeEach(() => {
   _handlers = new Map();
   _sessionId = 1;
 
-  terminalMocks.invoke = async (cmd: string, args: Record<string, unknown>) => {
+  terminalMocks.invoke = async (cmd: string, _args: Record<string, unknown>) => {
     if (cmd === 'terminal_run') return _sessionId++;
     if (cmd === 'terminal_kill') return undefined;
     throw new Error(`Unexpected: ${cmd}`);
@@ -58,10 +58,6 @@ afterEach(() => {
 
 function emit(id: number, line: string, stream: 'stdout' | 'stderr' = 'stdout') {
   _handlers.get(`terminal_output_${id}`)?.({ line, stream, done: false });
-}
-
-function emitDone(id: number) {
-  _handlers.get(`terminal_output_${id}`)?.({ line: '', stream: 'stdout', done: true });
 }
 
 describe('TerminalPanel (#87, #81)', () => {

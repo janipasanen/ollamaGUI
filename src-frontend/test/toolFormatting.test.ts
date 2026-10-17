@@ -7,7 +7,6 @@ import {
   compactPreview,
   prettyPrint,
   prettyLineCount,
-  topLevelRows,
   isToolError,
   STATUS_LABEL,
   type ToolStatus,

@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mcpServerManager, McpStdioClient } from '../services/mcp';
+import { mcpServerManager } from '../services/mcp';
 import type { McpServerConfig } from '../services/mcp';
 import { McpHttpTransport } from '../services/mcp-http';
 import { TauriMcpStdioTransport } from '../services/mcp-tauri';

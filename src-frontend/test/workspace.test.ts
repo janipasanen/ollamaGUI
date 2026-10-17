@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   openWorkspace, closeWorkspace, removeRecentWorkspace,
-  loadWorkspaceState, getActiveRoot, listWorkspaceDir,
+  loadWorkspaceState, listWorkspaceDir,
 } from '../services/workspace';
-import { _mocks as fileMocks, setWorkspaceRoot } from '../services/fileTools';
+import { _mocks as fileMocks } from '../services/fileTools';
 import type { DirEntry } from '../services/fileTools';
 
 const ROOT_A = '/projects/alpha';

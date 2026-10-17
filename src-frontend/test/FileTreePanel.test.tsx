@@ -22,7 +22,7 @@ vi.mock('../components/PanelShell', () => ({
 
 
 
-import FileTreePanel, { _mocks, registerFileTreePanel } from '../components/FileTreePanel';
+import { _mocks, registerFileTreePanel } from '../components/FileTreePanel';
 import { closeWorkspace, openWorkspace } from '../services/workspace';
 import { _mocks as fileToolsMocks } from '../services/fileTools';
 

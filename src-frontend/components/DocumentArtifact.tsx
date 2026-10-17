@@ -11,7 +11,6 @@
  * the `dark` ternary convention (no CSS variables).
  */
 
-import React from 'react';
 
 /** Shape of a document artifact pushed into the artifact panel. */
 export interface DocumentArtifactData {

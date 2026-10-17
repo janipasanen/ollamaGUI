@@ -28,23 +28,6 @@ afterEach(() => {
 const emptyModels = () =>
   vi.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any);
 
-const streamFetch = (reply: string) =>
-  vi.fn().mockImplementation(async (url: string) => {
-    const u = String(url);
-    if (u.includes('/api/chat')) {
-      return {
-        ok: true,
-        body: {
-          getReader: () => ({
-            read: vi.fn()
-              .mockResolvedValueOnce({ done: false, value: Buffer.from(JSON.stringify({ message: { content: reply } }) + '\n') })
-              .mockResolvedValueOnce({ done: true, value: undefined }),
-          }),
-        },
-      } as any;
-    }
-    return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
-  });
 
 // ── #336 Code word-wrap toggle ───────────────────────────────────────────────
 

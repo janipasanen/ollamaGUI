@@ -123,7 +123,6 @@ describe('storage corrupted localStorage (#454)', () => {
     };
     storage.saveSession(session);
     // Simulate quota exceeded
-    const origSetItem = localStorage.setItem.bind(localStorage);
     const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('quota', 'QuotaExceededError');
     });

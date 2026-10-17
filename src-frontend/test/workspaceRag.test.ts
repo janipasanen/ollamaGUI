@@ -132,7 +132,7 @@ describe('isTextFile — multi-dot / dotfile matching (#433)', () => {
 
 describe('indexWorkspace — .env.example is indexed (#433)', () => {
   it('includes a .env.example file in the indexed corpus', async () => {
-    const { isWorkspaceIndexed, queryWorkspace } = await import('../services/workspaceRag');
+    const { queryWorkspace } = await import('../services/workspaceRag');
     const envPath = `${ROOT}/.env.example`;
     fakeFs[envPath] = 'DATABASE_URL=postgres://example\nSECRET_KEY=changeme';
     fakeDirs[ROOT] = [

@@ -165,7 +165,6 @@ export function operationToToolDefinition(
     // from Rust must propagate as-is, not be swallowed by the catch.
     let tauriAvailable = false;
     let invokeResult: { success: boolean; status: number; body: string } | null = null;
-    let tauriError: any = null;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       invokeResult = await invoke('mcp_http_request', {
@@ -173,7 +172,7 @@ export function operationToToolDefinition(
       }) as { success: boolean; status: number; body: string };
       tauriAvailable = true;
     } catch (e: any) {
-      tauriError = e;
+      /* fall through to fetch fallback */
     }
 
     if (tauriAvailable && invokeResult) {

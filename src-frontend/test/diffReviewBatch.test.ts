@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   proposeEdits, setBatchReviewCallback, clearBatchReviewCallback,
   setDiffReviewCallback, clearDiffReviewCallback,
-  clearPendingEdits, type PendingEdit, type EditDecision,
+  clearPendingEdits, type PendingEdit,
 } from '../services/diffReview';
 import { _mocks as fileMocks } from '../services/fileTools';
 

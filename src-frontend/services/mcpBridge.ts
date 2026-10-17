@@ -65,7 +65,7 @@ export async function registerMcpTools(
  * server config's current tools array.
  */
 export function unregisterMcpTools(
-  serverId: string,
+  _serverId: string,
   toolNames: string[]
 ): void {
   for (const name of toolNames) {

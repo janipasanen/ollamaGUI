@@ -4,7 +4,6 @@ import {
   getRelevantSkills, composeSkillBlock, recordUsage,
   recordToolSequence, autoCaptureSkill,
   _registerToolDescription, _unregisterToolDescription,
-  type Skill,
 } from '../services/skills';
 
 beforeEach(() => {

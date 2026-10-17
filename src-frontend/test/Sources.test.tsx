@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import Sources, { renderWithCitations, InlineCitation } from '../components/Sources';
 import type { Source } from '../services/citations';
 

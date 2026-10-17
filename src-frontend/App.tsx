@@ -22,9 +22,9 @@ import {
 } from './services/openapiTools';
 import {
   CustomTool, FunctionDef,
-  loadCustomTools, saveCustomTools, initCustomTools,
+  loadCustomTools, initCustomTools,
   addCustomTool, updateCustomTool, removeCustomTool,
-  loadFunctionDefs, saveFunctionDefs,
+  loadFunctionDefs,
   addFunctionDef, updateFunctionDef, removeFunctionDef,
   applyFilterInlet, applyFilterOutlet,
   getEnabledActions, runAction,
@@ -32,8 +32,8 @@ import {
 } from './services/customTools';
 import {
   ModelPreset,
-  loadPresets, savePresets, addPreset, updatePreset, removePreset,
-  loadActivePresetId, setActivePreset, clearActivePreset, getActivePreset, applyPreset,
+  loadPresets, addPreset, updatePreset, removePreset,
+  loadActivePresetId, setActivePreset, clearActivePreset, applyPreset,
 } from './services/presets';
 import {
   ModelConnection, ConnectedModel,
@@ -54,7 +54,7 @@ import { registerBrowserTools, stopBrowserEngine } from './services/browser-tool
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
-import ArtifactPanel, { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
+import { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
 import './components/BrowserPane';
 import './components/FileTreePanel';
 import './components/TerminalPanel';
@@ -72,7 +72,6 @@ import WelcomeScreen from './components/WelcomeScreen';
 import WorkspaceChip from './components/WorkspaceChip';
 import { formatWorkspaceContext, detectRepoClis, detectGitInfo, type WorkspaceContext } from './services/workspaceContext';
 import NoWorkspaceHint from './components/NoWorkspaceHint';
-import { SkillsManager } from './components/SkillsManager';
 import { checkLibreOffice } from './services/documents';
 import { needsOnboarding, markDismissed } from './services/libreOfficeOnboarding';
 import { openSource } from './services/citations';
@@ -107,7 +106,7 @@ import {
 } from './services/voice';
 import {
   SlashCommand,
-  filterCommands, findCommand, runCommand, getAllCommands,
+  filterCommands, runCommand, getAllCommands,
   loadUserCommands, addUserCommand, updateUserCommand, removeUserCommand,
 } from './services/commands';
 import {
@@ -125,13 +124,12 @@ import {
 } from './services/branching';
 import { registerMcpTools, unregisterMcpTools, getRegisteredToolNames } from './services/mcpBridge';
 import {
-  Artifact,
-  detectArtifacts, pickPrimaryArtifact, exportArtifact,
+  detectArtifacts, pickPrimaryArtifact,
 } from './services/artifacts';
 import { registerFileTools, readFile, listDir, writeFile } from './services/fileTools';
 import { registerDevTools, makePostEditVerifyHook, isAutoVerifyEnabled, setAutoVerifyEnabled } from './services/devTools';
 import { registerCodeNavTools } from './services/codeNav';
-import { openWorkspace, getActiveRoot, projectRoots, openWorkspaceRoots, closeWorkspace } from './services/workspace';
+import { getActiveRoot, projectRoots, openWorkspaceRoots, closeWorkspace } from './services/workspace';
 
 import { registerGitTools, gitDiff, gitStatus, gitStage, gitUnstage, gitCommit } from './services/git';
 import {
@@ -938,7 +936,7 @@ const App: React.FC = () => {
   // Prompt library (#97)
   const [prompts, setPrompts] = useState<SavedPrompt[]>(() => loadPrompts());
   const [showPromptPicker, setShowPromptPicker] = useState(false);
-  const [showSkills, setShowSkills] = useState(false);
+  const [, setShowSkills] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptBody, setNewPromptBody] = useState('');
 
@@ -6327,7 +6325,7 @@ ${lines.join('\n')}`;
              {/* Pinned file context chips (#350) */}
             {pinnedFiles.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1" aria-label="Pinned files">
-                {pinnedFiles.map((f, i) => (
+                {pinnedFiles.map((f) => (
                   <span key={f.path} className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${dark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
                     <span>📎 {f.path}</span>
                     <button type="button" aria-label={`Drop pinned file ${f.path}`} title="Drop pinned file" className="opacity-60 hover:opacity-100" onMouseDown={e => { e.preventDefault(); const next = dropPinnedFile(pinnedFiles, f.path); setPinnedFiles(next); savePinnedFiles(next); }}>×</button>

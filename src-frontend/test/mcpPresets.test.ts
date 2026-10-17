@@ -4,7 +4,7 @@
  * "Add MCP server" form can pre-fill reliably.
  */
 import { describe, it, expect } from 'vitest';
-import { MCP_SERVER_PRESETS, getMcpPreset, type McpServerPreset } from '../services/mcpPresets';
+import { MCP_SERVER_PRESETS, getMcpPreset } from '../services/mcpPresets';
 
 describe('MCP server preset catalog (#173)', () => {
   it('is non-empty', () => {

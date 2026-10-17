@@ -30,7 +30,7 @@ beforeEach(() => {
     if (String(url).includes('/api/chat')) return chatStreamResponse('# AGENTS.md\n\nTest conventions.');
     return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
   });
-  fileMocks.invoke = async (cmd: string, args: any) => {
+  fileMocks.invoke = async (cmd: string, _args: any) => {
     if (cmd === 'set_workspace_root') return undefined;
     if (cmd === 'read_file') return '';
     if (cmd === 'list_dir') return [];
@@ -160,7 +160,7 @@ describe('Sidebar drag-and-drop into folders (#364)', () => {
 describe('/init generates an AGENTS.md file (#365)', () => {
   it('lists the workspace, streams from the model, and writes AGENTS.md', async () => {
     seedProject('/ws/repo');
-    const writeSpy = vi.fn(async (cmd: string, args: any) => {
+    const writeSpy = vi.fn(async (cmd: string, _args: any) => {
       if (cmd === 'set_workspace_root') return undefined;
       if (cmd === 'read_file') return '';
       if (cmd === 'list_dir') return [

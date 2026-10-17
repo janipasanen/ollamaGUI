@@ -22,7 +22,7 @@ function makeScenario(steps: ScenarioStep[]): BrowserScenario {
 }
 
 function mockInvoke(responses: Record<string, any>) {
-  _mocks.invoke = async (cmd: string, args: any) => {
+  _mocks.invoke = async (cmd: string, _args: any) => {
     if (cmd === 'browser_cdp_screenshot') return { screenshot: 'base64png==' };
     return responses[cmd] ?? { pass: true };
   };

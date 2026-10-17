@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  loadSettings, saveSettings, getAutonomyLevel, setAutonomyLevel,
+  getAutonomyLevel, setAutonomyLevel,
   getMaxIterations, setMaxIterations, isReadOnlyMode, setReadOnlyMode,
   isSmartApproveEnabled, setSmartApproveEnabled,
   isPlanMode, shouldAskBeforeToolUse, isBlockedByReadOnlyMode,

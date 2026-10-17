@@ -439,7 +439,7 @@ describe('AX snapshot session wiring (#219)', () => {
   it('a prior browser_snapshot lets browser_type detect a redacted secret field', async () => {
     const { cb, calls } = makeApproval(true);
     const cmds: string[] = [];
-    _mocks.invoke = async (cmd, args) => {
+    _mocks.invoke = async (cmd, _args) => {
       cmds.push(cmd);
       if (cmd === 'browser_cdp_type') throw new Error('should not type plaintext secret');
       if (cmd === 'browser_cdp_get_ax_tree') {

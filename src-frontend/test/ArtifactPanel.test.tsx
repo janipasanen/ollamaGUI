@@ -22,7 +22,7 @@ vi.mock('../components/PanelShell', () => ({
 }));
 
 // Import AFTER the PanelShell mock so the module-level registration is captured.
-import ArtifactPanel, { showArtifact, _mocks } from '../components/ArtifactPanel';
+import { showArtifact, _mocks } from '../components/ArtifactPanel';
 import type { Artifact, DocumentArtifactData } from '../components/ArtifactPanel';
 
 const sampleCodeArtifact: Artifact = {

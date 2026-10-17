@@ -148,10 +148,6 @@ export function isMlxActive(settings: MlxSettings, availability: MlxAvailability
   return availability.available && settings.fullInference;
 }
 
-function mlxBaseUrl(settings: MlxSettings): string {
-  return `http://127.0.0.1:${settings.serverPort}`;
-}
-
 /**
  * Stream a chat completion from the MLX server (OpenAI-compatible SSE).
  * Calls `onChunk` with each incremental content delta.

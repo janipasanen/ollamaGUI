@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 import { DiffReviewModal } from '../components/DiffReviewModal';
 import type { PendingEdit } from '../services/diffReview';
-import { storage, type ChatSession } from '../services/storage';
 import { savePinnedFiles } from '../services/pinnedFiles';
 import { _mocks as fileMocks } from '../services/fileTools';
 import { _mocks as webSearchMocks } from '../services/websearch';

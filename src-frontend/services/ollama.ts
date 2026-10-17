@@ -241,7 +241,7 @@ export async function fetchOllamaChatStream(
   messages: Message[],
   onChunk: (chunk: Partial<OllamaResponse>) => void,
   endpoint: string = 'http://localhost:11434/api/chat',
-  isCloudModel: boolean = false,
+  _isCloudModel: boolean = false,
   options?: GenerationOptions,
   signal?: AbortSignal,
   format?: 'json' | object,

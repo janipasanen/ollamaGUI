@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import React from 'react';
 import WorkspaceChip from '../components/WorkspaceChip';
 import NoWorkspaceHint from '../components/NoWorkspaceHint';
 import { workspaceLabel } from '../components/useWorkspacePicker';

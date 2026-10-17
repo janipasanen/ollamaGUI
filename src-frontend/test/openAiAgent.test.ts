@@ -206,12 +206,8 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
     // by the UI in the internal Message shape: an assistant message carrying
     // tool_calls, followed by a tool message that records only name/content.
     const bodies: string[] = [];
-    const encoder = new TextEncoder();
     (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
       if (init?.body) bodies.push(init.body);
-      const frames = bodies.length === 1
-        ? sse([chunk([{ index: 0, delta: { content: 'ok' } }]), chunk([{ index: 0, delta: {}, finish_reason: 'stop' }])])
-        : '';
       return { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) } };
     });
 

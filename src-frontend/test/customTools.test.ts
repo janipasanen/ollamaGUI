@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _setSandboxRun,
   addCustomTool, updateCustomTool, removeCustomTool,
@@ -274,7 +274,7 @@ describe('Action functions (#127)', () => {
 
   it('runAction returns null when action code has syntax error (#447)', async () => {
     // Override sandbox to simulate a syntax error rejection
-    _setSandboxRun(async (code: string) => { throw new Error('SyntaxError: unexpected token'); });
+    _setSandboxRun(async () => { throw new Error('SyntaxError: unexpected token'); });
     const fn = addFunctionDef({
       kind: 'action', name: 'bad_syntax',
       code: `function action(`,

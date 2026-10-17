@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { agenticChatStream, AgenticChatOptions } from '../services/agent';
 import { toolRegistry, registerBuiltInTools } from '../services/tools';
-import type { Message } from '../services/ollama';
 
 // Mock fetch so agenticChatStream doesn't hit real network
 const mockFetch = vi.fn();
@@ -93,7 +92,6 @@ describe('spawn_subagent tool (#104)', () => {
     // spawn_subagent is registered in App.tsx startup, not registerBuiltInTools.
     // Here we verify the service interface: agenticChatStream accepts toolFilter.
     // Full integration tested via App-level tests.
-    const tool = toolRegistry.getAllTools().find(t => t.name === 'spawn_subagent');
     // May or may not be registered depending on test isolation — just ensure we can register it
     const fakeTool = {
       name: 'spawn_subagent',

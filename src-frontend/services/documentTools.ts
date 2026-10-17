@@ -8,7 +8,7 @@
  * Supported read formats: docx, xlsx, pptx, odt/ods/odp, pdf, markdown, text.
  * Conversion requires Pandoc to be installed on the host machine.
  */
-import { pdfInfo, pdfMerge, pdfSplit, pdfExtract, pdfCreate, type PdfInfo } from './documentsPdf';
+import { pdfInfo, pdfMerge, pdfSplit, pdfExtract, pdfCreate } from './documentsPdf';
 import { editDocument, templateFillDocument, editOdfDocument } from './documents';
 
 
