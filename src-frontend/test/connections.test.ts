@@ -190,6 +190,22 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
     expect(chunks).toEqual(['Hello', ' world']);
   });
 
+  it('forwards response_format from the format option on the non-agentic path (#567)', async () => {
+    let bodyObj: any;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: any, init: any) => {
+      if (init?.body) bodyObj = JSON.parse(init.body);
+      return mockSse([
+        'data: {"choices":[{"delta":{"content":"ok"}}]}',
+        'data: [DONE]',
+      ]);
+    });
+    await streamOpenAiChat(conn, 'gpt-4', [], () => {}, undefined, { type: 'object', properties: {} });
+    expect(bodyObj).toBeDefined();
+    expect(bodyObj.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'response', schema: { type: 'object', properties: {} } } });
+    // strict must be omitted so unsupported schemas 400 instead of degrading quietly (#567).
+    expect((bodyObj.response_format.json_schema as { strict?: boolean }).strict).toBeUndefined();
+  });
+
   it('stops at [DONE] sentinel', async () => {
     const chunks: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(Promise.resolve(mockSse([
@@ -494,13 +510,15 @@ describe('OpenAI option translation (#583)', () => {
     expect(openAiResponseFormat('json')).toEqual({ type: 'json_object' });
   });
 
-  it('converts a schema object with name + strict (LM Studio/vLLM require name)', () => {
+  it('converts a schema object with name and omits strict (LM Studio/vLLM require name; strict 400s on openai.com) (#567)', () => {
     const schema = { type: 'object', properties: {} };
     const rf = openAiResponseFormat(schema);
     expect((rf as { type: string }).type).toBe('json_schema');
     const js = rf as { json_schema: { name: string; strict?: boolean } };
     expect(js.json_schema.name).toBe('response');
-    expect(js.json_schema.strict).toBe(true);
+    // strict must be omitted so a schema without additionalProperties:false
+    // / full required list does not 400 on api.openai.com (#567).
+    expect(js.json_schema.strict).toBeUndefined();
   });
 
   it('streams translated options through buildOpenAiChatRequest body (not nested)', () => {

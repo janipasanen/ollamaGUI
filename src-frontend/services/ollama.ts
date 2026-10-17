@@ -29,6 +29,12 @@ export interface Message {
   isError?: boolean;
   /** True when the user cancelled generation mid-stream (#303). */
   wasCancelled?: boolean;
+  /**
+   * Set on an assistant message produced under a structured-output constraint,
+   * so the JSON-validity badge only renders for real constraint replies and
+   * never retroactively on older prose / synthetic agentic messages (#567).
+   */
+  structuredFormat?: StructuredOutputFormat;
 }
 
 export interface OllamaResponse {
@@ -166,7 +172,12 @@ export function translateOpenAiSamplingOptions(options?: GenerationOptions): Rec
  */
 export function openAiResponseFormat(format: StructuredOutputFormat): OpenAIResponseFormat {
   if (format === 'json') return { type: 'json_object' };
-  return { type: 'json_schema', json_schema: { name: 'response', schema: format as Record<string, unknown>, strict: true } };
+  // Do NOT set `strict: true`: the `openai` kind can point at api.openai.com,
+  // where strict json_schema 400s on any schema lacking `additionalProperties:
+  // false` on every object with all `required` properties listed — including
+  // the placeholder shape the UI shows. Omit the field (server default false)
+  // so unsupported constructs degrade to best-effort rather than a hard 400 (#567).
+  return { type: 'json_schema', json_schema: { name: 'response', schema: format as Record<string, unknown> } };
 }
 
 /**

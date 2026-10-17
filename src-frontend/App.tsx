@@ -3289,6 +3289,7 @@ ${block}`;
                   (delta) => { summary += delta; },
                   genOptions,
                   undefined,
+                  undefined,
                 );
               } else {
                 await fetchOllamaChatStream(model, summaryMessages, (chunk) => {
@@ -4101,6 +4102,7 @@ ${lines.join('\n')}`;
                 });
               },
               genOptions,
+              format,
               abortControllerRef.current?.signal
             );
           } else {
@@ -4129,7 +4131,7 @@ ${lines.join('\n')}`;
           // Stamp producedByModel (#97) and apply filtered content in one update
           setMessages(prev => {
             const last = prev[prev.length - 1];
-            const updatedMsg: Message = { ...last, content: filtered, producedByModel: activeModel, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}), ...(genStats ? { genStats } : {}) };
+            const updatedMsg: Message = { ...last, content: filtered, producedByModel: activeModel, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}), ...(genStats ? { genStats } : {}), ...(format ? { structuredFormat: format } : {}) };
             const updated = [...prev.slice(0, -1), updatedMsg] as Message[];
             saveCurrentSession(updated);
             return updated;
@@ -4383,6 +4385,13 @@ ${lines.join('\n')}`;
     const ollamaModelName = selectedConnectedModel?.name ?? model;
     let continuedContent = '';
     let contGenStats: GenStats | undefined;
+    // Derive the structured-output constraint so the continued reply is sent
+    // under the same JSON constraint as the original run (#567).
+    let contFormat: 'json' | object | undefined;
+    if (structuredOutput.enabled) {
+      const parsed = parseSchemaInput(structuredOutput.schema);
+      if (parsed.ok) contFormat = parsed.schema ?? 'json';
+    }
     // Error guidance routed to the real host (#571/#580). Any non-local
     // connection is named by its own endpoint, never "run ollama serve".
     const isRemoteOllama =
@@ -4406,11 +4415,11 @@ ${lines.join('\n')}`;
           });
         }
         if (chunk.done) contGenStats = computeGenStats(chunk);
-      }, contEndpoint, false, genOptions, abortControllerRef.current?.signal);
+      }, contEndpoint, false, genOptions, abortControllerRef.current?.signal, contFormat);
       // Final save
       setMessages(prev => {
         const last = prev[prev.length - 1];
-        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false, ...(contGenStats ? { genStats: contGenStats } : {}) }] as Message[];
+        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false, ...(contGenStats ? { genStats: contGenStats } : {}), ...(contFormat ? { structuredFormat: contFormat } : {}) }] as Message[];
         saveCurrentSession(updated);
         return updated;
       });
@@ -5533,7 +5542,7 @@ ${lines.join('\n')}`;
                   <span className="inline-block w-0.5 h-4 bg-current opacity-75 animate-pulse ml-0.5 align-middle" />
                 )}
                 {/* Structured-output validity badge (#148) */}
-                {msg.role === 'assistant' && msg.content !== '' && structuredOutput.enabled && !(isLoading && i === messages.length - 1) && (() => {
+                {msg.role === 'assistant' && msg.content !== '' && msg.structuredFormat && structuredOutput.enabled && !(isLoading && i === messages.length - 1) && (() => {
                   const verdict = classifyResponse(msg.content, parseSchemaInput(structuredOutput.schema).schema);
                   return (
                     <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded mt-1 ${verdict === 'valid' ? (dark ? 'bg-green-900/50 text-green-300' : 'bg-green-100 text-green-700') : (dark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700')}`}>
@@ -6865,7 +6874,7 @@ ${lines.join('\n')}`;
                    <div className="flex items-center justify-between">
                      <div className="min-w-0 pr-3">
                        <div className="text-sm font-medium">Structured output (JSON)</div>
-                       <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Constrain replies to valid JSON via Ollama's <code>format</code>. Add a JSON Schema, or leave blank for plain JSON mode.</div>
+                       <div className={`text-[10px] ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>Constrain replies to valid JSON. On Ollama this uses its <code>format</code>; on OpenAI-compatible providers (LM Studio, vLLM) it sets <code>response_format</code>. Add a JSON Schema, or leave blank for plain JSON mode.</div>
                      </div>
                      <Toggle dark={dark} label="Structured output"
                        checked={structuredOutput.enabled}

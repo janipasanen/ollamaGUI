@@ -399,9 +399,10 @@ export async function streamOpenAiChat(
   messages: { role: string; content: string }[],
   onChunk: (delta: string, reasoning?: string) => void,
   options?: GenerationOptions,
+  format?: StructuredOutputFormat,
   signal?: AbortSignal
 ): Promise<void> {
-  const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options);
+  const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options, format);
   const res = await fetch(url, { method: 'POST', headers, body, signal });
   if (!res.ok) throw await openAiErrorFromResponse(res, 'OpenAI stream error');
 

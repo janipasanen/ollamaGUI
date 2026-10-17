@@ -441,10 +441,11 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
       format: schema,
     });
 
-    const body = JSON.parse(bodies[0]) as { response_format: { type: string; json_schema: { name: string; schema: unknown; strict: boolean } } };
+    const body = JSON.parse(bodies[0]) as { response_format: { type: string; json_schema: { name: string; schema: unknown; strict?: boolean } } };
     expect(body.response_format.type).toBe('json_schema');
     expect(body.response_format.json_schema.name).toBe('response');
-    expect(body.response_format.json_schema.strict).toBe(true);
+    // strict must be omitted (#567): a strict schema 400s on api.openai.com.
+    expect(body.response_format.json_schema.strict).toBeUndefined();
     expect(body.response_format.json_schema.schema).toEqual(schema);
   });
 
