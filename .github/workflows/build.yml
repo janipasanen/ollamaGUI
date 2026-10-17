@@ -79,11 +79,16 @@ jobs:
         run: npm ci
 
       - name: npm dependency audit
-        # Audit production dependencies only (--omit=dev). vite/vitest and their
+        # Audit production dependencies only (--omit=dev): vite/vitest and their
         # transitive dev deps are build/test tooling that never ships in the
         # Tauri binary; scoping to prod keeps this gate meaningful for the
-        # shipped surface. Fail only on high/critical advisories.
-        run: npm audit --omit=dev --audit-level=high
+        # shipped surface. The prod set is also the untrusted-input rendering
+        # path (react-markdown, remark-gfm, remark-math, rehype-katex, katex,
+        # mermaid, react-syntax-highlighter), so gate on moderate+ advisories —
+        # XSS / prototype-pollution / DoS in these renderers are scored moderate.
+        # STEP 1 (#619) bumped mermaid -> 11.16.1 and dompurify -> 3.4.17 to
+        # clear those moderate advisories, so this gate is green on merge.
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
