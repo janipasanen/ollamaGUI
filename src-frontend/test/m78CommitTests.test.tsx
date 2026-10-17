@@ -127,3 +127,72 @@ describe('/tests runs the suite and feeds failures to the model (#359)', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Usage: \/tests <command>/));
   });
 });
+
+// ── #569: /commit routes to the active model's own endpoint ─────────────
+describe('/commit routes to the connection endpoint (#569)', () => {
+  it('posts the generated commit message to an OpenAI connection /v1/chat/completions with the bare model name', async () => {
+    // An OpenAI-compatible (LM Studio / vLLM) connection. The request must NOT
+    // POST the commit-message generation to local Ollama, and must use the
+    // bare model name (not the "conn-openai/qwen" selector id).
+    localStorage.setItem('model_connections', JSON.stringify([
+      { id: 'conn-openai', name: 'LM Studio', kind: 'openai', baseUrl: 'http://lm:1234', apiKey: 'secret-key', enabled: true },
+    ]));
+    seedRepoProject();
+
+    const chatCalls: { url: string; body: any; headers?: Record<string, string> }[] = [];
+    let localChatCalled = false;
+
+    function openAiStream(content: string) {
+      const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
+      reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from(`data: {"choices":[{"delta":{"content":${JSON.stringify(content)}}}]}\n`) });
+      reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('data: {"choices":[{"delta":{}}]}\n') });
+      reader.read.mockResolvedValueOnce({ done: true, value: undefined });
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    }
+
+    global.fetch = vi.fn(async (url: unknown, opts: any) => {
+      const u = String(url);
+      if (u.includes('/v1/models')) return { ok: true, json: async () => ({ data: [{ id: 'qwen' }] }) } as any;
+      if (u.includes('/v1/chat/completions')) {
+        chatCalls.push({ url: u, body: JSON.parse(opts.body), headers: opts.headers as Record<string, string> });
+        return openAiStream('Fix the parser.');
+      }
+      if (u.includes('/api/chat')) { localChatCalled = true; return chatStreamResponse('Fix the parser.'); }
+      return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
+    });
+
+    const gitInvoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'git_status') return { staged: [], unstaged: ['src/a.ts'], untracked: ['src/b.ts'] };
+      if (cmd === 'git_diff') return { diff: 'diff --git a/src/a.ts …' };
+      if (cmd === 'git_stage') return undefined;
+      if (cmd === 'git_commit') return { hash: 'abc123' };
+      return { success: true };
+    });
+    gitMocks.invoke = gitInvoke;
+
+    render(<App />);
+    fireEvent.click(await screen.findByText('📂 Repo'));
+
+    const sel = screen.getByLabelText('Select AI model') as HTMLSelectElement;
+    await waitFor(() =>
+      expect(screen.getAllByRole('option').map(o => o.getAttribute('value'))).toContain('conn-openai/qwen'),
+      { timeout: 5000 },
+    );
+    fireEvent.change(sel, { target: { value: 'conn-openai/qwen' } });
+    await waitFor(() => expect(sel.value).toBe('conn-openai/qwen'), { timeout: 5000 });
+
+    sendCommand('/commit');
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Committed abc123: Fix the parser/), { timeout: 5000 });
+
+    // The generation went to the connection's /v1/chat/completions, not local /api/chat.
+    expect(localChatCalled).toBe(false);
+    expect(chatCalls.length).toBeGreaterThan(0);
+    const call = chatCalls[chatCalls.length - 1];
+    expect(call.url).toContain('http://lm:1234/v1/chat/completions');
+    // Bare model name, not the connection-scoped selector id.
+    expect(call.body.model).toBe('qwen');
+    expect(call.body.model).not.toBe('conn-openai/qwen');
+    // Auth is forwarded to the connection.
+    expect(call.headers?.Authorization).toBe('Bearer secret-key');
+  });
+});

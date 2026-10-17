@@ -2955,11 +2955,39 @@ const App: React.FC = () => {
                 const genMessages: Message[] = [
                   { role: 'user', content: `Write a concise conventional commit message (<=72 char subject, no body) for the following changes. Reply with ONLY the commit message, nothing else:\n\n${diff.slice(0, 8000)}` },
                 ];
-                // Cloud models are proxied by the local daemon (#483).
-                const commitEndpoint = url('/api/chat');
-                await fetchOllamaChatStream(model, genMessages, (chunk) => {
-                  if (chunk.message?.content) message += chunk.message.content;
-                }, commitEndpoint, false, genOptions, undefined);
+                // Route to the active model's own provider (#569). A connected
+                // model's selector id is "connId/model" — the request must use the
+                // bare model name against the right endpoint (LM Studio / vLLM /
+                // remote Ollama), not a connection-prefixed id against local
+                // Ollama. Cloud models are still proxied by the local daemon (#483).
+                const commitConnectedModel = connectedModels.find(m => m.id === model);
+                const commitConnection = commitConnectedModel
+                  ? connections.find(c => c.id === commitConnectedModel.connectionId)
+                  : undefined;
+                const commitEndpoint = commitConnection?.kind === 'ollama'
+                  ? `${commitConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+                  : url('/api/chat');
+                if (commitConnection?.kind === 'openai') {
+                  await streamOpenAiChat(
+                    commitConnection,
+                    commitConnectedModel?.name ?? model,
+                    genMessages,
+                    (delta) => { message += delta; },
+                    genOptions,
+                    undefined,
+                    undefined,
+                  );
+                } else {
+                  await fetchOllamaChatStream(
+                    commitConnectedModel?.name ?? model,
+                    genMessages,
+                    (chunk) => { if (chunk.message?.content) message += chunk.message.content; },
+                    commitEndpoint,
+                    false,
+                    genOptions,
+                    undefined,
+                  );
+                }
                 message = message.trim().split('\n')[0].slice(0, 72);
                 if (!message) { showStatusBanner('Could not generate a commit message — provide one with /commit <message>'); return; }
               }
@@ -3033,11 +3061,39 @@ const App: React.FC = () => {
 Directory listing:
 ${fileList}` },
               ];
-              // Cloud models are proxied by the local daemon (#483).
-              const initEndpoint = url('/api/chat');
-              await fetchOllamaChatStream(model, initMessages, (chunk) => {
-                if (chunk.message?.content) generated += chunk.message.content;
-              }, initEndpoint, false, genOptions, undefined);
+              // Route to the active model's own provider (#569). A connected
+              // model's selector id is "connId/model" — the request must use the
+              // bare model name against the right endpoint (LM Studio / vLLM /
+              // remote Ollama), not a connection-prefixed id against local
+              // Ollama. Cloud models are still proxied by the local daemon (#483).
+              const initConnectedModel = connectedModels.find(m => m.id === model);
+              const initConnection = initConnectedModel
+                ? connections.find(c => c.id === initConnectedModel.connectionId)
+                : undefined;
+              const initEndpoint = initConnection?.kind === 'ollama'
+                ? `${initConnection.baseUrl.replace(/\/$/, '')}/api/chat`
+                : url('/api/chat');
+              if (initConnection?.kind === 'openai') {
+                await streamOpenAiChat(
+                  initConnection,
+                  initConnectedModel?.name ?? model,
+                  initMessages,
+                  (delta) => { generated += delta; },
+                  genOptions,
+                  undefined,
+                  undefined,
+                );
+              } else {
+                await fetchOllamaChatStream(
+                  initConnectedModel?.name ?? model,
+                  initMessages,
+                  (chunk) => { if (chunk.message?.content) generated += chunk.message.content; },
+                  initEndpoint,
+                  false,
+                  genOptions,
+                  undefined,
+                );
+              }
               generated = generated.trim();
               if (!generated) { showStatusBanner('Could not generate AGENTS.md — try again or write one manually'); return; }
               await writeFile(`${wsRoot.replace(/\/$/, '')}/AGENTS.md`, generated);

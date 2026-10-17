@@ -191,6 +191,70 @@ describe('/init generates an AGENTS.md file (#365)', () => {
     expect(writeCall![1].content).toContain('AGENTS.md');
   });
 
+  it('routes the AGENTS.md generation to an OpenAI connection /v1/chat/completions with the bare model name (#569)', async () => {
+    // An OpenAI-compatible (LM Studio / vLLM) connection. The generation must
+    // NOT POST to local Ollama, and must use the bare model name.
+    localStorage.setItem('model_connections', JSON.stringify([
+      { id: 'conn-openai', name: 'LM Studio', kind: 'openai', baseUrl: 'http://lm:1234', apiKey: 'secret-key', enabled: true },
+    ]));
+    seedProject('/ws/repo');
+
+    const chatCalls: { url: string; body: any }[] = [];
+    let localChatCalled = false;
+
+    function openAiStream(content: string) {
+      const reader = { read: vi.fn() as ReturnType<typeof vi.fn> };
+      reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from(`data: {"choices":[{"delta":{"content":${JSON.stringify(content)}}}]}\n`) });
+      reader.read.mockResolvedValueOnce({ done: false, value: Buffer.from('data: {"choices":[{"delta":{}}]}\n') });
+      reader.read.mockResolvedValueOnce({ done: true, value: undefined });
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    }
+
+    fileMocks.invoke = async (cmd: string) => {
+      if (cmd === 'set_workspace_root') return undefined;
+      if (cmd === 'read_file') return '';
+      if (cmd === 'list_dir') return [{ name: 'src', path: '/ws/repo/src', is_dir: true, size: 0, modified_ms: null }];
+      if (cmd === 'write_file') return undefined;
+      return undefined;
+    };
+
+    global.fetch = vi.fn(async (url: unknown, opts: any) => {
+      const u = String(url);
+      if (u.includes('/v1/models')) return { ok: true, json: async () => ({ data: [{ id: 'qwen' }] }) } as any;
+      if (u.includes('/v1/chat/completions')) {
+        chatCalls.push({ url: u, body: JSON.parse(opts.body) });
+        return openAiStream('# AGENTS.md\n\nTest conventions.');
+      }
+      if (u.includes('/api/chat')) { localChatCalled = true; return chatStreamResponse('# AGENTS.md\n\nTest conventions.'); }
+      return { ok: true, json: async () => ({ models: [] }), body: null, text: async () => '' } as any;
+    });
+
+    render(<App />);
+    await act(async () => { fireEvent.click(await screen.findByText('📂 Repo')); });
+
+    const sel = screen.getByLabelText('Select AI model') as HTMLSelectElement;
+    await waitFor(() =>
+      expect(screen.getAllByRole('option').map(o => o.getAttribute('value'))).toContain('conn-openai/qwen'),
+      { timeout: 5000 },
+    );
+    fireEvent.change(sel, { target: { value: 'conn-openai/qwen' } });
+    await waitFor(() => expect(sel.value).toBe('conn-openai/qwen'), { timeout: 5000 });
+
+    fireEvent.change(screen.getByPlaceholderText('Message Ollama...'), { target: { value: '/init' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/AGENTS\.md created/), { timeout: 5000 });
+
+    // The generation went to the connection's /v1/chat/completions, not local /api/chat.
+    expect(localChatCalled).toBe(false);
+    expect(chatCalls.length).toBeGreaterThan(0);
+    const call = chatCalls[chatCalls.length - 1];
+    expect(call.url).toContain('http://lm:1234/v1/chat/completions');
+    // Bare model name, not the connection-scoped selector id.
+    expect(call.body.model).toBe('qwen');
+    expect(call.body.model).not.toBe('conn-openai/qwen');
+  });
+
   it('refuses with no workspace', async () => {
     render(<App />);
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
