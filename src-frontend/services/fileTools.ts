@@ -139,6 +139,7 @@ export async function globFiles(pattern: string, maxResults?: number): Promise<s
 export function registerFileTools(): void {
   toolRegistry.registerTool({
     name: 'read_file',
+    parallelSafe: true,
     description: 'Read the text content of a file within the workspace. Optionally pass offset (1-indexed start line) and limit (line count) to read only a range of a large file.',
     readOnly: true,
     parameters: {
@@ -184,6 +185,7 @@ export function registerFileTools(): void {
 
   toolRegistry.registerTool({
     name: 'list_dir',
+    parallelSafe: true,
     description: 'List files and subdirectories within a workspace directory. Directories appear first.',
     readOnly: true,
     parameters: {
@@ -315,6 +317,7 @@ export function registerFileTools(): void {
   // Literal / regex code search across the workspace (#420).
   toolRegistry.registerTool({
     name: 'search_files',
+    parallelSafe: true,
     description:
       'Search the workspace for a string or regex and return structured file:line matches. ' +
       'Prefer this over shell grep — it is fast, needs no approval, and skips node_modules/.git/target/dist. ' +
@@ -345,6 +348,7 @@ export function registerFileTools(): void {
   // Glob / find-files-by-pattern (#420).
   toolRegistry.registerTool({
     name: 'glob_files',
+    parallelSafe: true,
     description:
       'Find files whose workspace-relative path matches a glob pattern (** across dirs, * within a segment, ?). ' +
       'Example: "src/**/*.test.ts". Skips node_modules/.git/target/dist. Returns a sorted list of paths.',

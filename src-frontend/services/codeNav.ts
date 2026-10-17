@@ -83,6 +83,7 @@ function extOf(path: string): string {
 export function registerCodeNavTools(): void {
   toolRegistry.registerTool({
     name: 'list_symbols',
+    parallelSafe: true,
     description:
       'Return a structural outline of a file (top-level functions, classes, types, etc.) with line ' +
       'numbers, so you can understand its shape without reading the whole file. Supports TS/JS, Rust, Python.',
@@ -104,6 +105,7 @@ export function registerCodeNavTools(): void {
 
   toolRegistry.registerTool({
     name: 'find_references',
+    parallelSafe: true,
     description:
       'Find where a symbol (function/type/variable name) is used across the workspace. Grep-backed, ' +
       'word-boundary matched. Returns file:line hits including the definition.',
@@ -131,6 +133,7 @@ export function registerCodeNavTools(): void {
 
   toolRegistry.registerTool({
     name: 'go_to_definition',
+    parallelSafe: true,
     description:
       'Locate the likely definition(s) of a symbol across the workspace (function/class/type/const, ' +
       'or Rust fn/struct/enum/trait). Grep-backed heuristic; returns the most probable file:line(s).',

@@ -14,6 +14,14 @@ export interface ToolDefinition {
   execute: (params: any) => Promise<any>;
   /** If true, this tool only reads state and never mutates it. Used by readOnly mode and SmartApprove. */
   readOnly?: boolean;
+  /**
+   * If true, this tool is safe to run concurrently with other parallelSafe
+   * tools in the same batch (#587). Independent read-only tools (read_file,
+   * list_dir, search_files, …) may be grouped and executed in parallel; the
+   * browser read-only tools are intentionally excluded because they share one
+   * CDP engine. Tools without this flag always execute strictly sequentially.
+   */
+  parallelSafe?: boolean;
 }
 
 export interface ToolCall {
@@ -49,6 +57,155 @@ export interface ToolResult {
   role?: 'tool';
   name: string;
   content: string;
+}
+
+/** Concurrency cap for parallel-safe tool groups (#587). */
+export const PARALLEL_TOOL_CONCURRENCY = 4;
+
+/**
+ * Outcome of executing one prepared tool call. `notify` mirrors the historical
+ * per-call behavior: `true` for a real result (success or blocked), `false` for
+ * an execution error, so the `onToolResult` callback fires in exactly the same
+ * places it did before batching existed.
+ */
+export interface ToolExecution {
+  result: ToolResult;
+  notify: boolean;
+}
+
+/**
+ * Options for {@link runToolCalls}. The helper owns only grouping, ordering and
+ * abort handling; every side effect lives in a callback so both the Ollama
+ * (agent.ts) and OpenAI (openAiAgent.ts) loops can reuse it verbatim.
+ */
+export interface ToolBatchOptions<M extends object = any> {
+  /** True when this tool call may be grouped with parallelSafe calls. */
+  isSafe: (toolCall: ToolCall) => boolean;
+  /** Optional abort signal. A new group is never started once it is aborted. */
+  signal?: AbortSignal;
+  /** Max tool calls executed concurrently within a group (default PARALLEL_TOOL_CONCURRENCY). */
+  concurrency?: number;
+  /**
+   * Sequential gate run per call BEFORE execute. Return a blocked ToolResult
+   * (filter/read-only-mode/approval/hook) to skip execution, or null to proceed.
+   */
+  gate: (toolCall: ToolCall) => Promise<ToolResult | null>;
+  /** Execute one prepared call. Must catch its own errors and return an error ToolResult. */
+  execute: (toolCall: ToolCall) => Promise<ToolExecution>;
+  /** Produce the content pushed to the conversation store (post-hook + truncate). */
+  postProcess: (toolCall: ToolCall, result: ToolResult) => Promise<string>;
+  /**
+   * Emit one result to the UI + store (in order). Returns the message to yield
+   * to the caller's generator, or undefined to skip yielding. Must perform the
+   * store push and onToolResult callback before returning (so ordering and the
+   * "store before yield" invariant hold).
+   */
+  emit: (
+    toolCall: ToolCall,
+    result: ToolResult,
+    storeContent: string,
+    notify: boolean,
+  ) => Promise<M | undefined>;
+}
+
+/**
+ * Execute a batch of tool calls, preserving original order (#587).
+ *
+ * A contiguous run of parallel-safe tool calls is gated, executed and flushed
+ * as one ordered group (cap at `concurrency`). Everything else — mutating
+ * tools, gaps between runs, and the approval/pre-hook chains — stays strictly
+ * sequential and in place. Results (blocked and executed) are always emitted in
+ * the original call order, and no new group is started once `signal` aborts.
+ * Post-hooks run sequentially per call (phase 3), never inside the parallel
+ * execute step, so hook chains keep their ordering guarantees.
+ *
+ * Returns the yielded messages in the original call order; the caller is
+ * responsible for `yield`-ing each one from its own generator.
+ *
+ * @param M The message type returned by `emit` (e.g. the conversation message).
+ */
+export async function runToolCalls<M extends object>(
+  toolCalls: ToolCall[],
+  options: ToolBatchOptions<M>,
+): Promise<M[]> {
+  const concurrency = options.concurrency ?? PARALLEL_TOOL_CONCURRENCY;
+  const N = toolCalls.length;
+  const out: M[] = [];
+  let i = 0;
+
+  while (i < N) {
+    // Group boundary: never begin a new group once the run has been aborted.
+    // This also makes the previously-uninterruptible Ollama batch loop stoppable.
+    if (options.signal?.aborted) break;
+
+    const toolCall = toolCalls[i];
+
+    // Sequential path: mutating tools, non-parallel-safe tools, and run gaps.
+    if (!options.isSafe(toolCall)) {
+      const blocked = await options.gate(toolCall);
+      if (blocked) {
+        const msg = await options.emit(toolCall, blocked, blocked.content, true);
+        if (msg !== undefined) out.push(msg);
+        i++;
+        continue;
+      }
+      const exec = await options.execute(toolCall);
+      const storeContent = exec.notify
+        ? await options.postProcess(toolCall, exec.result)
+        : exec.result.content;
+      const msg = await options.emit(toolCall, exec.result, storeContent, exec.notify);
+      if (msg !== undefined) out.push(msg);
+      i++;
+      continue;
+    }
+
+    // Parallel group: gather a contiguous run of parallel-safe calls, capped so
+    // the group size itself is the effective concurrency limit.
+    const group: ToolCall[] = [];
+    let j = i;
+    while (j < N && options.isSafe(toolCalls[j]) && group.length < concurrency) {
+      group.push(toolCalls[j]);
+      j++;
+    }
+
+    // Phase 1 — gate each group member sequentially, in original order.
+    const prepared: number[] = [];       // positions inside the group
+    const blocked: { pos: number; toolCall: ToolCall; result: ToolResult }[] = [];
+    for (let g = 0; g < group.length; g++) {
+      const b = await options.gate(group[g]);
+      if (b) blocked.push({ pos: g, toolCall: group[g], result: b });
+      else prepared.push(g);
+    }
+
+    // Phase 2 — execute the prepared members concurrently. Each captures its
+    // group position so ordering can be restored on flush (execute catches its
+    // own errors and returns an error ToolExecution with notify=false).
+    const executed: { pos: number; toolCall: ToolCall; exec: ToolExecution }[] = await Promise.all(
+      prepared.map(async (pos) => ({ pos, toolCall: group[pos], exec: await options.execute(group[pos]) }))
+    );
+
+    // Phase 3 — finalize strictly in the original call order. Blocked and error
+    // results flush their content directly; successful results run through
+    // postProcess first to build the model-store copy. Each emit appends the
+    // message to `out` in call order.
+    const entries = [
+      ...blocked.map((e) => ({ pos: e.pos, toolCall: e.toolCall, result: e.result, blocked: true as const })),
+      ...executed.map((e) => ({ pos: e.pos, toolCall: e.toolCall, result: e.exec.result, blocked: false as const, notify: e.exec.notify })),
+    ].sort((a, b) => a.pos - b.pos);
+    for (const entry of entries) {
+      if (entry.blocked || !entry.notify) {
+        const msg = await options.emit(entry.toolCall, entry.result, entry.result.content, entry.blocked);
+        if (msg !== undefined) out.push(msg);
+        continue;
+      }
+      const storeContent = await options.postProcess(entry.toolCall, entry.result);
+      const msg = await options.emit(entry.toolCall, entry.result, storeContent, entry.notify);
+      if (msg !== undefined) out.push(msg);
+    }
+    i = j;
+  }
+
+  return out;
 }
 
 class ToolRegistry {

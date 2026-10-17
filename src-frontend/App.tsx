@@ -1444,6 +1444,7 @@ const App: React.FC = () => {
           name: 'search_web',
           description: 'Search the web using DuckDuckGo (or SearXNG if configured). Returns titles, URLs, and snippets.',
           readOnly: true,
+          parallelSafe: true,
           parameters: {
             type: 'object',
             properties: {

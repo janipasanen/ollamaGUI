@@ -166,6 +166,7 @@ export function reviewDiffText(diff: string): ReviewFinding[] {
 export function registerDevTools(): void {
   toolRegistry.registerTool({
     name: 'review_diff',
+    parallelSafe: true,
     description:
       'Review the current git working-tree diff (or a specific file) for common issues before committing: ' +
       'leftover debug statements, TODO/FIXME, focused/skipped tests, empty catch blocks, and possible ' +

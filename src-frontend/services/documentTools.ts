@@ -84,6 +84,7 @@ import { toolRegistry } from './tools';
 export function registerDocumentTools(): void {
   toolRegistry.registerTool({
     name: 'document_read',
+    parallelSafe: true,
     description: 'Read and extract text from a document file (docx, xlsx, pptx, odt, pdf, md, txt).',
     parameters: {
       type: 'object',
@@ -133,6 +134,7 @@ export function registerDocumentTools(): void {
 
   toolRegistry.registerTool({
     name: 'document_formats',
+    parallelSafe: true,
     description: 'List document formats supported by the read/create/convert tools.',
     parameters: { type: 'object', properties: {} },
     readOnly: true,
@@ -142,6 +144,7 @@ export function registerDocumentTools(): void {
   // PDF tools (#218) — wire documentsPdf into the agent tool registry.
   toolRegistry.registerTool({
     name: 'pdf_info',
+    parallelSafe: true,
     description: 'Probe a PDF for its page count and whether it has extractable text.',
     parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the PDF file' } }, required: ['path'] },
     readOnly: true,
@@ -179,6 +182,7 @@ export function registerDocumentTools(): void {
 
   toolRegistry.registerTool({
     name: 'pdf_extract',
+    parallelSafe: true,
     description: 'Extract plain text from a PDF (bundled, no external tool).',
     parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the PDF file' } }, required: ['path'] },
     readOnly: true,

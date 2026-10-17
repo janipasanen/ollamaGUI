@@ -1,8 +1,7 @@
 import { Message, GenerationOptions, cleanGenerationOptions, computeGenStats, ollamaErrorFromResponse, type GenStats } from './ollama';
-import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs } from './tools';
+import { toolRegistry, ToolCall, ToolResult, toolCallName, toolCallArgs, truncateToolContent, runToolCalls } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse } from './agentAutonomy';
-import { truncateToolContent } from './tools';
 
 export interface AgenticChatOptions {
   model: string;
@@ -382,117 +381,125 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
           ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
           tool_calls: toolCalls,
         } as any);
-        for (const toolCall of toolCalls) {
-          try {
-            const toolDef = toolRegistry.getTool(toolCallName(toolCall));
+        // Execute the batch, preserving the original tool-call order (#587).
+        // Read-only, parallel-safe tools (read_file, list_dir, search_files, …)
+        // are grouped and run concurrently; everything else — mutating tools,
+        // the approval/pre-hook chains, and gaps between runs — stays strictly
+        // sequential and in place. The per-call gate (filter/read-only/
+        // approval/pre-hook) and post-hook run one call at a time, so the
+        // ordering guarantees are unchanged, and a group is never started once
+        // the run aborts (making the batch loop stoppable).
+        const toolMessages = await runToolCalls(toolCalls, {
+          signal,
+          isSafe: (tc) => (toolRegistry.getTool(toolCallName(tc)) as any)?.parallelSafe === true,
+          gate: async (tc) => {
+            const toolDef = toolRegistry.getTool(toolCallName(tc));
             const toolIsReadOnly = (toolDef as any)?.readOnly ?? false;
 
             // Per-tool disable (#399/#423): even if the model hallucinates a
             // tool it wasn't offered, a tool excluded from the active toolFilter
             // must not execute. The filter only removes it from the request;
             // enforce it here at execution time too.
-            if (toolFilter && !toolFilter.includes(toolCallName(toolCall))) {
+            if (toolFilter && !toolFilter.includes(toolCallName(tc))) {
               const blocked: ToolResult = {
-                tool_call_id: toolCall.id ?? 'unknown',
-                name: toolCallName(toolCall),
-                content: `Tool blocked: '${toolCallName(toolCall)}' is disabled by the user.`,
+                tool_call_id: tc.id ?? 'unknown',
+                name: toolCallName(tc),
+                content: `Tool blocked: '${toolCallName(tc)}' is disabled by the user.`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-              continue;
+              return blocked;
             }
 
             // Read-only mode check (agentAutonomy #146)
             if (isBlockedByReadOnlyMode(toolIsReadOnly)) {
               const blocked: ToolResult = {
-                tool_call_id: toolCall.id ?? 'unknown',
-                name: toolCallName(toolCall),
-                content: `Tool blocked: read-only mode is active and '${toolCallName(toolCall)}' is not a read-only tool.`,
+                tool_call_id: tc.id ?? 'unknown',
+                name: toolCallName(tc),
+                content: `Tool blocked: read-only mode is active and '${toolCallName(tc)}' is not a read-only tool.`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-              continue;
+              return blocked;
             }
 
-            // Plan/ask autonomy gate (#88/#89/#189)
-            const approvalArgs = toolCallArgs(toolCall);
+            // Plan/ask autonomy gate (#88/#89/#189). Read-only (and therefore
+            // parallel-safe) tools never prompt at any autonomy level.
+            const approvalArgs = toolCallArgs(tc);
             if (shouldAskBeforeToolUse(toolIsReadOnly) && onApprovalNeeded) {
-              const approved = await onApprovalNeeded(toolCallName(toolCall), approvalArgs);
+              const approved = await onApprovalNeeded(toolCallName(tc), approvalArgs);
               if (!approved) {
                 const blocked: ToolResult = {
-                  tool_call_id: toolCall.id ?? 'unknown',
-                  name: toolCallName(toolCall),
+                  tool_call_id: tc.id ?? 'unknown',
+                  name: toolCallName(tc),
                   content: `Tool blocked: user denied approval (autonomy level: ${(await import('./agentAutonomy')).getAutonomyLevel()}).`,
                 };
                 if (onToolResult) onToolResult(blocked);
-                currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
-                yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-                continue;
+                return blocked;
               }
             }
 
             // Pre-tool-use hook chain (toolHooks #90)
-            const hookArgs = approvalArgs;
-            const hookResult = await runPreToolUseHooks(toolCallName(toolCall), hookArgs);
+            const hookResult = await runPreToolUseHooks(toolCallName(tc), approvalArgs);
             if (!hookResult.allowed) {
               const blocked: ToolResult = {
-                tool_call_id: toolCall.id ?? 'unknown',
-                name: toolCallName(toolCall),
+                tool_call_id: tc.id ?? 'unknown',
+                name: toolCallName(tc),
                 content: `Tool blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-              continue;
+              return blocked;
             }
-
-            const toolResult = await toolRegistry.executeToolCall(toolCall);
-            if (onToolResult) {
-              onToolResult(toolResult);
+            return null;
+          },
+          execute: async (tc) => {
+            try {
+              const toolResult = await toolRegistry.executeToolCall(tc);
+              if (onToolResult) {
+                onToolResult(toolResult);
+              }
+              return { result: toolResult, notify: true };
+            } catch (error) {
+              const errToolName = toolCallName(tc);
+              console.error(`Error executing tool ${errToolName}:`, error);
+              const result: ToolResult = {
+                tool_call_id: tc.id ?? 'unknown',
+                name: errToolName,
+                content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              };
+              return { result, notify: false };
             }
-            
+          },
+          postProcess: async (tc, result) => {
             // PostToolUse hooks (#395) — may redact/block the output before it
             // reaches the model. The UI still shows the original full result.
-            const postHook = await runPostToolUseHooks(toolResult.name, approvalArgs, toolResult.content);
+            const postHook = await runPostToolUseHooks(result.name, toolCallArgs(tc), result.content);
             // Truncate the model-context copy so a huge output can't blow the
             // context window (#396). UI keeps the full content above.
-            const modelContent = truncateToolContent(postHook.content);
-
-            // Add tool result to messages for next iteration (model context)
+            return truncateToolContent(postHook.content);
+          },
+          emit: async (tc, result, storeContent, notify) => {
+            if (notify && onToolResult) {
+              onToolResult(result);
+            }
             currentMessages.push({
               role: 'tool',
-              content: modelContent,
-              name: toolResult.name,
-              tool_call_id: toolResult.tool_call_id,
+              content: storeContent,
+              name: result.name,
+              tool_call_id: result.tool_call_id,
             } as any);
-
-            yield {
+            return {
               role: 'tool',
-              content: toolResult.content,
-              name: toolResult.name,
-              tool_call_id: toolResult.tool_call_id,
+              content: result.content,
+              name: result.name,
+              tool_call_id: result.tool_call_id,
             } as any;
-          } catch (error) {
-            const errToolName = toolCallName(toolCall);
-            console.error(`Error executing tool ${errToolName}:`, error);
-            currentMessages.push({
-              role: 'tool',
-              content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              name: errToolName,
-              tool_call_id: toolCall.id ?? 'unknown',
-            } as any);
+          },
+        });
 
-            yield {
-              role: 'tool',
-              content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              name: errToolName,
-              tool_call_id: toolCall.id ?? 'unknown',
-            } as any;
-          }
+        // Forward batch results to the conversation, in original call order.
+        for (const message of toolMessages) {
+          yield message as any;
         }
-        
+
         // Continue to next iteration to let the model respond to tool results
         if (iteration >= maxIterations) {
           hitMaxIterations = true;

@@ -6,6 +6,7 @@ import {
   toolCallName,
   toolCallArgs,
   truncateToolContent,
+  runToolCalls,
 } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse, getAutonomyLevel } from './agentAutonomy';
@@ -485,106 +486,118 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
         tool_calls: toolCalls,
       } as any);
 
-      for (const toolCall of toolCalls) {
-        try {
-          const toolDef = toolRegistry.getTool(toolCallName(toolCall));
+      // Execute the batch, preserving tool-call order (#587). Parallel-safe,
+      // read-only tools run concurrently; mutating tools, the approval/pre-hook
+      // chains, and run gaps stay strictly sequential and in place.
+      const toolMessages = await runToolCalls(toolCalls, {
+        signal,
+        isSafe: (tc) => (toolRegistry.getTool(toolCallName(tc)) as any)?.parallelSafe === true,
+        gate: async (tc) => {
+          const toolDef = toolRegistry.getTool(toolCallName(tc));
           const toolIsReadOnly = (toolDef as any)?.readOnly ?? false;
 
           // Enforce toolFilter at execution time.
-          if (toolFilter && !toolFilter.includes(toolCallName(toolCall))) {
+          if (toolFilter && !toolFilter.includes(toolCallName(tc))) {
             const blocked: ToolResult = {
-              tool_call_id: toolCall.id ?? 'unknown',
+              tool_call_id: tc.id ?? 'unknown',
               role: 'tool',
-              name: toolCallName(toolCall),
-              content: `Tool blocked: '${toolCallName(toolCall)}' is disabled by the user.`,
+              name: toolCallName(tc),
+              content: `Tool blocked: '${toolCallName(tc)}' is disabled by the user.`,
             };
             if (onToolResult) onToolResult(blocked);
-            openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-            continue;
+            return blocked;
           }
 
           // Read-only mode check.
           if (isBlockedByReadOnlyMode(toolIsReadOnly)) {
             const blocked: ToolResult = {
-              tool_call_id: toolCall.id ?? 'unknown',
+              tool_call_id: tc.id ?? 'unknown',
               role: 'tool',
-              name: toolCallName(toolCall),
-              content: `Tool blocked: read-only mode is active and '${toolCallName(toolCall)}' is not a read-only tool.`,
+              name: toolCallName(tc),
+              content: `Tool blocked: read-only mode is active and '${toolCallName(tc)}' is not a read-only tool.`,
             };
             if (onToolResult) onToolResult(blocked);
-            openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-            continue;
+            return blocked;
           }
 
-          // Plan/ask autonomy gate.
-          const approvalArgs = toolCallArgs(toolCall);
+          // Plan/ask autonomy gate. Read-only (and therefore parallel-safe)
+          // tools never prompt at any autonomy level.
+          const approvalArgs = toolCallArgs(tc);
           if (shouldAskBeforeToolUse(toolIsReadOnly) && onApprovalNeeded) {
-            const approved = await onApprovalNeeded(toolCallName(toolCall), approvalArgs);
+            const approved = await onApprovalNeeded(toolCallName(tc), approvalArgs);
             if (!approved) {
               const blocked: ToolResult = {
-                tool_call_id: toolCall.id ?? 'unknown',
+                tool_call_id: tc.id ?? 'unknown',
                 role: 'tool',
-                name: toolCallName(toolCall),
+                name: toolCallName(tc),
                 content: `Tool blocked: user denied approval (autonomy level: ${getAutonomyLevel()}).`,
               };
               if (onToolResult) onToolResult(blocked);
-              openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-              continue;
+              return blocked;
             }
           }
 
           // Pre-tool-use hook chain.
-          const hookArgs = approvalArgs;
-          const hookResult = await runPreToolUseHooks(toolCallName(toolCall), hookArgs);
+          const hookResult = await runPreToolUseHooks(toolCallName(tc), approvalArgs);
           if (!hookResult.allowed) {
             const blocked: ToolResult = {
-              tool_call_id: toolCall.id ?? 'unknown',
+              tool_call_id: tc.id ?? 'unknown',
               role: 'tool',
-              name: toolCallName(toolCall),
+              name: toolCallName(tc),
               content: `Tool blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
             };
             if (onToolResult) onToolResult(blocked);
-            openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
-            continue;
+            return blocked;
           }
-
-          const toolResult = await toolRegistry.executeToolCall(toolCall);
-          if (onToolResult) onToolResult(toolResult);
-
-          // PostToolUse hooks.
-          const postHook = await runPostToolUseHooks(toolResult.name, approvalArgs, toolResult.content);
-          const modelContent = truncateToolContent(postHook.content);
-
+          return null;
+        },
+        execute: async (tc) => {
+          try {
+            const toolResult = await toolRegistry.executeToolCall(tc);
+            if (onToolResult) {
+              onToolResult(toolResult);
+            }
+            return { result: toolResult, notify: true };
+          } catch (error) {
+            const errToolName = toolCallName(tc);
+            console.error(`Error executing tool ${errToolName}:`, error);
+            const result: ToolResult = {
+              tool_call_id: tc.id ?? 'unknown',
+              role: 'tool',
+              name: errToolName,
+              content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            };
+            return { result, notify: false };
+          }
+        },
+        postProcess: async (tc, result) => {
+          // PostToolUse hooks — may redact/block the output before it reaches
+          // the model. The UI still shows the original full result.
+          const postHook = await runPostToolUseHooks(result.name, toolCallArgs(tc), result.content);
+          return truncateToolContent(postHook.content);
+        },
+        emit: async (tc, result, storeContent, notify) => {
+          if (notify && onToolResult) {
+            onToolResult(result);
+          }
           openaiMessages.push({
             role: 'tool',
-            tool_call_id: toolCall.id ?? 'unknown',
-            content: modelContent,
-            name: toolResult.name,
+            tool_call_id: tc.id ?? 'unknown',
+            content: storeContent,
+            name: result.name,
           });
-
-          yield {
+          return {
             role: 'tool',
-            content: toolResult.content,
-            name: toolResult.name,
-            tool_call_id: toolResult.tool_call_id,
+            content: result.content,
+            name: result.name,
+            tool_call_id: tc.id ?? 'unknown',
           } as any;
-        } catch (error) {
-          const errToolName = toolCallName(toolCall);
-          console.error(`Error executing tool ${errToolName}:`, error);
-          const errResult: ToolResult = {
-            tool_call_id: toolCall.id ?? 'unknown',
-            role: 'tool',
-            name: errToolName,
-            content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          };
-          if (onToolResult) onToolResult(errResult);
-          openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: errResult.content, name: errResult.name });
-          yield { role: 'tool', content: errResult.content, name: errResult.name, tool_call_id: errResult.tool_call_id } as any;
-        }
+        },
+      });
+
+      // Forward batch results to the conversation, in original call order.
+      for (const message of toolMessages) {
+        yield message as any;
       }
 
       if (iteration >= maxIterations) hitMaxIterations = true;

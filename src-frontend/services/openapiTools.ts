@@ -160,6 +160,9 @@ export function operationToToolDefinition(
     // GET/HEAD operations fetch data without side effects (#477); everything
     // else (POST/PUT/PATCH/DELETE) may mutate remote state.
     readOnly: method === 'get' || method === 'head',
+    // GET/HEAD are read-only and independent, so they can run concurrently
+    // with other parallel-safe tools (#587); mutating verbs stay sequential.
+    parallelSafe: method === 'get' || method === 'head',
     parameters: {
       type: 'object',
       properties,
