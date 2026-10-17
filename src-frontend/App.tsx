@@ -1099,6 +1099,23 @@ const App: React.FC = () => {
       : { baseUrl: conn?.baseUrl ?? ollamaBaseUrl, kind, model: cm?.name });
   }, [model, connections, connectedModels, ollamaBaseUrl]);
 
+  // #592: mirror the visible session id + pending-approval state into refs so
+  // streaming callbacks read the latest session id synchronously (no
+  // re-renders) and the memoized teardown below can unblock an awaited approval
+  // gate even when called from the []-deps startNewChat.
+  const currentSessionIdRef = useRef<string | null>(null);
+  const pendingApprovalRef = useRef(pendingApproval);
+  const pendingToolApprovalRef = useRef(pendingToolApproval);
+  const pendingPlanApprovalRef = useRef(pendingPlanApproval);
+  // #592: the run currently owning the streamed chat output. Each generation
+  // stamps a fresh sessionId + token here; switching sessions nulls it so
+  // residual stream callbacks know they no longer own the live chat.
+  const runOwnerRef = useRef<{ sessionId: string | null; token: symbol } | null>(null);
+  useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => { pendingApprovalRef.current = pendingApproval; }, [pendingApproval]);
+  useEffect(() => { pendingToolApprovalRef.current = pendingToolApproval; }, [pendingToolApproval]);
+  useEffect(() => { pendingPlanApprovalRef.current = pendingPlanApproval; }, [pendingPlanApproval]);
+
   // Storage quota warning
   const [storageWarning, setStorageWarning] = useState(false);
 
@@ -1889,7 +1906,37 @@ const App: React.FC = () => {
     return () => window.removeEventListener('ollama-gui:select-file', handler);
   }, [activeProjectId, projects, pinnedFiles]);
 
+  // #592: shared teardown for "leave the chat mid-stream". Defined before
+  // startNewChat/loadSession so the []-deps versions can call it from their
+  // bodies without a TDZ error, and so the keydown-listener effect (which
+  // depends on startNewChat) never re-registers on every approval-state change.
+  // Reads the pending-approval refs so it always sees the freshest gate.
+  const stopActiveRun = useCallback(() => {
+    abortControllerRef.current?.abort();
+    // If the agent is blocked on an approval prompt (CLI command #361, agent
+    // tool #88, or plan #408), the AbortSignal alone can't unblock the awaited
+    // promise — resolve it as denied so the loop reaches its top-of-iteration
+    // abort guard and completes cleanly, and close the modal immediately.
+    const pa = pendingApprovalRef.current;
+    if (pa) { pa.resolve(false); setPendingApproval(null); }
+    const pt = pendingToolApprovalRef.current;
+    if (pt) { pt.resolve(false); setPendingToolApproval(null); }
+    const pp = pendingPlanApprovalRef.current;
+    if (pp) { pp.resolve(false); setPendingPlanApproval(null); setPlanEditDraft(null); }
+    setIsLoading(false);
+    setAgentStatus(null);
+    setAgentStep(null);
+  }, []);
+
+  // Kept for the stop button and Escape handler; delegates to stopActiveRun so
+  // there is a single abort/cleanup code path.
+  const cancelStream = () => stopActiveRun();
+
   const startNewChat = useCallback((projectId?: string | null) => {
+    // #592: leave any in-flight run cleanly before clearing state, so its
+    // residual tokens do not land in the fresh chat we are about to show.
+    stopActiveRun();
+    currentSessionIdRef.current = null;
     setMessages([]);
     trunkMessagesRef.current = [];
     setBranchState(emptyBranchState());
@@ -1902,10 +1949,13 @@ const App: React.FC = () => {
     setPinnedFiles([]);
     savePinnedFiles([]);
     if (projectId !== undefined) setActiveProjectId(projectId);
-  }, []);
+  }, [stopActiveRun]);
 
   // Start a temporary chat — messages live only in state, never persisted.
   const startTemporaryChat = useCallback(() => {
+    // #592: same clean leave as startNewChat, before resetting state.
+    stopActiveRun();
+    currentSessionIdRef.current = null;
     setMessages([]);
     trunkMessagesRef.current = [];
     setBranchState(emptyBranchState());
@@ -1915,7 +1965,7 @@ const App: React.FC = () => {
     setIsTemporary(true);
     setMessageQueue([]);
     setLatestArtifact(null);
-  }, []);
+  }, [stopActiveRun]);
 
   // Promote the current temporary chat into a persisted session.
   const saveTemporaryChat = () => {
@@ -2330,6 +2380,11 @@ const App: React.FC = () => {
 
   // Session management
   const loadSession = (session: ChatSession) => {
+    // #592: leave any in-flight run cleanly before swapping in the target chat,
+    // then stamp the visible session id synchronously so a residual stream
+    // callback routing by id targets the correct (left) session.
+    stopActiveRun();
+    currentSessionIdRef.current = session.id;
     const bs = session.branchState ?? migrateToBranchState(session.messages);
     setMessages(session.messages);
     trunkMessagesRef.current = session.messages;
@@ -2555,6 +2610,10 @@ const App: React.FC = () => {
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
       setCurrentSessionId(newSession.id);
+      // #592: an in-flight run that started in an empty session adopts the
+      // freshly minted id so its stream callbacks keep "owning" it.
+      const owner = runOwnerRef.current;
+      if (owner && owner.sessionId == null) owner.sessionId = newSession.id;
       setSessions(storage.getSessions());
     } else {
       const session = storage.getSessions().find(s => s.id === currentSessionId);
@@ -2564,6 +2623,17 @@ const App: React.FC = () => {
         setSessions(storage.getSessions());
       }
     }
+  };
+
+  // #592: persist a finalized/cancelled message array to the session it owns,
+  // by id — used when an in-flight run's owning session is no longer the chat on
+  // screen, so residual output never lands in whatever session happens to be open.
+  const persistMessagesToSession = (sessionId: string | null, build: (prev: Message[]) => Message[]) => {
+    if (!sessionId) return;
+    const sess = storage.getSessions().find(s => s.id === sessionId);
+    if (!sess) return;
+    storage.saveSession({ ...sess, messages: build(sess.messages) });
+    setSessions(storage.getSessions());
   };
 
   // M5 Issue 19: Export/import conversations
@@ -2717,20 +2787,6 @@ const App: React.FC = () => {
       e.preventDefault();
       attachImageFiles(images);
     }
-  };
-
-  const cancelStream = () => {
-    abortControllerRef.current?.abort();
-    // If the agent is blocked on an approval prompt (CLI command #361, agent
-    // tool #88, or plan #408), the AbortSignal alone can't unblock the awaited
-    // promise — resolve it as denied so the loop reaches its top-of-iteration
-    // abort guard and completes cleanly, and close the modal immediately.
-    if (pendingApproval) { pendingApproval.resolve(false); setPendingApproval(null); }
-    if (pendingToolApproval) { pendingToolApproval.resolve(false); setPendingToolApproval(null); }
-    if (pendingPlanApproval) { pendingPlanApproval.resolve(false); setPendingPlanApproval(null); setPlanEditDraft(null); }
-    setIsLoading(false);
-    setAgentStatus(null);
-    setAgentStep(null);
   };
 
   // Send message
@@ -3858,6 +3914,14 @@ ${lines.join('\n')}`;
     setAttachedImages([]);
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
+    // #592: stamp this run's ownership (owning session id + a per-run token) so
+    // every stream callback can tell, without re-renders, whether it still owns
+    // the chat currently on screen. Switching sessions later nulls the owner or
+    // changes currentSessionIdRef, which makes residual callbacks bail out.
+    const runToken = Symbol();
+    runOwnerRef.current = { sessionId: currentSessionIdRef.current, token: runToken };
+    const ownsVisibleRun = () =>
+      runOwnerRef.current != null && runOwnerRef.current.token === runToken && runOwnerRef.current.sessionId === currentSessionIdRef.current;
 
     // Hoisted above the try so the catch can reference it too, and named
     // distinctly so it does not shadow the module-level isCloudModel() (#484).
@@ -3901,10 +3965,15 @@ ${lines.join('\n')}`;
             mlx: { active: mlxActive, port: mlxSettings.serverPort },
             signal: abortControllerRef.current?.signal,
             onPhase: (_phase, label) => {
+              // #592: bails when a session switch has ended this run's ownership
+              // of the live chat, so residual orchestrator phases never append to
+              // the wrong (open) chat.
+              if (!ownsVisibleRun()) return;
               header = `_${label}…_\n\n`;
               setMessages(prev => [...prev, { role: 'assistant', content: header, ...(orchestratorReasoning ? { reasoning: orchestratorReasoning } : {}) }] as Message[]);
             },
             onDelta: (_phase, fullText) => {
+              if (!ownsVisibleRun()) return;
               setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last?.role === 'assistant') {
@@ -3914,6 +3983,7 @@ ${lines.join('\n')}`;
               });
             },
             onReasoning: (_phase, fullReasoning) => {
+              if (!ownsVisibleRun()) return;
               orchestratorReasoning = fullReasoning;
               setMessages(prev => {
                 const last = prev[prev.length - 1];
@@ -3924,9 +3994,14 @@ ${lines.join('\n')}`;
               });
             },
           });
-          setMessages(prev => { saveCurrentSession(prev); return prev; });
+          // #592: only persist if this run still owns the live chat.
+          setMessages(prev => { if (!ownsVisibleRun()) return prev; saveCurrentSession(prev); return prev; });
         } catch (e) {
-          setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${e instanceof Error ? e.message : 'Orchestration failed'}` }] as Message[]);
+          // #592: if we switched sessions, don't surface the failure in the
+          // open chat — the run's output was already dropped above.
+          if (ownsVisibleRun()) {
+            setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${e instanceof Error ? e.message : 'Orchestration failed'}` }] as Message[]);
+          }
         }
         setIsLoading(false);
       } else if (mlxActive && !isAgenticMode) {
@@ -3936,6 +4011,9 @@ ${lines.join('\n')}`;
         setMessages(prev => [...prev, { role: 'assistant', content: '', ts: Date.now() }]);
         try {
           await fetchMlxChatStream(mlxSettings.localModel, chatHistory, (delta, reasoning) => {
+            // #592: bail when a session switch has ended this run's ownership,
+            // so residual MLX deltas never land in the wrong chat or mint it.
+            if (!ownsVisibleRun()) return;
             if (reasoning) assistantReasoning += reasoning;
             if (delta) assistantContent += delta;
             setMessages(prev => {
@@ -3947,6 +4025,17 @@ ${lines.join('\n')}`;
           }, mlxSettings.serverPort, { signal: abortControllerRef.current?.signal });
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
+            // #592: if we switched sessions mid-stream, persist the partial
+            // output to the session we left (by id) instead of the open chat.
+            if (!ownsVisibleRun()) {
+              const target = runOwnerRef.current?.sessionId;
+              const body = assistantContent ? `${assistantContent}\n\n*(generation cancelled)*` : '(generation cancelled)*';
+              if (target && body.length > 0) {
+                persistMessagesToSession(target, prev => [...prev, { role: 'assistant', content: body, wasCancelled: true, ts: Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message]);
+              }
+              setIsLoading(false);
+              return;
+            }
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last?.role === 'assistant') {
@@ -3997,6 +4086,9 @@ ${lines.join('\n')}`;
           // (parity with the normal streaming cancel-keep-partial #303)
           // instead of surfacing an "Error: aborted" banner.
           onCancel: () => {
+            // #592: bail when a session switch has ended this run's ownership,
+            // so the agentic loop can't append/cancel in the wrong (open) chat.
+            if (!ownsVisibleRun()) return;
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last?.role === 'assistant') {
@@ -4012,6 +4104,8 @@ ${lines.join('\n')}`;
           // Plan/ask autonomy gate (#88/#89/#189), shared with sub-agents (#476)
           onApprovalNeeded: createApprovalGate(),
           onAssistantMessage: (message) => {
+            // #592: bail when a session switch has ended this run's ownership.
+            if (!ownsVisibleRun()) return;
             setAgentStatus('Thinking…');
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
@@ -4028,6 +4122,8 @@ ${lines.join('\n')}`;
             });
           },
           onAssistantReasoning: (reasoning) => {
+            // #592: bail when a session switch has ended this run's ownership.
+            if (!ownsVisibleRun()) return;
             agenticReasoning = reasoning;
             setMessages(prev => {
               const lastMessage = prev[prev.length - 1];
@@ -4041,6 +4137,8 @@ ${lines.join('\n')}`;
           },
           onGenStats: (stats) => { agenticGenStats = stats; },
           onToolCall: (toolCall) => {
+            // #592: bail when a session switch has ended this run's ownership.
+            if (!ownsVisibleRun()) return;
             const name = toolCallName(toolCall);
             setAgentStatus(`Running: ${name}`);
             // Live inline status (#657): mark the call running.
@@ -4065,6 +4163,8 @@ ${lines.join('\n')}`;
             ]);
           },
           onToolResult: (toolResult) => {
+            // #592: bail when a session switch has ended this run's ownership.
+            if (!ownsVisibleRun()) return;
             setAgentStatus('Thinking…');
             pushActivity('result', toolResult.name, toolResult.content); // (#432)
             // Live inline status (#657): mark the call terminal and clear it as
@@ -4105,6 +4205,9 @@ ${lines.join('\n')}`;
             // clears it on the next send.
           },
           onError: (error) => {
+            // #592: only surface agentic failures in the live chat when this run
+            // still owns it.
+            if (!ownsVisibleRun()) return;
             setMessages(prev => [
               ...prev,
               { role: 'assistant', content: formatErrorLine(error, errCtx, errProv), isError: true },
@@ -4138,6 +4241,10 @@ ${lines.join('\n')}`;
             });
 
         for await (const message of agentStream) {
+          // #592: bails once a session switch has ended this run's ownership of
+          // the live chat, so the yield-issued max-iterations warning never
+          // lands in the wrong (open) chat.
+          if (!ownsVisibleRun()) continue;
           // Messages are already handled by the callbacks — except the
           // max-iterations stop warning, which is yielded directly by the
           // generator (not via onAssistantMessage) and must be surfaced to
@@ -4147,7 +4254,7 @@ ${lines.join('\n')}`;
           }
         }
         // Stamp final-turn generation stats onto the last assistant reply (#391, #392).
-        if (agenticGenStats) {
+        if (agenticGenStats && ownsVisibleRun()) {
           setMessages(prev => {
             for (let i = prev.length - 1; i >= 0; i--) {
               if (prev[i].role === 'assistant') {
@@ -4231,6 +4338,9 @@ ${lines.join('\n')}`;
               connectedModel.name,
               chatHistory,
               (delta, reasoning) => {
+                // #592: bail when a session switch has ended this run's
+                // ownership, so residual deltas never mint the open chat.
+                if (!ownsVisibleRun()) return;
                 if (reasoning) assistantReasoning += reasoning;
                 if (delta) assistantContent += delta;
                 setMessages(prev => {
@@ -4249,6 +4359,10 @@ ${lines.join('\n')}`;
           // Use bare model name — connected models carry a "connId/name" id prefix.
           const ollamaModelName = connectedModel?.name ?? activeModel;
           await fetchOllamaChatStream(ollamaModelName, chatHistory, (chunk) => {
+            // #592: if we switched sessions mid-stream, the run no longer owns
+            // the chat on screen — drop its tokens so it never pollutes the open
+            // chat nor mints/overwrites the wrong session.
+            if (!ownsVisibleRun()) return;
             const thinking = chunk.message?.thinking ?? chunk.thinking;
             if (thinking) {
               assistantReasoning += thinking;
@@ -4266,7 +4380,18 @@ ${lines.join('\n')}`;
           }, endpoint, false, genOptions, abortControllerRef.current?.signal, format);
           }
           streamOk = true;
-          // Apply filter outlets after stream completes (#127)
+          // #592: if we switched sessions during the stream, the run no longer
+          // owns the live chat. Persist the final output to the session it
+          // belongs to (by id) and stop, leaving the open chat and its
+          // artifacts/spoken/notifications untouched.
+          if (!ownsVisibleRun()) {
+            const target = runOwnerRef.current?.sessionId;
+            if (target && assistantContent.length > 0) {
+              persistMessagesToSession(target, prev => [...prev, { role: 'assistant', content: assistantContent, ts: Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}), ...(genStats ? { genStats } : {}) } as Message]);
+            }
+            setIsLoading(false);
+            return;
+          }
           const filtered = await applyFilterOutlet(assistantContent);
           // Stamp producedByModel (#97) and apply filtered content in one update
           setMessages(prev => {
@@ -4331,7 +4456,21 @@ ${lines.join('\n')}`;
           if (playSoundOnComplete) playCompletionSound();
         } catch (streamError) {
           if (abortControllerRef.current?.signal.aborted) {
-            // User cancelled — keep partial content, append note (#303)
+            // #592: if we switched sessions during the stream, persist the
+            // (possibly partial) output to the session we actually left, by id,
+            // and stop — leaving the live chat untouched instead of appending a
+            // cancellation marker to whatever chat is now open.
+            if (!ownsVisibleRun()) {
+              const target = runOwnerRef.current?.sessionId;
+              const marker = '\n\n*(generation cancelled)*';
+              const body = assistantContent ? `${assistantContent}${marker}`.trim() : '(generation cancelled)*';
+              if (target && body.length > 0) {
+                persistMessagesToSession(target, prev => [...prev, { role: 'assistant', content: body, wasCancelled: true, ts: Date.now(), ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message]);
+              }
+              setIsLoading(false);
+              return;
+            }
+            // User cancelled while staying — keep partial content, append note (#303)
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last?.role === 'assistant') {
@@ -4512,6 +4651,13 @@ ${lines.join('\n')}`;
     saveCurrentSession(history);
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
+    // #592: stamp this run's ownership so a session switch during the
+    // continuation ends its ownership and stops residual content from landing
+    // in the wrong (open) session.
+    const runToken = Symbol();
+    runOwnerRef.current = { sessionId: currentSessionIdRef.current, token: runToken };
+    const ownsVisibleRun = () =>
+      runOwnerRef.current != null && runOwnerRef.current.token === runToken && runOwnerRef.current.sessionId === currentSessionIdRef.current;
     const usingCloudModel = models.some(m => m.name === model && m.cloud);
     const selectedConnectedModel = connectedModels.find(m => m.id === model);
     const selectedConnection = selectedConnectedModel
@@ -4545,6 +4691,9 @@ ${lines.join('\n')}`;
 
     try {
       await fetchOllamaChatStream(ollamaModelName, history, (chunk) => {
+        // #592: bail if a session switch ended this continuation's ownership,
+        // so residual deltas never mint the wrong (open) session.
+        if (!ownsVisibleRun()) return;
         if (chunk.message?.content) {
           continuedContent += chunk.message.content;
           setMessages(prev => {
@@ -4557,14 +4706,34 @@ ${lines.join('\n')}`;
         if (chunk.done) contGenStats = computeGenStats(chunk);
       }, contEndpoint, false, genOptions, abortControllerRef.current?.signal, contFormat);
       // Final save
-      setMessages(prev => {
-        const last = prev[prev.length - 1];
-        const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false, ...(contGenStats ? { genStats: contGenStats } : {}), ...(contFormat ? { structuredFormat: contFormat } : {}) }] as Message[];
-        saveCurrentSession(updated);
-        return updated;
-      });
+      if (ownsVisibleRun()) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          const updated = [...prev.slice(0, -1), { ...last, content: cleanContent + continuedContent, wasCancelled: false, ...(contGenStats ? { genStats: contGenStats } : {}), ...(contFormat ? { structuredFormat: contFormat } : {}) }] as Message[];
+          saveCurrentSession(updated);
+          return updated;
+        });
+      }
     } catch (streamError) {
       if (abortControllerRef.current?.signal.aborted) {
+        // #592: if a session switch ended this continuation's ownership,
+        // persist the cancelled reply to the session we belong to (by id),
+        // leaving the live chat untouched.
+        if (!ownsVisibleRun()) {
+          const target = runOwnerRef.current?.sessionId;
+          const body = `${cleanContent + continuedContent}\n\n*(generation cancelled)*`;
+          if (target && body.length > 0) {
+            persistMessagesToSession(target, prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant') {
+                return [...prev.slice(0, -1), { ...last, content: body, wasCancelled: true }] as Message[];
+              }
+              return [...prev, { role: 'assistant', content: body, wasCancelled: true }] as Message[];
+            });
+          }
+          setIsLoading(false);
+          return;
+        }
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'assistant') {
