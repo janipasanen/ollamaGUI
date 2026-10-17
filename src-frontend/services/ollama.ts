@@ -10,6 +10,8 @@ export interface Message {
   content: string;
   images?: string[];
   name?: string;
+  /** For `role: 'tool'`: the matching assistant tool call id, so a reloaded session stays valid OpenAI history (#579). */
+  tool_call_id?: string;
   tool_calls?: any[];
   /** Grounding sources for inline citations (#120); round-trips via storage.saveSession. */
   sources?: import('./citations').Source[];

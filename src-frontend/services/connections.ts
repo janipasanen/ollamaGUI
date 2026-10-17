@@ -4,8 +4,168 @@
  * all enabled connections are aggregated into one unified model selector.
  */
 import { formatErrorLine } from './errorMessages';
+import { type Message } from './ollama';
 
 const STORAGE_KEY = 'model_connections';
+
+/**
+ * A single tool call in a transcript, as seen inside a persisted assistant
+ * `tool_calls` array. OpenAI-dialect calls shape it as `{ id, type, function:
+ * { name, arguments } }`; Ollama-dialect calls drop the `function` wrapper and
+ * store `name`/`arguments` at the top level.
+ */
+interface RawToolCall {
+  id?: string;
+  name?: string;
+  function?: { name?: string; arguments?: unknown };
+  arguments?: unknown;
+}
+
+/** A single accumulated tool call, normalized to an id + name + string args. */
+interface PendingToolCall {
+  id: string;
+  name: string;
+  args: string;
+}
+
+/** The waiting assistant tool_calls turn plus its (unanswered) accumulated calls. */
+interface PendingTurn {
+  content: string;
+  calls: PendingToolCall[];
+}
+
+/**
+ * Normalize an internal `Message[]` transcript into valid OpenAI-compatible
+ * chat history so it can be replayed to a strict `/v1/chat/completions` server
+ * (#579).
+ *
+ * Two structural defects otherwise make the first follow-up turn 400 on vLLM
+ * and recent LM Studio:
+ *  - the tool message's `tool_call_id` is fabricated from the tool name (or
+ *    omitted), so it matches no preceding `tool_calls[].id`;
+ *  - multi-call turns can arrive as `assistant(tc1), assistant(tc2),
+ *    tool(r1), tool(r2)` (each assistant turn not immediately followed by its
+ *    responses), or carry object-valued `function.arguments`.
+ *
+ * Normalization coalesces consecutive assistant tool_calls turns, matches each
+ * tool message to the nearest preceding unanswered tool call (by explicit
+ * `tool_call_id`, falling back to name for legacy sessions), drops tool
+ * messages that match nothing, drops an assistant tool_calls turn left with
+ * zero responses (or keeps its text as plain assistant text), and
+ * JSON-stringifies object-valued `function.arguments`.
+ */
+export function normalizeOpenAiHistory(messages: Message[]): any[] {
+  const out: any[] = [];
+
+  // The current waiting assistant tool_calls turn, plus the tool messages seen
+  // immediately after it. A tool message is only emitted after the assistant
+  // turn it answers, so we buffer the turn until a non-tool message (or the
+  // end) forces it to flush.
+  let pendingAssistant: PendingTurn | null = null;
+  let pendingTools: Message[] = [];
+
+  const flush = () => {
+    if (!pendingAssistant && pendingTools.length === 0) return;
+
+    const pairs: { call: PendingToolCall; result: Message }[] = [];
+    if (pendingAssistant) {
+      let toolIndex = 0;
+      for (const call of pendingAssistant?.calls ?? []) {
+        // Find the next still-unseen tool message that answers this call.
+        let result: Message | undefined;
+        while (toolIndex < pendingTools.length) {
+          const candidate = pendingTools[toolIndex++];
+          if (answersCall(call, candidate)) {
+            result = candidate;
+            break;
+          }
+        }
+        if (result) pairs.push({ call, result });
+      }
+    }
+
+    const text = (pendingAssistant && pendingAssistant.content) || '';
+    if (pairs.length === 0) {
+      // No tool response answers this turn. An orphaned assistant tool_calls
+      // turn is invalid history, so drop it — but keep the human-facing text
+      // (e.g. "Calling tool: …") as a plain assistant message.
+      const trimmed = text.trim();
+      if (trimmed) out.push({ role: 'assistant', content: trimmed });
+    } else {
+      const assistantMsg: any = { role: 'assistant' };
+      if (text.trim()) assistantMsg.content = text;
+      assistantMsg.tool_calls = pairs.map(({ call }) => ({
+        id: call.id,
+        type: 'function',
+        function: { name: call.name, arguments: call.args },
+      }));
+      out.push(assistantMsg);
+      for (const { call, result } of pairs) out.push(toolResultWire(result, call.id));
+    }
+
+    pendingAssistant = null;
+    pendingTools = [];
+  };
+
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      if (!pendingAssistant) pendingAssistant = { content: '', calls: [] };
+      if (m.content && m.content.trim()) {
+        pendingAssistant.content = pendingAssistant.content
+          ? `${pendingAssistant.content}\n${m.content}`
+          : m.content;
+      }
+      for (const tc of m.tool_calls) {
+        pendingAssistant.calls.push(normalizeToolCall(tc, pendingAssistant.calls.length));
+      }
+    } else if (m.role === 'tool') {
+      pendingTools.push(m);
+    } else {
+      flush();
+      out.push(nonToolWire(m));
+    }
+  }
+  flush();
+  return out;
+}
+
+/** Whether a persisted tool message answers a given accumulated call. */
+function answersCall(call: PendingToolCall, msg: Message): boolean {
+  if (msg.tool_call_id && msg.tool_call_id === call.id) return true;
+  // Legacy fallback: a saved tool message predating the fix carries only a
+  // name. Match on it, but only when there is no (mismatched) id present.
+  return !msg.tool_call_id && msg.name === call.name;
+}
+
+/** Build the wire tool-call record, defaulting the id and stringifying args. */
+function normalizeToolCall(tc: RawToolCall, index: number): PendingToolCall {
+  const name = tc?.function?.name ?? tc?.name ?? 'unknown';
+  const id = tc?.id ?? `call-${Date.now()}-${index}`;
+  const rawArgs = tc?.function?.arguments ?? tc?.arguments;
+  if (typeof rawArgs === 'string') return { id, name, args: rawArgs };
+  try {
+    return { id, name, args: JSON.stringify(rawArgs ?? {}) };
+  } catch {
+    return { id, name, args: '{}' };
+  }
+}
+
+/** Wire shape of a tool result: role + tool_call_id + content. */
+function toolResultWire(msg: Message, matchedCallId?: string): any {
+  // A matched message either carries its own id (which equals the call id) or
+  // was matched by name from a legacy save — in both cases the call id is the
+  // value to emit, so it never falls back to the unmatchable 'unknown'.
+  return {
+    role: 'tool',
+    tool_call_id: msg.tool_call_id ?? matchedCallId ?? 'unknown',
+    content: msg.content,
+  };
+}
+
+/** Wire shape of a plain message (user / system / text-only assistant). */
+function nonToolWire(m: Message): any {
+  return { role: m.role, content: m.content ?? '' };
+}
 
 export type ConnectionKind = 'openai' | 'ollama';
 
@@ -204,16 +364,18 @@ export async function openAiErrorFromResponse(res: Response, prefix: string): Pr
 export function buildOpenAiChatRequest(
   conn: ModelConnection,
   model: string,
-  messages: { role: string; content: string }[],
+  messages: Message[],
   options?: { temperature?: number; max_tokens?: number },
   stream = true
 ): { url: string; headers: Record<string, string>; body: string } {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
+  // Normalize so a reloaded session replays without 400 on strict servers (#579).
+  const normalized = normalizeOpenAiHistory(messages);
   return {
-    url: `${conn.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
+    url: `${conn.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`,
     headers,
-    body: JSON.stringify({ model, messages, stream, ...options }),
+    body: JSON.stringify({ model, messages: normalized, stream, ...options }),
   };
 }
 

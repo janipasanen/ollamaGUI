@@ -241,24 +241,26 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
             // enforce it here at execution time too.
             if (toolFilter && !toolFilter.includes(toolCallName(toolCall))) {
               const blocked: ToolResult = {
+                tool_call_id: toolCall.id ?? 'unknown',
                 name: toolCallName(toolCall),
                 content: `Tool blocked: '${toolCallName(toolCall)}' is disabled by the user.`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
+              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
               continue;
             }
 
             // Read-only mode check (agentAutonomy #146)
             if (isBlockedByReadOnlyMode(toolIsReadOnly)) {
               const blocked: ToolResult = {
+                tool_call_id: toolCall.id ?? 'unknown',
                 name: toolCallName(toolCall),
                 content: `Tool blocked: read-only mode is active and '${toolCallName(toolCall)}' is not a read-only tool.`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
+              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
               continue;
             }
 
@@ -268,12 +270,13 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
               const approved = await onApprovalNeeded(toolCallName(toolCall), approvalArgs);
               if (!approved) {
                 const blocked: ToolResult = {
+                  tool_call_id: toolCall.id ?? 'unknown',
                   name: toolCallName(toolCall),
                   content: `Tool blocked: user denied approval (autonomy level: ${(await import('./agentAutonomy')).getAutonomyLevel()}).`,
                 };
                 if (onToolResult) onToolResult(blocked);
-                currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
-                yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+                currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
+                yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
                 continue;
               }
             }
@@ -283,12 +286,13 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
             const hookResult = await runPreToolUseHooks(toolCallName(toolCall), hookArgs);
             if (!hookResult.allowed) {
               const blocked: ToolResult = {
+                tool_call_id: toolCall.id ?? 'unknown',
                 name: toolCallName(toolCall),
                 content: `Tool blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
               };
               if (onToolResult) onToolResult(blocked);
-              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name } as any);
-              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              currentMessages.push({ role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any);
+              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
               continue;
             }
 
@@ -309,12 +313,14 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
               role: 'tool',
               content: modelContent,
               name: toolResult.name,
+              tool_call_id: toolResult.tool_call_id,
             } as any);
-            
+
             yield {
               role: 'tool',
               content: toolResult.content,
               name: toolResult.name,
+              tool_call_id: toolResult.tool_call_id,
             } as any;
           } catch (error) {
             const errToolName = toolCallName(toolCall);
@@ -323,12 +329,14 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
               role: 'tool',
               content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
               name: errToolName,
+              tool_call_id: toolCall.id ?? 'unknown',
             } as any);
 
             yield {
               role: 'tool',
               content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
               name: errToolName,
+              tool_call_id: toolCall.id ?? 'unknown',
             } as any;
           }
         }

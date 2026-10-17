@@ -3948,6 +3948,7 @@ ${lines.join('\n')}`;
                 role: 'tool',
                 content: toolResult.content,
                 name: toolResult.name,
+                tool_call_id: toolResult.tool_call_id,
               },
             ]);
           },

@@ -9,7 +9,7 @@ import {
 } from './tools';
 import { runPreToolUseHooks, runPostToolUseHooks } from './toolHooks';
 import { isBlockedByReadOnlyMode, shouldAskBeforeToolUse, getAutonomyLevel } from './agentAutonomy';
-import type { ModelConnection } from './connections';
+import { type ModelConnection, normalizeOpenAiHistory } from './connections';
 
 /**
  * Internal tool-call record accumulated from OpenAI SSE deltas. Arguments can
@@ -19,34 +19,6 @@ interface AccumulatedToolCall {
   id: string;
   name: string;
   args: string;
-}
-
-/**
- * Convert an internal Message[] (used by the whole app) to the OpenAI chat
- * message shape expected by /v1/chat/completions.
- */
-function toOpenAiMessage(m: Message, toolCallIdMap: Map<string, string>): any {
-  if (m.role === 'tool') {
-    const name = m.name ?? 'unknown';
-    const callId = toolCallIdMap.get(name) ?? `${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    toolCallIdMap.set(name, callId);
-    return { role: 'tool', tool_call_id: callId, content: m.content };
-  }
-  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-    const toolCalls = m.tool_calls.map((tc, idx) => {
-      const id = tc.id ?? `call-${Date.now()}-${idx}`;
-      const args = tc.function?.arguments ?? tc.arguments;
-      const argStr = typeof args === 'string' ? args : JSON.stringify(args ?? {});
-      toolCallIdMap.set(toolCallName(tc), id);
-      return {
-        id,
-        type: 'function',
-        function: { name: toolCallName(tc), arguments: argStr },
-      };
-    });
-    return { role: 'assistant', content: m.content ?? '', tool_calls: toolCalls };
-  }
-  return { role: m.role, content: m.content };
 }
 
 /** Build an OpenAI chat-completions request for the given connection. */
@@ -252,9 +224,12 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
 
-  // Convert initial messages to OpenAI format.
-  const toolCallIdMap = new Map<string, string>();
-  let openaiMessages = messages.map(m => toOpenAiMessage(m, toolCallIdMap));
+  // Convert initial messages to valid OpenAI format. `normalizeOpenAiHistory`
+  // coalesces consecutive assistant tool_calls turns, matches every tool
+  // message to the nearest preceding unanswered call by `tool_call_id`, drops
+  // orphans, and stringifies object args — so a reloaded session replays
+  // without the "unmatched tool_call_id" 400 on strict servers (#579).
+  let openaiMessages = normalizeOpenAiHistory(messages);
 
   // Available tools (the registry already emits the OpenAI shape).
   const allTools = toolRegistry.getOllamaToolDefinitions();
@@ -370,7 +345,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
             };
             if (onToolResult) onToolResult(blocked);
             openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
             continue;
           }
 
@@ -384,7 +359,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
             };
             if (onToolResult) onToolResult(blocked);
             openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
             continue;
           }
 
@@ -401,7 +376,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
               };
               if (onToolResult) onToolResult(blocked);
               openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-              yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+              yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
               continue;
             }
           }
@@ -418,7 +393,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
             };
             if (onToolResult) onToolResult(blocked);
             openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: blocked.content, name: blocked.name });
-            yield { role: 'tool', content: blocked.content, name: blocked.name } as any;
+            yield { role: 'tool', content: blocked.content, name: blocked.name, tool_call_id: toolCall.id ?? 'unknown' } as any;
             continue;
           }
 
@@ -440,6 +415,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
             role: 'tool',
             content: toolResult.content,
             name: toolResult.name,
+            tool_call_id: toolResult.tool_call_id,
           } as any;
         } catch (error) {
           const errToolName = toolCallName(toolCall);
@@ -452,7 +428,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
           };
           if (onToolResult) onToolResult(errResult);
           openaiMessages.push({ role: 'tool', tool_call_id: toolCall.id ?? 'unknown', content: errResult.content, name: errResult.name });
-          yield { role: 'tool', content: errResult.content, name: errResult.name } as any;
+          yield { role: 'tool', content: errResult.content, name: errResult.name, tool_call_id: errResult.tool_call_id } as any;
         }
       }
 

@@ -171,6 +171,97 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
     expect(finalText).toBe('The sum is 6.');
   });
 
+  it('re-sends a persisted tool turn as VALID OpenAI history (#579)', async () => {
+    // A follow-up turn on a persisted session. The prior tool turn was saved
+    // by the UI in the internal Message shape: an assistant message carrying
+    // tool_calls, followed by a tool message that records only name/content.
+    const bodies: string[] = [];
+    const encoder = new TextEncoder();
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
+      if (init?.body) bodies.push(init.body);
+      const frames = bodies.length === 1
+        ? sse([chunk([{ index: 0, delta: { content: 'ok' } }]), chunk([{ index: 0, delta: {}, finish_reason: 'stop' }])])
+        : '';
+      return { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) } };
+    });
+
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [
+        { role: 'user', content: 'Add 2 and 4.' },
+        {
+          role: 'assistant',
+          content: 'Calling tool: add_numbers',
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'add_numbers', arguments: '{"a":2,"b":4}' } }],
+        },
+        { role: 'tool', name: 'add_numbers', content: '6' },
+        { role: 'user', content: 'thanks' },
+      ],
+      maxIterations: 1,
+    });
+
+    // The first request must carry valid OpenAI history: the tool message's
+    // tool_call_id has to match the assistant message's tool call id,
+    // otherwise strict servers 400.
+    expect(bodies.length).toBeGreaterThanOrEqual(1);
+    const firstBody = JSON.parse(bodies[0]) as { messages: any[] };
+    expect(firstBody.messages.length).toBe(4);
+    const assistant = firstBody.messages.find((m) => m.role === 'assistant' && m.tool_calls);
+    const toolMsg = firstBody.messages.find((m) => m.role === 'tool');
+    expect(assistant).toBeTruthy();
+    expect(toolMsg).toBeTruthy();
+    const toolCallId = assistant.tool_calls[0].id;
+    expect(toolCallId).toBe('call_1');
+    // The bug: tool messages record only name/content, so the reconstructed
+    // tool_call_id may not match the persisted assistant tool call id.
+    expect(toolMsg.tool_call_id).toBe(toolCallId);
+  });
+
+  it('matches each parallel tool result to the right call id (#579)', async () => {
+    // A single assistant message requests the SAME tool twice. The persisted
+    // tool messages carry only name/content, so a name-only lookup cannot tell
+    // which call-1 vs call-2 each result belongs to.
+    const bodies: string[] = [];
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
+      if (init?.body) bodies.push(init.body);
+      return { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) } };
+    });
+
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call-1', type: 'function', function: { name: 'add_numbers', arguments: '{"a":1,"b":1}' } },
+            { id: 'call-2', type: 'function', function: { name: 'add_numbers', arguments: '{"a":2,"b":2}' } },
+          ],
+        },
+        { role: 'tool', name: 'add_numbers', content: '2', tool_call_id: 'call-1' },
+        { role: 'tool', name: 'add_numbers', content: '4', tool_call_id: 'call-2' },
+        { role: 'user', content: 'ok' },
+      ],
+      maxIterations: 1,
+    });
+
+    const firstBody = JSON.parse(bodies[0]) as { messages: any[] };
+    const toolMsgs = firstBody.messages.filter((m) => m.role === 'tool');
+    const assistant = firstBody.messages.find((m) => m.role === 'assistant' && m.tool_calls);
+    // Both persisted call ids must be represented so no call is left unanswered.
+    const toolCallIds = toolMsgs.map((t) => t.tool_call_id);
+    expect(toolCallIds).toContain('call-1');
+    expect(toolCallIds).toContain('call-2');
+    expect(toolCallIds.length).toBe(2);
+    // Each tool message's id must match a real tool call on the assistant side.
+    const validIds = assistant.tool_calls.map((tc: any) => tc.id);
+    for (const id of toolCallIds) {
+      expect(validIds).toContain(id);
+    }
+  });
+
   it('streams text and reasoning deltas inline', async () => {
     const chunks = sse([
       chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
