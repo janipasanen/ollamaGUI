@@ -67,12 +67,13 @@ pub fn ooxml_repack(parts: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
         let cursor = Cursor::new(&mut buf);
         let mut zip = zip::ZipWriter::new(cursor);
         // Deflated is the standard OOXML compression; default options are fine.
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
         for (name, data) in parts {
             zip.start_file(name.as_str(), options)
                 .map_err(|e| format!("zip start {name}: {e}"))?;
-            zip.write_all(data).map_err(|e| format!("zip write {name}: {e}"))?;
+            zip.write_all(data)
+                .map_err(|e| format!("zip write {name}: {e}"))?;
         }
         zip.finish().map_err(|e| format!("zip finish: {e}"))?;
     }
@@ -353,7 +354,10 @@ const DOCX_MAIN: &str = "word/document.xml";
 
 /// Run `template_fill` over `word/document.xml` and repack. Lossless for all
 /// other parts.
-pub fn docx_template_fill(file_bytes: &[u8], data: &HashMap<String, String>) -> Result<Vec<u8>, String> {
+pub fn docx_template_fill(
+    file_bytes: &[u8],
+    data: &HashMap<String, String>,
+) -> Result<Vec<u8>, String> {
     let mut parts = ooxml_unpack(file_bytes)?;
     let mut found = false;
     for (name, data_bytes) in parts.iter_mut() {
@@ -365,7 +369,9 @@ pub fn docx_template_fill(file_bytes: &[u8], data: &HashMap<String, String>) -> 
         }
     }
     if !found {
-        return Err(format!("docx template fill: '{DOCX_MAIN}' not found — not a valid .docx"));
+        return Err(format!(
+            "docx template fill: '{DOCX_MAIN}' not found — not a valid .docx"
+        ));
     }
     ooxml_repack(&parts)
 }
@@ -386,7 +392,9 @@ pub fn docx_surgical_edit(file_bytes: &[u8], find: &str, replace: &str) -> Resul
         }
     }
     if !edited {
-        return Err(format!("docx surgical edit: '{DOCX_MAIN}' not found — not a valid .docx"));
+        return Err(format!(
+            "docx surgical edit: '{DOCX_MAIN}' not found — not a valid .docx"
+        ));
     }
     ooxml_repack(&parts)
 }
@@ -523,14 +531,18 @@ fn extract_run_text(xml_bytes: &[u8]) -> String {
 pub async fn document_edit(path: String, op: serde_json::Value) -> Result<EditResult, String> {
     let abs = crate::resolve_workspace_path(&path)?;
     let abs_str = abs.to_str().ok_or("Invalid path")?.to_string();
-    let format = ooxml_format(&abs_str)
-        .ok_or_else(|| format!("document_edit: unsupported format for '{path}' (expected .docx/.xlsx/.pptx)"))?;
+    let format = ooxml_format(&abs_str).ok_or_else(|| {
+        format!("document_edit: unsupported format for '{path}' (expected .docx/.xlsx/.pptx)")
+    })?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let file_bytes = std::fs::read(&abs_str).map_err(|e| format!("read {abs_str}: {e}"))?;
 
         // Route on the op shape.
-        let is_template = op.get("template").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_template = op
+            .get("template")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let new_bytes: Vec<u8> = if is_template {
             let data_obj = op
@@ -589,7 +601,10 @@ pub async fn document_edit(path: String, op: serde_json::Value) -> Result<EditRe
 /// Template-fill every slide's XML (`ppt/slides/slideN.xml`). Placeholders that
 /// don't appear in a given slide are left alone, so unrelated slides are
 /// untouched and ALL slides remain present.
-pub fn pptx_template_fill(file_bytes: &[u8], data: &HashMap<String, String>) -> Result<Vec<u8>, String> {
+pub fn pptx_template_fill(
+    file_bytes: &[u8],
+    data: &HashMap<String, String>,
+) -> Result<Vec<u8>, String> {
     let mut parts = ooxml_unpack(file_bytes)?;
     for (name, data_bytes) in parts.iter_mut() {
         if is_pptx_slide(name) {
@@ -603,7 +618,10 @@ pub fn pptx_template_fill(file_bytes: &[u8], data: &HashMap<String, String>) -> 
 
 /// Template-fill the workbook's shared-strings table (`xl/sharedStrings.xml`),
 /// where Excel stores cell text. Numeric/inline cells are not touched.
-pub fn xlsx_template_fill(file_bytes: &[u8], data: &HashMap<String, String>) -> Result<Vec<u8>, String> {
+pub fn xlsx_template_fill(
+    file_bytes: &[u8],
+    data: &HashMap<String, String>,
+) -> Result<Vec<u8>, String> {
     let mut parts = ooxml_unpack(file_bytes)?;
     let mut found = false;
     for (name, data_bytes) in parts.iter_mut() {
@@ -671,7 +689,10 @@ fn attr_local(key: &[u8]) -> &[u8] {
 fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if attr_local(a.key.as_ref()) == name {
-            return a.normalized_value(quick_xml::XmlVersion::default()).ok().map(|v| v.into_owned());
+            return a
+                .normalized_value(quick_xml::XmlVersion::default())
+                .ok()
+                .map(|v| v.into_owned());
         }
     }
     None
@@ -704,9 +725,7 @@ fn looks_like_number(value: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    t.parse::<f64>()
-        .map(|f| f.is_finite())
-        .unwrap_or(false)
+    t.parse::<f64>().map(|f| f.is_finite()).unwrap_or(false)
 }
 
 /// Resolve a (optional) sheet name to its worksheet part path inside the xlsx
@@ -716,10 +735,12 @@ fn resolve_worksheet_part(
     sheet: Option<&str>,
 ) -> Result<(String, String), String> {
     fn part<'a>(parts: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8]> {
-        parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
-    let wb = part(parts, "xl/workbook.xml")
-        .ok_or("Not a valid xlsx: missing xl/workbook.xml")?;
+    let wb = part(parts, "xl/workbook.xml").ok_or("Not a valid xlsx: missing xl/workbook.xml")?;
     // Sheet order in workbook.xml defines the visible order; first = default.
     let mut sheets: Vec<(String, String)> = Vec::new();
     let mut reader = quick_xml::Reader::from_reader(wb);
@@ -727,7 +748,10 @@ fn resolve_worksheet_part(
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        match reader.read_event_into(&mut buf).map_err(|e| format!("workbook.xml: {e}"))? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("workbook.xml: {e}"))?
+        {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheet" => {
                 let name = attr_value(&e, b"name").unwrap_or_default();
                 // `r:id` (the relationship id) — not `sheetId`, which is a
@@ -757,7 +781,10 @@ fn resolve_worksheet_part(
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        match reader.read_event_into(&mut buf).map_err(|e| format!("workbook rels: {e}"))? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("workbook rels: {e}"))?
+        {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
                 if attr_value(&e, b"Id").as_deref() == Some(r_id.as_str()) {
                     target = attr_value(&e, b"Target");
@@ -767,7 +794,8 @@ fn resolve_worksheet_part(
             _ => {}
         }
     }
-    let target = target.ok_or_else(|| format!("Relationship {r_id} not found in workbook.xml.rels"))?;
+    let target =
+        target.ok_or_else(|| format!("Relationship {r_id} not found in workbook.xml.rels"))?;
     // Target is relative to `xl/` (e.g. "worksheets/sheet1.xml").
     let norm = target.trim_start_matches("./");
     Ok((sheet_name, format!("xl/{norm}")))
@@ -793,17 +821,35 @@ fn make_cell_events(
     let mut events: Vec<Event<'static>> = Vec::new();
     events.push(Event::Start(bs.into_owned()));
     if number {
-        events.push(Event::Start(quick_xml::events::BytesStart::new("v").into_owned()));
-        events.push(Event::Text(quick_xml::events::BytesText::new(value).into_owned()));
-        events.push(Event::End(quick_xml::events::BytesEnd::new("v").into_owned()));
+        events.push(Event::Start(
+            quick_xml::events::BytesStart::new("v").into_owned(),
+        ));
+        events.push(Event::Text(
+            quick_xml::events::BytesText::new(value).into_owned(),
+        ));
+        events.push(Event::End(
+            quick_xml::events::BytesEnd::new("v").into_owned(),
+        ));
     } else {
-        events.push(Event::Start(quick_xml::events::BytesStart::new("is").into_owned()));
-        events.push(Event::Start(quick_xml::events::BytesStart::new("t").into_owned()));
-        events.push(Event::Text(quick_xml::events::BytesText::new(value).into_owned()));
-        events.push(Event::End(quick_xml::events::BytesEnd::new("t").into_owned()));
-        events.push(Event::End(quick_xml::events::BytesEnd::new("is").into_owned()));
+        events.push(Event::Start(
+            quick_xml::events::BytesStart::new("is").into_owned(),
+        ));
+        events.push(Event::Start(
+            quick_xml::events::BytesStart::new("t").into_owned(),
+        ));
+        events.push(Event::Text(
+            quick_xml::events::BytesText::new(value).into_owned(),
+        ));
+        events.push(Event::End(
+            quick_xml::events::BytesEnd::new("t").into_owned(),
+        ));
+        events.push(Event::End(
+            quick_xml::events::BytesEnd::new("is").into_owned(),
+        ));
     }
-    events.push(Event::End(quick_xml::events::BytesEnd::new("c").into_owned()));
+    events.push(Event::End(
+        quick_xml::events::BytesEnd::new("c").into_owned(),
+    ));
     Ok(events)
 }
 
@@ -816,7 +862,9 @@ fn make_row_events(row: u32, cell_ref: &str, value: &str) -> Result<Vec<Event<'s
     let mut events: Vec<Event<'static>> = Vec::new();
     events.push(Event::Start(bs.into_owned()));
     events.extend(make_cell_events(cell_ref, value, &[])?);
-    events.push(Event::End(quick_xml::events::BytesEnd::new("row").into_owned()));
+    events.push(Event::End(
+        quick_xml::events::BytesEnd::new("row").into_owned(),
+    ));
     Ok(events)
 }
 
@@ -851,8 +899,7 @@ fn rewrite_cell_in_row(
     // be a normal `<c>…</c>` (Start) or a self-closing `<c/>` (Empty).
     let has_cell = raw.iter().any(|ev| match ev {
         Event::Start(e) | Event::Empty(e) => {
-            e.local_name().as_ref() == b"c"
-                && attr_value(e, b"r").as_deref() == Some(target_ref)
+            e.local_name().as_ref() == b"c" && attr_value(e, b"r").as_deref() == Some(target_ref)
         }
         _ => false,
     });
@@ -867,15 +914,17 @@ fn rewrite_cell_in_row(
             match raw_iter.next().ok_or("row ended before <c>")? {
                 // Self-closing `<c r="A1"/>`: replace the single Empty event
                 // with the full new cell (Start…End). No body to skip.
-                Event::Empty(e) if e.local_name().as_ref() == b"c"
-                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                Event::Empty(e)
+                    if e.local_name().as_ref() == b"c"
+                        && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
                 {
                     let keep = collect_keep_attrs(&e);
                     out.extend(make_cell_events(target_ref, value, &keep)?);
                     break;
                 }
-                Event::Start(e) if e.local_name().as_ref() == b"c"
-                    && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
+                Event::Start(e)
+                    if e.local_name().as_ref() == b"c"
+                        && attr_value(&e, b"r").as_deref() == Some(target_ref) =>
                 {
                     let keep = collect_keep_attrs(&e);
                     // Skip the original cell body up to and including </c>.
@@ -899,7 +948,11 @@ fn rewrite_cell_in_row(
     } else {
         // Target row but cell missing: insert a new cell before </row>.
         for _ in 0..last {
-            out.push(raw_iter.next().ok_or("malformed row: unexpected end of events")?);
+            out.push(
+                raw_iter
+                    .next()
+                    .ok_or("malformed row: unexpected end of events")?,
+            );
         }
         out.extend(make_cell_events(target_ref, value, &[])?);
         out.push(raw_iter.next().ok_or("malformed row: missing </row>")?); // </row>
@@ -1080,7 +1133,8 @@ fn extract_cell(
             .map_err(|e| format!("worksheet read: {e}"))?
         {
             Event::Start(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                let ln = e.local_name();
+                let loc: &[u8] = ln.as_ref();
                 if depth > 0 && loc == b"c" && attr_value(&e, b"r").as_deref() == Some(target) {
                     in_target = true;
                     cell_depth = depth;
@@ -1094,14 +1148,22 @@ fn extract_cell(
             }
             Event::Text(t) => {
                 if capture_v {
-                    v_text = Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                    v_text = Some(
+                        t.xml10_content()
+                            .map_err(|e| format!("decode: {e}"))?
+                            .into_owned(),
+                    );
                 } else if capture_is {
-                    is_text =
-                        Some(t.xml10_content().map_err(|e| format!("decode: {e}"))?.into_owned());
+                    is_text = Some(
+                        t.xml10_content()
+                            .map_err(|e| format!("decode: {e}"))?
+                            .into_owned(),
+                    );
                 }
             }
             Event::End(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                let ln = e.local_name();
+                let loc: &[u8] = ln.as_ref();
                 if loc == b"v" {
                     capture_v = false;
                 } else if loc == b"is" {
@@ -1122,7 +1184,11 @@ fn extract_cell(
 /// Look up a shared-string index in `xl/sharedStrings.xml`. Each `<si>` may be
 /// a plain `<t>` or a rich run `<r><t>…</t></r>`; concatenate all `<t>` text.
 fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, String> {
-    let Some(ss) = parts.iter().find(|(n, _)| n == "xl/sharedStrings.xml").map(|(_, b)| b.as_slice()) else {
+    let Some(ss) = parts
+        .iter()
+        .find(|(n, _)| n == "xl/sharedStrings.xml")
+        .map(|(_, b)| b.as_slice())
+    else {
         return Err("shared strings table not found".into());
     };
     let mut reader = quick_xml::Reader::from_reader(ss);
@@ -1135,9 +1201,13 @@ fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, S
     let mut count = 0usize;
     loop {
         buf.clear();
-        match reader.read_event_into(&mut buf).map_err(|e| format!("sharedStrings: {e}"))? {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|e| format!("sharedStrings: {e}"))?
+        {
             Event::Start(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                let ln = e.local_name();
+                let loc: &[u8] = ln.as_ref();
                 if loc == b"si" {
                     in_si = true;
                     si_depth = depth;
@@ -1149,7 +1219,8 @@ fn shared_string_at(parts: &[(String, Vec<u8>)], idx: usize) -> Result<String, S
                 current.push_str(&t.xml10_content().map_err(|e| format!("decode: {e}"))?);
             }
             Event::End(e) => {
-                let ln = e.local_name(); let loc: &[u8] = ln.as_ref();
+                let ln = e.local_name();
+                let loc: &[u8] = ln.as_ref();
                 if in_si && loc == b"si" && depth - 1 == si_depth {
                     if count == idx {
                         return Ok(current);
@@ -1188,7 +1259,9 @@ pub fn xlsx_read_cell_value(
     }
     if let Some(v) = v_text {
         if t_attr.as_deref() == Some("s") {
-            let idx: usize = v.parse().map_err(|_| format!("bad shared-string index '{v}'"))?;
+            let idx: usize = v
+                .parse()
+                .map_err(|_| format!("bad shared-string index '{v}'"))?;
             return shared_string_at(&parts, idx);
         }
         return Ok(v);
@@ -1218,7 +1291,11 @@ mod tests {
             .find(|(n, _)| n == "xl/worksheets/sheet1.xml")
             .map(|(_, b)| String::from_utf8_lossy(b))
             .unwrap();
-        assert_eq!(sheet.matches(r#"r="A1""#).count(), 1, "duplicate A1 cell: {sheet}");
+        assert_eq!(
+            sheet.matches(r#"r="A1""#).count(),
+            1,
+            "duplicate A1 cell: {sheet}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1280,7 +1357,10 @@ mod tests {
             !sheet.contains(r#"r="A1" t="inlineStr""#),
             "numeric cell should not be inlineStr: {sheet}"
         );
-        assert!(sheet.contains("<v>42</v>"), "expected numeric <v>42</v>: {sheet}");
+        assert!(
+            sheet.contains("<v>42</v>"),
+            "expected numeric <v>42</v>: {sheet}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1337,7 +1417,10 @@ mod tests {
         );
 
         let mut parts: Vec<(String, Vec<u8>)> = vec![
-            ("[Content_Types].xml".to_string(), content_types.into_bytes()),
+            (
+                "[Content_Types].xml".to_string(),
+                content_types.into_bytes(),
+            ),
             ("_rels/.rels".to_string(), rels.as_bytes().to_vec()),
             ("xl/workbook.xml".to_string(), workbook.as_bytes().to_vec()),
             (
@@ -1369,9 +1452,15 @@ mod tests {
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#;
         let parts: Vec<(String, Vec<u8>)> = vec![
-            ("[Content_Types].xml".to_string(), content_types.as_bytes().to_vec()),
+            (
+                "[Content_Types].xml".to_string(),
+                content_types.as_bytes().to_vec(),
+            ),
             ("_rels/.rels".to_string(), rels.as_bytes().to_vec()),
-            ("word/document.xml".to_string(), document_xml.as_bytes().to_vec()),
+            (
+                "word/document.xml".to_string(),
+                document_xml.as_bytes().to_vec(),
+            ),
         ];
         ooxml_repack(&parts).expect("repack test docx")
     }
@@ -1392,7 +1481,10 @@ mod tests {
         let repacked = ooxml_repack(&parts1).expect("repack");
         let parts2 = ooxml_unpack(&repacked).expect("unpack 2");
         // Assert on the PARTS vector (names + content bytes), not raw zip bytes.
-        assert_eq!(parts1, parts2, "unpack->repack->unpack must be byte-identical per part");
+        assert_eq!(
+            parts1, parts2,
+            "unpack->repack->unpack must be byte-identical per part"
+        );
         // And the original three parts survive in order.
         assert_eq!(parts1.len(), 3);
         assert_eq!(parts1[0].0, "[Content_Types].xml");
@@ -1436,7 +1528,10 @@ mod tests {
             }
         }
         // Document part filled.
-        let doc_part = parts.iter().find(|(n, _)| n == "word/document.xml").unwrap();
+        let doc_part = parts
+            .iter()
+            .find(|(n, _)| n == "word/document.xml")
+            .unwrap();
         let s = String::from_utf8(doc_part.1.clone()).unwrap();
         assert!(s.contains("Hi Ada"));
         assert!(!s.contains("{{name}}"));
@@ -1484,8 +1579,14 @@ mod tests {
         let slide2 = r#"<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:t>Appendix</a:t></p:sld>"#;
         let parts: Vec<(String, Vec<u8>)> = vec![
             ("[Content_Types].xml".to_string(), b"<Types/>".to_vec()),
-            ("ppt/slides/slide1.xml".to_string(), slide1.as_bytes().to_vec()),
-            ("ppt/slides/slide2.xml".to_string(), slide2.as_bytes().to_vec()),
+            (
+                "ppt/slides/slide1.xml".to_string(),
+                slide1.as_bytes().to_vec(),
+            ),
+            (
+                "ppt/slides/slide2.xml".to_string(),
+                slide2.as_bytes().to_vec(),
+            ),
         ];
         let bytes = ooxml_repack(&parts).expect("pack");
         let out = pptx_replace_text(&bytes, "Quarterly Report", "Annual Report").expect("replace");
@@ -1494,18 +1595,29 @@ mod tests {
         assert!(out_parts.iter().any(|(n, _)| n == "ppt/slides/slide1.xml"));
         assert!(out_parts.iter().any(|(n, _)| n == "ppt/slides/slide2.xml"));
         // Slide 1 edited; slide 2 untouched.
-        let s1 = out_parts.iter().find(|(n, _)| n == "ppt/slides/slide1.xml").unwrap();
-        let s2 = out_parts.iter().find(|(n, _)| n == "ppt/slides/slide2.xml").unwrap();
-        assert!(String::from_utf8(s1.1.clone()).unwrap().contains("Annual Report"));
-        assert!(String::from_utf8(s2.1.clone()).unwrap().contains("Appendix"));
+        let s1 = out_parts
+            .iter()
+            .find(|(n, _)| n == "ppt/slides/slide1.xml")
+            .unwrap();
+        let s2 = out_parts
+            .iter()
+            .find(|(n, _)| n == "ppt/slides/slide2.xml")
+            .unwrap();
+        assert!(String::from_utf8(s1.1.clone())
+            .unwrap()
+            .contains("Annual Report"));
+        assert!(String::from_utf8(s2.1.clone())
+            .unwrap()
+            .contains("Appendix"));
     }
 
     #[test]
     fn pptx_absent_text_errors() {
         let slide1 = r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:t>Hello</a:t></p:sld>"#;
-        let parts: Vec<(String, Vec<u8>)> = vec![
-            ("ppt/slides/slide1.xml".to_string(), slide1.as_bytes().to_vec()),
-        ];
+        let parts: Vec<(String, Vec<u8>)> = vec![(
+            "ppt/slides/slide1.xml".to_string(),
+            slide1.as_bytes().to_vec(),
+        )];
         let bytes = ooxml_repack(&parts).expect("pack");
         let err = pptx_replace_text(&bytes, "Nope", "x").unwrap_err();
         assert!(err.contains("not found"), "got: {err}");

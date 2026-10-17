@@ -180,7 +180,11 @@ fn extract_value_string(field: Option<&Value>) -> String {
 ///     `"password"` is intentionally *not* used — role-based heuristics are too
 ///     blunt; the engine passes an explicit secret-ref set instead (below).
 fn node_is_secret(node: &Value) -> bool {
-    if node.get("secret").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if node
+        .get("secret")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return true;
     }
     if let Some(props) = node.get("properties").and_then(|p| p.as_array()) {
@@ -209,7 +213,10 @@ fn read_node(node: &Value) -> AxNode {
         role: extract_value_string(node.get("role")),
         name: extract_value_string(node.get("name")),
         backend_dom_node_id: node.get("backendDOMNodeId").and_then(|v| v.as_i64()),
-        ignored: node.get("ignored").and_then(|v| v.as_bool()).unwrap_or(false),
+        ignored: node
+            .get("ignored")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         secret: node_is_secret(node),
     }
 }
@@ -281,8 +288,7 @@ fn emit_node(ser: &mut Serializer, node: &AxNode) -> bool {
         }
     } else {
         // Context nodes: emit for orientation, no ref, no map entry.
-        ser.lines
-            .push(format!("- {} \"{}\"", role, node.name));
+        ser.lines.push(format!("- {} \"{}\"", role, node.name));
     }
 
     true
@@ -562,7 +568,6 @@ impl Default for ConsoleRing {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -708,9 +713,7 @@ mod tests {
         );
         // All credential keys removed, order of kept params preserved.
         assert_eq!(
-            strip_query_credentials(
-                "https://api.example.com/p?a=1&token=secret&b=2&api_key=K&c=3"
-            ),
+            strip_query_credentials("https://api.example.com/p?a=1&token=secret&b=2&api_key=K&c=3"),
             "https://api.example.com/p?a=1&b=2&c=3"
         );
         // Case-insensitive key match, and the fragment is preserved untouched.

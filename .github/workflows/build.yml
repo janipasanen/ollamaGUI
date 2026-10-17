@@ -57,6 +57,13 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib
 
+      # STEP 1 (#618): baseline formatting gate. `cargo fmt` sorts the mod
+      # decls in lib.rs and wraps format! arguments, so this commit is recorded
+      # in .git-blame-ignore-revs to keep `git blame` meaningful for that file.
+      - name: Rust fmt check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:

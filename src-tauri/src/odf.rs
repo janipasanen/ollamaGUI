@@ -87,8 +87,7 @@ pub fn odf_repack(parts: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
         let mut zip = ZipWriter::new(&mut cursor);
 
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-        let deflated =
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
         // 1) mimetype FIRST, STORED. Locate it among the parts (it need not be
         //    first in the input vec, though after odf_unpack it usually is).
@@ -318,8 +317,7 @@ pub async fn document_odf_edit(
         let bytes = std::fs::read(&abs).map_err(|e| format!("Failed to read '{path}': {e}"))?;
         let new_bytes = odt_surgical_edit(&bytes, &find, &replace)?;
 
-        std::fs::write(&abs, &new_bytes)
-            .map_err(|e| format!("Failed to write '{path}': {e}"))?;
+        std::fs::write(&abs, &new_bytes).map_err(|e| format!("Failed to write '{path}': {e}"))?;
 
         // Build a short preview centred on the replacement text.
         let preview = build_preview(&replace);
@@ -353,7 +351,10 @@ pub fn range_to_markdown(range: &calamine::Range<calamine::Data>) -> String {
     if let Some(header) = rows.next() {
         let cells: Vec<String> = header.iter().map(|c| c.to_string()).collect();
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
-        out.push_str(&format!("|{}|\n", vec![" --- "; cells.len().max(1)].join("|")));
+        out.push_str(&format!(
+            "|{}|\n",
+            vec![" --- "; cells.len().max(1)].join("|")
+        ));
         for row in rows {
             let cells: Vec<String> = row.iter().map(|c| c.to_string()).collect();
             out.push_str(&format!("| {} |\n", cells.join(" | ")));
@@ -402,8 +403,7 @@ mod tests {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut zip = ZipWriter::new(&mut cursor);
-            let stored =
-                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
             let deflated =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
@@ -528,8 +528,7 @@ mod tests {
 
     #[test]
     fn ambiguous_match_across_nodes_returns_err() {
-        let content =
-            r#"<text:p><text:span>cat</text:span></text:p><text:p><text:span>cat</text:span></text:p>"#;
+        let content = r#"<text:p><text:span>cat</text:span></text:p><text:p><text:span>cat</text:span></text:p>"#;
         let result = odf_edit_text(content, "cat", "dog");
         assert!(result.is_err(), "two-node match must be ambiguous");
         assert!(result.unwrap_err().contains("Ambiguous"));

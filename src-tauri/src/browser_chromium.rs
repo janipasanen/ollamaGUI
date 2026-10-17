@@ -115,10 +115,7 @@ pub fn candidate_paths() -> Vec<&'static str> {
 /// filesystem: production callers pass a closure backed by
 /// [`std::path::Path::exists`]; tests pass a closure over a fixed set.
 pub fn first_existing(paths: &[&str], exists: impl Fn(&str) -> bool) -> Option<String> {
-    paths
-        .iter()
-        .find(|p| exists(p))
-        .map(|p| p.to_string())
+    paths.iter().find(|p| exists(p)).map(|p| p.to_string())
 }
 
 /// Resolve a system Chromium-class binary path from the well-known locations,
@@ -175,7 +172,10 @@ pub fn detect_version(path: &str) -> Option<String> {
 /// injectable existence check) so the `downloaded` branch of the status logic is
 /// testable without an `AppHandle`. The on-disk layout mirrors what the
 /// downloader produces: `<app-data>/chromium/<platform-binary>`.
-pub fn downloaded_path(app_data_dir: &std::path::Path, exists: impl Fn(&str) -> bool) -> Option<String> {
+pub fn downloaded_path(
+    app_data_dir: &std::path::Path,
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
     let binary = downloaded_binary_name();
     let candidate = app_data_dir.join("chromium").join(binary);
     let candidate_str = candidate.to_str()?.to_string();
@@ -351,7 +351,11 @@ pub async fn browser_chromium_download(app: tauri::AppHandle) -> Result<String, 
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
-        let ratio = if total > 0 { downloaded as f64 / total as f64 } else { 0.0 };
+        let ratio = if total > 0 {
+            downloaded as f64 / total as f64
+        } else {
+            0.0
+        };
         let _ = app.emit("chromium://progress", ratio);
     }
     drop(file);
@@ -359,7 +363,9 @@ pub async fn browser_chromium_download(app: tauri::AppHandle) -> Result<String, 
     // 3. Extract and locate the binary.
     let zf = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(zf).map_err(|e| e.to_string())?;
-    archive.extract(&dir).map_err(|e| format!("Failed to extract: {e}"))?;
+    archive
+        .extract(&dir)
+        .map_err(|e| format!("Failed to extract: {e}"))?;
     let _ = std::fs::remove_file(&zip_path);
 
     let bin = extracted_chrome_path(&dir, platform);

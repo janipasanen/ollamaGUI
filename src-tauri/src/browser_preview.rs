@@ -197,12 +197,10 @@ pub async fn preview_webview_open(
     rect: PreviewRect,
     allow: Option<Vec<String>>,
 ) -> Result<(), String> {
-    use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl};
     use tauri::webview::WebviewBuilder;
+    use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl};
 
-    let window = app
-        .get_window("main")
-        .ok_or("main window not found")?;
+    let window = app.get_window("main").ok_or("main window not found")?;
 
     // Re-opening replaces any existing preview webview (idempotent).
     if let Some(existing) = app.get_webview(PREVIEW_LABEL) {
@@ -255,13 +253,18 @@ pub async fn preview_webview_navigate(
 /// a deliberate no-op (`Ok(())`) so the frontend's geometry listeners can fire
 /// freely without guarding on open-state themselves.
 #[tauri::command]
-pub async fn preview_webview_set_bounds(app: tauri::AppHandle, rect: PreviewRect) -> Result<(), String> {
+pub async fn preview_webview_set_bounds(
+    app: tauri::AppHandle,
+    rect: PreviewRect,
+) -> Result<(), String> {
     use tauri::{LogicalPosition, LogicalSize, Manager};
     let Some(wv) = app.get_webview(PREVIEW_LABEL) else {
         return Ok(());
     };
-    wv.set_position(LogicalPosition::new(rect.x, rect.y)).map_err(|e| e.to_string())?;
-    wv.set_size(LogicalSize::new(rect.width, rect.height)).map_err(|e| e.to_string())?;
+    wv.set_position(LogicalPosition::new(rect.x, rect.y))
+        .map_err(|e| e.to_string())?;
+    wv.set_size(LogicalSize::new(rect.width, rect.height))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -273,7 +276,8 @@ pub async fn preview_webview_reload(app: tauri::AppHandle) -> Result<(), String>
         return Ok(());
     };
     // Webview has no direct reload(); re-run the document's own reload.
-    wv.eval("window.location.reload()").map_err(|e| e.to_string())
+    wv.eval("window.location.reload()")
+        .map_err(|e| e.to_string())
 }
 
 /// Close (unmount) the native preview child webview if one is open.
@@ -378,8 +382,14 @@ mod tests {
 
     #[test]
     fn extract_host_basic_forms() {
-        assert_eq!(extract_host("https://example.com/p"), Some("example.com".to_string()));
-        assert_eq!(extract_host("example.com:8080"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_host("https://example.com/p"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_host("example.com:8080"),
+            Some("example.com".to_string())
+        );
         assert_eq!(extract_host("http://[::1]:1/"), Some("::1".to_string()));
         assert_eq!(extract_host("   "), None);
         assert_eq!(extract_host(""), None);
@@ -391,7 +401,14 @@ mod tests {
         // (We don't mutate it here to avoid cross-test ordering coupling on a
         // process-global; this only asserts the initial-read helper compiles and
         // reflects the static's default.)
-        assert!(!PreviewRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }.width.is_nan());
+        assert!(!PreviewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0
+        }
+        .width
+        .is_nan());
         // is_preview_open just reads the atomic; default is false unless another
         // test in the same binary flipped it (none do).
         let _ = is_preview_open();

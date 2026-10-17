@@ -77,15 +77,15 @@ pub async fn browser_engine_start(headless: Option<bool>) -> Result<(), String> 
     if !headless.unwrap_or(false) {
         builder = builder.with_head();
     }
-    let config = builder.build().map_err(|e| format!("Browser config: {e}"))?;
+    let config = builder
+        .build()
+        .map_err(|e| format!("Browser config: {e}"))?;
 
-    let (browser, mut handler) = Browser::launch(config)
-        .await
-        .map_err(|e| format!("Failed to launch Chromium (is it installed? see browser_chromium_status): {e}"))?;
+    let (browser, mut handler) = Browser::launch(config).await.map_err(|e| {
+        format!("Failed to launch Chromium (is it installed? see browser_chromium_status): {e}")
+    })?;
 
-    let handle = tokio::task::spawn(async move {
-        while handler.next().await.is_some() {}
-    });
+    let handle = tokio::task::spawn(async move { while handler.next().await.is_some() {} });
 
     let page = browser
         .new_page("about:blank")
@@ -123,12 +123,29 @@ pub async fn browser_cdp_navigate(url: String) -> Result<NavResult, String> {
     let mut slot = ENGINE.lock().await;
     let engine = slot.as_mut().ok_or("Engine not started")?;
     engine.page.goto(&url).await.map_err(|e| e.to_string())?;
-    engine.page.wait_for_navigation().await.map_err(|e| e.to_string())?;
-    let title = engine.page.get_title().await.map_err(|e| e.to_string())?.unwrap_or_default();
-    let landed = engine.page.url().await.map_err(|e| e.to_string())?.unwrap_or(url);
+    engine
+        .page
+        .wait_for_navigation()
+        .await
+        .map_err(|e| e.to_string())?;
+    let title = engine
+        .page
+        .get_title()
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let landed = engine
+        .page
+        .url()
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(url);
     // Strip credential query params from the returned url so secrets never
     // re-enter the model via a navigation result (#73).
-    Ok(NavResult { url: ax::strip_query_credentials(&landed), title })
+    Ok(NavResult {
+        url: ax::strip_query_credentials(&landed),
+        title,
+    })
 }
 
 /// Snapshot the accessibility tree as a `ref=eNN` outline and store the fresh
@@ -151,7 +168,10 @@ pub async fn browser_cdp_get_ax_tree() -> Result<String, String> {
 }
 
 /// Resolve a snapshot ref to a backend DOM node id, returning the JS object id.
-async fn resolve_object_id(page: &chromiumoxide::Page, backend_node_id: i64) -> Result<String, String> {
+async fn resolve_object_id(
+    page: &chromiumoxide::Page,
+    backend_node_id: i64,
+) -> Result<String, String> {
     let resolved = page
         .execute(ResolveNodeParams {
             node_id: None,
@@ -184,13 +204,21 @@ pub async fn browser_cdp_click(ref_id: String) -> Result<(), String> {
         .object_id(object_id)
         .build()
         .map_err(|e| e.to_string())?;
-    engine.page.execute(params).await.map_err(|e| e.to_string())?;
+    engine
+        .page
+        .execute(params)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Type `text` into the element referenced by `ref_id`; optionally submit (Enter).
 #[tauri::command]
-pub async fn browser_cdp_type(ref_id: String, text: String, submit: Option<bool>) -> Result<(), String> {
+pub async fn browser_cdp_type(
+    ref_id: String,
+    text: String,
+    submit: Option<bool>,
+) -> Result<(), String> {
     let mut slot = ENGINE.lock().await;
     let engine = slot.as_mut().ok_or("Engine not started")?;
     let backend = ax::resolve_ref(&engine.refs, &ref_id)
@@ -202,7 +230,11 @@ pub async fn browser_cdp_type(ref_id: String, text: String, submit: Option<bool>
         .object_id(object_id)
         .build()
         .map_err(|e| e.to_string())?;
-    engine.page.execute(focus).await.map_err(|e| e.to_string())?;
+    engine
+        .page
+        .execute(focus)
+        .await
+        .map_err(|e| e.to_string())?;
     engine
         .page
         .execute(InsertTextParams { text })
@@ -228,7 +260,11 @@ pub async fn browser_cdp_screenshot(full_page: Option<bool>) -> Result<String, S
         .format(CaptureScreenshotFormat::Png)
         .full_page(full_page.unwrap_or(false))
         .build();
-    let bytes = engine.page.screenshot(params).await.map_err(|e| e.to_string())?;
+    let bytes = engine
+        .page
+        .screenshot(params)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
@@ -237,7 +273,11 @@ pub async fn browser_cdp_screenshot(full_page: Option<bool>) -> Result<String, S
 pub async fn browser_cdp_eval(expression: String) -> Result<String, String> {
     let mut slot = ENGINE.lock().await;
     let engine = slot.as_mut().ok_or("Engine not started")?;
-    let eval = engine.page.evaluate(expression).await.map_err(|e| e.to_string())?;
+    let eval = engine
+        .page
+        .evaluate(expression)
+        .await
+        .map_err(|e| e.to_string())?;
     let value: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Null);
     serde_json::to_string(&value).map_err(|e| e.to_string())
 }
@@ -252,22 +292,33 @@ pub async fn browser_cdp_read_console(clear: Option<bool>) -> Result<Vec<Console
     } else {
         engine.console.lines()
     };
-    Ok(lines.into_iter().map(|text| ConsoleEntry { text }).collect())
+    Ok(lines
+        .into_iter()
+        .map(|text| ConsoleEntry { text })
+        .collect())
 }
 
 /// Wait until a CSS selector matches an element, up to `timeout_ms` (#181).
 /// Polls every 100 ms using JS. Returns an error string if timed out.
 #[tauri::command]
 pub async fn browser_cdp_wait_for(selector: String, timeout_ms: Option<u64>) -> Result<(), String> {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
-    let js = format!("document.querySelector({}) !== null", serde_json::to_string(&selector).unwrap_or_default());
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap_or(5000));
+    let js = format!(
+        "document.querySelector({}) !== null",
+        serde_json::to_string(&selector).unwrap_or_default()
+    );
     loop {
         {
             let mut slot = ENGINE.lock().await;
             let engine = slot.as_mut().ok_or("Engine not started")?;
-            let eval = engine.page.evaluate(js.clone()).await.map_err(|e| e.to_string())?;
-            let value: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Bool(false));
+            let eval = engine
+                .page
+                .evaluate(js.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            let value: serde_json::Value =
+                eval.into_value().unwrap_or(serde_json::Value::Bool(false));
             if value.as_bool().unwrap_or(false) {
                 return Ok(());
             }
@@ -307,10 +358,17 @@ fn evaluate_assertion(raw: &serde_json::Value, expected: Option<&str>) -> Assert
 /// Evaluate a JS expression and check whether its string representation equals
 /// `value` (if given) or is truthy (#181). Returns AssertResult { pass, actual }.
 #[tauri::command]
-pub async fn browser_cdp_assert(assertion: String, value: Option<String>) -> Result<AssertResult, String> {
+pub async fn browser_cdp_assert(
+    assertion: String,
+    value: Option<String>,
+) -> Result<AssertResult, String> {
     let mut slot = ENGINE.lock().await;
     let engine = slot.as_mut().ok_or("Engine not started")?;
-    let eval = engine.page.evaluate(assertion).await.map_err(|e| e.to_string())?;
+    let eval = engine
+        .page
+        .evaluate(assertion)
+        .await
+        .map_err(|e| e.to_string())?;
     let raw: serde_json::Value = eval.into_value().unwrap_or(serde_json::Value::Null);
     Ok(evaluate_assertion(&raw, value.as_deref()))
 }
@@ -331,11 +389,18 @@ mod spike_harness {
     #[tokio::test]
     #[ignore = "needs a Chromium install + display (#67 spike harness)"]
     async fn axtree_snapshot_click_loop() {
-        browser_engine_start(Some(false)).await.expect("engine start");
+        browser_engine_start(Some(false))
+            .await
+            .expect("engine start");
         let form = "data:text/html,<input aria-label='Email'><button>Sign in</button>";
-        browser_cdp_navigate(form.to_string()).await.expect("navigate");
+        browser_cdp_navigate(form.to_string())
+            .await
+            .expect("navigate");
         let outline = browser_cdp_get_ax_tree().await.expect("ax tree");
-        assert!(outline.contains("[ref=e"), "expected actionable refs, got:\n{outline}");
+        assert!(
+            outline.contains("[ref=e"),
+            "expected actionable refs, got:\n{outline}"
+        );
         // A real run would feed `outline` to local models and measure
         // click-by-ref / type-by-ref success. We assert the loop is mechanically
         // possible end-to-end here.
@@ -400,8 +465,14 @@ mod tests {
 
     #[test]
     fn nav_and_console_structs_serialize() {
-        let nav = NavResult { url: "https://e.com".into(), title: "E".into() };
-        assert_eq!(serde_json::to_value(&nav).unwrap(), json!({ "url": "https://e.com", "title": "E" }));
+        let nav = NavResult {
+            url: "https://e.com".into(),
+            title: "E".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&nav).unwrap(),
+            json!({ "url": "https://e.com", "title": "E" })
+        );
         let ce = ConsoleEntry { text: "hi".into() };
         assert_eq!(serde_json::to_value(&ce).unwrap(), json!({ "text": "hi" }));
     }

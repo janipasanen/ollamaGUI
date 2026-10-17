@@ -90,9 +90,7 @@ pub fn engine_for(from: &str, to: &str) -> Engine {
     }
 
     // Tier 2: the text/markup family pandoc handles well.
-    let text_family = |f: &str| {
-        matches!(f, "md" | "html" | "docx" | "odt" | "txt")
-    };
+    let text_family = |f: &str| matches!(f, "md" | "html" | "docx" | "odt" | "txt");
     if text_family(&from) || text_family(&to) {
         return Engine::Pandoc;
     }
@@ -177,9 +175,17 @@ pub fn detect_libreoffice() -> LoAvailability {
     match first_existing(&candidates, binary_resolves) {
         Some(path) => {
             let version = libreoffice_version(&path);
-            LoAvailability { available: true, path: Some(path), version }
+            LoAvailability {
+                available: true,
+                path: Some(path),
+                version,
+            }
         }
-        None => LoAvailability { available: false, path: None, version: None },
+        None => LoAvailability {
+            available: false,
+            path: None,
+            version: None,
+        },
     }
 }
 
@@ -316,7 +322,10 @@ pub async fn convert_document_tiered(
     // Kick off: report 0% so the UI can show an in-progress state immediately.
     let _ = app.emit(
         "convert://progress",
-        ConvertProgress { job_id: job_id.clone(), ratio: 0.0 },
+        ConvertProgress {
+            job_id: job_id.clone(),
+            ratio: 0.0,
+        },
     );
 
     let job = job_id.clone();
@@ -339,7 +348,10 @@ pub async fn convert_document_tiered(
         Ok(r) => {
             let _ = app.emit(
                 "convert://progress",
-                ConvertProgress { job_id: job_id.clone(), ratio: 1.0 },
+                ConvertProgress {
+                    job_id: job_id.clone(),
+                    ratio: 1.0,
+                },
             );
             let _ = app.emit(
                 "convert://done",
@@ -398,7 +410,10 @@ fn run_bundled(_job: &str, from: &str, to: &str) -> Result<ConvertResult, String
         csv.push('\n');
     }
     std::fs::write(to, csv).map_err(|e| format!("Failed to write CSV: {e}"))?;
-    Ok(ConvertResult { engine: Engine::BundledCrate.as_str().to_string(), ok: true })
+    Ok(ConvertResult {
+        engine: Engine::BundledCrate.as_str().to_string(),
+        ok: true,
+    })
 }
 
 /// Tier 2 — Pandoc. Spawns `pandoc -f <in> -t <out> -o <dest> <src>`.
@@ -412,7 +427,10 @@ fn run_pandoc(job: &str, from: &str, to: &str, to_fmt: &str) -> Result<ConvertRe
         Err(_) => return Err(pandoc_missing_error()),
     };
     if out.status.success() {
-        Ok(ConvertResult { engine: Engine::Pandoc.as_str().to_string(), ok: true })
+        Ok(ConvertResult {
+            engine: Engine::Pandoc.as_str().to_string(),
+            ok: true,
+        })
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // A spawn that produced no diagnostics usually means pandoc is absent.
@@ -427,12 +445,7 @@ fn run_pandoc(job: &str, from: &str, to: &str, to_fmt: &str) -> Result<ConvertRe
 /// Tier 3 — LibreOffice headless. Serialized behind `LIBREOFFICE_LOCK` and
 /// given a per-call temp `--user-installation` profile so concurrent app
 /// instances don't collide.
-fn run_libreoffice(
-    job: &str,
-    from: &str,
-    to: &str,
-    to_fmt: &str,
-) -> Result<ConvertResult, String> {
+fn run_libreoffice(job: &str, from: &str, to: &str, to_fmt: &str) -> Result<ConvertResult, String> {
     // Refuse early with an actionable message if no soffice is installed.
     let avail = detect_libreoffice();
     if !avail.available {
@@ -468,7 +481,10 @@ fn run_libreoffice(
 
     let out = out?;
     if out.status.success() {
-        Ok(ConvertResult { engine: Engine::LibreOffice.as_str().to_string(), ok: true })
+        Ok(ConvertResult {
+            engine: Engine::LibreOffice.as_str().to_string(),
+            ok: true,
+        })
     } else {
         Err(String::from_utf8_lossy(&out.stderr).into_owned())
     }
@@ -560,7 +576,10 @@ mod tests {
     #[test]
     fn first_existing_respects_priority_order() {
         // soffice on PATH should win over an Applications fallback.
-        let paths = ["soffice", "/Applications/LibreOffice.app/Contents/MacOS/soffice"];
+        let paths = [
+            "soffice",
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ];
         let got = first_existing(&paths, |_| true);
         assert_eq!(got, Some("soffice".to_string()));
     }

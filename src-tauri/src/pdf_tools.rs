@@ -185,7 +185,10 @@ pub fn build_text_pdf(text: &str) -> Result<Document, String> {
             ops.push(Operation::new("Td", vec![0.into(), (-leading).into()]));
         }
         first = false;
-        ops.push(Operation::new("Tj", vec![Object::string_literal(line.as_bytes().to_vec())]));
+        ops.push(Operation::new(
+            "Tj",
+            vec![Object::string_literal(line.as_bytes().to_vec())],
+        ));
     }
     ops.push(Operation::new("ET", vec![]));
 
@@ -226,7 +229,8 @@ pub async fn document_pdf_extract(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let doc = Document::load(&abs).map_err(|e| format!("Failed to open PDF: {e}"))?;
         let pages: Vec<u32> = doc.get_pages().keys().copied().collect();
-        doc.extract_text(&pages).map_err(|e| format!("Text extraction failed: {e}"))
+        doc.extract_text(&pages)
+            .map_err(|e| format!("Text extraction failed: {e}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -238,7 +242,8 @@ pub async fn document_pdf_create(path: String, text: String) -> Result<(), Strin
     let abs = resolve_workspace_path(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut doc = build_text_pdf(&text)?;
-        doc.save(&abs).map_err(|e| format!("Failed to write PDF: {e}"))?;
+        doc.save(&abs)
+            .map_err(|e| format!("Failed to write PDF: {e}"))?;
         Ok::<(), String>(())
     })
     .await
@@ -251,7 +256,10 @@ pub async fn document_pdf_create(path: String, text: String) -> Result<(), Strin
 /// pages are collected under a fresh `/Pages` tree, and a new catalog is written.
 #[tauri::command]
 pub async fn document_pdf_merge(paths: Vec<String>, out: String) -> Result<(), String> {
-    let abs_paths: Vec<_> = paths.iter().map(|p| resolve_workspace_path(p)).collect::<Result<_, _>>()?;
+    let abs_paths: Vec<_> = paths
+        .iter()
+        .map(|p| resolve_workspace_path(p))
+        .collect::<Result<_, _>>()?;
     let abs_out = resolve_workspace_path(&out)?;
     if abs_paths.is_empty() {
         return Err("No input PDFs to merge.".to_string());
@@ -268,7 +276,8 @@ fn merge_pdfs(paths: &[std::path::PathBuf], out: &std::path::Path) -> Result<(),
     let mut all_objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
 
     for path in paths {
-        let mut doc = Document::load(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+        let mut doc =
+            Document::load(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
         doc.renumber_objects_with(max_id);
         max_id = doc.max_id + 1;
         for object_id in doc.get_pages().into_values() {
@@ -295,7 +304,9 @@ fn merge_pdfs(paths: &[std::path::PathBuf], out: &std::path::Path) -> Result<(),
     for (id, obj) in all_objects {
         merged.objects.insert(id, obj);
     }
-    merged.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    merged
+        .objects
+        .insert(pages_id, Object::Dictionary(pages_dict));
     let catalog_id = merged.add_object(dictionary! {
         "Type" => "Catalog",
         "Pages" => pages_id,
@@ -304,7 +315,9 @@ fn merge_pdfs(paths: &[std::path::PathBuf], out: &std::path::Path) -> Result<(),
     merged.max_id = merged.objects.keys().map(|(i, _)| *i).max().unwrap_or(0);
     merged.renumber_objects();
     merged.compress();
-    merged.save(out).map_err(|e| format!("Failed to write merged PDF: {e}"))?;
+    merged
+        .save(out)
+        .map_err(|e| format!("Failed to write merged PDF: {e}"))?;
     Ok(())
 }
 
@@ -333,7 +346,8 @@ pub async fn document_pdf_split(
             let delete: Vec<u32> = (1..=total).filter(|p| !keep.contains(p)).collect();
             doc.delete_pages(&delete);
             let out_path = abs_dir.join(format!("split_{}_{}-{}.pdf", idx + 1, lo, hi));
-            doc.save(&out_path).map_err(|e| format!("Failed to write split: {e}"))?;
+            doc.save(&out_path)
+                .map_err(|e| format!("Failed to write split: {e}"))?;
             written.push(out_path.to_string_lossy().into_owned());
         }
         Ok::<Vec<String>, String>(written)

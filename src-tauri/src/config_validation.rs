@@ -43,8 +43,7 @@ pub fn load_capabilities() -> Result<Value, String> {
     let path = manifest_relative(&["capabilities", "default.json"]);
     let raw = fs::read_to_string(&path)
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
-    serde_json::from_str(&raw)
-        .map_err(|e| format!("failed to parse {}: {}", path.display(), e))
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {}", path.display(), e))
 }
 
 /// Read and parse `src-tauri/tauri.conf.json` into a JSON value.
@@ -52,8 +51,7 @@ pub fn load_tauri_conf() -> Result<Value, String> {
     let path = manifest_relative(&["tauri.conf.json"]);
     let raw = fs::read_to_string(&path)
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
-    serde_json::from_str(&raw)
-        .map_err(|e| format!("failed to parse {}: {}", path.display(), e))
+    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {}", path.display(), e))
 }
 
 /// Collect the `permissions` array of a capability manifest as owned strings.

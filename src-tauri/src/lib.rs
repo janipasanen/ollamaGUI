@@ -9,15 +9,15 @@ use tauri::Emitter;
 // Multi-format document I/O modules (#140-#143) and browser-infra modules
 // (#66, #68, #72, #73). Each is a self-contained module; pure logic is
 // unit-tested via #[cfg(test)]; runtime-dependent paths are deferred.
-mod document_convert; // #140 tiered converter + LibreOffice detection
-mod ooxml;            // #141 OOXML template-fill + surgical edit
-mod odf;              // #142 ODF edit (mimetype-stored-first)
-mod pdf_tools;        // #143 PDF info/merge/split surface
-mod ax;               // #73 AX-tree serializer + redaction
-mod browser_engine;   // #73 chromiumoxide CDP automation engine
+mod ax; // #73 AX-tree serializer + redaction
 mod browser_chromium; // #68 Chromium detection
-mod browser_preview;  // #72 native-preview webview (Tauri unstable add_child)
+mod browser_engine; // #73 chromiumoxide CDP automation engine
+mod browser_preview; // #72 native-preview webview (Tauri unstable add_child)
 mod config_validation; // #66 config-invariant tests
+mod document_convert; // #140 tiered converter + LibreOffice detection
+mod odf; // #142 ODF edit (mimetype-stored-first)
+mod ooxml; // #141 OOXML template-fill + surgical edit
+mod pdf_tools; // #143 PDF info/merge/split surface
 
 #[derive(Serialize)]
 struct CliOutput {
@@ -105,10 +105,7 @@ async fn run_cli(
 
                 Ok(CliOutput {
                     stdout: String::new(),
-                    stderr: format!(
-                        "Command timed out after {}ms",
-                        timeout.as_millis()
-                    ),
+                    stderr: format!("Command timed out after {}ms", timeout.as_millis()),
                     exit_code: -1,
                     timed_out: true,
                 })
@@ -159,9 +156,7 @@ fn handle_oauth_redirect(port: u16) -> Result<OAuthRedirect, String> {
         .accept()
         .map_err(|e| format!("Failed to accept connection: {}", e))?;
 
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
     let mut buf = [0u8; 4096];
     let n = stream
@@ -232,12 +227,12 @@ fn url_decode(s: &str) -> String {
     result
 }
 
-use std::process::{Command, Child, ChildStdin, ChildStdout, ChildStderr};
-use std::io::{Write, BufRead, BufReader};
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
-use serde::Deserialize;
 use reqwest::Client;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -312,15 +307,15 @@ struct McpProcess {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr: BufReader<ChildStderr>,
-    pending_requests: HashMap<u32, tauri::async_runtime::Sender<Result<String, String>>>, 
+    pending_requests: HashMap<u32, tauri::async_runtime::Sender<Result<String, String>>>,
     next_request_id: u32,
 }
 
 lazy_static::lazy_static! {
-    static ref MCP_PROCESSES: Arc<Mutex<HashMap<String, McpProcess>>> = 
+    static ref MCP_PROCESSES: Arc<Mutex<HashMap<String, McpProcess>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    
-    static ref CLI_ALLOWLIST: Arc<Mutex<Vec<String>>> = 
+
+    static ref CLI_ALLOWLIST: Arc<Mutex<Vec<String>>> =
         Arc::new(Mutex::new(vec![
             "echo".to_string(),
             "ls".to_string(),
@@ -329,8 +324,8 @@ lazy_static::lazy_static! {
             "date".to_string(),
             "whoami".to_string(),
         ]));
-    
-    static ref CLI_DENYLIST: Arc<Mutex<Vec<String>>> = 
+
+    static ref CLI_DENYLIST: Arc<Mutex<Vec<String>>> =
         Arc::new(Mutex::new(vec![
             "rm".to_string(),
             "del".to_string(),
@@ -341,11 +336,11 @@ lazy_static::lazy_static! {
             "shutdown".to_string(),
             "reboot".to_string(),
         ]));
-    
-    static ref MCP_HTTP_CLIENT: Arc<Mutex<Option<Client>>> = 
+
+    static ref MCP_HTTP_CLIENT: Arc<Mutex<Option<Client>>> =
         Arc::new(Mutex::new(None));
-    
-    static ref MCP_SESSIONS: Arc<Mutex<HashMap<String, McpHttpSession>>> = 
+
+    static ref MCP_SESSIONS: Arc<Mutex<HashMap<String, McpHttpSession>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
@@ -378,13 +373,13 @@ async fn mcp_stdio_spawn(
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    
+
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    
+
     let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
     let stdout = BufReader::new(child.stdout.take().ok_or("Failed to capture stdout")?);
     let stderr = BufReader::new(child.stderr.take().ok_or("Failed to capture stderr")?);
-    
+
     let process = McpProcess {
         child,
         stdin,
@@ -393,9 +388,9 @@ async fn mcp_stdio_spawn(
         pending_requests: HashMap::new(),
         next_request_id: 1,
     };
-    
+
     processes.insert(session_id.clone(), process);
-    
+
     Ok(McpStdioResponse {
         success: true,
         message: format!("Process spawned with session ID: {}", session_id),
@@ -404,21 +399,18 @@ async fn mcp_stdio_spawn(
 }
 
 #[tauri::command]
-async fn mcp_stdio_send(
-    session_id: String,
-    request: String,
-) -> Result<McpStdioResponse, String> {
+async fn mcp_stdio_send(session_id: String, request: String) -> Result<McpStdioResponse, String> {
     let mut processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
     let process = processes.get_mut(&session_id).ok_or("Session not found")?;
-    
+
     // Write request to stdin
-    process.stdin.write_all(request.as_bytes())
+    process
+        .stdin
+        .write_all(request.as_bytes())
         .map_err(|e| e.to_string())?;
-    process.stdin.write_all(b"\n")
-        .map_err(|e| e.to_string())?;
-    process.stdin.flush()
-        .map_err(|e| e.to_string())?;
-    
+    process.stdin.write_all(b"\n").map_err(|e| e.to_string())?;
+    process.stdin.flush().map_err(|e| e.to_string())?;
+
     Ok(McpStdioResponse {
         success: true,
         message: "Request sent".to_string(),
@@ -427,12 +419,10 @@ async fn mcp_stdio_send(
 }
 
 #[tauri::command]
-async fn mcp_stdio_read(
-    session_id: String,
-) -> Result<Option<String>, String> {
+async fn mcp_stdio_read(session_id: String) -> Result<Option<String>, String> {
     let mut processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
     let process = processes.get_mut(&session_id).ok_or("Session not found")?;
-    
+
     let mut line = String::new();
     match process.stdout.read_line(&mut line) {
         Ok(0) => Ok(None), // EOF
@@ -442,15 +432,13 @@ async fn mcp_stdio_read(
 }
 
 #[tauri::command]
-async fn mcp_stdio_close(
-    session_id: String,
-) -> Result<McpStdioResponse, String> {
+async fn mcp_stdio_close(session_id: String) -> Result<McpStdioResponse, String> {
     let mut processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
     let mut process = processes.remove(&session_id).ok_or("Session not found")?;
 
     // Try to kill the process gracefully
     let _ = process.child.kill();
-    
+
     Ok(McpStdioResponse {
         success: true,
         message: "Process terminated".to_string(),
@@ -459,9 +447,7 @@ async fn mcp_stdio_close(
 }
 
 #[tauri::command]
-async fn mcp_http_request(
-    request: McpHttpRequest,
-) -> Result<McpHttpResponse, String> {
+async fn mcp_http_request(request: McpHttpRequest) -> Result<McpHttpResponse, String> {
     // Initialize HTTP client if not already done. Scope the guard in a block so
     // it is definitively dropped before the `.await` below (std MutexGuard is !Send).
     let client = {
@@ -481,22 +467,22 @@ async fn mcp_http_request(
         "PATCH" => client.patch(&request.url),
         _ => client.post(&request.url), // default to POST
     };
-    
+
     // Add headers
     for (key, value) in &request.headers {
         req_builder = req_builder.header(key, value);
     }
-    
+
     // Add authorization if token is provided
     if let Some(token) = &request.auth_token {
         req_builder = req_builder.bearer_auth(token);
     }
-    
+
     // Add body if provided
     if let Some(body) = &request.body {
         req_builder = req_builder.body(body.clone());
     }
-    
+
     // Execute the request
     let response = req_builder.send().await.map_err(|e| e.to_string())?;
 
@@ -570,12 +556,15 @@ async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
 /// IPC contract remains available; re-point the `run_shell_command` tool at it
 /// to switch to list-based enforcement.
 #[tauri::command]
-async fn run_cli_command(
-    request: CliCommandRequest,
-) -> Result<CliCommandResponse, String> {
+async fn run_cli_command(request: CliCommandRequest) -> Result<CliCommandResponse, String> {
     // Check command against allowlist/denylist. Scope the guards in a block so
     // they are dropped before the `.await` below (std MutexGuard is !Send).
-    let command_name = request.command.split_whitespace().next().unwrap_or("").to_string();
+    let command_name = request
+        .command
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
     {
         let allowlist = CLI_ALLOWLIST.lock().map_err(|e| e.to_string())?;
         let denylist = CLI_DENYLIST.lock().map_err(|e| e.to_string())?;
@@ -605,17 +594,17 @@ async fn run_cli_command(
 
     let mut cmd = Command::new(&request.command);
     cmd.args(&request.args);
-    
+
     if let Some(cwd) = &request.cwd {
         cmd.current_dir(cwd);
     }
-    
+
     if let Some(env_vars) = &request.env {
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
     }
-    
+
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -647,14 +636,18 @@ async fn run_cli_command(
             let mut s = String::new();
             let mut r = BufReader::new(child_stdout);
             let _ = r.read_to_string(&mut s);
-            if let Ok(mut g) = out_buf.lock() { *g = s; }
+            if let Ok(mut g) = out_buf.lock() {
+                *g = s;
+            }
         });
         std::thread::spawn(move || {
             use std::io::Read;
             let mut s = String::new();
             let mut r = BufReader::new(child_stderr);
             let _ = r.read_to_string(&mut s);
-            if let Ok(mut g) = err_buf.lock() { *g = s; }
+            if let Ok(mut g) = err_buf.lock() {
+                *g = s;
+            }
         });
 
         let (tx, rx) = mpsc::channel::<Result<std::process::ExitStatus, std::io::Error>>();
@@ -666,8 +659,14 @@ async fn run_cli_command(
             Ok(Ok(status)) => {
                 // Reader threads may still be draining; give them a brief moment.
                 std::thread::sleep(Duration::from_millis(50));
-                let stdout = stdout_buf.lock().map(|g| g.chars().take(10_000).collect::<String>()).unwrap_or_default();
-                let stderr = stderr_buf.lock().map(|g| g.chars().take(2_000).collect::<String>()).unwrap_or_default();
+                let stdout = stdout_buf
+                    .lock()
+                    .map(|g| g.chars().take(10_000).collect::<String>())
+                    .unwrap_or_default();
+                let stderr = stderr_buf
+                    .lock()
+                    .map(|g| g.chars().take(2_000).collect::<String>())
+                    .unwrap_or_default();
                 Ok(CliCommandResponse {
                     success: status.success(),
                     exit_code: status.code(),
@@ -676,7 +675,7 @@ async fn run_cli_command(
                     error: None,
                     timed_out: false,
                 })
-            },
+            }
             Ok(Err(e)) => Err(e.to_string()),
             Err(_) => {
                 // Kill the process; reader threads will exit as pipes close.
@@ -691,15 +690,25 @@ async fn run_cli_command(
 
                 // Drain whatever partial output was captured before the kill.
                 std::thread::sleep(Duration::from_millis(100));
-                let stdout = stdout_buf.lock().map(|g| g.chars().take(10_000).collect::<String>()).unwrap_or_default();
-                let stderr = stderr_buf.lock().map(|g| g.chars().take(2_000).collect::<String>()).unwrap_or_default();
+                let stdout = stdout_buf
+                    .lock()
+                    .map(|g| g.chars().take(10_000).collect::<String>())
+                    .unwrap_or_default();
+                let stderr = stderr_buf
+                    .lock()
+                    .map(|g| g.chars().take(2_000).collect::<String>())
+                    .unwrap_or_default();
                 let timeout_note = format!("(timed out after {}ms)", timeout.as_millis());
 
                 Ok(CliCommandResponse {
                     success: false,
                     exit_code: None,
                     stdout,
-                    stderr: if stderr.is_empty() { timeout_note.clone() } else { format!("{}\n{}", timeout_note, stderr) },
+                    stderr: if stderr.is_empty() {
+                        timeout_note.clone()
+                    } else {
+                        format!("{}\n{}", timeout_note, stderr)
+                    },
                     error: Some(format!("Command timed out after {}ms", timeout.as_millis())),
                     timed_out: true,
                 })
@@ -711,9 +720,7 @@ async fn run_cli_command(
 }
 
 #[tauri::command]
-async fn mcp_stdio_check(
-    session_id: String,
-) -> Result<bool, String> {
+async fn mcp_stdio_check(session_id: String) -> Result<bool, String> {
     let processes = MCP_PROCESSES.lock().map_err(|e| e.to_string())?;
     Ok(processes.contains_key(&session_id))
 }
@@ -775,8 +782,7 @@ fn detect_mlx_python() -> Option<(String, String)> {
 #[tauri::command]
 async fn check_mlx_available() -> Result<MlxAvailability, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let apple_silicon =
-            std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64";
+        let apple_silicon = std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64";
 
         if !apple_silicon {
             return MlxAvailability {
@@ -927,15 +933,20 @@ async fn mlx_server_status() -> Result<MlxServerStatus, String> {
 // headless Linux): an AES-256-GCM encrypted file in the app data dir, with the
 // 32-byte key in a sibling 0600 file. Plaintext secrets never touch disk.
 
-use aes_gcm::{Aes256Gcm, Nonce, Key};
-use aes_gcm::aead::{Aead, KeyInit, OsRng, AeadCore};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 { return None; }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 fn secret_fallback_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -958,7 +969,9 @@ fn secret_fallback_key(app: &tauri::AppHandle) -> Result<Vec<u8>, String> {
     let path = secret_fallback_dir(app)?.join("secrets.key");
     if let Ok(s) = std::fs::read_to_string(&path) {
         if let Some(k) = hex_decode(s.trim()) {
-            if k.len() == 32 { return Ok(k); }
+            if k.len() == 32 {
+                return Ok(k);
+            }
         }
     }
     let key = Aes256Gcm::generate_key(&mut OsRng);
@@ -977,10 +990,16 @@ fn secret_fallback_load(app: &tauri::AppHandle) -> HashMap<String, String> {
     }
 }
 
-fn secret_fallback_save(app: &tauri::AppHandle, map: &HashMap<String, String>) -> Result<(), String> {
+fn secret_fallback_save(
+    app: &tauri::AppHandle,
+    map: &HashMap<String, String>,
+) -> Result<(), String> {
     let path = secret_fallback_dir(app)?.join("secrets.enc");
-    std::fs::write(&path, serde_json::to_string(map).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &path,
+        serde_json::to_string(map).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     restrict_perms(&path);
     Ok(())
 }
@@ -989,22 +1008,36 @@ fn secret_entry_key(service: &str, key: &str) -> String {
     format!("{service}\u{0}{key}")
 }
 
-fn secret_fallback_set(app: &tauri::AppHandle, service: &str, key: &str, value: &str) -> Result<(), String> {
+fn secret_fallback_set(
+    app: &tauri::AppHandle,
+    service: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let kbytes = secret_fallback_key(app)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ct = cipher.encrypt(&nonce, value.as_bytes()).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(&nonce, value.as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut map = secret_fallback_load(app);
-    map.insert(secret_entry_key(service, key), format!("{}:{}", hex_encode(&nonce), hex_encode(&ct)));
+    map.insert(
+        secret_entry_key(service, key),
+        format!("{}:{}", hex_encode(&nonce), hex_encode(&ct)),
+    );
     secret_fallback_save(app, &map)
 }
 
 fn secret_fallback_get(app: &tauri::AppHandle, service: &str, key: &str) -> Option<String> {
-    let entry = secret_fallback_load(app).get(&secret_entry_key(service, key))?.clone();
+    let entry = secret_fallback_load(app)
+        .get(&secret_entry_key(service, key))?
+        .clone();
     let (n, c) = entry.split_once(':')?;
     let kbytes = secret_fallback_key(app).ok()?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&kbytes));
-    let pt = cipher.decrypt(Nonce::from_slice(&hex_decode(n)?), hex_decode(c)?.as_ref()).ok()?;
+    let pt = cipher
+        .decrypt(Nonce::from_slice(&hex_decode(n)?), hex_decode(c)?.as_ref())
+        .ok()?;
     String::from_utf8(pt).ok()
 }
 
@@ -1015,7 +1048,12 @@ fn secret_fallback_delete(app: &tauri::AppHandle, service: &str, key: &str) -> R
 }
 
 #[tauri::command]
-async fn secret_set(app: tauri::AppHandle, service: String, key: String, value: String) -> Result<(), String> {
+async fn secret_set(
+    app: tauri::AppHandle,
+    service: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     match keyring::Entry::new(&service, &key).and_then(|e| e.set_password(&value)) {
         Ok(_) => Ok(()),
         Err(_) => secret_fallback_set(&app, &service, &key, &value), // no OS keychain → encrypted file
@@ -1023,7 +1061,11 @@ async fn secret_set(app: tauri::AppHandle, service: String, key: String, value: 
 }
 
 #[tauri::command]
-async fn secret_get(app: tauri::AppHandle, service: String, key: String) -> Result<Option<String>, String> {
+async fn secret_get(
+    app: tauri::AppHandle,
+    service: String,
+    key: String,
+) -> Result<Option<String>, String> {
     match keyring::Entry::new(&service, &key).and_then(|e| e.get_password()) {
         Ok(v) => Ok(Some(v)),
         Err(keyring::Error::NoEntry) => Ok(secret_fallback_get(&app, &service, &key)),
@@ -1116,7 +1158,10 @@ async fn terminal_run(
 
     // Store the OS PID so terminal_kill can signal the process.
     let pid = child.id();
-    TERMINAL_PIDS.lock().map_err(|e| e.to_string())?.insert(id, pid);
+    TERMINAL_PIDS
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(id, pid);
 
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
@@ -1126,7 +1171,14 @@ async fn terminal_run(
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
-            let _ = app1.emit(&event1, TerminalLine { line, stream: "stdout".into(), done: false });
+            let _ = app1.emit(
+                &event1,
+                TerminalLine {
+                    line,
+                    stream: "stdout".into(),
+                    done: false,
+                },
+            );
         }
     });
 
@@ -1135,7 +1187,14 @@ async fn terminal_run(
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
-            let _ = app2.emit(&event2, TerminalLine { line, stream: "stderr".into(), done: false });
+            let _ = app2.emit(
+                &event2,
+                TerminalLine {
+                    line,
+                    stream: "stderr".into(),
+                    done: false,
+                },
+            );
         }
     });
 
@@ -1145,7 +1204,14 @@ async fn terminal_run(
     std::thread::spawn(move || {
         let _ = child.wait();
         pids_ref.lock().ok().map(|mut m| m.remove(&id));
-        let _ = app3.emit(&event3, TerminalLine { line: String::new(), stream: "stdout".into(), done: true });
+        let _ = app3.emit(
+            &event3,
+            TerminalLine {
+                line: String::new(),
+                stream: "stdout".into(),
+                done: true,
+            },
+        );
     });
 
     Ok(id)
@@ -1221,7 +1287,9 @@ fn normalize_path(path: &PathBuf) -> PathBuf {
     for component in path.components() {
         use std::path::Component::*;
         match component {
-            ParentDir => { parts.pop(); }
+            ParentDir => {
+                parts.pop();
+            }
             CurDir => {}
             c => parts.push(c.as_os_str()),
         }
@@ -1259,13 +1327,20 @@ fn set_workspace_roots(paths: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 fn get_workspace_roots() -> Result<Vec<String>, String> {
     let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-    Ok(roots.iter().map(|p| p.to_string_lossy().to_string()).collect())
+    Ok(roots
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
 }
 
 /// Read a file, optionally a line range. `offset` is a 1-indexed start line and
 /// `limit` a line count; omitting both returns the whole file (#422).
 #[tauri::command]
-async fn read_file(path: String, offset: Option<usize>, limit: Option<usize>) -> Result<String, String> {
+async fn read_file(
+    path: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String, String> {
     let abs = resolve_workspace_path(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         let content = std::fs::read_to_string(&abs).map_err(|e| e.to_string())?;
@@ -1273,7 +1348,11 @@ async fn read_file(path: String, offset: Option<usize>, limit: Option<usize>) ->
             return Ok(content);
         }
         let lines: Vec<&str> = content.lines().collect();
-        let start = offset.unwrap_or(1).max(1).saturating_sub(1).min(lines.len());
+        let start = offset
+            .unwrap_or(1)
+            .max(1)
+            .saturating_sub(1)
+            .min(lines.len());
         let end = match limit {
             Some(l) => start.saturating_add(l).min(lines.len()),
             None => lines.len(),
@@ -1306,7 +1385,8 @@ async fn list_dir(path: String) -> Result<Vec<FsDirEntry>, String> {
             .filter_map(|e| e.ok())
             .map(|e| {
                 let meta = e.metadata().ok();
-                let modified_ms = meta.as_ref()
+                let modified_ms = meta
+                    .as_ref()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as u64);
@@ -1320,7 +1400,9 @@ async fn list_dir(path: String) -> Result<Vec<FsDirEntry>, String> {
             })
             .collect();
         entries.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         Ok(entries)
     })
@@ -1340,7 +1422,10 @@ async fn apply_edit(path: String, old_string: String, new_string: String) -> Res
             return Err("old_string not found in file.".to_string());
         }
         if count > 1 {
-            return Err(format!("old_string found {} times — provide more context to make the match unique.", count));
+            return Err(format!(
+                "old_string found {} times — provide more context to make the match unique.",
+                count
+            ));
         }
         let updated = content.replacen(old_string.as_str(), new_string.as_str(), 1);
         std::fs::write(&abs, &updated).map_err(|e| e.to_string())
@@ -1369,7 +1454,14 @@ async fn delete_file(path: String) -> Result<(), String> {
 
 /// Directories skipped during workspace-wide search/glob (noise + VCS + builds).
 const SEARCH_SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "target", "dist", "build", ".next", ".vite", ".turbo",
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".vite",
+    ".turbo",
 ];
 
 #[derive(serde::Serialize)]
@@ -1433,31 +1525,43 @@ async fn search_files(
 ) -> Result<Vec<SearchHit>, String> {
     let root = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        guard
+            .first()
+            .ok_or_else(|| "No workspace root set.".to_string())?
+            .clone()
     };
     let max = max_results.unwrap_or(200).min(2000);
     let case_sensitive = case_sensitive.unwrap_or(false);
     let use_regex = is_regex.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let pattern = if use_regex { query.clone() } else { regex::escape(&query) };
+        let pattern = if use_regex {
+            query.clone()
+        } else {
+            regex::escape(&query)
+        };
         let matcher = regex::RegexBuilder::new(&pattern)
             .case_insensitive(!case_sensitive)
             .build()
             .map_err(|e| format!("Invalid pattern: {e}"))?;
         let include = match include_glob {
             Some(g) if !g.is_empty() => Some(
-                regex::Regex::new(&glob_to_regex(&g)).map_err(|e| format!("Invalid include glob: {e}"))?,
+                regex::Regex::new(&glob_to_regex(&g))
+                    .map_err(|e| format!("Invalid include glob: {e}"))?,
             ),
             _ => None,
         };
         let mut hits: Vec<SearchHit> = Vec::new();
         let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            !(e.file_type().is_dir() && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
         });
         for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
             let rel = entry
                 .path()
                 .strip_prefix(&root)
@@ -1465,9 +1569,14 @@ async fn search_files(
                 .to_string_lossy()
                 .replace('\\', "/");
             if let Some(ref inc) = include {
-                if !inc.is_match(&rel) { continue; }
+                if !inc.is_match(&rel) {
+                    continue;
+                }
             }
-            let content = match std::fs::read_to_string(entry.path()) { Ok(c) => c, Err(_) => continue };
+            let content = match std::fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
             for (idx, line) in content.lines().enumerate() {
                 if matcher.is_match(line) {
                     hits.push(SearchHit {
@@ -1475,7 +1584,9 @@ async fn search_files(
                         line: (idx as u32) + 1,
                         text: line.chars().take(400).collect(),
                     });
-                    if hits.len() >= max { return Ok(hits); }
+                    if hits.len() >= max {
+                        return Ok(hits);
+                    }
                 }
             }
         }
@@ -1491,19 +1602,27 @@ async fn search_files(
 async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<String>, String> {
     let root = {
         let guard = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-        guard.first().ok_or_else(|| "No workspace root set.".to_string())?.clone()
+        guard
+            .first()
+            .ok_or_else(|| "No workspace root set.".to_string())?
+            .clone()
     };
     let max = max_results.unwrap_or(500).min(5000);
     tauri::async_runtime::spawn_blocking(move || {
-        let re = regex::Regex::new(&glob_to_regex(&pattern)).map_err(|e| format!("Invalid glob: {e}"))?;
+        let re = regex::Regex::new(&glob_to_regex(&pattern))
+            .map_err(|e| format!("Invalid glob: {e}"))?;
         let mut out: Vec<String> = Vec::new();
         let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
+            !(e.file_type().is_dir() && e.file_name().to_str().map(is_skip_dir).unwrap_or(false))
         });
         for entry in walker {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().is_file() { continue; }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
             let rel = entry
                 .path()
                 .strip_prefix(&root)
@@ -1512,7 +1631,9 @@ async fn glob_files(pattern: String, max_results: Option<usize>) -> Result<Vec<S
                 .replace('\\', "/");
             if re.is_match(&rel) {
                 out.push(rel);
-                if out.len() >= max { break; }
+                if out.len() >= max {
+                    break;
+                }
             }
         }
         out.sort();
@@ -1554,7 +1675,9 @@ async fn copy_path(from: String, to: String) -> Result<(), String> {
         if let Some(parent) = abs_to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::copy(&abs_from, &abs_to).map(|_| ()).map_err(|e| e.to_string())
+        std::fs::copy(&abs_from, &abs_to)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1605,16 +1728,28 @@ async fn git_status(cwd: String) -> Result<GitStatus, String> {
         let mut unstaged = Vec::new();
         let mut untracked = Vec::new();
         for line in raw.lines() {
-            if line.len() < 3 { continue; }
+            if line.len() < 3 {
+                continue;
+            }
             let xy = &line[..2];
             let path = line[3..].to_string();
             let x = &xy[..1];
             let y = &xy[1..2];
-            if x != " " && x != "?" { staged.push(path.clone()); }
-            if y != " " && y != "?" { unstaged.push(path.clone()); }
-            if xy == "??" { untracked.push(path.clone()); }
+            if x != " " && x != "?" {
+                staged.push(path.clone());
+            }
+            if y != " " && y != "?" {
+                unstaged.push(path.clone());
+            }
+            if xy == "??" {
+                untracked.push(path.clone());
+            }
         }
-        Ok(GitStatus { staged, unstaged, untracked })
+        Ok(GitStatus {
+            staged,
+            unstaged,
+            untracked,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1626,12 +1761,21 @@ struct GitDiff {
 }
 
 #[tauri::command]
-async fn git_diff(cwd: String, file: Option<String>, staged: Option<bool>) -> Result<GitDiff, String> {
+async fn git_diff(
+    cwd: String,
+    file: Option<String>,
+    staged: Option<bool>,
+) -> Result<GitDiff, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut args: Vec<&str> = vec!["diff"];
         let staged_flag = "--cached";
-        if staged.unwrap_or(false) { args.push(staged_flag); }
-        if let Some(ref f) = file { args.push("--"); args.push(f.as_str()); }
+        if staged.unwrap_or(false) {
+            args.push(staged_flag);
+        }
+        if let Some(ref f) = file {
+            args.push("--");
+            args.push(f.as_str());
+        }
         let diff = run_git(&args, &cwd)?;
         Ok(GitDiff { diff })
     })
@@ -1643,7 +1787,9 @@ async fn git_diff(cwd: String, file: Option<String>, staged: Option<bool>) -> Re
 async fn git_stage(cwd: String, files: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut args: Vec<&str> = vec!["add", "--"];
-        for f in &files { args.push(f.as_str()); }
+        for f in &files {
+            args.push(f.as_str());
+        }
         run_git(&args, &cwd).map(|_| ())
     })
     .await
@@ -1654,7 +1800,9 @@ async fn git_stage(cwd: String, files: Vec<String>) -> Result<(), String> {
 async fn git_unstage(cwd: String, files: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
-        for f in &files { args.push(f.as_str()); }
+        for f in &files {
+            args.push(f.as_str());
+        }
         run_git(&args, &cwd).map(|_| ())
     })
     .await
@@ -1671,7 +1819,9 @@ async fn git_commit(cwd: String, message: String) -> Result<GitCommitResult, Str
     tauri::async_runtime::spawn_blocking(move || {
         run_git(&["commit", "-m", &message], &cwd)?;
         let hash = run_git(&["rev-parse", "--short", "HEAD"], &cwd)?;
-        Ok(GitCommitResult { hash: hash.trim().to_string() })
+        Ok(GitCommitResult {
+            hash: hash.trim().to_string(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1689,12 +1839,18 @@ struct GitLogEntry {
 async fn git_log(cwd: String, n: Option<usize>) -> Result<Vec<GitLogEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let limit = format!("-{}", n.unwrap_or(20));
-        let raw = run_git(&["log", &limit, "--pretty=format:%H\x1f%an\x1f%ai\x1f%s"], &cwd)?;
-        let entries = raw.lines()
+        let raw = run_git(
+            &["log", &limit, "--pretty=format:%H\x1f%an\x1f%ai\x1f%s"],
+            &cwd,
+        )?;
+        let entries = raw
+            .lines()
             .filter(|l| !l.is_empty())
             .filter_map(|line| {
                 let parts: Vec<&str> = line.splitn(4, '\x1f').collect();
-                if parts.len() < 4 { return None; }
+                if parts.len() < 4 {
+                    return None;
+                }
                 Some(GitLogEntry {
                     hash: parts[0].chars().take(8).collect(),
                     author: parts[1].to_string(),
@@ -1790,7 +1946,9 @@ fn read_zip_entry(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let mut entry = zip.by_name(entry_name).map_err(|e| format!("{entry_name}: {e}"))?;
+    let mut entry = zip
+        .by_name(entry_name)
+        .map_err(|e| format!("{entry_name}: {e}"))?;
     let mut buf = Vec::new();
     entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
@@ -1846,18 +2004,30 @@ fn extract_pptx_text(path: &str) -> Result<String, String> {
 
 fn extract_odt_text(path: &str) -> Result<String, String> {
     let xml = read_zip_entry(path, "content.xml")?;
-    Ok(extract_xml_text(&xml, &[b"p", b"h", b"span"], &[b"p", b"h"]))
+    Ok(extract_xml_text(
+        &xml,
+        &[b"p", b"h", b"span"],
+        &[b"p", b"h"],
+    ))
 }
 
 fn detect_format(path: &str) -> &'static str {
     let lower = path.to_lowercase();
-    if lower.ends_with(".docx") { "docx" }
-    else if lower.ends_with(".xlsx") { "xlsx" }
-    else if lower.ends_with(".pptx") { "pptx" }
-    else if lower.ends_with(".odt") || lower.ends_with(".ods") || lower.ends_with(".odp") { "odt" }
-    else if lower.ends_with(".pdf") { "pdf" }
-    else if lower.ends_with(".md") || lower.ends_with(".markdown") { "markdown" }
-    else { "text" }
+    if lower.ends_with(".docx") {
+        "docx"
+    } else if lower.ends_with(".xlsx") {
+        "xlsx"
+    } else if lower.ends_with(".pptx") {
+        "pptx"
+    } else if lower.ends_with(".odt") || lower.ends_with(".ods") || lower.ends_with(".odp") {
+        "odt"
+    } else if lower.ends_with(".pdf") {
+        "pdf"
+    } else if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        "markdown"
+    } else {
+        "text"
+    }
 }
 
 #[tauri::command]
@@ -1878,8 +2048,7 @@ async fn document_read(path: String) -> Result<DocumentContent, String> {
                 .arg("-")
                 .output();
             match out {
-                Ok(o) if o.status.success() =>
-                    String::from_utf8_lossy(&o.stdout).into_owned(),
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
                 _ => String::new(),
             }
         }
@@ -1907,7 +2076,9 @@ async fn document_convert(src: String, dest: String) -> Result<(), String> {
         .arg("-o")
         .arg(dest_s)
         .output()
-        .map_err(|_| "pandoc not found — install Pandoc to enable document conversion".to_string())?;
+        .map_err(|_| {
+            "pandoc not found — install Pandoc to enable document conversion".to_string()
+        })?;
 
     if out.status.success() {
         Ok(())
@@ -1934,9 +2105,13 @@ async fn document_create(path: String, format: String, content: String) -> Resul
                 .arg("-o")
                 .arg(dest_s)
                 .output()
-                .map_err(|_| "pandoc not found — install Pandoc to create this document format".to_string())?;
+                .map_err(|_| {
+                    "pandoc not found — install Pandoc to create this document format".to_string()
+                })?;
             let _ = std::fs::remove_file(&tmp);
-            if out.status.success() { Ok(()) } else {
+            if out.status.success() {
+                Ok(())
+            } else {
                 Err(String::from_utf8_lossy(&out.stderr).into_owned())
             }
         }
@@ -1946,9 +2121,15 @@ async fn document_create(path: String, format: String, content: String) -> Resul
 #[tauri::command]
 fn document_formats() -> Vec<String> {
     vec![
-        "docx".to_string(), "xlsx".to_string(), "pptx".to_string(),
-        "odt".to_string(), "ods".to_string(), "odp".to_string(),
-        "pdf".to_string(), "markdown".to_string(), "text".to_string(),
+        "docx".to_string(),
+        "xlsx".to_string(),
+        "pptx".to_string(),
+        "odt".to_string(),
+        "ods".to_string(),
+        "odp".to_string(),
+        "pdf".to_string(),
+        "markdown".to_string(),
+        "text".to_string(),
     ]
 }
 
@@ -1995,12 +2176,15 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
     let _ = lower; // used above via lo
-    // Strip remaining tags char-by-char.
+                   // Strip remaining tags char-by-char.
     let mut in_tag = false;
     for ch in work.chars() {
         match ch {
             '<' => in_tag = true,
-            '>' => { in_tag = false; out.push(' '); }
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
             _ if !in_tag => out.push(ch),
             _ => {}
         }
@@ -2016,7 +2200,11 @@ fn extract_html_title(html: &str) -> Option<String> {
     let end = lo[after_gt..].find("</title>").map(|i| i + after_gt)?;
     let raw = &html[after_gt..end];
     let clean = raw.trim().to_string();
-    if clean.is_empty() { None } else { Some(clean) }
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
 }
 
 /// Fetch a URL and return cleaned page text (HTML tags stripped).
@@ -2047,7 +2235,12 @@ async fn fetch_url(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    Ok(FetchedPage { url: final_url, title, text, fetched_at })
+    Ok(FetchedPage {
+        url: final_url,
+        title,
+        text,
+        fetched_at,
+    })
 }
 
 // ── Web search (#121) ─────────────────────────────────────────────────────────
@@ -2067,13 +2260,21 @@ fn parse_ddg_lite(html: &str, max: usize) -> Vec<WebSearchResult> {
     while results.len() < max {
         // Each result link sits in <a class="result-link" href="...">Title</a>
         let class_marker = "class=\"result-link\"";
-        let Some(ci) = lo[pos..].find(class_marker) else { break };
+        let Some(ci) = lo[pos..].find(class_marker) else {
+            break;
+        };
         let abs = pos + ci;
         // Walk back to find the href on the enclosing <a …>
         let tag_start = lo[..abs].rfind('<').unwrap_or(abs);
-        let Some(href_i) = lo[tag_start..abs + class_marker.len()].find("href=\"") else { pos = abs + 1; continue };
+        let Some(href_i) = lo[tag_start..abs + class_marker.len()].find("href=\"") else {
+            pos = abs + 1;
+            continue;
+        };
         let href_start = tag_start + href_i + 6;
-        let href_end = lo[href_start..].find('"').map(|i| i + href_start).unwrap_or(href_start);
+        let href_end = lo[href_start..]
+            .find('"')
+            .map(|i| i + href_start)
+            .unwrap_or(href_start);
         let url = html[href_start..href_end].trim().to_string();
         // Title: text between > and </a>
         let gt = lo[abs..].find('>').map(|i| i + abs + 1).unwrap_or(abs + 1);
@@ -2090,7 +2291,11 @@ fn parse_ddg_lite(html: &str, max: usize) -> Vec<WebSearchResult> {
             String::new()
         };
         if !url.is_empty() && !title.is_empty() {
-            results.push(WebSearchResult { title, url, snippet });
+            results.push(WebSearchResult {
+                title,
+                url,
+                snippet,
+            });
         }
         pos = abs + 1;
     }
@@ -2115,28 +2320,55 @@ async fn search_ddg_lite(query: &str, count: usize) -> Result<Vec<WebSearchResul
         .user_agent("Mozilla/5.0 (compatible; OllamaGUI/1.0)")
         .build()
         .map_err(|e| e.to_string())?;
-    let body = client.get(&url).send().await.map_err(|e| e.to_string())?
-        .text().await.map_err(|e| e.to_string())?;
+    let body = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(parse_ddg_lite(&body, count))
 }
 
 /// Search via a self-hosted SearXNG instance (JSON API).
-async fn search_searxng(base_url: &str, query: &str, count: usize) -> Result<Vec<WebSearchResult>, String> {
-    let url = format!("{}/search?q={}&format=json", base_url.trim_end_matches('/'),
-        query.replace(' ', "+"));
+async fn search_searxng(
+    base_url: &str,
+    query: &str,
+    count: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let url = format!(
+        "{}/search?q={}&format=json",
+        base_url.trim_end_matches('/'),
+        query.replace(' ', "+")
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let data: serde_json::Value = client.get(&url).send().await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+    let data: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
     let results = data["results"].as_array().cloned().unwrap_or_default();
-    Ok(results.into_iter().take(count).filter_map(|r| {
-        let title = r["title"].as_str()?.to_string();
-        let url = r["url"].as_str()?.to_string();
-        let snippet = r["content"].as_str().unwrap_or("").to_string();
-        Some(WebSearchResult { title, url, snippet })
-    }).collect())
+    Ok(results
+        .into_iter()
+        .take(count)
+        .filter_map(|r| {
+            let title = r["title"].as_str()?.to_string();
+            let url = r["url"].as_str()?.to_string();
+            let snippet = r["content"].as_str().unwrap_or("").to_string();
+            Some(WebSearchResult {
+                title,
+                url,
+                snippet,
+            })
+        })
+        .collect())
 }
 
 /// Web search via DuckDuckGo Lite or a SearXNG instance (#121).
@@ -2150,7 +2382,8 @@ async fn web_search(
     let n = count.unwrap_or(5).min(20);
     match provider.as_deref().unwrap_or("duckduckgo") {
         "searxng" => {
-            let base = searxng_url.ok_or_else(|| "SearXNG URL required for provider=searxng".to_string())?;
+            let base = searxng_url
+                .ok_or_else(|| "SearXNG URL required for provider=searxng".to_string())?;
             search_searxng(&base, &query, n).await
         }
         _ => search_ddg_lite(&query, n).await,
@@ -2263,9 +2496,9 @@ mod tests {
     #[test]
     fn glob_globstar_crosses_segments_and_zero_dirs() {
         let re = regex::Regex::new(&glob_to_regex("**/*.ts")).unwrap();
-        assert!(re.is_match("a.ts"));            // zero dirs
-        assert!(re.is_match("src/a.ts"));        // one dir
-        assert!(re.is_match("src/deep/a.ts"));   // many dirs
+        assert!(re.is_match("a.ts")); // zero dirs
+        assert!(re.is_match("src/a.ts")); // one dir
+        assert!(re.is_match("src/deep/a.ts")); // many dirs
         assert!(!re.is_match("src/a.rs"));
     }
 
@@ -2301,7 +2534,6 @@ mod tests {
         assert!(sys.total_memory() > 0, "total memory should be non-zero");
         assert!(sys.available_memory() <= sys.total_memory());
     }
-
 
     #[test]
     fn mcp_http_request_deserializes_camel_case_and_optional_session_id() {
@@ -2345,14 +2577,20 @@ mod tests {
 
         // Response serializes to camelCase keys.
         let resp = super::CliCommandResponse {
-            success: false, exit_code: Some(1), stdout: String::new(),
-            stderr: "err".to_string(), error: Some("boom".to_string()),
+            success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "err".to_string(),
+            error: Some("boom".to_string()),
             timed_out: true,
         };
         let j = serde_json::to_value(&resp).unwrap();
         assert!(j.get("exitCode").is_some(), "exitCode should be camelCase");
         assert!(j.get("timedOut").is_some(), "timedOut should be camelCase");
-        assert!(j.get("exit_code").is_none(), "snake_case key should not exist");
+        assert!(
+            j.get("exit_code").is_none(),
+            "snake_case key should not exist"
+        );
     }
 
     #[test]
@@ -2365,8 +2603,14 @@ mod tests {
             session_id: Some("s1".to_string()),
         };
         let j = serde_json::to_value(&resp).unwrap();
-        assert!(j.get("sessionId").is_some(), "sessionId should be camelCase");
-        assert!(j.get("session_id").is_none(), "snake_case key should not exist");
+        assert!(
+            j.get("sessionId").is_some(),
+            "sessionId should be camelCase"
+        );
+        assert!(
+            j.get("session_id").is_none(),
+            "snake_case key should not exist"
+        );
         assert_eq!(j.get("success"), Some(&serde_json::Value::Bool(true)));
     }
 
@@ -2385,7 +2629,9 @@ mod tests {
         let data = [0xFF, 0x00, 0xAB, 0x01];
         let enc = super::bytes_to_base64(&data);
         use base64::Engine;
-        let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
+        let dec = base64::engine::general_purpose::STANDARD
+            .decode(&enc)
+            .unwrap();
         assert_eq!(dec, data);
     }
 }
