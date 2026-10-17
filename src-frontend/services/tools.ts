@@ -233,6 +233,147 @@ export async function runCliOnce(
 }
 
 // Built-in tools
+// ── #612: safe arithmetic evaluation for the `calculate` tool ────────────────
+// The previous `calculate` used `new Function('return (...)')`, which could
+// execute arbitrary code from a model-supplied expression. This tokenizer +
+// recursive-descent parser accepts only numeric literals, the operators
+// + - * / % and unary minus, parentheses, and a fixed set of Math
+// functions/constants — no identifier can escape to executable code.
+
+const MATH_FUNCTIONS: Record<string, (...args: number[]) => number> = {
+  abs: Math.abs, sqrt: Math.sqrt, cbrt: Math.cbrt,
+  sin: Math.sin, cos: Math.cos, tan: Math.tan,
+  asin: Math.asin, acos: Math.acos, atan: Math.atan,
+  floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign,
+  log: Math.log, log2: Math.log2, log10: Math.log10, exp: Math.exp,
+  pow: Math.pow, min: Math.min, max: Math.max,
+};
+const MATH_CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E };
+
+type Tok =
+  | { type: 'num'; value: number }
+  | { type: 'op'; value: string }
+  | { type: 'lparen' }
+  | { type: 'rparen' }
+  | { type: 'comma' }
+  | { type: 'func'; value: string }
+  | { type: 'const'; value: string };
+
+function tokenizeArithmetic(input: string): Tok[] {
+  const tokens: Tok[] = [];
+  let i = 0;
+  while (i < input.length) {
+    const c = input[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if ((c >= '0' && c <= '9') || c === '.') {
+      let j = i;
+      while (j < input.length && ((input[j] >= '0' && input[j] <= '9') || input[j] === '.')) j++;
+      if (input[j] === 'e' || input[j] === 'E') {
+        let k = j + 1;
+        if (input[k] === '+' || input[k] === '-') k++;
+        if (k < input.length && input[k] >= '0' && input[k] <= '9') {
+          k++;
+          while (k < input.length && input[k] >= '0' && input[k] <= '9') k++;
+          j = k;
+        }
+      }
+      const num = parseFloat(input.slice(i, j));
+      if (Number.isNaN(num)) throw new Error('Bad number');
+      tokens.push({ type: 'num', value: num });
+      i = j;
+      continue;
+    }
+    if (c === '(') { tokens.push({ type: 'lparen' }); }
+    else if (c === ')') { tokens.push({ type: 'rparen' }); }
+    else if (c === ',') { tokens.push({ type: 'comma' }); }
+    else if (c === '+' || c === '-' || c === '*' || c === '/' || c === '%') { tokens.push({ type: 'op', value: c }); }
+    else if (/[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < input.length && /[A-Za-z0-9_]/.test(input[j])) j++;
+      const name = input.slice(i, j);
+      const lower = name.toLowerCase();
+      if (MATH_FUNCTIONS[lower]) tokens.push({ type: 'func', value: lower });
+      else if (MATH_CONSTANTS[lower]) tokens.push({ type: 'const', value: lower });
+      else throw new Error(`Unknown identifier: ${name}`);
+      i = j;
+      continue;
+    }
+    else { throw new Error(`Unexpected character: ${c}`); }
+    i++;
+  }
+  return tokens;
+}
+
+// Parse + evaluate an arithmetic expression safely. Returns NaN for anything
+// it cannot make numeric; callers should treat non-finite results as errors.
+export function evaluateArithmetic(input: string): number {
+  const tokens = tokenizeArithmetic(input);
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const next = () => tokens[pos++];
+  const parseExpression = (): number => {
+    let value = parseTerm();
+    while (true) {
+      const tok = peek();
+      if (tok && tok.type === 'op' && (tok.value === '+' || tok.value === '-')) {
+        next();
+        value = tok.value === '+' ? value + parseTerm() : value - parseTerm();
+      } else break;
+    }
+    return value;
+  };
+  const parseTerm = (): number => {
+    let value = parseFactor();
+    while (true) {
+      const tok = peek();
+      if (tok && tok.type === 'op' && (tok.value === '*' || tok.value === '/' || tok.value === '%')) {
+        next();
+        value = tok.value === '*' ? value * parseFactor() : tok.value === '/' ? value / parseFactor() : value % parseFactor();
+      } else break;
+    }
+    return value;
+  };
+  const parseFactor = (): number => {
+    const tok = peek();
+    if (tok && tok.type === 'op' && (tok.value === '-' || tok.value === '+')) {
+      next();
+      const v = parseFactor();
+      return tok.value === '-' ? -v : v;
+    }
+    return parsePrimary();
+  };
+  const parsePrimary = (): number => {
+    const tok = peek();
+    if (!tok) throw new Error('Unexpected end of expression');
+    if (tok.type === 'num') { next(); return tok.value; }
+    if (tok.type === 'const') { next(); return MATH_CONSTANTS[tok.value]; }
+    if (tok.type === 'lparen') {
+      next();
+      const value = parseExpression();
+      if (!peek() || peek()!.type !== 'rparen') throw new Error('Expected )');
+      next();
+      return value;
+    }
+    if (tok.type === 'func') {
+      next();
+      if (!peek() || peek()!.type !== 'lparen') throw new Error('Expected (');
+      next();
+      const args: number[] = [];
+      if (peek() && peek()!.type !== 'rparen') {
+        args.push(parseExpression());
+        while (peek()?.type === 'comma') { next(); args.push(parseExpression()); }
+      }
+      if (!peek() || peek()!.type !== 'rparen') throw new Error('Expected )');
+      next();
+      return MATH_FUNCTIONS[tok.value](...args);
+    }
+    throw new Error('Unexpected token');
+  };
+  const value = parseExpression();
+  if (pos < tokens.length) throw new Error('Trailing characters');
+  return value;
+}
+
 export function registerBuiltInTools() {
   // System information tool
   toolRegistry.registerTool({
@@ -270,7 +411,6 @@ export function registerBuiltInTools() {
   toolRegistry.registerTool({
     name: 'calculate',
     description: 'Perform a mathematical calculation',
-    readOnly: true,
     parameters: {
       type: 'object',
       properties: {
@@ -283,9 +423,11 @@ export function registerBuiltInTools() {
     },
     execute: async (params: { expression: string }) => {
       try {
-        // Use Function constructor (sandboxed scope) instead of eval
-        const fn = new Function('return (' + params.expression + ')');
-        const result = fn();
+        // Safe recursive-descent arithmetic parser (#612); never runs raw input
+        // as code. Reject any non-finite result as an invalid expression.
+        if (typeof params.expression !== 'string') return { error: 'Invalid expression' };
+        const result = evaluateArithmetic(params.expression.trim());
+        if (typeof result !== 'number' || !Number.isFinite(result)) return { error: 'Invalid expression' };
         return { result };
       } catch {
         return { error: 'Invalid expression' };

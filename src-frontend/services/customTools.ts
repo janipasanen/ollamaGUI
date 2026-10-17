@@ -6,8 +6,10 @@
  * Actions: add per-message buttons to the assistant message toolbar.
  *
  * All user code runs in a Web Worker sandbox with a capped timeout so a
- * runaway body can't hang the UI. The `eval` pattern in the built-in
- * `calculate` tool is also replaced with the sandboxed runner.
+ * runaway body can't hang the UI. (The built-in `calculate` tool used to
+ * evaluate a raw expression via the Function constructor — a model-supplied
+ * arbitrary-code hazard — and was replaced with a safe arithmetic parser in
+ * #612; it is NOT executed in the Worker.)
  */
 import { toolRegistry, type ToolDefinition } from './tools';
 
