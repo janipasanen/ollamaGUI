@@ -82,7 +82,12 @@ async function* streamOpenAiWithTools(
   }
   if (!res.ok) {
     const { openAiErrorFromResponse } = await import('./connections');
-    throw await openAiErrorFromResponse(res, 'OpenAI stream error');
+    // Preserve the HTTP status so the transient-failure retry predicate
+    // (#586) can classify 502/503/504 even though `openAiErrorFromResponse`
+    // only carries the body detail into the Error message.
+    const err = await openAiErrorFromResponse(res, 'OpenAI stream error');
+    (err as { status?: number }).status = res.status;
+    throw err;
   }
 
   const reader = res.body?.getReader();

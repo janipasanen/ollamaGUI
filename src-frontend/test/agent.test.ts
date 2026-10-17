@@ -452,4 +452,31 @@ describe('agenticChatStream retry transient failures (#586)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(retries).toHaveLength(0);
   });
+
+  it('does NOT re-fetch when aborted during backoff; calls onCancel instead (#586)', async () => {
+    const controller = new AbortController();
+    // Simulate the user hitting Stop while the first attempt is failing:
+    // abort, then reject — the catch must see signal.aborted and bail.
+    const fetchMock = vi.fn().mockImplementation(() => {
+      controller.abort();
+      return Promise.reject(new Error('connection reset by peer'));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCancel = vi.fn();
+    const onRetry = vi.fn();
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      signal: controller.signal,
+      onCancel,
+      onRetry,
+    })) {
+      void _;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // never re-fetch
+    expect(onCancel).toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
 });

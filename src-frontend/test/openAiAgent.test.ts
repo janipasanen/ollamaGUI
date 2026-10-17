@@ -543,13 +543,14 @@ const contentSse = () => sse([
 ]);
 
 describe('openAiAgenticChatStream retry transient failures (#586)', () => {
-  // Note: openAiErrorFromResponse does not preserve `res.status`, so a
-  // non-ok response is only retryable when its statusText matches the
-  // retryable message regex.
+  // Note: openAiErrorFromResponse does not preserve `res.status`, so the
+  // retry predicate relies on the attached status for 502/503/504. Use a
+  // statusText that does NOT match the retryable message regex, to exercise
+  // the status branch specifically.
   const transientError = () => ({
     ok: false,
     status: 503,
-    statusText: 'connection reset by peer',
+    statusText: 'Service Unavailable',
     json: async () => ({}),
   });
 
@@ -606,6 +607,31 @@ describe('openAiAgenticChatStream retry transient failures (#586)', () => {
       onRetry,
     });
     expect(counter.count()).toBe(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-fetch when aborted during backoff; calls onCancel instead (#586)', async () => {
+    const controller = new AbortController();
+    let callCount = 0;
+    // Install a fetch that rejects and aborts — installRouteFetch cannot carry
+    // a rejection, so set globalThis.fetch directly here.
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async () => {
+      callCount++;
+      controller.abort();
+      return Promise.reject(new Error('connection reset by peer'));
+    });
+    const onCancel = vi.fn();
+    const onRetry = vi.fn();
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hi' }],
+      signal: controller.signal,
+      onCancel,
+      onRetry,
+    });
+    expect(callCount).toBe(1); // never re-fetch
+    expect(onCancel).toHaveBeenCalled();
     expect(onRetry).not.toHaveBeenCalled();
   });
 });
