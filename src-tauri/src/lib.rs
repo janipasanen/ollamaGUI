@@ -231,15 +231,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use std::process::{Child, ChildStdin, ChildStdout, Command};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct McpStdioCommand {
-    command: String,
-    args: Vec<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -286,14 +280,6 @@ struct McpHttpResponse {
     error: Option<String>,
 }
 
-#[derive(Debug)]
-struct McpHttpSession {
-    url: String,
-    auth_token: Option<String>,
-    client: Client,
-    sender: mpsc::Sender<McpHttpResponse>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpStdioResponse {
@@ -306,9 +292,6 @@ struct McpProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    stderr: BufReader<ChildStderr>,
-    pending_requests: HashMap<u32, tauri::async_runtime::Sender<Result<String, String>>>,
-    next_request_id: u32,
 }
 
 lazy_static::lazy_static! {
@@ -339,9 +322,6 @@ lazy_static::lazy_static! {
 
     static ref MCP_HTTP_CLIENT: Arc<Mutex<Option<Client>>> =
         Arc::new(Mutex::new(None));
-
-    static ref MCP_SESSIONS: Arc<Mutex<HashMap<String, McpHttpSession>>> =
-        Arc::new(Mutex::new(HashMap::new()));
 }
 
 #[tauri::command]
@@ -372,21 +352,16 @@ async fn mcp_stdio_spawn(
     }
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
     let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
     let stdout = BufReader::new(child.stdout.take().ok_or("Failed to capture stdout")?);
-    let stderr = BufReader::new(child.stderr.take().ok_or("Failed to capture stderr")?);
 
     let process = McpProcess {
         child,
         stdin,
         stdout,
-        stderr,
-        pending_requests: HashMap::new(),
-        next_request_id: 1,
     };
 
     processes.insert(session_id.clone(), process);
