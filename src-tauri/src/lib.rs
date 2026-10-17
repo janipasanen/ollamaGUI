@@ -940,7 +940,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -1112,7 +1112,7 @@ async fn get_system_memory() -> Result<SystemMemory, String> {
 
 static TERMINAL_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Maps session_id → OS PID for kill support.
+// Maps session_id → OS PID for kill support.
 lazy_static::lazy_static! {
     static ref TERMINAL_PIDS: Arc<Mutex<HashMap<u64, u32>>>
         = Arc::new(Mutex::new(HashMap::new()));
@@ -1282,7 +1282,7 @@ fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Lexically normalize a path (resolve `..` without hitting the filesystem).
-fn normalize_path(path: &PathBuf) -> PathBuf {
+fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
     for component in path.components() {
         use std::path::Component::*;
@@ -1914,17 +1914,17 @@ fn extract_xml_text(
             Ok(Event::Start(ref e)) => {
                 let loc = e.local_name();
                 let l = loc.as_ref();
-                if include_local.iter().any(|&t| t == l) {
+                if include_local.contains(&l) {
                     depth += 1;
                 }
             }
             Ok(Event::End(ref e)) => {
                 let loc = e.local_name();
                 let l = loc.as_ref();
-                if include_local.iter().any(|&t| t == l) && depth > 0 {
+                if include_local.contains(&l) && depth > 0 {
                     depth -= 1;
                 }
-                if paragraph_local.iter().any(|&t| t == l) {
+                if paragraph_local.contains(&l) {
                     output.push('\n');
                 }
             }

@@ -3,15 +3,15 @@
 //! Routes a conversion request through one of three engines, cheapest first:
 //!
 //!   1. `BundledCrate`  — handled in-process with crates we already ship
-//!                        (e.g. `xlsx -> csv` via the `zip`/`quick-xml` readers).
+//!      (e.g. `xlsx -> csv` via the `zip`/`quick-xml` readers).
 //!   2. `Pandoc`        — the `pandoc` CLI for the common text/markup family
-//!                        (md, html, docx, odt, txt) when no presentation /
-//!                        PDF rendering is involved.
+//!      (md, html, docx, odt, txt) when no presentation /
+//!      PDF rendering is involved.
 //!   3. `LibreOffice`   — `soffice --headless` for anything that needs a real
-//!                        layout engine: presentations (pptx/odp) and PDF
-//!                        export. This is the heaviest tier and is optional —
-//!                        if LibreOffice is not installed we return an
-//!                        actionable error rather than failing silently.
+//!      layout engine: presentations (pptx/odp) and PDF
+//!      export. This is the heaviest tier and is optional —
+//!      if LibreOffice is not installed we return an
+//!      actionable error rather than failing silently.
 //!
 //! The routing matrix (`engine_for`) and the binary-detection helpers are pure
 //! functions so they can be unit-tested without a real conversion runtime. The

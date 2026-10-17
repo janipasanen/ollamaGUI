@@ -1109,12 +1109,13 @@ fn capture_row(
     Ok((processed, true))
 }
 
+/// The cell triple [`extract_cell`] yields: attribute, `<v>` text, and
+/// inline-string text; each element is `None` when that field is absent.
+type CellData = (Option<String>, Option<String>, Option<String>);
+
 /// Extract `(t_attr, <v> text, inline-string text)` for a cell ref from a
 /// worksheet part. Used by [`xlsx_read_cell_value`].
-fn extract_cell(
-    ws: &[u8],
-    target: &str,
-) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+fn extract_cell(ws: &[u8], target: &str) -> Result<CellData, String> {
     let mut reader = quick_xml::Reader::from_reader(ws);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -1169,7 +1170,6 @@ fn extract_cell(
                 } else if loc == b"is" {
                     capture_is = false;
                 } else if in_target && loc == b"c" && depth - 1 == cell_depth {
-                    in_target = false;
                     return Ok((t_attr, v_text, is_text));
                 }
                 depth -= 1;

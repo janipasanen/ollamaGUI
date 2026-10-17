@@ -64,6 +64,17 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check
 
+      # STEP 2 (#618): clippy gate at the level already clean after the 7 lint
+      # fixes (ptr_arg, question_mark, type_complexity, manual_contains,
+      # manual_is_multiple_of, manual_pattern_char_comparison, doc_lazy_continuation).
+      # Denies correctness/suspicious/perf; dead_code and style nits stay informational
+      # (STEP 3 removes the dead code). ubuntu-only: clippy output is platform-
+      # independent here (#618).
+      - name: Rust clippy
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: src-tauri
+        run: cargo clippy --lib -- -D clippy::correctness -D clippy::suspicious -D clippy::perf
+
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:

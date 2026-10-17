@@ -138,7 +138,7 @@ fn extract_host(raw: &str) -> Option<String> {
 
     // Authority ends at the first '/', '?' or '#'. Take everything before that.
     let authority_end = after_scheme
-        .find(|c| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
     if authority.is_empty() {
@@ -156,9 +156,9 @@ fn extract_host(raw: &str) -> Option<String> {
 
     // IPv6 literal: `[::1]:8080` → host is the bracketed part.
     let host = if let Some(stripped) = host_port.strip_prefix('[') {
-        match stripped.find(']') {
-            Some(end) => &stripped[..end],
-            None => return None, // unbalanced bracket
+        {
+            let end = stripped.find(']')?;
+            &stripped[..end]
         }
     } else {
         // Distinguish `host:port` (one colon) from a bare IPv6 literal like
