@@ -1,0 +1,6 @@
+# git blame config: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# Commits here are skipped by `git blame`, so they don't attribute
+# reformatting churn to a single commit.
+
+# #618 STEP 1 — src-tauri rustfmt baseline (sorts mod decls, wraps format! args).
+552f832f923aa1b6c205d8a0f681a610953ba5b5
