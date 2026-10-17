@@ -163,4 +163,53 @@ describe('spawn_subagent tool (#104)', () => {
     expect(outcome).toHaveProperty('error');
     expect(outcome).not.toHaveProperty('result');
   });
+
+  // ── #585: failed/sub-agent outcomes are flagged, never an empty result ────
+
+  it('non-ok (503) response surfaces an error signal (#585/#586)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ error: 'Service Unavailable' }),
+    });
+    let result = '';
+    let errorText: string | undefined;
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'a task' }],
+      maxIterations: 3,
+      onAssistantMessage: (m) => { result = m; },
+      onError: (e) => { errorText = e.message; },
+    })) {
+      void _;
+    }
+    // No content on a failed stream...
+    expect(result).toBe('');
+    // ...but the failure is surfaced so the parent returns { error } (#585).
+    expect(errorText).toContain('Service Unavailable');
+  });
+
+  it('flags maxIterations reached instead of returning an empty result (#585)', async () => {
+    // Always returns a tool call so the loop would run forever without the guard.
+    vi.spyOn(toolRegistry, 'executeToolCall').mockResolvedValue({ content: 'ok', name: 'noop' });
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(makeStreamResponse([{ content: '', tool_calls: [{ id: 'c1', function: { name: 'noop', arguments: {} } }] }]))
+    );
+    let truncated = false;
+    const msgs: any[] = [];
+    for await (const m of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'task' }],
+      maxIterations: 3,
+      onMaxIterations: () => { truncated = true; },
+    })) {
+      msgs.push(m);
+    }
+    // Stopping at maxIterations is flagged rather than swallowed as '' (#585).
+    expect(truncated).toBe(true);
+    const last = msgs[msgs.length - 1];
+    expect(last.role).toBe('assistant');
+    expect(last.content).toContain('maximum tool iterations');
+  });
 });

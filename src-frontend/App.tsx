@@ -1487,9 +1487,14 @@ const App: React.FC = () => {
           subagentDepthRef.current += 1;
           try {
             let result = '';
-            // Capture a fetch/stream failure so the parent sees an error result
-            // instead of an empty string (#586).
+            let lastMessage = '';
+            // Report sub-agent outcome to the parent model instead of a bare
+            // empty string on failure/cancel/truncation (#585). onError/onCancel/
+            // onMaxIterations fire even when the text is only emitted as a yield
+            // (agent.ts), so we never silently return { result: '' } again.
             let errorText: string | undefined;
+            let cancelled = false;
+            let truncated = false;
             const subMessages: Message[] = [
               { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
               { role: 'user', content: params.task },
@@ -1509,12 +1514,21 @@ const App: React.FC = () => {
               onApprovalNeeded: createApprovalGate(),
               onAssistantMessage: (msg) => { result = msg; },
               onError: (e) => { errorText = e.message; },
+              onCancel: () => { cancelled = true; },
+              onMaxIterations: () => { truncated = true; },
             });
-            for await (const _m of gen) { /* consume */ }
-            // If the sub-agent never produced content (e.g. the fetch failed),
-            // surface the error to the parent rather than an empty result.
-            if (result === '') return { error: errorText ?? 'Sub-agent failed to respond.' };
-            return { result };
+            // Keep the last yielded assistant message: the failure text and the
+            // max-iterations warning reach the loop only as yields, not via
+            // onAssistantMessage, so this is load-bearing on both paths.
+            for await (const m of gen) {
+              const am = m as Message;
+              if (am.role === 'assistant' && am.content) lastMessage = am.content;
+            }
+            if (cancelled) return { cancelled: true };
+            if (errorText) return { error: errorText };
+            if (truncated) return { result: result || lastMessage, truncated: true };
+            if (!result && !lastMessage) return { result: '', note: 'sub-agent produced no output' };
+            return { result: result || lastMessage };
           } finally {
             subagentDepthRef.current -= 1;
           }
@@ -1550,11 +1564,14 @@ const App: React.FC = () => {
             const toolFilter = params.tools && params.tools.length > 0
               ? params.tools.filter(n => !spawnNames.has(n))
               : allToolNames;
-            const runOne = async (task: string): Promise<string> => {
+            const runOne = async (task: string): Promise<{ result?: string; error?: string; cancelled?: boolean; truncated?: boolean; note?: string }> => {
               let result = '';
-              // Capture a fetch/stream failure so the parent sees an error
-              // result instead of an empty string (#586).
+              let lastMessage = '';
+              // Report sub-agent outcome to the parent model instead of a bare
+              // string so failures/cancel/truncation survive (#585/#586).
               let errorText: string | undefined;
+              let cancelled = false;
+              let truncated = false;
               const gen = agenticChatStream({
                 model,
                 messages: [
@@ -1567,15 +1584,29 @@ const App: React.FC = () => {
                 onApprovalNeeded: createApprovalGate(),
                 onAssistantMessage: (msg) => { result = msg; },
                 onError: (e) => { errorText = e.message; },
+                onCancel: () => { cancelled = true; },
+                onMaxIterations: () => { truncated = true; },
               });
-              for await (const _m of gen) { /* consume */ }
-              return result === '' ? `Error: ${errorText ?? 'Sub-agent failed to respond.'}` : result;
+              for await (const m of gen) {
+                const am = m as Message;
+                if (am.role === 'assistant' && am.content) lastMessage = am.content;
+              }
+              if (cancelled) return { cancelled: true };
+              if (errorText) return { error: errorText };
+              if (truncated) return { result: result || lastMessage, truncated: true };
+              if (!result && !lastMessage) return { result: '', note: 'sub-agent produced no output' };
+              return { result: result || lastMessage };
             };
             const settled = await Promise.allSettled(limited.map(runOne));
-            const results = settled.map((s, i) => ({
-              task: limited[i],
-              result: s.status === 'fulfilled' ? s.value : `Error: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`,
-            }));
+            // Spread the per-task object into each entry so the model sees the
+            // sub-agent's outcome (#585). The fulfilled branch is a happy path
+            // object; the rejected branch only fires for throws such as a bad
+            // conn, since network errors are swallowed inside the loops.
+            const results = settled.map((s, i) => (
+              s.status === 'fulfilled'
+                ? { task: limited[i], ...(s.value as object) }
+                : { task: limited[i], error: `Error: ${s.reason instanceof Error ? s.reason.message : String(s.reason)}` }
+            ));
             return { ranInParallel: limited.length, dropped: tasks.length - limited.length, results };
           } finally {
             subagentDepthRef.current -= 1;
