@@ -38,6 +38,7 @@ import {
 import {
   ModelConnection, ConnectedModel,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
+  initConnectionSecrets, migrateConnectionSecrets,
   fetchAllConnectionModels, probeConnection, streamOpenAiChat,
 } from './services/connections';
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
@@ -87,6 +88,7 @@ import { parseSchemaInput, classifyResponse } from './services/structuredOutput'
 import {
   ImageGenConfig,
   loadImageGenConfig, saveImageGenConfig,
+  initImageGenConfigSecrets, migrateImageGenKey,
   generateImage, registerImageGenTool,
 } from './services/imagegen';
 import {
@@ -171,7 +173,7 @@ import { ConversationStatsButton } from './components/ConversationStatsButton';
 
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
-import { initOpenApiServers } from './services/openapiTools';
+import { initOpenApiServers, initOpenApiServersSecrets, migrateOpenApiKeys } from './services/openapiTools';
 import { registerWorkspaceRagTools } from './services/workspaceRag';
 import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
 
@@ -1298,6 +1300,20 @@ const App: React.FC = () => {
 
   useEffect(() => {
     async function loadInitialData() {
+      // #611: hydrate the connection + OpenAPI + imagegen API-key caches from the
+      // keychain, and migrate any pre-#611 plaintext keys out of localStorage,
+      // before any connection read or handler can observe a key. Reload so the
+      // keys are attached to the state the handlers read from.
+      await initConnectionSecrets();
+      await migrateConnectionSecrets();
+      await initOpenApiServersSecrets();
+      await migrateOpenApiKeys();
+      await initImageGenConfigSecrets();
+      await migrateImageGenKey();
+      setConnections(loadConnections());
+      setOpenApiServers(loadOpenApiServers());
+      setImageGenConfig(loadImageGenConfig());
+
       const savedUrl = localStorage.getItem('ollama_gui_base_url');
       if (savedUrl) setOllamaBaseUrl(savedUrl);
 
@@ -1406,10 +1422,15 @@ const App: React.FC = () => {
      setEditAppliedCallback((path, label) => { void autoCommitEdit(path, label, loadAutoCommitEdits()); });
      // Wire the read-only mode hook (#146) so the hook chain enforces it.
       registerHook('builtin:read-only', makeReadOnlyHook());
-      // Redact known secrets (connection API keys) from tool output before it
-      // reaches the model, so tokens never leak into the prompt context (#409).
-      registerPostToolUseHook('builtin:redact-secrets', makeSecretsRedactHook(
-        () => loadConnections().map(c => c.apiKey ?? '').filter(Boolean),
+      // Redact known secrets (connection API keys, OpenAPI server keys, and the
+      // imagegen API key) from tool output before it reaches the model, so
+      // tokens never leak into the prompt context (#409, #611).
+      registerPostToolUseHook('builtin:redact-secrets', makeSecretsRedactHook(() =>
+        [
+          ...loadConnections().map(c => c.apiKey ?? ''),
+          ...loadOpenApiServers().map(s => s.apiKey ?? ''),
+          loadImageGenConfig().apiKey ?? '',
+        ].filter(Boolean),
       ));
       // Post-edit verification (#425): when enabled (Settings), run the project
       // checks after each successful edit and feed diagnostics back to the model.
@@ -6762,7 +6783,7 @@ ${lines.join('\n')}`;
                                  const token = entered.trim();
                                  const updated = connections.map(c =>
                                    c.id === conn.id ? { ...c, apiKey: token || undefined } : c);
-                                 saveConnections(updated);
+                                 await saveConnections(updated);
                                  setConnections(updated);
                                  const changed = updated.find(c => c.id === conn.id)!;
                                  const { fetchOllamaConnectionModels } = await import('./services/connections');
@@ -6774,19 +6795,19 @@ ${lines.join('\n')}`;
                                className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}
                              >🔑</button>
                              <button
-                               onClick={() => {
+                               onClick={async () => {
                                  const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
-                                 saveConnections(updated);
+                                 await saveConnections(updated);
                                  setConnections(updated);
                                }}
                                className={`shrink-0 text-[10px] px-2 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-emerald-700 text-emerald-400' : 'border-emerald-400 text-emerald-600') : (dark ? 'border-zinc-600 text-zinc-500' : 'border-zinc-300 text-zinc-400')}`}
                              >{conn.enabled ? 'On' : 'Off'}</button>
                              <button
                                aria-label={`Remove connection ${conn.name}`}
-                               onClick={() => {
+                               onClick={async () => {
                                  if (!window.confirm(`Remove connection "${conn.name}"?`)) return;
                                  const updated = connections.filter(c => c.id !== conn.id);
-                                 saveConnections(updated);
+                                 await saveConnections(updated);
                                  setConnections(updated);
                                  setConnectedModels(prev => prev.filter(m => m.connectionId !== conn.id));
                                }}
@@ -6827,7 +6848,7 @@ ${lines.join('\n')}`;
                          const name = newRemoteOllamaName.trim() || rawUrl;
                          if (!rawUrl) return;
                          const token = newRemoteOllamaToken.trim();
-                         const conn = addConnection({
+                         const conn = await addConnection({
                            name, kind: 'ollama', baseUrl: rawUrl, enabled: true,
                            ...(token ? { apiKey: token } : {}),
                          });
@@ -7223,16 +7244,16 @@ ${lines.join('\n')}`;
                       <input aria-label="Connection base URL" placeholder="Base URL (e.g. http://localhost:1234)" value={newConn.baseUrl} onChange={e => setNewConn(v => ({ ...v, baseUrl: e.target.value }))}
                         className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       {newConn.kind === 'openai' && (
-                        <input aria-label="Connection API key" placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
+                        <input type="password" aria-label="Connection API key" placeholder="API key (optional)" value={newConn.apiKey} onChange={e => setNewConn(v => ({ ...v, apiKey: e.target.value }))}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`} />
                       )}
-                      <button onClick={() => {
+                      <button onClick={async () => {
                         if (!newConn.name.trim() || !newConn.baseUrl.trim()) return;
                         if (editingConnId) {
                           // #419: edit an existing connection in place.
-                          updateConnection(editingConnId, { name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined });
+                          await updateConnection(editingConnId, { name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined });
                         } else {
-                          addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
+                          await addConnection({ name: newConn.name.trim(), kind: newConn.kind, baseUrl: newConn.baseUrl.trim(), apiKey: newConn.apiKey.trim() || undefined, enabled: true });
                         }
                         const updated = loadConnections();
                         setConnections(updated);
@@ -7301,14 +7322,14 @@ ${lines.join('\n')}`;
                                 setEditingConnId(conn.id);
                                 setShowAddConnection(true);
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-zinc-400 hover:bg-zinc-700' : 'border-zinc-300 text-zinc-500 hover:bg-zinc-100'}`}>Edit</button>
-                              <button onClick={() => {
+                              <button onClick={async () => {
                                 const updated = connections.map(c => c.id === conn.id ? { ...c, enabled: !c.enabled } : c);
-                                saveConnections(updated); setConnections(updated);
+                                await saveConnections(updated); setConnections(updated);
                                 fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {});
                               }} className={`text-[10px] px-1.5 py-0.5 rounded border ${conn.enabled ? (dark ? 'border-green-700 text-green-400' : 'border-green-300 text-green-600') : (dark ? 'border-zinc-600 text-zinc-400' : 'border-zinc-300 text-zinc-500')}`}>
                                 {conn.enabled ? 'On' : 'Off'}
                               </button>
-                              <button aria-label={`Remove connection ${conn.name}`} onClick={() => { if (!window.confirm(`Remove connection "${conn.name}"?`)) return; removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
+                              <button aria-label={`Remove connection ${conn.name}`} onClick={async () => { if (!window.confirm(`Remove connection "${conn.name}"?`)) return; await removeConnection(conn.id); const updated = loadConnections(); setConnections(updated); fetchAllConnectionModels(updated).then(setConnectedModels).catch(() => {}); }}
                                 className={`text-[10px] px-1.5 py-0.5 rounded border ${dark ? 'border-zinc-600 text-red-400' : 'border-zinc-300 text-red-500'}`}>✕</button>
                             </div>
                           </div>
@@ -7735,7 +7756,7 @@ ${lines.join('\n')}`;
                           };
                           const updated = [...openApiServers, cfg];
                           setOpenApiServers(updated);
-                          saveOpenApiServers(updated);
+                          await saveOpenApiServers(updated);
                           registerOpenApiServer(cfg).catch(() => {});
                           setNewOpenApi({ name: '', specUrl: '', apiKey: '', apiKeyHeader: '' });
                           setShowAddOpenApi(false);
@@ -7780,10 +7801,10 @@ ${lines.join('\n')}`;
                             {openApiTestStatus[srv.id] === 'testing' ? '…' : 'Test'}
                           </button>
                           <button
-                            onClick={() => {
+                            onClick={async () => {
                               const updated = openApiServers.map(s => s.id === srv.id ? { ...s, enabled: !s.enabled } : s);
                               setOpenApiServers(updated);
-                              saveOpenApiServers(updated);
+                              await saveOpenApiServers(updated);
                               const toggled = updated.find(s => s.id === srv.id)!;
                               if (toggled.enabled) registerOpenApiServer(toggled).catch(() => {});
                               else unregisterOpenApiServer(srv.id);
@@ -7797,10 +7818,10 @@ ${lines.join('\n')}`;
                             {srv.enabled ? 'On' : 'Off'}
                           </button>
                           <button
-                            onClick={() => {
+                            onClick={async () => {
                               const updated = openApiServers.filter(s => s.id !== srv.id);
                               setOpenApiServers(updated);
-                              saveOpenApiServers(updated);
+                              await saveOpenApiServers(updated);
                               unregisterOpenApiServer(srv.id);
                             }}
                             className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${dark ? 'border-zinc-600 text-red-400 hover:bg-zinc-700' : 'border-zinc-300 text-red-500 hover:bg-zinc-50'}`}
@@ -8244,7 +8265,7 @@ ${lines.join('\n')}`;
                     <label className={`text-sm font-medium ${dark ? 'text-zinc-400' : 'text-zinc-600'}`}>Image Generation</label>
                     <Toggle
                       checked={imageGenConfig.enabled}
-                      onChange={() => { const cfg = { ...imageGenConfig, enabled: !imageGenConfig.enabled }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                      onChange={async () => { const cfg = { ...imageGenConfig, enabled: !imageGenConfig.enabled }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                       dark={dark}
                       label="Enable image generation"
                     />
@@ -8254,7 +8275,7 @@ ${lines.join('\n')}`;
                       <div className="flex gap-1.5">
                         <select
                           value={imageGenConfig.backend}
-                          onChange={e => { const cfg = { ...imageGenConfig, backend: e.target.value as any }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          onChange={async e => { const cfg = { ...imageGenConfig, backend: e.target.value as any }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         >
                           <option value="a1111">A1111 / Forge</option>
@@ -8266,7 +8287,7 @@ ${lines.join('\n')}`;
                         <input
                           placeholder="Base URL (e.g. http://127.0.0.1:7860)"
                           value={imageGenConfig.baseUrl}
-                          onChange={e => { const cfg = { ...imageGenConfig, baseUrl: e.target.value }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          onChange={async e => { const cfg = { ...imageGenConfig, baseUrl: e.target.value }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                           className={`w-full border rounded px-2 py-1 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                       )}
@@ -8275,7 +8296,7 @@ ${lines.join('\n')}`;
                           placeholder={imageGenConfig.backend === 'openai' ? 'OpenAI API key (sk-…)' : 'Password (optional)'}
                           type="password"
                           value={imageGenConfig.apiKey ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, apiKey: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          onChange={async e => { const cfg = { ...imageGenConfig, apiKey: e.target.value || undefined }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                           className={`w-full border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                       )}
@@ -8283,14 +8304,14 @@ ${lines.join('\n')}`;
                         <input
                           placeholder="Default size (e.g. 512x512)"
                           value={imageGenConfig.size ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, size: e.target.value || undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          onChange={async e => { const cfg = { ...imageGenConfig, size: e.target.value || undefined }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                           className={`flex-1 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                         <input
                           placeholder="Steps (e.g. 20)"
                           type="number"
                           value={imageGenConfig.steps ?? ''}
-                          onChange={e => { const cfg = { ...imageGenConfig, steps: e.target.value ? parseInt(e.target.value) : undefined }; setImageGenConfig(cfg); saveImageGenConfig(cfg); }}
+                          onChange={async e => { const cfg = { ...imageGenConfig, steps: e.target.value ? parseInt(e.target.value) : undefined }; setImageGenConfig(cfg); await saveImageGenConfig(cfg); }}
                           className={`w-28 border rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none ${dark ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900'}`}
                         />
                       </div>

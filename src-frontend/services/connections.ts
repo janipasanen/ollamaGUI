@@ -4,6 +4,7 @@
  * all enabled connections are aggregated into one unified model selector.
  */
 import { formatErrorLine } from './errorMessages';
+import { secretStore } from './secretStore';
 import { type Message, GenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type StructuredOutputFormat, usageToGenStats, type GenStats } from './ollama';
 
 const STORAGE_KEY = 'model_connections';
@@ -220,8 +221,14 @@ export interface ModelConnection {
   kind: ConnectionKind;
   /** Base URL — e.g. http://localhost:1234 */
   baseUrl: string;
-  /** Optional API key for OpenAI-compatible endpoints */
+  /** Optional API key value. */
   apiKey?: string;
+  /**
+   * True when this connection has a stored API key. The value itself lives in
+   * the OS keychain (see #611), so `apiKey` is only populated from the
+   * boot-hydrated in-memory cache by `loadConnections` — it is never persisted.
+   */
+  hasApiKey?: boolean;
   enabled: boolean;
 }
 
@@ -241,29 +248,159 @@ export interface ConnectedModel {
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────────
+//
+// Connection API keys live in the OS keychain via `secretStore` (#611).
+// localStorage records only a presence flag (`hasApiKey`), so plaintext keys
+// never touch storage. The live key is hydrated once at boot into
+// `connectionApiKeyCache` and read from there by the sync hot paths
+// (`getConnectionApiKey` → `probeConnection` / `buildOpenAiChatRequest`),
+// mirroring the MCP `envSecretKey` pattern in mcpConfig.ts.
 
+/** Keychain namespace for connection API keys. */
+const connSecretKey = (connectionId: string): string => `conn:${connectionId}`;
+
+/**
+ * Module-level cache hydrated once at boot. Sync accessors read the live key
+ * from here so the async keychain is never hit on the read path.
+ */
+const connectionApiKeyCache = new Map<string, string>();
+
+/** Strip the live key, keep a presence flag, for persistence. */
+function toPersistedConnection(conn: ModelConnection): Omit<ModelConnection, 'apiKey'> {
+  const { apiKey, ...rest } = conn;
+  return { ...rest, hasApiKey: Boolean(apiKey) };
+}
+
+/**
+ * Write a (already redacted) connection array to localStorage. Used by both
+ * `saveConnections` and `migrateConnectionSecrets`, so migration can persist
+ * records whose `apiKey` has already been stripped without `saveConnections`
+ * re-stripping it and clearing the presence flag.
+ */
+function persistConnections(conns: Omit<ModelConnection, 'apiKey'>[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(conns));
+  } catch { /* quota / unavailable storage */ }
+}
+
+/**
+ * Load connections. The live API key is NOT embedded in storage — `loadConnections`
+ * attaches it from the boot-hydrated in-memory cache, so callers read it
+ * synchronously via `getConnectionApiKey(id)` while plaintext never persists.
+ */
 export function loadConnections(): ModelConnection[] {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    return arr.map((c) => ({ ...c, apiKey: getConnectionApiKey(c.id) }) as ModelConnection);
+  } catch { return []; }
 }
 
-export function saveConnections(conns: ModelConnection[]): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conns)); } catch { /* quota */ }
+/**
+ * Sync accessor for a connection's live API key (#611 step 2). Reads the
+ * boot-hydrated in-memory cache so hot paths (`probeConnection`,
+ * `buildOpenAiChatRequest`) never block on an async keychain read.
+ */
+export function getConnectionApiKey(id: string): string | undefined {
+  return connectionApiKeyCache.get(id);
 }
 
-export function addConnection(conn: Omit<ModelConnection, 'id'>): ModelConnection {
+/**
+ * Persist a connection array and write-through each connection's API key to the
+ * keychain (#611). Connections with a key are stored in the keychain + cache;
+ * those without clear both, so the cache can never serve a stale token once the
+ * user removes the key.
+ */
+export async function saveConnections(conns: ModelConnection[]): Promise<void> {
+  for (const conn of conns) {
+    if (conn.apiKey) {
+      await secretStore.set(connSecretKey(conn.id), conn.apiKey);
+      connectionApiKeyCache.set(conn.id, conn.apiKey);
+    } else {
+      await secretStore.delete(connSecretKey(conn.id));
+      connectionApiKeyCache.delete(conn.id);
+    }
+  }
+  persistConnections(conns.map(toPersistedConnection));
+}
+
+/**
+ * Add a connection. The entry is returned with its `apiKey` in place so the
+ * caller can use it immediately (its `probeConnection` reads the key from the
+ * cache, which `saveConnections` just populated).
+ */
+export async function addConnection(conn: Omit<ModelConnection, 'id'>): Promise<ModelConnection> {
   const entry: ModelConnection = { ...conn, id: crypto.randomUUID() };
   const all = loadConnections();
   all.push(entry);
-  saveConnections(all);
+  await saveConnections(all);
   return entry;
 }
 
-export function updateConnection(id: string, patch: Partial<Omit<ModelConnection, 'id'>>): void {
-  saveConnections(loadConnections().map(c => c.id === id ? { ...c, ...patch } : c));
+/**
+ * Update a connection in place. The API key is preserved from the cache unless
+ * the patch supplies one, so an edit that only changes name/URL/kind never
+ * drops the stored token.
+ */
+export async function updateConnection(
+  id: string, patch: Partial<Omit<ModelConnection, 'id'>>
+): Promise<void> {
+  const prev = loadConnections().find(c => c.id === id);
+  await saveConnections(
+    loadConnections().map(c =>
+      c.id === id ? { ...c, ...patch, apiKey: patch.apiKey ?? prev?.apiKey } : c
+    )
+  );
 }
 
-export function removeConnection(id: string): void {
-  saveConnections(loadConnections().filter(c => c.id !== id));
+/** Remove a connection and purge its API key from the keychain + cache. */
+export async function removeConnection(id: string): Promise<void> {
+  await secretStore.delete(connSecretKey(id));
+  connectionApiKeyCache.delete(id);
+  await saveConnections(loadConnections().filter(c => c.id !== id));
+}
+
+/**
+ * Migrate plaintext connection keys from a pre-#611 install into the keychain
+ * (#611 step 3). Any record that still carries a plaintext `apiKey` is written
+ * to the keychain and cache, then its `apiKey` is stripped and replaced with the
+ * `hasApiKey` presence flag so the key is never read from localStorage again.
+ */
+export async function migrateConnectionSecrets(): Promise<void> {
+  let dirty = false;
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    const migrated = arr.map((c) => {
+      if (c && typeof c.apiKey === 'string' && c.apiKey) {
+        secretStore.set(connSecretKey(c.id), c.apiKey);
+        connectionApiKeyCache.set(c.id, c.apiKey);
+        dirty = true;
+        const { apiKey, ...rest } = c;
+        return { ...rest, hasApiKey: true };
+      }
+      return c;
+    });
+    if (dirty) persistConnections(migrated);
+  } catch { /* ignore malformed storage during migration */ }
+}
+
+/**
+ * Hydrate the in-memory key cache from the keychain (#611 step 2). Reads one
+ * key per stored connection at boot; the sync accessors then serve from the
+ * cache.
+ */
+export async function initConnectionSecrets(): Promise<void> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    await Promise.all(arr.map(async (c) => {
+      if (c && c.id) {
+        const v = await secretStore.get(connSecretKey(c.id));
+        if (v != null) connectionApiKeyCache.set(c.id, v);
+      }
+    }));
+  } catch { /* ignore malformed storage during hydration */ }
 }
 
 // ── Model fetching ────────────────────────────────────────────────────────────

@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
+  getConnectionApiKey, migrateConnectionSecrets, initConnectionSecrets,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels, probeConnection,
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse, asDataUrl,
   type ModelConnection,
 } from '../services/connections';
+import { secretStore } from '../services/secretStore';
 import type { Message } from '../services/ollama';
 import { translateOpenAiSamplingOptions, openAiResponseFormat, usageToGenStats } from '../services/ollama';
 
@@ -13,35 +15,104 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+// Test API-key values. Referenced via constants so a single edit never needs
+// an inline literal re-typed here.
+const SECRET = 'secret';
+const SECRET_Y = 'secret-y';
+
 // ── CRUD + persistence ────────────────────────────────────────────────────────
 
 describe('Connection CRUD (#123)', () => {
-  it('addConnection assigns id and persists', () => {
-    const c = addConnection({ name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true });
+  it('addConnection assigns id and persists', async () => {
+    const c = await addConnection({ name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true });
     expect(c.id).toBeTruthy();
     expect(loadConnections()).toHaveLength(1);
   });
 
-  it('updateConnection patches the right entry', () => {
-    const c = addConnection({ name: 'A', kind: 'openai', baseUrl: 'http://a', enabled: true });
-    updateConnection(c.id, { enabled: false, apiKey: 'secret' });
+  it('updateConnection patches the right entry', async () => {
+    const c = await addConnection({ name: 'A', kind: 'openai', baseUrl: 'http://a', enabled: true });
+    await updateConnection(c.id, { enabled: false, apiKey: SECRET });
     const updated = loadConnections().find(x => x.id === c.id)!;
     expect(updated.enabled).toBe(false);
     expect(updated.apiKey).toBe('secret');
   });
 
-  it('removeConnection deletes from storage', () => {
-    const c = addConnection({ name: 'B', kind: 'ollama', baseUrl: 'http://b', enabled: true });
-    removeConnection(c.id);
+  it('removeConnection deletes from storage', async () => {
+    const c = await addConnection({ name: 'B', kind: 'ollama', baseUrl: 'http://b', enabled: true });
+    await removeConnection(c.id);
     expect(loadConnections()).toHaveLength(0);
   });
 
-  it('saveConnections + loadConnections round-trips', () => {
+  it('saveConnections stores the key and loadConnections serves it from the cache (#611)', async () => {
     const conns: ModelConnection[] = [
-      { id: 'x', name: 'X', kind: 'openai', baseUrl: 'http://x', enabled: true, apiKey: 'k' },
+      { id: 'x', name: 'X', kind: 'openai', baseUrl: 'http://x', enabled: true, apiKey: SECRET },
     ];
-    saveConnections(conns);
-    expect(loadConnections()).toEqual(conns);
+    await saveConnections(conns);
+    // The persisted shape carries a presence flag; the live key is served from
+    // the in-memory cache so it is never read back from localStorage (#611).
+    const loaded = loadConnections();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].hasApiKey).toBe(true);
+    expect(loaded[0].apiKey).toBe('secret');
+    expect(localStorage.getItem('model_connections')).not.toContain('secret');
+  });
+
+  it('saveConnections clears the key when one is removed (#611)', async () => {
+    await saveConnections([
+      { id: 'y', name: 'Y', kind: 'openai', baseUrl: 'http://y', enabled: true, apiKey: SECRET_Y },
+    ]);
+    expect(loadConnections()[0].apiKey).toBe('secret-y');
+    // Now persist the same connection with no key — the cache must drop it.
+    await saveConnections([
+      { id: 'y', name: 'Y', kind: 'openai', baseUrl: 'http://y', enabled: true },
+    ]);
+    expect(loadConnections()[0].apiKey).toBeUndefined();
+    expect(loadConnections()[0].hasApiKey).toBe(false);
+    expect(getConnectionApiKey('y')).toBeUndefined();
+  });
+});
+
+// ── Secret migration + hydration (#611) ──────────────────────────────────────
+
+describe('Connection secret migration + hydration (#611)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    secretStore._clearMemory();
+  });
+
+  it('migrateConnectionSecrets moves a plaintext key into the keychain, strips it, and keeps it loadable', async () => {
+    // A pre-#611 install stores the plaintext key directly in localStorage.
+    localStorage.setItem(
+      'model_connections',
+      JSON.stringify([
+        { id: 'm1', name: 'Legacy', kind: 'openai', baseUrl: 'http://l', enabled: true, apiKey: 'plaintext-key' },
+      ])
+    );
+    await migrateConnectionSecrets();
+
+    // The key now lives in the keychain + cache, not localStorage.
+    expect(await secretStore.get('conn:m1')).toBe('plaintext-key');
+    expect(getConnectionApiKey('m1')).toBe('plaintext-key');
+    expect(loadConnections()[0].apiKey).toBe('plaintext-key');
+
+    // It is gone from localStorage in the clear, replaced by a presence flag.
+    const persisted = JSON.parse(localStorage.getItem('model_connections')!);
+    expect(persisted[0].apiKey).toBeUndefined();
+    expect(persisted[0].hasApiKey).toBe(true);
+    expect(localStorage.getItem('model_connections')).not.toContain('plaintext-key');
+  });
+
+  it('initConnectionSecrets hydrates the cache + loadConnections from the keychain', async () => {
+    // A key already in the keychain (e.g. left behind by a prior install).
+    await secretStore.set('conn:m2', 'hydrated-key');
+    localStorage.setItem(
+      'model_connections',
+      JSON.stringify([{ id: 'm2', name: 'Hydrated', kind: 'openai', baseUrl: 'http://h', enabled: true }])
+    );
+    await initConnectionSecrets();
+
+    expect(getConnectionApiKey('m2')).toBe('hydrated-key');
+    expect(loadConnections()[0].apiKey).toBe('hydrated-key');
   });
 });
 

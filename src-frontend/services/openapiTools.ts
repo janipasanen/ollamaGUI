@@ -4,8 +4,38 @@
  * HTTP calls route through the Rust mcp_http_request command to avoid CORS.
  */
 import { toolRegistry, type ToolDefinition } from './tools';
+import { secretStore } from './secretStore';
 
 const STORAGE_KEY = 'openapi_servers';
+
+// ── Persistence (#611) ───────────────────────────────────────────────────────
+//
+// API keys live in the OS keychain via `secretStore`. localStorage records only
+// a presence flag (`hasApiKey`), so plaintext keys never touch storage. A
+// boot-hydrated in-memory cache backs the sync accessors; writes go to both
+// the cache and the keychain.
+
+/** Keychain namespace for OpenAPI server API keys. */
+const openapiSecretKey = (id: string): string => `openapi:${id}`;
+
+/** Module-level cache hydrated once at boot. */
+const openapiApiKeyCache = new Map<string, string>();
+
+/** Strip the live key, keep a presence flag, for persistence. */
+function toPersistedServer(config: OpenApiServerConfig): Omit<OpenApiServerConfig, 'apiKey'> {
+  const { apiKey, ...rest } = config;
+  return { ...rest, hasApiKey: Boolean(apiKey) };
+}
+
+/** Write a (already redacted) server array to localStorage. */
+function persistOpenApiServers(conns: Omit<OpenApiServerConfig, 'apiKey'>[]): void {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conns)); } catch { /* quota */ }
+}
+
+/** Sync accessor for a server's live API key (#611). */
+export function loadOpenApiServerApiKey(id: string): string | undefined {
+  return openapiApiKeyCache.get(id);
+}
 
 export interface OpenApiServerConfig {
   id: string;
@@ -14,8 +44,14 @@ export interface OpenApiServerConfig {
   specUrl: string;
   /** Base URL for API calls (falls back to servers[0].url in spec) */
   baseUrl?: string;
-  /** Optional API key value */
+  /** Optional API key value. */
   apiKey?: string;
+  /**
+   * True when this server has a stored API key. The value itself lives in the
+   * OS keychain (#611), so `apiKey` is only populated from the boot-hydrated
+   * in-memory cache by `loadOpenApiServers` — it is never persisted.
+   */
+  hasApiKey?: boolean;
   /** Header name to send the API key in (default: 'Authorization', value: 'Bearer <apiKey>') */
   apiKeyHeader?: string;
   enabled: boolean;
@@ -245,32 +281,102 @@ export function unregisterOpenApiServer(id: string): void {
 
 export function loadOpenApiServers(): OpenApiServerConfig[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
-  } catch {
-    return [];
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    return arr.map(s => ({ ...s, apiKey: loadOpenApiServerApiKey(s.id) ?? undefined })) as OpenApiServerConfig[];
+  } catch { return []; }
+}
+
+/**
+ * Persist server arrays. Each server's key is written to the keychain (+ cache)
+ * when present, or purged when absent, so the cache never serves a stale token
+ * once the key is removed (#611).
+ */
+export async function saveOpenApiServers(configs: OpenApiServerConfig[]): Promise<void> {
+  for (const config of configs) {
+    if (config.apiKey) {
+      await secretStore.set(openapiSecretKey(config.id), config.apiKey);
+      openapiApiKeyCache.set(config.id, config.apiKey);
+    } else {
+      await secretStore.delete(openapiSecretKey(config.id));
+      openapiApiKeyCache.delete(config.id);
+    }
   }
+  persistOpenApiServers(configs.map(toPersistedServer));
 }
 
-export function saveOpenApiServers(configs: OpenApiServerConfig[]): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(configs)); } catch { /* quota */ }
-}
-
-export function addOpenApiServer(config: Omit<OpenApiServerConfig, 'id'>): OpenApiServerConfig {
+/**
+ * Add a server. The entry is returned with its `apiKey` in place so the caller
+ * can use it immediately; `registerOpenApiServer` reads the key from the cache.
+ */
+export async function addOpenApiServer(config: Omit<OpenApiServerConfig, 'id'>): Promise<OpenApiServerConfig> {
   const entry: OpenApiServerConfig = { ...config, id: crypto.randomUUID() };
   const all = loadOpenApiServers();
   all.push(entry);
-  saveOpenApiServers(all);
+  await saveOpenApiServers(all);
   return entry;
 }
 
-export function updateOpenApiServer(id: string, patch: Partial<Omit<OpenApiServerConfig, 'id'>>): void {
-  const all = loadOpenApiServers().map(s => s.id === id ? { ...s, ...patch } : s);
-  saveOpenApiServers(all);
+/**
+ * Update a server in place. The API key is preserved from the cache unless the
+ * patch supplies one, so name/URL edits never drop a stored key.
+ */
+export async function updateOpenApiServer(id: string, patch: Partial<Omit<OpenApiServerConfig, 'id'>>): Promise<void> {
+  const prev = loadOpenApiServers().find(s => s.id === id);
+  await saveOpenApiServers(loadOpenApiServers().map(s => s.id === id ? { ...s, ...patch, apiKey: patch.apiKey ?? prev?.apiKey } : s));
 }
 
-export function removeOpenApiServer(id: string): void {
-  unregisterOpenApiServer(id);
-  saveOpenApiServers(loadOpenApiServers().filter(s => s.id !== id));
+/**
+ * Remove a server and purge its API key from the keychain + cache (#611).
+ */
+export async function removeOpenApiServer(id: string): Promise<void> {
+  await secretStore.delete(openapiSecretKey(id));
+  openapiApiKeyCache.delete(id);
+  await saveOpenApiServers(loadOpenApiServers().filter(s => s.id !== id));
+}
+
+/**
+ * Migrate plaintext OpenAPI keys from a pre-#611 install into the keychain
+ * (#611 step 3). Any record that still carries a plaintext `apiKey` is written
+ * to the keychain + cache, then its `apiKey` is stripped and replaced with the
+ * `hasApiKey` presence flag so the key is never read from localStorage again.
+ */
+export async function migrateOpenApiKeys(): Promise<void> {
+  let dirty = false;
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    const migrated: Omit<OpenApiServerConfig, 'apiKey'>[] = [];
+    for (const s of arr) {
+      if (s && typeof s.apiKey === 'string' && s.apiKey) {
+        await secretStore.set(openapiSecretKey(s.id), s.apiKey);
+        openapiApiKeyCache.set(s.id, s.apiKey);
+        dirty = true;
+        const { apiKey, ...rest } = s;
+        migrated.push({ ...rest, hasApiKey: true });
+      } else {
+        migrated.push(s as Omit<OpenApiServerConfig, 'apiKey'>);
+      }
+    }
+    if (dirty) persistOpenApiServers(migrated);
+  } catch { /* ignore malformed storage during migration */ }
+}
+
+/**
+ * Hydrate the in-memory key cache from the keychain (#611 step 2). Reads one
+ * key per stored server at boot; the sync accessors then serve from the cache.
+ */
+export async function initOpenApiServersSecrets(): Promise<void> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const arr = Array.isArray(raw) ? raw : [];
+    await Promise.all(arr.map(async (s: any) => {
+      if (s && s.id) {
+        const v = await secretStore.get(openapiSecretKey(s.id));
+        if (v != null) openapiApiKeyCache.set(s.id, v);
+      }
+    }));
+  } catch { /* ignore malformed storage */ }
 }
 
 /** Re-register all enabled servers (called on app startup) */

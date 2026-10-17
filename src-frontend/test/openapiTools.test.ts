@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toolRegistry } from '../services/tools';
+import { secretStore } from '../services/secretStore';
 
 // Mock Tauri invoke — captured in tests to inspect calls
 let _invokeImpl: ((cmd: string, args?: any) => any) | null = null;
@@ -51,6 +52,9 @@ const PET_SPEC = {
   },
 };
 
+// Fixture OpenAPI server key used by the keychain-persistence tests (#611).
+const SERVER_KEY = 'svc-xkey-987654';
+
 import {
   specToToolDefinitions,
   operationToToolDefinition,
@@ -58,14 +62,19 @@ import {
   unregisterOpenApiServer,
   addOpenApiServer,
   removeOpenApiServer,
+  updateOpenApiServer,
   loadOpenApiServers,
+  loadOpenApiServerApiKey,
+  migrateOpenApiKeys,
   saveOpenApiServers,
   fetchOpenApiSpec,
+  type OpenApiServerConfig,
 } from '../services/openapiTools';
 
 describe('OpenAPI tool servers (#129)', () => {
   beforeEach(() => {
     localStorage.clear();
+    secretStore._clearMemory();
     _invokeImpl = null;
     // Clean up any registered openapi tools
     const toRemove = toolRegistry.getAllTools().filter(t => t.name.includes('__'));
@@ -250,26 +259,68 @@ describe('OpenAPI tool servers (#129)', () => {
 
   // ── Persistence (localStorage) ───────────────────────────────────────────────
 
-  it('addOpenApiServer persists and returns a config with generated id', () => {
-    const cfg = addOpenApiServer({ name: 'My API', specUrl: 'https://my.api/openapi.json', enabled: true });
+  it('addOpenApiServer persists and returns a config with generated id', async () => {
+    const cfg = await addOpenApiServer({ name: 'My API', specUrl: 'https://my.api/openapi.json', enabled: true });
     expect(cfg.id).toBeTruthy();
     expect(loadOpenApiServers()).toHaveLength(1);
     expect(loadOpenApiServers()[0].name).toBe('My API');
   });
 
-  it('removeOpenApiServer removes from localStorage', () => {
-    const cfg = addOpenApiServer({ name: 'API', specUrl: 'https://a.example.com/openapi.json', enabled: true });
-    removeOpenApiServer(cfg.id);
+  it('removeOpenApiServer removes from localStorage and purges the keychain', async () => {
+    const cfg = await addOpenApiServer({ name: 'API', specUrl: 'https://a.example.com/openapi.json', enabled: true, apiKey: SERVER_KEY });
+    expect(loadOpenApiServers()).toHaveLength(1);
+    expect(loadOpenApiServerApiKey(cfg.id)).toBe(SERVER_KEY);
+    await removeOpenApiServer(cfg.id);
     expect(loadOpenApiServers()).toHaveLength(0);
+    expect(loadOpenApiServerApiKey(cfg.id)).toBeUndefined();
   });
 
-  it('saveOpenApiServers + loadOpenApiServers round-trips', () => {
-    const configs = [
-      { id: 'a', name: 'A', specUrl: 'https://a.com/spec', enabled: true },
-      { id: 'b', name: 'B', specUrl: 'https://b.com/spec', enabled: false, apiKey: 'k' },
-    ];
-    saveOpenApiServers(configs);
-    expect(loadOpenApiServers()).toEqual(configs);
+  it('saveOpenApiServers persists the key to the keychain + hasApiKey flag, serves apiKey from cache (#611)', async () => {
+    await saveOpenApiServers([
+      { id: 'oa-a', name: 'A', specUrl: 'https://a.com/spec', enabled: true },
+      { id: 'oa-b', name: 'B', specUrl: 'https://b.com/spec', enabled: false, apiKey: SERVER_KEY },
+    ]);
+    const loaded = loadOpenApiServers();
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].apiKey).toBeUndefined();
+    expect(loaded[0].hasApiKey).toBe(false);
+    expect(loaded[1].apiKey).toBe(SERVER_KEY);
+    expect(loaded[1].hasApiKey).toBe(true);
+    // The plaintext key must NOT be in localStorage in the clear.
+    const persisted = localStorage.getItem('openapi_servers') ?? '';
+    expect(persisted).not.toContain(SERVER_KEY);
+    expect(persisted).not.toContain('"apiKey"');
+    // The sync accessor serves the key from the cache.
+    expect(loadOpenApiServerApiKey('oa-b')).toBe(SERVER_KEY);
+  });
+
+  it('updateOpenApiServer preserves the stored key when the patch omits it (#611)', async () => {
+    const cfg = await addOpenApiServer({ name: 'U', specUrl: 'https://u.com/spec', enabled: true, apiKey: SERVER_KEY });
+    await updateOpenApiServer(cfg.id, { name: 'U2' });
+    const loaded = loadOpenApiServers()[0] as OpenApiServerConfig;
+    expect(loaded.name).toBe('U2');
+    expect(loaded.apiKey).toBe(SERVER_KEY);
+    expect(loaded.hasApiKey).toBe(true);
+  });
+
+  it('migrateOpenApiKeys moves a plaintext key into the keychain and strips it (#611)', async () => {
+    // A pre-#611 install stores the plaintext key directly in localStorage.
+    localStorage.setItem('openapi_servers', JSON.stringify([
+      { id: 'oa-m', name: 'Legacy', specUrl: 'https://l.com/spec', enabled: true, apiKey: 'legacy-plaintext-key' },
+    ]));
+    await migrateOpenApiKeys();
+
+    // The key now lives in the keychain + cache, not localStorage.
+    expect(await secretStore.get('openapi:oa-m')).toBe('legacy-plaintext-key');
+    expect(loadOpenApiServerApiKey('oa-m')).toBe('legacy-plaintext-key');
+    expect(loadOpenApiServers()[0].apiKey).toBe('legacy-plaintext-key');
+    expect(loadOpenApiServers()[0].hasApiKey).toBe(true);
+
+    // It is gone from localStorage in the clear, replaced by a presence flag.
+    const persisted = JSON.parse(localStorage.getItem('openapi_servers') ?? '[]');
+    expect(persisted[0].apiKey).toBeUndefined();
+    expect(persisted[0].hasApiKey).toBe(true);
+    expect(localStorage.getItem('openapi_servers')).not.toContain('legacy-plaintext-key');
   });
 });
 

@@ -3,6 +3,8 @@
  * HTTP calls route through Rust mcp_http_request to avoid CORS.
  * Generated images are base64-encoded PNGs ready for the existing image path.
  */
+import { secretStore } from './secretStore';
+
 const STORAGE_KEY = 'imagegen_config';
 
 export type ImageGenBackend = 'a1111' | 'comfyui' | 'openai';
@@ -10,7 +12,14 @@ export type ImageGenBackend = 'a1111' | 'comfyui' | 'openai';
 export interface ImageGenConfig {
   backend: ImageGenBackend;
   baseUrl: string;
+  /** Optional API key value. */
   apiKey?: string;
+  /**
+   * True when this config has a stored API key. The value itself lives in the
+   * OS keychain (#611), so `apiKey` is only populated from the boot-hydrated
+   * in-memory cache by `loadImageGenConfig` — it is never persisted.
+   */
+  hasApiKey?: boolean;
   defaultModel?: string;
   steps?: number;
   size?: string;    // e.g. '512x512', '1024x1024'
@@ -42,14 +51,78 @@ const DEFAULT_CONFIG: ImageGenConfig = {
   enabled: false,
 };
 
-// ── Persistence ───────────────────────────────────────────────────────────────
+// ── Persistence (#611) ───────────────────────────────────────────────────────
+//
+// The API key lives in the OS keychain via `secretStore`; localStorage records
+// only a presence flag (`hasApiKey`), so plaintext keys never touch storage. A
+// boot-hydrated in-memory cache backs the sync accessor; writes go to both.
 
-export function loadImageGenConfig(): ImageGenConfig {
-  try { return { ...DEFAULT_CONFIG, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') }; } catch { return { ...DEFAULT_CONFIG }; }
+/** Keychain namespace for the imagegen API key. */
+const IMAGEGEN_SECRET_KEY = 'imagegen:apiKey';
+
+/** In-memory API-key cache hydrated once at boot. */
+let imagegenApiKeyCache: string | undefined;
+
+/** Strip the live key, keep a presence flag, for persistence. */
+function toPersistedConfig(cfg: ImageGenConfig): Omit<ImageGenConfig, 'apiKey'> {
+  const { apiKey, ...rest } = cfg;
+  return { ...rest, hasApiKey: Boolean(apiKey) };
 }
 
-export function saveImageGenConfig(cfg: ImageGenConfig): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); } catch { /* quota */ }
+/** Sync accessor for the imagegen API key (#611). */
+export function loadImageGenConfigApiKey(): string | undefined {
+  return imagegenApiKeyCache;
+}
+
+export function loadImageGenConfig(): ImageGenConfig {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Omit<ImageGenConfig, 'apiKey'>;
+    return { ...DEFAULT_CONFIG, ...stored, apiKey: imagegenApiKeyCache };
+  } catch { return { ...DEFAULT_CONFIG, apiKey: imagegenApiKeyCache }; }
+}
+
+/**
+ * Save the imagegen config. The key is written to the keychain (+ cache) when
+ * present, or purged when absent, so the cache never serves a stale token
+ * (#611). The persisted record carries only the presence flag.
+ */
+export async function saveImageGenConfig(cfg: ImageGenConfig): Promise<void> {
+  if (cfg.apiKey) {
+    await secretStore.set(IMAGEGEN_SECRET_KEY, cfg.apiKey);
+    imagegenApiKeyCache = cfg.apiKey;
+  } else {
+    await secretStore.delete(IMAGEGEN_SECRET_KEY);
+    imagegenApiKeyCache = undefined;
+  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(toPersistedConfig(cfg))); } catch { /* quota */ }
+}
+
+/**
+ * Migrate a plaintext imagegen key from a pre-#611 install into the keychain
+ * (#611 step 3): write it to the keychain + cache, then strip it from the
+ * record and set `hasApiKey` so the key is never read from localStorage again.
+ */
+export async function migrateImageGenKey(): Promise<void> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as ImageGenConfig | null;
+    if (stored && typeof stored.apiKey === 'string' && stored.apiKey) {
+      await secretStore.set(IMAGEGEN_SECRET_KEY, stored.apiKey);
+      imagegenApiKeyCache = stored.apiKey;
+      const { apiKey, ...rest } = stored;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...rest, hasApiKey: true }));
+    }
+  } catch { /* ignore malformed storage during migration */ }
+}
+
+/**
+ * Hydrate the in-memory key cache from the keychain (#611 step 2). Reads the
+ * single key at boot; the sync accessor then serves from the cache.
+ */
+export async function initImageGenConfigSecrets(): Promise<void> {
+  try {
+    const v = await secretStore.get(IMAGEGEN_SECRET_KEY);
+    if (v != null) imagegenApiKeyCache = v;
+  } catch { /* ignore malformed storage */ }
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
