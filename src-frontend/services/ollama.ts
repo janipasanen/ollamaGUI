@@ -126,6 +126,49 @@ export function cleanGenerationOptions(options?: GenerationOptions): GenerationO
   return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
+/** OpenAI-compatible `response_format` payload for structured output. */
+export type OpenAIResponseFormat =
+  | { type: 'json_object' }
+  | { type: 'json_schema'; json_schema: { name: string; schema: Record<string, unknown>; strict?: boolean } };
+
+/**
+ * The client-side structured-output selector: the Ollama `format` value, either
+ * the 'json' flag or a JSON Schema object.
+ */
+export type StructuredOutputFormat = 'json' | object;
+
+/**
+ * Translate Ollama-style `GenerationOptions` into the top-level sampling fields
+ * an OpenAI-compatible `/v1/chat/completions` endpoint accepts (#583):
+ *  - `num_predict` -> `max_tokens` (skipped when -1, i.e. unlimited, which has
+ *    no OpenAI spelling)
+ *  - `top_p`, `stop` pass through (stop omitted when empty)
+ *  - `temperature` passes through
+ *  - `num_ctx` / `top_k` are dropped: num_ctx is a server-side model-load
+ *    setting and top_k is not in the OpenAI schema (strict proxies reject it)
+ * Reuses `cleanGenerationOptions` so undefined/NaN never reach the wire.
+ */
+export function translateOpenAiSamplingOptions(options?: GenerationOptions): Record<string, number | string[] | undefined> {
+  const cleaned = cleanGenerationOptions(options);
+  if (!cleaned) return {};
+  const out: Record<string, number | string[] | undefined> = {};
+  if (typeof cleaned.temperature === 'number') out.temperature = cleaned.temperature;
+  if (typeof cleaned.top_p === 'number') out.top_p = cleaned.top_p;
+  if (typeof cleaned.num_predict === 'number' && cleaned.num_predict !== -1) out.max_tokens = cleaned.num_predict;
+  if (cleaned.stop && Array.isArray(cleaned.stop) && cleaned.stop.length) out.stop = cleaned.stop;
+  return out;
+}
+
+/**
+ * Convert the client structured-output selector into the OpenAI
+ * `response_format` shape. LM Studio and vLLM require the `name` member for
+ * `json_schema` (#583).
+ */
+export function openAiResponseFormat(format: StructuredOutputFormat): OpenAIResponseFormat {
+  if (format === 'json') return { type: 'json_object' };
+  return { type: 'json_schema', json_schema: { name: 'response', schema: format as Record<string, unknown>, strict: true } };
+}
+
 /**
  * Build a descriptive Error from a non-ok Ollama response (#456).
  * Ollama returns the detailed failure reason as JSON `{ "error": "..." }` in the

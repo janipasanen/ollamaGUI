@@ -4,7 +4,7 @@
  * all enabled connections are aggregated into one unified model selector.
  */
 import { formatErrorLine } from './errorMessages';
-import { type Message } from './ollama';
+import { type Message, GenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type StructuredOutputFormat } from './ollama';
 
 const STORAGE_KEY = 'model_connections';
 
@@ -365,17 +365,27 @@ export function buildOpenAiChatRequest(
   conn: ModelConnection,
   model: string,
   messages: Message[],
-  options?: { temperature?: number; max_tokens?: number },
+  options?: GenerationOptions,
+  format?: StructuredOutputFormat,
   stream = true
 ): { url: string; headers: Record<string, string>; body: string } {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
   // Normalize so a reloaded session replays without 400 on strict servers (#579).
   const normalized = normalizeOpenAiHistory(messages);
+  // Translate Ollama-style sampling options into OpenAI top-level fields so
+  // num_predict/top_p/stop/temperature actually reach the server (#583).
+  const sampling = translateOpenAiSamplingOptions(options);
   return {
     url: `${conn.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`,
     headers,
-    body: JSON.stringify({ model, messages: normalized, stream, ...options }),
+    body: JSON.stringify({
+      model,
+      messages: normalized,
+      ...(format ? { response_format: openAiResponseFormat(format) } : {}),
+      stream,
+      ...sampling,
+    }),
   };
 }
 
@@ -388,7 +398,7 @@ export async function streamOpenAiChat(
   model: string,
   messages: { role: string; content: string }[],
   onChunk: (delta: string, reasoning?: string) => void,
-  options?: { temperature?: number },
+  options?: GenerationOptions,
   signal?: AbortSignal
 ): Promise<void> {
   const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options);

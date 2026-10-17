@@ -8,7 +8,7 @@
  * concurrently. A memory warning is shown when two locals on the same host
  * are selected.
  */
-import type { Message } from './ollama';
+import type { Message, GenerationOptions } from './ollama';
 import type { ModelConnection, ConnectedModel } from './connections';
 
 /** One model's reply within a group */
@@ -107,7 +107,7 @@ export async function runManyModels(
     genOptions?: { temperature?: number; num_ctx?: number };
     signal?: AbortSignal;
     streamOllama: (model: string, messages: Message[], onChunk: (chunk: any) => void, endpoint: string, isCloud: boolean, genOptions?: any, signal?: AbortSignal) => Promise<void>;
-    streamOpenAi?: (conn: ModelConnection, model: string, messages: Message[], onChunk: (delta: string, reasoning?: string) => void, opts?: { temperature?: number }, signal?: AbortSignal) => Promise<void>;
+    streamOpenAi?: (conn: ModelConnection, model: string, messages: Message[], onChunk: (delta: string, reasoning?: string) => void, opts?: GenerationOptions, signal?: AbortSignal) => Promise<void>;
   }
 ): Promise<void> {
   const { defaultBaseUrl, connectedModels, connections, genOptions, signal, streamOllama, streamOpenAi } = options;
@@ -124,7 +124,7 @@ export async function runManyModels(
         const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
 
         if (conn?.kind === 'openai' && cm && streamOpenAi) {
-          await streamOpenAi(conn, cm.name, messages, (delta, reasoning) => onUpdate(modelId, delta, 'streaming', undefined, reasoning), { temperature: genOptions?.temperature }, signal);
+          await streamOpenAi(conn, cm.name, messages, (delta, reasoning) => onUpdate(modelId, delta, 'streaming', undefined, reasoning), genOptions, signal);
         } else {
           // Default Ollama path
           const actualModel = cm?.name ?? modelId;

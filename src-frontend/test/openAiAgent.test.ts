@@ -85,6 +85,35 @@ function installRouteFetch(route: (callIndex: number) => unknown): { count: () =
   return { count: () => callCount };
 }
 
+/**
+ * Install `globalThis.fetch` that captures each outgoing request body and
+ * streams `frame` on every call (returning proper SSE so the agentic loop
+ * terminates on `finish_reason: stop`). Returns the captured bodies.
+ */
+function installStreamCapture(frame: string): { bodies: string[] } {
+  const encoder = new TextEncoder();
+  const frames = frame.split('\n\n').filter((f) => f.trim());
+  const bodies: string[] = [];
+  (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async (_url: unknown, init: { body?: string } | undefined) => {
+    if (init?.body) bodies.push(init.body);
+    let i = 0;
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (i < frames.length) return { done: false, value: encoder.encode(frames[i++] + '\n\n') };
+            return { done: true, value: undefined };
+          },
+          return: async () => ({ done: true, value: undefined }),
+        }),
+      },
+    };
+  });
+  return { bodies };
+}
+
 const conn = makeConn();
 
 /** Fully consume the generator (needed — `await` alone does not iterate it). */
@@ -341,5 +370,108 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
 
     expect(err).toBeInstanceOf(Error);
     expect(String(err?.message)).toMatch(/boom/i);
+  });
+
+  it('forwards generation options as OpenAI top-level fields (not nested) (#583)', async () => {
+    // Ollama-style options must reach the server as OpenAI's top-level fields,
+    // not nested under an Ollama-named `options:` block that the server ignores.
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'done' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+    ]));
+
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hello' }],
+      maxIterations: 1,
+      options: { temperature: 0.3, num_predict: 100, top_p: 0.9, stop: ['\n'], num_ctx: 4096, top_k: 50 },
+    });
+
+    const body = JSON.parse(bodies[0]) as Record<string, unknown>;
+    expect(body.temperature).toBe(0.3);
+    expect(body.max_tokens).toBe(100);
+    expect(body.top_p).toBe(0.9);
+    expect(body.stop).toEqual(['\n']);
+    // Ollama-only / OpenAI-ignored fields must NOT be forwarded, and nothing is nested.
+    expect(body.options).toBeUndefined();
+    expect(body.num_predict).toBeUndefined();
+    expect(body.num_ctx).toBeUndefined();
+    expect(body.top_k).toBeUndefined();
+  });
+
+  it('sends response_format for JSON structured output without tools (#583)', async () => {
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'ok' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+    ]));
+
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'answer' }],
+      maxIterations: 1,
+      // No toolFilter + empty filter => tools.length === 0, so the loop emits
+      // the structured-output response_format (#583).
+      toolFilter: [],
+      format: 'json',
+    });
+
+    const body = JSON.parse(bodies[0]) as { response_format?: unknown };
+    expect(body.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('sends json_schema response_format for an object structured output (#583)', async () => {
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'ok' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+    ]));
+
+    const schema = { type: 'object', properties: { answer: { type: 'string' } } };
+
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'answer' }],
+      maxIterations: 1,
+      toolFilter: [],
+      format: schema,
+    });
+
+    const body = JSON.parse(bodies[0]) as { response_format: { type: string; json_schema: { name: string; schema: unknown; strict: boolean } } };
+    expect(body.response_format.type).toBe('json_schema');
+    expect(body.response_format.json_schema.name).toBe('response');
+    expect(body.response_format.json_schema.strict).toBe(true);
+    expect(body.response_format.json_schema.schema).toEqual(schema);
+  });
+
+  it('drops response_format when tools are present and notes it inactive (#583)', async () => {
+    // A GBNF/grammar format sampled on every token cannot coexist with tool_calls.
+    // No toolFilter is passed, so the loop uses the whole registry (which
+    // registers `add_numbers` in `beforeEach`) — i.e. tools are active, and a
+    // schema must be gated off with a status note rather than silently sent.
+    const notes: string[] = [];
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'ok' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+    ]));
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'answer' }],
+      maxIterations: 1,
+      format: { type: 'object', properties: { answer: { type: 'string' } } },
+      onAssistantMessage: (m) => { notes.push(m); },
+    });
+
+    const body = JSON.parse(bodies[0]) as { response_format?: unknown };
+    // Tools present -> response_format must not be sent.
+    expect(body.response_format).toBeUndefined();
+    // And the user must be told the schema was ignored.
+    expect(notes.some(n => n.includes('Structured output is inactive'))).toBe(true);
   });
 });

@@ -5,6 +5,7 @@ import {
   buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
   type ModelConnection,
 } from '../services/connections';
+import { translateOpenAiSamplingOptions, openAiResponseFormat } from '../services/ollama';
 
 beforeEach(() => {
   localStorage.clear();
@@ -463,5 +464,51 @@ describe('probeConnection (#589)', () => {
     const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
     vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('network'));
     expect(await fetchOpenAiModels(conn)).toEqual([]);
+  });
+});
+
+describe('OpenAI option translation (#583)', () => {
+  it('translates Ollama sampling options to OpenAI top-level fields', () => {
+    const out = translateOpenAiSamplingOptions({ temperature: 0.3, num_predict: 100, top_p: 0.9, stop: ['\n'], num_ctx: 4096, top_k: 50 });
+    expect(out.temperature).toBe(0.3);
+    expect(out.max_tokens).toBe(100);
+    expect(out.top_p).toBe(0.9);
+    expect(out.stop).toEqual(['\n']);
+    // Ollama-only / OpenAI-ignored fields must NOT be forwarded.
+    expect(out.num_predict).toBeUndefined();
+    expect(out.num_ctx).toBeUndefined();
+    expect(out.top_k).toBeUndefined();
+  });
+
+  it('keeps num_predict=-1 as unlimited (no max_tokens)', () => {
+    const out = translateOpenAiSamplingOptions({ num_predict: -1, temperature: 0.5 });
+    expect(out.max_tokens).toBeUndefined();
+    expect(out.temperature).toBe(0.5);
+  });
+
+  it('returns {} for undefined options', () => {
+    expect(translateOpenAiSamplingOptions(undefined)).toEqual({});
+  });
+
+  it('converts json_object for the json flag', () => {
+    expect(openAiResponseFormat('json')).toEqual({ type: 'json_object' });
+  });
+
+  it('converts a schema object with name + strict (LM Studio/vLLM require name)', () => {
+    const schema = { type: 'object', properties: {} };
+    const rf = openAiResponseFormat(schema);
+    expect((rf as { type: string }).type).toBe('json_schema');
+    const js = rf as { json_schema: { name: string; strict?: boolean } };
+    expect(js.json_schema.name).toBe('response');
+    expect(js.json_schema.strict).toBe(true);
+  });
+
+  it('streams translated options through buildOpenAiChatRequest body (not nested)', () => {
+    const conn: ModelConnection = { id: 'oa', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    const { body } = buildOpenAiChatRequest(conn, 'm', [{ role: 'user', content: 'hi' }] as any, { temperature: 0.2, num_predict: 50 });
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    expect(parsed.temperature).toBe(0.2);
+    expect(parsed.max_tokens).toBe(50);
+    expect(parsed.options).toBeUndefined();
   });
 });

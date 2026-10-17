@@ -3983,6 +3983,7 @@ ${lines.join('\n')}`;
               maxIterations: autonomySettings.maxIterations,
               signal: abortControllerRef.current?.signal,
               options: genOptions,
+              format,
               ...agentCallbacks,
             })
           : agenticChatStream({
@@ -4099,7 +4100,7 @@ ${lines.join('\n')}`;
                   return updated;
                 });
               },
-              { temperature: genOptions?.temperature },
+              genOptions,
               abortControllerRef.current?.signal
             );
           } else {

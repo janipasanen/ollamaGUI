@@ -1,4 +1,4 @@
-import { Message, GenerationOptions, cleanGenerationOptions, type GenStats } from './ollama';
+import { Message, GenerationOptions, cleanGenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type GenStats, type StructuredOutputFormat } from './ollama';
 import {
   toolRegistry,
   ToolCall,
@@ -28,20 +28,24 @@ function buildOpenAiChatRequest(
   messages: any[],
   tools: any[],
   options?: GenerationOptions,
+  format?: StructuredOutputFormat,
   stream = true
 ): { url: string; headers: Record<string, string>; body: string } {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (conn.apiKey) headers['Authorization'] = `Bearer ${conn.apiKey}`;
-  const cleaned = cleanGenerationOptions(options);
+  // Translate Ollama-style sampling options into OpenAI top-level fields so
+  // num_predict/top_p/stop/temperature actually reach the server (#583).
+  const sampling = translateOpenAiSamplingOptions(options);
   return {
-    url: `${conn.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
+    url: `${conn.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`,
     headers,
     body: JSON.stringify({
       model,
       messages,
+      ...(format ? { response_format: openAiResponseFormat(format) } : {}),
       tools: tools.length > 0 ? tools : undefined,
       stream,
-      ...(cleaned ? { options: cleaned } : {}),
+      ...sampling,
     }),
   };
 }
@@ -58,9 +62,10 @@ async function* streamOpenAiWithTools(
   messages: any[],
   tools: any[],
   options?: GenerationOptions,
+  format?: StructuredOutputFormat,
   signal?: AbortSignal
 ): AsyncGenerator<{ content: string; reasoning: string; toolCalls: AccumulatedToolCall[]; finishReason: string | null; streamComplete: boolean }> {
-  const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, tools, options, true);
+  const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, tools, options, format, true);
   const res = await fetch(url, { method: 'POST', headers, body, signal });
   if (!res.ok) {
     const { openAiErrorFromResponse } = await import('./connections');
@@ -178,6 +183,7 @@ export interface OpenAiAgenticOptions {
   maxIterations?: number;
   signal?: AbortSignal;
   options?: GenerationOptions;
+  format?: StructuredOutputFormat;
   toolFilter?: string[];
   onApprovalNeeded?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
   onToolCall?: (toolCall: ToolCall) => void;
@@ -208,6 +214,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
     maxIterations = 5,
     signal,
     options: genOptions,
+    format,
     toolFilter,
     onApprovalNeeded,
     onToolCall,
@@ -238,6 +245,15 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
   let iteration = 0;
   let hitMaxIterations = false;
 
+  // Structured output (response_format) cannot coexist with tool calling —
+  // a GBNF/grammar format on every sampled token would block tool_calls
+  // entirely. Emit it only when no tools are active; otherwise note it so the
+  // user is not silently misled (#583).
+  const effectiveFormat = tools.length === 0 ? format : undefined;
+  if (format && tools.length > 0 && onAssistantMessage) {
+    onAssistantMessage('⚠️ Structured output is inactive for this run because tools are enabled; ignoring schema.');
+  }
+
   while (iteration < maxIterations) {
     if (signal?.aborted) {
       if (onCancel) onCancel();
@@ -261,6 +277,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
           openaiMessages,
           tools,
           cleanedOptions,
+          effectiveFormat,
           signal
         )
       ) {
