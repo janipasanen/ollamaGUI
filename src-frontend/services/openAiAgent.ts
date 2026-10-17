@@ -222,6 +222,12 @@ export interface OpenAiAgenticOptions {
   onComplete?: () => void;
   onError?: (error: Error) => void;
   onCancel?: () => void;
+  /**
+   * Fired when a transient fetch/stream failure is about to be retried in the
+   * agentic loop, with (attemptNumber, maxAttempts). attemptNumber is 1-based.
+   * (Issue #586)
+   */
+  onRetry?: (attempt: number, maxAttempts: number) => void;
 }
 
 /**
@@ -253,9 +259,55 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
     onComplete,
     onError,
     onCancel,
+    onRetry,
   } = opts;
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
+
+  // Retry bounds for transient network failures in the agentic loop (#586).
+  const MAX_FETCH_RETRIES = 3;
+
+  /**
+   * Whether a fetch/stream failure is transient and safe to retry. Network
+   * errors (fetch rejections, ECONNRESET/ECONNREFUSED, 502/503/504) qualify;
+   * anything else (a 400, a plain Error) does not. A user-initiated abort is
+   * never "retryable" here — it is handled separately via the AbortSignal.
+   */
+  function isRetryableError(error: unknown): boolean {
+    if (error instanceof TypeError) return true;
+    const err = error as { message?: string; status?: number; code?: string };
+    if (typeof err.status === 'number' && [502, 503, 504].includes(err.status)) return true;
+    if (
+      err.code === 'ECONNRESET' ||
+      err.code === 'ECONNREFUSED' ||
+      err.code === 'ECONN_CLOSED'
+    ) return true;
+    const msg = (err.message ?? '').toLowerCase();
+    return (
+      /network error|networkerror|failed to fetch|load failed|connection (reset|closed|refused)/.test(
+        msg
+      )
+    );
+  }
+
+  /** Sleep for `ms`, resolving early with `true` if the signal aborts. */
+  function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      if (signal?.aborted) {
+        resolve(true);
+        return;
+      }
+      const timer = setTimeout(() => resolve(false), ms);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve(true);
+        },
+        { once: true }
+      );
+    });
+  }
 
   // Convert initial messages to valid OpenAI format. `normalizeOpenAiHistory`
   // coalesces consecutive assistant tool_calls turns, matches every tool
@@ -295,72 +347,124 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
     const toolCalls: ToolCall[] = [];
     const notifiedToolIds = new Set<string>();
 
-    try {
-      for await (
-        const { content, reasoning, toolCalls: tcalls, finishReason, streamComplete } of streamOpenAiWithTools(
-          conn,
-          model,
-          openaiMessages,
-          tools,
-          cleanedOptions,
-          effectiveFormat,
-          signal,
-          onGenStats
-        )
-      ) {
-        assistantContent = content;
-        assistantReasoning = reasoning;
+    // Retry transient fetch/stream failures in place (#586). The stream is
+    // retried before any content is emitted; the retry never consumes an
+    // iteration, so a transient 502/503/504 or ECONNRESET still completes the
+    // turn. A failure after content was emitted is not replayed.
+    let streamError: unknown;
+    for (let attempt = 0; !streamError && attempt < MAX_FETCH_RETRIES; attempt++) {
+      // Reset per-attempt state so a replayed stream does not accumulate twice.
+      assistantContent = '';
+      lastYieldedContent = '';
+      lastYieldedReasoning = '';
+      assistantReasoning = '';
+      toolCalls.length = 0;
+      notifiedToolIds.clear();
+      let emitted = false;
 
-        // Stream reasoning to the UI (once reasoning exists).
-        if (reasoning !== lastYieldedReasoning) {
-          lastYieldedReasoning = reasoning;
-          if (reasoning && onAssistantReasoning) onAssistantReasoning(reasoning);
+      try {
+        for await (
+          const { content, reasoning, toolCalls: tcalls, finishReason, streamComplete } of streamOpenAiWithTools(
+            conn,
+            model,
+            openaiMessages,
+            tools,
+            cleanedOptions,
+            effectiveFormat,
+            signal,
+            onGenStats
+          )
+        ) {
+          assistantContent = content;
+          assistantReasoning = reasoning;
+
+          // Stream reasoning to the UI (once reasoning exists).
+          if (reasoning !== lastYieldedReasoning) {
+            lastYieldedReasoning = reasoning;
+            if (reasoning && onAssistantReasoning) {
+              onAssistantReasoning(reasoning);
+              emitted = true;
+            }
+          }
+
+          // Stream text to the UI.
+          if (content !== lastYieldedContent) {
+            lastYieldedContent = content;
+            if (content && onAssistantMessage) {
+              onAssistantMessage(content);
+              emitted = true;
+            }
+            yield {
+              role: 'assistant',
+              content: content,
+              ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
+            } as Message;
+          }
+
+          // Notify each tool call exactly once.
+          //
+          // Arguments arrive in deltas that come AFTER the tool-call name
+          // (streaming argument fragments), so we must not fire `onToolCall`
+          // on the first name-only chunk or with partial args. The terminating
+          // delta (`finish_reason` set) is only reached once all argument
+          // fragments for the tool-call block have been accumulated, so we
+          // emit there to guarantee complete arguments.
+          for (const tc of tcalls) {
+            if (notifiedToolIds.has(tc.id)) continue;
+            if (!tc.name || (!finishReason && !streamComplete)) continue;
+            notifiedToolIds.add(tc.id);
+            const call: ToolCall = {
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: tc.args },
+            };
+            toolCalls.push(call);
+            if (onToolCall) onToolCall(call);
+            emitted = true;
+          }
+
+          // A stream is complete once the generator has been fully read (the
+          // trailing snapshot carries `streamComplete:true`). Breaking on that
+          // (instead of on `finishReason` alone) lets the generator drain the
+          // final SSE frame so its `usage` can be surfaced via onGenStats (#575).
+          if (streamComplete) break;
         }
-
-        // Stream text to the UI.
-        if (content !== lastYieldedContent) {
-          lastYieldedContent = content;
-          if (content && onAssistantMessage) onAssistantMessage(content);
-          yield {
-            role: 'assistant',
-            content: content,
-            ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
-          } as Message;
+        break; // stream completed without throwing
+      } catch (error) {
+        // A user-initiated abort is never retried.
+        if (signal?.aborted) {
+          streamError = error;
+          break;
         }
-
-        // Notify each tool call exactly once.
-        //
-        // Arguments arrive in deltas that come AFTER the tool-call name
-        // (streaming argument fragments), so we must not fire `onToolCall`
-        // on the first name-only chunk or with partial args. The terminating
-        // delta (`finish_reason` set) is only reached once all argument
-        // fragments for the tool-call block have been accumulated, so we
-        // emit there to guarantee complete arguments.
-        for (const tc of tcalls) {
-          if (notifiedToolIds.has(tc.id)) continue;
-          if (!tc.name || (!finishReason && !streamComplete)) continue;
-          notifiedToolIds.add(tc.id);
-          const call: ToolCall = {
-            id: tc.id,
-            type: 'function',
-            function: { name: tc.name, arguments: tc.args },
-          };
-          toolCalls.push(call);
-          if (onToolCall) onToolCall(call);
+        // Retry only transient network failures, and only before anything was
+        // emitted, so a mid-stream reset never replays a half-built turn.
+        if (isRetryableError(error) && !emitted && attempt < MAX_FETCH_RETRIES - 1) {
+          if (onRetry) onRetry(attempt + 1, MAX_FETCH_RETRIES);
+          if (await abortableSleep(500 * (attempt + 1), signal)) {
+            streamError = error;
+            break;
+          }
+          continue;
         }
-
-        // A stream is complete once the generator has been fully read (the
-        // trailing snapshot carries `streamComplete:true`). Breaking on that
-        // (instead of on `finishReason` alone) lets the generator drain the
-        // final SSE frame so its `usage` can be surfaced via onGenStats (#575).
-        if (streamComplete) break;
+        streamError = error;
       }
-    } catch (error) {
-      // A connection or stream error surfaces via onError (parity with the
-      // Ollama-native agentic loop in agent.ts).
+    }
+
+    if (streamError) {
+      const errName = (streamError as any)?.name ?? '';
+      const errMsg = (streamError as any)?.message ?? '';
+      const isAbort = !!signal?.aborted ||
+        errName === 'AbortError' || /abort/i.test(errName) || /abort/i.test(errMsg);
+      if (isAbort) {
+        if (onCancel) onCancel();
+        break;
+      }
       if (onError) {
-        onError(error instanceof Error ? error : new Error(String(error)));
+        onError(streamError instanceof Error ? streamError : new Error('Unknown error'));
       }
+      // Surface the failure as a message (parity with the Ollama-native loop,
+      // agent.ts) so the caller sees the error even if no onError listener is set.
+      yield { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : String(streamError)}` };
       break;
     }
 

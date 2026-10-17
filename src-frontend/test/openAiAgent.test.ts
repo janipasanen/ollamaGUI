@@ -533,3 +533,79 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
     expect(stats.stopReason).toBe('stopped');
   });
 });
+
+// ── #586: retry transient fetch/stream failures before content is emitted ───
+
+// A successful OpenAI content stream that terminates on finish_reason: stop.
+const contentSse = () => sse([
+  chunk([{ index: 0, delta: { content: 'Retried.' } }]),
+  chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+]);
+
+describe('openAiAgenticChatStream retry transient failures (#586)', () => {
+  // Note: openAiErrorFromResponse does not preserve `res.status`, so a
+  // non-ok response is only retryable when its statusText matches the
+  // retryable message regex.
+  const transientError = () => ({
+    ok: false,
+    status: 503,
+    statusText: 'connection reset by peer',
+    json: async () => ({}),
+  });
+
+  it('retries after a transient failure and yields the final answer', async () => {
+    const counter = installRouteFetch((n) => (n === 0 ? transientError() : contentSse()));
+    const messages: string[] = [];
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hi' }],
+      onAssistantMessage: (m) => { messages.push(m); },
+    });
+    expect(counter.count()).toBe(2);
+    expect(messages.some((m) => m.includes('Retried.'))).toBe(true);
+  });
+
+  it('fires onRetry with the 1-based attempt before the retry', async () => {
+    installRouteFetch((n) => (n === 0 ? transientError() : contentSse()));
+    const onRetry = vi.fn();
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hi' }],
+      onRetry,
+    });
+    expect(onRetry).toHaveBeenCalledWith(1, 3);
+  });
+
+  it('gives up after 3 attempts and surfaces the error', async () => {
+    installRouteFetch(() => transientError());
+    const onError = vi.fn();
+    const onRetry = vi.fn();
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hi' }],
+      onError,
+      onRetry,
+    });
+    // 3 attempts total — 2 retries before the final attempt, one error surfaced.
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT retry a non-transient (4xx) failure', async () => {
+    const counter = installRouteFetch((n) => (n === 0
+      ? { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ error: { message: 'not found' } }) }
+      : contentSse()));
+    const onRetry = vi.fn();
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'hi' }],
+      onRetry,
+    });
+    expect(counter.count()).toBe(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+});

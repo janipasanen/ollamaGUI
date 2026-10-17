@@ -136,4 +136,31 @@ describe('spawn_subagent tool (#104)', () => {
     for await (const _ of gen) { /* consume */ }
     expect(callCount).toBeLessThanOrEqual(3);
   });
+
+  // ── #586: sub-agent fetch failure surfaces an error (not an empty result) ──
+
+  it('sub-agent fetch failure surfaces an error and no result (#586)', async () => {
+    // Mirror of App.tsx `spawn_subagent`: an empty result + onError ⇒ { error }
+    // rather than { result: '' }.
+    mockFetch.mockRejectedValue(new Error('connection reset by peer'));
+    let result = '';
+    let errorText: string | undefined;
+    const gen = agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'a task' }],
+      maxIterations: 3,
+      endpoint: 'http://localhost/api/chat',
+      onAssistantMessage: (m) => { result = m; },
+      onError: (e) => { errorText = e.message; },
+    });
+    for await (const _ of gen) { /* consume */ }
+
+    // No assistant content was produced...
+    expect(result).toBe('');
+    // ...but an error was surfaced, so the parent returns { error } (#586).
+    expect(errorText).toContain('connection reset');
+    const outcome = result === '' ? { error: errorText ?? 'Sub-agent failed to respond.' } : { result };
+    expect(outcome).toHaveProperty('error');
+    expect(outcome).not.toHaveProperty('result');
+  });
 });

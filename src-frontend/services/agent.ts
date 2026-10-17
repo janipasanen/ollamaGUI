@@ -42,6 +42,12 @@ export interface AgenticChatOptions {
   /** Fired when the run is cancelled via AbortSignal mid-fetch (#405). Unlike
    *  onError, a cancel is intentional and should not surface an error banner. */
   onCancel?: () => void;
+  /**
+   * Fired when a transient fetch/stream failure is about to be retried in the
+   * agentic loop, with (attemptNumber, maxAttempts). attemptNumber is 1-based
+   * — 1 is the first retry. (Issue #586)
+   */
+  onRetry?: (attempt: number, maxAttempts: number) => void;
 }
 
 export async function* agenticChatStream(options: AgenticChatOptions): AsyncGenerator<Message, void, unknown> {
@@ -63,9 +69,207 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onComplete,
     onError,
     onCancel,
+    onRetry,
     toolFilter,
     onApprovalNeeded,
   } = options;
+
+  // Retry bounds for transient network failures in the agentic loop (#586).
+  const MAX_FETCH_RETRIES = 3;
+
+  /**
+   * Whether a fetch/stream failure is transient and safe to retry. Network
+   * errors (fetch rejections, ECONNRESET/ECONNREFUSED, 502/503/504) qualify;
+   * anything else (a 400, a plain Error) does not. A user-initiated abort is
+   * never "retryable" here — it is handled separately via the AbortSignal.
+   */
+  function isRetryableError(error: unknown): boolean {
+    if (error instanceof TypeError) return true;
+    const err = error as { message?: string; status?: number; code?: string };
+    if (typeof err.status === 'number' && [502, 503, 504].includes(err.status)) return true;
+    if (
+      err.code === 'ECONNRESET' ||
+      err.code === 'ECONNREFUSED' ||
+      err.code === 'ECONN_CLOSED'
+    ) return true;
+    const msg = (err.message ?? '').toLowerCase();
+    return (
+      /network error|networkerror|failed to fetch|load failed|connection (reset|closed|refused)/.test(
+        msg
+      )
+    );
+  }
+
+  /** Sleep for `ms`, resolving early with `true` if the signal aborts. */
+  function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      if (signal?.aborted) {
+        resolve(true);
+        return;
+      }
+      const timer = setTimeout(() => resolve(false), ms);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve(true);
+        },
+        { once: true }
+      );
+    });
+  }
+
+  /**
+   * Stream one Ollama chat turn: fetch the endpoint, parse the NDJSON stream,
+   * and accumulate the result into `turn` (`turn.emitted` flips to true on the
+   * first content, reasoning, or tool call). Assistant messages are yielded
+   * live so callers can surface them. Retrying a transient network failure is
+   * the caller's job (#586) — this generator simply surfaces whatever the
+   * server returns, and throws on failure.
+   */
+  async function* streamOllamaTurn(
+    endpoint: string,
+    requestBody: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    turn: {
+      message: string;
+      reasoning: string;
+      toolCalls: ToolCall[];
+      hasToolCalls: boolean;
+      stats: GenStats | undefined;
+      emitted: boolean;
+    }
+  ): AsyncGenerator<Message> {
+    const decoder = new TextDecoder();
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      const statusErr = await ollamaErrorFromResponse(response, 'Ollama API error');
+      (statusErr as { status?: number }).status = response.status;
+      throw statusErr;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('Response body is null');
+
+    let streamBuf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      streamBuf += decoder.decode(value, { stream: true });
+      const lines = streamBuf.split('\n');
+      // Keep the last (possibly incomplete) line in the buffer.
+      streamBuf = lines.pop() ?? '';
+      const completeLines = lines.filter(line => line.trim());
+
+      for (const line of completeLines) {
+        try {
+          const parsed = JSON.parse(line);
+
+          // Capture reasoning/thinking trace (#245)
+          const thinking = parsed.message?.thinking ?? parsed.thinking;
+          if (thinking) {
+            turn.reasoning += thinking;
+            turn.emitted = true;
+            if (onAssistantReasoning) {
+              onAssistantReasoning(turn.reasoning);
+            }
+          }
+          // Handle regular message content
+          if (parsed.message?.content) {
+            turn.message += parsed.message.content;
+            turn.emitted = true;
+            if (onAssistantMessage) {
+              onAssistantMessage(turn.message);
+            }
+            yield {
+              role: 'assistant',
+              content: turn.message,
+              ...(turn.reasoning ? { reasoning: turn.reasoning } : {}),
+            } as Message;
+          }
+          // Capture final-chunk generation stats for this turn (#391, #392).
+          if (parsed.done) turn.stats = computeGenStats(parsed);
+
+          // Handle tool calls
+          if (parsed.message?.tool_calls) {
+            turn.hasToolCalls = true;
+            turn.emitted = true;
+            for (const toolCall of parsed.message.tool_calls) {
+              // Deduplicate across stream chunks. When the model provides a
+              // unique `id`, use it. When `id` is missing (common with some
+              // Ollama models), fall back to a name+arguments composite key
+              // so that DIFFERENT tool calls without ids are not silently
+              // dropped as duplicates of the first (#443).
+              const dedupKey = toolCall.id
+                ?? `__no_id__:${toolCall.function?.name ?? ''}:${toolCall.function?.arguments ?? ''}`;
+              const exists = turn.toolCalls.some(tc => {
+                const tcKey = tc.id
+                  ?? `__no_id__:${tc.function?.name ?? ''}:${tc.function?.arguments ?? ''}`;
+                return tcKey === dedupKey;
+              });
+              if (!exists) {
+                turn.toolCalls.push(toolCall);
+                if (onToolCall) {
+                  onToolCall(toolCall);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.error('Error parsing stream chunk', e);
+        }
+      }
+    }
+
+    // Flush any remaining buffered content after the stream ends.
+    if (streamBuf.trim()) {
+      try {
+        const parsed = JSON.parse(streamBuf);
+        const thinking = parsed.message?.thinking ?? parsed.thinking;
+        if (thinking) {
+          turn.reasoning += thinking;
+          if (onAssistantReasoning) onAssistantReasoning(turn.reasoning);
+        }
+        if (parsed.message?.content) {
+          turn.message += parsed.message.content;
+          turn.emitted = true;
+          if (onAssistantMessage) onAssistantMessage(turn.message);
+          yield {
+            role: 'assistant',
+            content: turn.message,
+            ...(turn.reasoning ? { reasoning: turn.reasoning } : {}),
+          } as Message;
+        }
+        if (parsed.done) turn.stats = computeGenStats(parsed);
+        if (parsed.message?.tool_calls) {
+          turn.hasToolCalls = true;
+          turn.emitted = true;
+          for (const toolCall of parsed.message.tool_calls) {
+            const dedupKey = toolCall.id
+              ?? `__no_id__:${toolCall.function?.name ?? ''}:${toolCall.function?.arguments ?? ''}`;
+            const exists = turn.toolCalls.some(tc => {
+              const tcKey = tc.id
+                ?? `__no_id__:${tc.function?.name ?? ''}:${tc.function?.arguments ?? ''}`;
+              return tcKey === dedupKey;
+            });
+            if (!exists) {
+              turn.toolCalls.push(toolCall);
+              if (onToolCall) onToolCall(toolCall);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing stream chunk', e);
+      }
+    }
+  }
 
   const cleanedOptions = cleanGenerationOptions(genOptions);
 
@@ -96,128 +300,76 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     };
 
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        ...(signal ? { signal } : {}),
-      });
-      
-      if (!response.ok) {
-        throw await ollamaErrorFromResponse(response, 'Ollama API error');
-      }
-      
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      if (!reader) {
-        throw new Error('Response body is null');
-      }
-      
-      let assistantMessage = '';
-      let assistantReasoning = '';
-      let toolCalls: ToolCall[] = [];
-      let hasToolCalls = false;
-      let turnStats: GenStats | undefined;
-      
-      // Process the stream — buffer incomplete lines across chunks (#444).
-      let streamBuf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      // Per-turn accumulators populated by streamOllamaTurn.
+      const turn = {
+        message: '',
+        reasoning: '',
+        toolCalls: [] as ToolCall[],
+        hasToolCalls: false,
+        stats: undefined as GenStats | undefined,
+        emitted: false,
+      };
 
-        streamBuf += decoder.decode(value, { stream: true });
-        const lines = streamBuf.split('\n');
-        // Keep the last (possibly incomplete) line in the buffer.
-        streamBuf = lines.pop() ?? '';
-        const completeLines = lines.filter(line => line.trim());
+      // Retry transient fetch/stream failures in place (#586). The fetch+stream
+      // is retried before any content is emitted; the retry never consumes an
+      // iteration, so a transient 502/503/504 or ECONNRESET still completes the
+      // turn. A failure after content was emitted is not replayed.
+      let streamError: unknown;
+      for (let attempt = 0; !streamError && attempt < MAX_FETCH_RETRIES; attempt++) {
+        // Reset per-attempt accumulators.
+        turn.message = '';
+        turn.reasoning = '';
+        turn.toolCalls = [];
+        turn.hasToolCalls = false;
+        turn.stats = undefined;
+        turn.emitted = false;
 
-        for (const line of completeLines) {
-          try {
-            const parsed = JSON.parse(line);
-            
-            // Capture reasoning/thinking trace (#245)
-            const thinking = parsed.message?.thinking ?? parsed.thinking;
-            if (thinking) {
-              assistantReasoning += thinking;
-              if (onAssistantReasoning) {
-                onAssistantReasoning(assistantReasoning);
-              }
-            }
-            // Handle regular message content
-            if (parsed.message?.content) {
-              assistantMessage += parsed.message.content;
-              if (onAssistantMessage) {
-                onAssistantMessage(assistantMessage);
-              }
-              yield { role: 'assistant', content: assistantMessage, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message;
-            }
-            
-            // Capture final-chunk generation stats for this turn (#391, #392).
-            if (parsed.done) turnStats = computeGenStats(parsed);
-
-            // Handle tool calls
-            if (parsed.message?.tool_calls) {
-              hasToolCalls = true;
-              for (const toolCall of parsed.message.tool_calls) {
-                // Deduplicate across stream chunks. When the model provides a
-                // unique `id`, use it. When `id` is missing (common with some
-                // Ollama models), fall back to a name+arguments composite key
-                // so that DIFFERENT tool calls without ids are not silently
-                // dropped as duplicates of the first (#443).
-                const dedupKey = toolCall.id
-                  ?? `__no_id__:${toolCall.function?.name ?? ''}:${toolCall.function?.arguments ?? ''}`;
-                const exists = toolCalls.some(tc => {
-                  const tcKey = tc.id
-                    ?? `__no_id__:${tc.function?.name ?? ''}:${tc.function?.arguments ?? ''}`;
-                  return tcKey === dedupKey;
-                });
-                if (!exists) {
-                  toolCalls.push(toolCall);
-                  if (onToolCall) {
-                    onToolCall(toolCall);
-                  }
-                }
-              }
-            }
-          } catch (e) {
-            console.error('Error parsing stream chunk', e);
+        try {
+          for await (const msg of streamOllamaTurn(endpoint, requestBody, signal, turn)) {
+            yield msg;
           }
+          break; // stream completed without throwing
+        } catch (error) {
+          // A user-initiated abort is never retried.
+          if (signal?.aborted) {
+            streamError = error;
+            break;
+          }
+          // Retry only transient network failures, and only before anything was
+          // emitted, so a mid-stream reset never replays a half-built turn.
+          if (isRetryableError(error) && !turn.emitted && attempt < MAX_FETCH_RETRIES - 1) {
+            if (onRetry) onRetry(attempt + 1, MAX_FETCH_RETRIES);
+            if (await abortableSleep(500 * (attempt + 1), signal)) {
+              streamError = error;
+              break;
+            }
+            continue;
+          }
+          streamError = error;
         }
       }
-      // Flush any remaining buffered content after the stream ends.
-      if (streamBuf.trim()) {
-        try {
-          const parsed = JSON.parse(streamBuf);
-          const thinking = parsed.message?.thinking ?? parsed.thinking;
-          if (thinking) {
-            assistantReasoning += thinking;
-            if (onAssistantReasoning) onAssistantReasoning(assistantReasoning);
-          }
-          if (parsed.message?.content) {
-            assistantMessage += parsed.message.content;
-            if (onAssistantMessage) onAssistantMessage(assistantMessage);
-            yield { role: 'assistant', content: assistantMessage, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) } as Message;
-          }
-          if (parsed.done) turnStats = computeGenStats(parsed);
-          if (parsed.message?.tool_calls) {
-            hasToolCalls = true;
-            for (const toolCall of parsed.message.tool_calls) {
-              const dedupKey = toolCall.id
-                ?? `__no_id__:${toolCall.function?.name ?? ''}:${toolCall.function?.arguments ?? ''}`;
-              const exists = toolCalls.some(tc => {
-                const tcKey = tc.id
-                  ?? `__no_id__:${tc.function?.name ?? ''}:${tc.function?.arguments ?? ''}`;
-                return tcKey === dedupKey;
-              });
-              if (!exists) {
-                toolCalls.push(toolCall);
-                if (onToolCall) onToolCall(toolCall);
-              }
-            }
-          }
-        } catch { /* ignore trailing partial */ }
+
+      if (streamError) {
+        const errName = (streamError as any)?.name ?? '';
+        const errMsg = (streamError as any)?.message ?? '';
+        const isAbort = !!signal?.aborted ||
+          errName === 'AbortError' || /abort/i.test(errName) || /abort/i.test(errMsg);
+        if (isAbort) {
+          if (onCancel) onCancel();
+          break;
+        }
+        if (onError) {
+          onError(streamError instanceof Error ? streamError : new Error('Unknown error'));
+        }
+        yield { role: 'assistant', content: `Error: ${streamError instanceof Error ? streamError.message : String(streamError)}` };
+        break;
       }
+
+      const assistantMessage = turn.message;
+      const assistantReasoning = turn.reasoning;
+      const toolCalls = turn.toolCalls;
+      const hasToolCalls = turn.hasToolCalls;
+      let turnStats: GenStats | undefined = turn.stats;
 
       // If we have tool calls, execute them and continue the loop
       if (hasToolCalls && toolCalls.length > 0) {

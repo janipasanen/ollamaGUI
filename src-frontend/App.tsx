@@ -1487,6 +1487,9 @@ const App: React.FC = () => {
           subagentDepthRef.current += 1;
           try {
             let result = '';
+            // Capture a fetch/stream failure so the parent sees an error result
+            // instead of an empty string (#586).
+            let errorText: string | undefined;
             const subMessages: Message[] = [
               { role: 'system', content: 'You are a focused sub-agent. Complete the given task and return only your final answer.' },
               { role: 'user', content: params.task },
@@ -1505,8 +1508,12 @@ const App: React.FC = () => {
               toolFilter,
               onApprovalNeeded: createApprovalGate(),
               onAssistantMessage: (msg) => { result = msg; },
+              onError: (e) => { errorText = e.message; },
             });
             for await (const _m of gen) { /* consume */ }
+            // If the sub-agent never produced content (e.g. the fetch failed),
+            // surface the error to the parent rather than an empty result.
+            if (result === '') return { error: errorText ?? 'Sub-agent failed to respond.' };
             return { result };
           } finally {
             subagentDepthRef.current -= 1;
@@ -1545,6 +1552,9 @@ const App: React.FC = () => {
               : allToolNames;
             const runOne = async (task: string): Promise<string> => {
               let result = '';
+              // Capture a fetch/stream failure so the parent sees an error
+              // result instead of an empty string (#586).
+              let errorText: string | undefined;
               const gen = agenticChatStream({
                 model,
                 messages: [
@@ -1556,9 +1566,10 @@ const App: React.FC = () => {
                 toolFilter,
                 onApprovalNeeded: createApprovalGate(),
                 onAssistantMessage: (msg) => { result = msg; },
+                onError: (e) => { errorText = e.message; },
               });
               for await (const _m of gen) { /* consume */ }
-              return result;
+              return result === '' ? `Error: ${errorText ?? 'Sub-agent failed to respond.'}` : result;
             };
             const settled = await Promise.allSettled(limited.map(runOne));
             const results = settled.map((s, i) => ({
@@ -3901,13 +3912,19 @@ ${lines.join('\n')}`;
         const agentCallbacks: Pick<AgenticChatOptions,
           'onIteration' | 'onMaxIterations' | 'onCancel' | 'onApprovalNeeded'
           | 'onAssistantMessage' | 'onAssistantReasoning' | 'onToolCall'
-          | 'onToolResult' | 'onGenStats' | 'onComplete' | 'onError'> & {
+          | 'onToolResult' | 'onGenStats' | 'onComplete' | 'onError' | 'onRetry'> & {
           toolFilter?: string[];
         } = {
           onIteration: (iteration, maxIterations) => setAgentStep({ iteration, max: maxIterations }),
           onMaxIterations: () => {
             captureSuccess = false;
             setAgentHitMax(true);
+          },
+          // Retry transient fetch/stream failures in place (#586). Surface the
+          // attempt counter so the UI shows progress while the agentic loop
+          // retries a 502/503/504 or ECONNRESET.
+          onRetry: (attempt, maxAttempts) => {
+            setAgentStatus(`Retrying… (${attempt}/${maxAttempts})`);
           },
           // Clean abort handling (#405): a user-initiated Stop during an
           // agentic fetch marks the partial assistant reply as cancelled

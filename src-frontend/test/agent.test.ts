@@ -97,18 +97,22 @@ describe('agenticChatStream', () => {
     // Always returns a tool call so the loop would run forever without the guard
     vi.spyOn(toolRegistry, 'executeToolCall').mockResolvedValue({ content: 'ok', name: 'noop' });
 
-    const infiniteFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      body: makeStream([
-        {
-          message: {
-            role: 'assistant',
-            content: '',
-            tool_calls: [{ id: 'c1', function: { name: 'noop', arguments: {} } }],
+    // A fresh stream per call, like a real server response. (The stream is a
+    // one-shot reader, so it must be recreated for each fetch.)
+    const infiniteFetch = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: makeStream([
+          {
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: 'c1', function: { name: 'noop', arguments: {} } }],
+            },
           },
-        },
-      ]),
-    });
+        ]),
+      })
+    );
     vi.stubGlobal('fetch', infiniteFetch);
 
     const msgs = [];
@@ -295,5 +299,157 @@ describe('agenticChatStream assistant message in context (#472)', () => {
     const assistantIdx = messages.indexOf(assistantWithTools);
     const toolIdx = messages.findIndex((m: any) => m.role === 'tool');
     expect(toolIdx).toBeGreaterThan(assistantIdx);
+  });
+});
+
+// ── #586: retry transient fetch/stream failures before content is emitted ───
+
+describe('agenticChatStream retry transient failures (#586)', () => {
+  beforeEach(() => {
+    for (const t of toolRegistry.getAllTools()) toolRegistry.unregisterTool(t.name);
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  function streamOnce(content: string) {
+    return { ok: true, body: makeStream([{ message: { role: 'assistant', content } }]) };
+  }
+
+  function stream503() {
+    return {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ error: 'Service Unavailable' }),
+    };
+  }
+
+  // A stream that emits content first, then errors mid-stream — proves the
+  // retry guard does not replay a turn whose content was already emitted.
+  // `pull` fires only after the content has been read, so the error surfaces
+  // on the follow-up read rather than discarding the pending value.
+  function streamWithError(content: string, err: Error) {
+    const enc = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          enc.encode(JSON.stringify({ message: { role: 'assistant', content } }) + '\n')
+        );
+      },
+      pull(controller) {
+        controller.error(err);
+      },
+    });
+  }
+
+  it('retries after a transient 503 and yields the final answer', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(stream503())
+      .mockResolvedValueOnce(streamOnce('Retried and done.'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const messages: any[] = [];
+    for await (const msg of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+    })) {
+      messages.push(msg as any);
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(messages.some(m => m.content?.includes('Retried and done.'))).toBe(true);
+  });
+
+  it('fires onRetry with the 1-based attempt before the first retry', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(stream503())
+      .mockResolvedValueOnce(streamOnce('Ok.'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const retries: { attempt: number; max: number }[] = [];
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onRetry: (attempt, maxAttempts) => retries.push({ attempt, max: maxAttempts }),
+    })) {
+      void _;
+    }
+
+    expect(retries).toEqual([{ attempt: 1, max: 3 }]);
+  });
+
+  it('gives up after 3 attempts and surfaces the error (no extra retry)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(stream503());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const errors: Error[] = [];
+    const retries: number[] = [];
+    const yielded: any[] = [];
+    for await (const msg of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onError: e => errors.push(e),
+      onRetry: () => { retries.push(1); },
+    })) {
+      yielded.push(msg as any);
+    }
+
+    // Exactly 3 attempts — the 3rd is the last, so it is not retried.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(retries).toHaveLength(2);
+    expect(errors[0]?.message).toContain('Service Unavailable');
+    expect(yielded.some(m => m.content?.includes('Error:'))).toBe(true);
+  });
+
+  it('does NOT retry a retryable error once content has been emitted', async () => {
+    // A fresh stream per fetch; each one emits content, then errors
+    // (retryable) on the follow-up read — but since content was emitted, the
+    // retry guard must not replay the turn.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        body: streamWithError('Partial answer', new Error('connection reset by peer')),
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const retries: number[] = [];
+    const messages: any[] = [];
+    for await (const msg of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onRetry: () => { retries.push(1); },
+    })) {
+      messages.push(msg as any);
+    }
+
+    // One attempt only: content was emitted, so the retryable error is not replayed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(retries).toHaveLength(0);
+    expect(messages.some(m => m.content?.includes('Partial answer'))).toBe(true);
+    expect(messages.some(m => m.content?.includes('Error:'))).toBe(true);
+  });
+
+  it('does NOT retry a non-transient (4xx) failure', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({ error: 'not found' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const retries: number[] = [];
+    for await (const _ of agenticChatStream({
+      model: 'llama3',
+      messages: [{ role: 'user', content: 'test' }],
+      onRetry: () => { retries.push(1); },
+    })) {
+      void _;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(retries).toHaveLength(0);
   });
 });
