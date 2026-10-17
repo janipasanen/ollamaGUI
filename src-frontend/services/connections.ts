@@ -162,8 +162,53 @@ function toolResultWire(msg: Message, matchedCallId?: string): any {
   };
 }
 
-/** Wire shape of a plain message (user / system / text-only assistant). */
+/**
+ * Reconstruct a `data:` URL from raw base64, sniffing the MIME from the
+ * magic bytes. `toApiBase64` (App.tsx) strips the original `data:` prefix
+ * before the message reaches the service layer, so the true MIME is lost
+ * here — sniff JPEG/PNG/GIF/WebP instead of hardcoding one, defaulting to
+ * jpeg so we never mislabel the bytes we were handed (#566).
+ */
+export function asDataUrl(img: string): string {
+  // A data URL already carries its MIME; pass it straight through.
+  if (img.startsWith('data:')) return img;
+  return `data:${base64MimeType(img) ?? 'image/jpeg'};base64,${img}`;
+}
+
+/** Detect a base-image MIME from the start of its base64 encoding, or null. */
+function base64MimeType(b64: string): string | null {
+  if (b64.startsWith('/9j/')) return 'image/jpeg'; // JPEG
+  if (b64.startsWith('iVBOR')) return 'image/png'; // PNG
+  if (b64.startsWith('R0lGOD')) return 'image/gif'; // GIF
+  if (b64.startsWith('UklGR')) return 'image/webp'; // WebP
+  return null;
+}
+
+/**
+ * OpenAI `image_url` content parts for a message's attached images, or an
+ * empty array. Text-only turns carry none, so the caller keeps the plain
+ * string `content` form (#566).
+ */
+function messageImageParts(m: Message): { type: 'image_url'; image_url: { url: string } }[] {
+  if (!m.images || m.images.length === 0) return [];
+  return m.images.map(img => ({ type: 'image_url', image_url: { url: asDataUrl(img) } }));
+}
+
+/**
+ * Wire shape of a plain message (user / system / text-only assistant). A
+ * message carrying attached images is normalised into the multimodal
+ * `{role, content:[...]}` form so the pixels reach an OpenAI-compatible
+ * server (LM Studio / vLLM); text-only turns keep the string `content` so
+ * llama.cpp builds that only understand it still work (#566).
+ */
 function nonToolWire(m: Message): any {
+  const parts = messageImageParts(m);
+  if (parts.length > 0) {
+    return {
+      role: m.role,
+      content: [{ type: 'text', text: m.content ?? '' }, ...parts],
+    };
+  }
   return { role: m.role, content: m.content ?? '' };
 }
 

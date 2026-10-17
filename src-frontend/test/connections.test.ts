@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
   fetchOpenAiModels, fetchOllamaConnectionModels, fetchAllConnectionModels, probeConnection,
-  buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse,
+  buildOpenAiChatRequest, streamOpenAiChat, openAiErrorFromResponse, asDataUrl,
   type ModelConnection,
 } from '../services/connections';
+import type { Message } from '../services/ollama';
 import { translateOpenAiSamplingOptions, openAiResponseFormat } from '../services/ollama';
 
 beforeEach(() => {
@@ -528,5 +529,54 @@ describe('OpenAI option translation (#583)', () => {
     expect(parsed.temperature).toBe(0.2);
     expect(parsed.max_tokens).toBe(50);
     expect(parsed.options).toBeUndefined();
+  });
+});
+
+// ── Image attachments on OpenAI-compatible providers (#566) ────────────────────
+
+describe('image attachments (OpenAI path) (#566)', () => {
+  it('asDataUrl sniffs the MIME from base64 magic bytes', () => {
+    expect(asDataUrl('/9j/')).toBe('data:image/jpeg;base64,/9j/');
+    expect(asDataUrl('iVBORw0KGgo=')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    expect(asDataUrl('R0lGOD')).toBe('data:image/gif;base64,R0lGOD');
+    expect(asDataUrl('UklGRnoAB')).toBe('data:image/webp;base64,UklGRnoAB');
+    // A MIME we cannot detect defaults to jpeg rather than guessing png.
+    expect(asDataUrl('AAAA')).toBe('data:image/jpeg;base64,AAAA');
+  });
+
+  it('asDataUrl passes an already-formed data URL straight through', () => {
+    expect(asDataUrl('data:image/png;base64,iVBORw0KGgo=')).toBe('data:image/png;base64,iVBORw0KGgo=');
+  });
+
+  it('buildOpenAiChatRequest emits image_url parts and keeps the text part (#566)', () => {
+    const conn: ModelConnection = { id: 'lm', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    const req = buildOpenAiChatRequest(conn, 'qwen2.5-vl', [
+      { role: 'user', content: 'what is this', images: ['/9j/AAAA'] } as Message,
+    ]);
+    const parsed = JSON.parse(req.body) as { messages: { role: string; content: any[] }[] };
+    const content = parsed.messages[0].content;
+    expect(content).toEqual([
+      { type: 'text', text: 'what is this' },
+      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/AAAA' } },
+    ]);
+  });
+
+  it('text-only turns keep the plain string content (not a parts array) (#566)', () => {
+    const conn: ModelConnection = { id: 'lm', name: 'LM Studio', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    const req = buildOpenAiChatRequest(conn, 'gpt-4', [{ role: 'user', content: 'hi' } as Message]);
+    const parsed = JSON.parse(req.body) as { messages: { role: string; content: unknown }[] };
+    expect(parsed.messages[0].content).toBe('hi');
+  });
+
+  it('buildOpenAiChatRequest drops non-message fields (ts/genStats/sources) from the body (#566)', () => {
+    const conn: ModelConnection = { id: 'lm', name: 'vLLM', kind: 'openai', baseUrl: 'http://localhost:1234', enabled: true };
+    const req = buildOpenAiChatRequest(conn, 'm', [
+      { role: 'user', content: 'hi', ts: 123, sources: ['/tmp'], producedByModel: true } as unknown as Message,
+    ]);
+    const userMsg = JSON.parse(req.body).messages[0];
+    expect(userMsg.content).toBe('hi');
+    expect(userMsg.ts).toBeUndefined();
+    expect(userMsg.sources).toBeUndefined();
+    expect(userMsg.producedByModel).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { openAiAgenticChatStream } from '../services/openAiAgent';
 import { toolRegistry } from '../services/tools';
 import type { ModelConnection } from '../services/connections';
+import type { Message } from '../services/ollama';
 
 /** Build a fake OpenAI connection. */
 function makeConn(): ModelConnection {
@@ -474,5 +475,32 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
     expect(body.response_format).toBeUndefined();
     // And the user must be told the schema was ignored.
     expect(notes.some(n => n.includes('Structured output is inactive'))).toBe(true);
+  });
+
+  it('carries attached images in the first request body (agentic path) (#566)', async () => {
+    // Plain final-answer stream — no tool round-trip needed to observe the
+    // first request the agent sends.
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'Hi there.' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+    ]));
+
+    await run({
+      conn,
+      model: 'qwen2.5-vl',
+      messages: [
+        { role: 'user', content: 'what is this', images: ['/9j/AAAA'] } as Message,
+      ],
+      maxIterations: 5,
+      onAssistantMessage: () => {},
+    });
+
+    expect(bodies.length).toBeGreaterThanOrEqual(1);
+    const firstMsg = JSON.parse(bodies[0]).messages[0];
+    expect(firstMsg.content).toEqual([
+      { type: 'text', text: 'what is this' },
+      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/AAAA' } },
+    ]);
   });
 });
