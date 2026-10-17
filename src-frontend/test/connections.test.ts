@@ -6,7 +6,7 @@ import {
   type ModelConnection,
 } from '../services/connections';
 import type { Message } from '../services/ollama';
-import { translateOpenAiSamplingOptions, openAiResponseFormat } from '../services/ollama';
+import { translateOpenAiSamplingOptions, openAiResponseFormat, usageToGenStats } from '../services/ollama';
 
 beforeEach(() => {
   localStorage.clear();
@@ -266,6 +266,24 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
     expect(stats.evalCount).toBe(12);
     expect(stats.promptCount).toBe(7);
     expect(stats.stopReason).toBe('stopped');
+  });
+
+  it('usageToGenStats maps counts, stop reason and wall-clock duration (#575/#584)', () => {
+    const stats = usageToGenStats(
+      { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      'length',
+      250,
+    );
+    // 20 tokens over 250 ms => 80 tok/s, and the full generation time is kept.
+    expect(stats).toEqual({
+      evalCount: 20,
+      promptCount: 10,
+      tokensPerSec: 80,
+      totalDurationMs: 250,
+      stopReason: 'length-limited',
+    });
+    // No token counts and no finish reason => nothing to render.
+    expect(usageToGenStats({}, null, 0)).toBeUndefined();
   });
 
   it('retries once without stream_options when a strict proxy 400s on it (#575)', async () => {

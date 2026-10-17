@@ -135,6 +135,10 @@ export function usageToGenStats(
     const secs = durationMs > 0 ? durationMs / 1000 : 0;
     if (secs > 0) stats.tokensPerSec = completion / secs;
   }
+  // durationMs is the wall-clock time from stream start to the usage frame
+  // (OpenAI exposes no server-side timing) — record it so the footer can show
+  // total generation time too (#575/#584).
+  if (durationMs > 0) stats.totalDurationMs = Math.round(durationMs);
   if (typeof prompt === 'number' && prompt > 0) stats.promptCount = prompt;
   if (finishReason) {
     const label = describeStopReason(finishReason);
