@@ -4103,7 +4103,8 @@ ${lines.join('\n')}`;
               },
               genOptions,
               format,
-              abortControllerRef.current?.signal
+              abortControllerRef.current?.signal,
+              (stats) => { if (stats) genStats = stats; },
             );
           } else {
           // Use bare model name — connected models carry a "connId/name" id prefix.

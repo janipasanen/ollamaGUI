@@ -113,6 +113,36 @@ export function computeGenStats(chunk: Partial<OllamaResponse>): GenStats | unde
   return result;
 }
 
+/**
+ * Map an OpenAI `completion.usage` block to the provider-agnostic `GenStats`
+ * footer so LM Studio / vLLM / OpenAI replies show tokens/sec + counts like
+ * Ollama replies do (#575). OpenAI-compatible endpoints give no server-side
+ * token timing, so `tokensPerSec` is derived from the wall-clock `durationMs`
+ * of the stream. `finishReason` is one of 'stop' / 'length' / 'tool_calls' /
+ * 'content_filter'.
+ */
+export function usageToGenStats(
+  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined | null,
+  finishReason: string | null,
+  durationMs: number,
+): GenStats | undefined {
+  const completion = usage?.completion_tokens;
+  const prompt = usage?.prompt_tokens;
+  if (typeof completion !== 'number' && typeof prompt !== 'number') return undefined;
+  const stats: GenStats = {};
+  if (typeof completion === 'number') {
+    stats.evalCount = completion;
+    const secs = durationMs > 0 ? durationMs / 1000 : 0;
+    if (secs > 0) stats.tokensPerSec = completion / secs;
+  }
+  if (typeof prompt === 'number' && prompt > 0) stats.promptCount = prompt;
+  if (finishReason) {
+    const label = describeStopReason(finishReason);
+    if (label) stats.stopReason = label;
+  }
+  return stats;
+}
+
 /** Ollama generation options (subset). num_ctx is the key lever on small-RAM machines. */
 export interface GenerationOptions {
   num_ctx?: number;

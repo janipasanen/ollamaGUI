@@ -503,4 +503,33 @@ describe('openAiAgenticChatStream — OpenAI tool-calling loop', () => {
       { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/AAAA' } },
     ]);
   });
+
+  it('requests usage and forwards it via onGenStats (#575)', async () => {
+    const { bodies } = installStreamCapture(sse([
+      chunk([{ index: 0, delta: { role: 'assistant', content: '' } }]),
+      chunk([{ index: 0, delta: { content: 'hi' } }]),
+      chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]),
+      // Trailing usage frame — empty `choices`, as OpenAI sends it.
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } },
+    ]));
+
+    let stats: any;
+    await run({
+      conn,
+      model: 'switchyard/ornith35',
+      messages: [{ role: 'user', content: 'answer' }],
+      maxIterations: 1,
+      toolFilter: [],
+      onGenStats: s => { stats = s; },
+    });
+
+    // The request asked the server for usage…
+    const body = JSON.parse(bodies[0]) as { stream_options?: unknown };
+    expect(body.stream_options).toEqual({ include_usage: true });
+    // …and the accumulated stats were surfaced to the caller.
+    expect(stats).toBeDefined();
+    expect(stats.evalCount).toBe(3);
+    expect(stats.promptCount).toBe(5);
+    expect(stats.stopReason).toBe('stopped');
+  });
 });

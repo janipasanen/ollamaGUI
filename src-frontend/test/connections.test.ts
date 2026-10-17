@@ -234,6 +234,60 @@ describe('streamOpenAiChat — SSE parsing (#123)', () => {
     await expect(streamOpenAiChat(conn, 'gpt-4', [], () => {})).rejects.toThrow('OpenAI stream error');
   });
 
+  // ── #575: usage footer for OpenAI-compatible providers ──────────────────────
+
+  it('requests stream_options.include_usage when streaming', async () => {
+    let bodyObj: any;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: any, init: any) => {
+      if (init?.body) bodyObj = JSON.parse(init.body);
+      return mockSse(['data: [DONE]']);
+    });
+    await streamOpenAiChat(conn, 'gpt-4', [], () => {});
+    expect(bodyObj.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('omits stream_options when stream=false (e.g. summarize)', () => {
+    const req = buildOpenAiChatRequest(conn, 'gpt-4', [], undefined, undefined, false);
+    const body = JSON.parse(req.body);
+    expect(body.stream).toBe(false);
+    expect(body.stream_options).toBeUndefined();
+  });
+
+  it('emits onGenStats from the trailing usage frame (#575)', async () => {
+    let stats: any;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => mockSse([
+      'data: {"choices":[{"delta":{"content":"hi"}}]}',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":12,"total_tokens":19}}',
+      'data: [DONE]',
+    ]));
+    await streamOpenAiChat(conn, 'gpt-4', [], () => {}, undefined, undefined, undefined, s => { stats = s; });
+    expect(stats).toBeDefined();
+    expect(stats.evalCount).toBe(12);
+    expect(stats.promptCount).toBe(7);
+    expect(stats.stopReason).toBe('stopped');
+  });
+
+  it('retries once without stream_options when a strict proxy 400s on it (#575)', async () => {
+    let calls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: any, init: any) => {
+      calls++;
+      if (calls === 1) {
+        return {
+          ok: false, status: 400, statusText: 'Bad Request',
+          text: async () => JSON.stringify({ error: { message: 'body.stream_options: unexpected field' } }),
+        } as any;
+      }
+      // The retried request must have stream_options stripped.
+      expect(JSON.parse(init.body).stream_options).toBeUndefined();
+      return mockSse(['data: {"choices":[{"delta":{"content":"ok"}}]}', 'data: [DONE]']);
+    });
+    const chunks: string[] = [];
+    await streamOpenAiChat(conn, 'gpt-4', [], d => chunks.push(d));
+    expect(calls).toBe(2);
+    expect(chunks).toEqual(['ok']);
+  });
+
   // ── #458: surface response body error on non-ok ──────────────────────────
 
   it('openAiErrorFromResponse extracts nested error.message (#458)', async () => {

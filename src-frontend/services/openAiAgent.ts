@@ -1,4 +1,4 @@
-import { Message, GenerationOptions, cleanGenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type GenStats, type StructuredOutputFormat } from './ollama';
+import { Message, GenerationOptions, cleanGenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, usageToGenStats, type GenStats, type StructuredOutputFormat } from './ollama';
 import {
   toolRegistry,
   ToolCall,
@@ -45,6 +45,9 @@ function buildOpenAiChatRequest(
       ...(format ? { response_format: openAiResponseFormat(format) } : {}),
       tools: tools.length > 0 ? tools : undefined,
       stream,
+      // Request usage on the final SSE frame for the tokens/sec footer (#575).
+      // Only on streaming requests — non-streaming POSTs reject it with a 400.
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       ...sampling,
     }),
   };
@@ -63,10 +66,20 @@ async function* streamOpenAiWithTools(
   tools: any[],
   options?: GenerationOptions,
   format?: StructuredOutputFormat,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onGenStats?: (stats: GenStats) => void
 ): AsyncGenerator<{ content: string; reasoning: string; toolCalls: AccumulatedToolCall[]; finishReason: string | null; streamComplete: boolean }> {
   const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, tools, options, format, true);
-  const res = await fetch(url, { method: 'POST', headers, body, signal });
+  let res = await fetch(url, { method: 'POST', headers, body, signal });
+  // A strict proxy may reject the optional stream_options field; retry once
+  // without it so the usage footer never breaks an agentic run (#575).
+  if (!res.ok && !signal?.aborted) {
+    const { openAiDetailText, stripStreamOptions } = await import('./connections');
+    const detail = await openAiDetailText(res);
+    if (/stream_options/i.test(detail)) {
+      res = await fetch(url, { method: 'POST', headers, body: stripStreamOptions(body), signal });
+    }
+  }
   if (!res.ok) {
     const { openAiErrorFromResponse } = await import('./connections');
     throw await openAiErrorFromResponse(res, 'OpenAI stream error');
@@ -80,7 +93,9 @@ async function* streamOpenAiWithTools(
   let content = '';
   let reasoning = '';
   let finishReason: string | null = null;
+  let usage: GenStats | undefined;
   const indexMap = new Map<number, AccumulatedToolCall>();
+  const streamStart = Date.now();
 
   const finalize = (): AccumulatedToolCall[] =>
     [...indexMap.entries()]
@@ -102,6 +117,12 @@ async function* streamOpenAiWithTools(
       }
       try {
         const chunk = JSON.parse(data);
+        // include_usage delivers its stats on a trailing {choices:[], usage}
+        // frame; surface it so the agentic loop can notify (#575).
+        if (chunk?.usage && !usage) {
+          usage = usageToGenStats(chunk.usage, finishReason, Date.now() - streamStart);
+          if (usage) onGenStats?.(usage);
+        }
         const choice = chunk?.choices?.[0];
         if (!choice) continue;
         const delta = choice.delta ?? {};
@@ -134,7 +155,8 @@ async function* streamOpenAiWithTools(
         // malformed SSE line — skip
       }
     }
-    if (finishReason) break;
+    // Read to stream end so the trailing usage frame (not just the finish
+    // content delta) is consumed; finish_reason still drives the consumer.
   }
 
   // Flush any remaining buffered content.
@@ -144,6 +166,10 @@ async function* streamOpenAiWithTools(
       if (data !== '[DONE]') {
         try {
           const chunk = JSON.parse(data);
+          if (chunk?.usage && !usage) {
+            usage = usageToGenStats(chunk.usage, finishReason, Date.now() - streamStart);
+            if (usage) onGenStats?.(usage);
+          }
           const choice = chunk?.choices?.[0];
           if (choice) {
             const delta = choice.delta ?? {};
@@ -278,7 +304,8 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
           tools,
           cleanedOptions,
           effectiveFormat,
-          signal
+          signal,
+          onGenStats
         )
       ) {
         assistantContent = content;
@@ -322,9 +349,11 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
           if (onToolCall) onToolCall(call);
         }
 
-        // A stream is complete when it either ends with a tool_calls finish
-        // reason, or when the reader has closed (DONE) with no finish reason.
-        if (finishReason === 'tool_calls' || finishReason === 'stop') break;
+        // A stream is complete once the generator has been fully read (the
+        // trailing snapshot carries `streamComplete:true`). Breaking on that
+        // (instead of on `finishReason` alone) lets the generator drain the
+        // final SSE frame so its `usage` can be surfaced via onGenStats (#575).
+        if (streamComplete) break;
       }
     } catch (error) {
       // A connection or stream error surfaces via onError (parity with the

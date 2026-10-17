@@ -4,7 +4,7 @@
  * all enabled connections are aggregated into one unified model selector.
  */
 import { formatErrorLine } from './errorMessages';
-import { type Message, GenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type StructuredOutputFormat } from './ollama';
+import { type Message, GenerationOptions, translateOpenAiSamplingOptions, openAiResponseFormat, type StructuredOutputFormat, usageToGenStats, type GenStats } from './ollama';
 
 const STORAGE_KEY = 'model_connections';
 
@@ -367,6 +367,42 @@ export async function fetchAllConnectionModels(connections: ModelConnection[]): 
 // ── Stream chat through the right connection ───────────────────────────────────
 
 /**
+ * Extract an actionable message from a non-ok OpenAI-compatible response, for
+ * the optional-`stream_options` retry guard (#575). Returns '' when the body is
+ * unreadable (e.g. a test stub with no `.text()`), so the caller can fall back
+ * to `statusText`.
+ */
+export async function openAiDetailText(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return '';
+    try {
+      const data = JSON.parse(text);
+      if (typeof data?.error?.message === 'string' && data.error.message.trim()) return data.error.message;
+      if (typeof data?.error === 'string' && data.error.trim()) return data.error.trim();
+      if (typeof data?.message === 'string' && data.message.trim()) return data.message.trim();
+      if (typeof data?.detail === 'string' && data.detail.trim()) return data.detail.trim();
+    } catch {
+      // non-JSON body — fall through to the raw text
+    }
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/** Drop the optional `stream_options` block so a strict proxy no longer 400 (#575). */
+export function stripStreamOptions(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if ('stream_options' in parsed) delete parsed.stream_options;
+    return JSON.stringify(parsed);
+  } catch {
+    return body;
+  }
+}
+
+/**
  * Build a descriptive Error from a non-ok OpenAI-compatible response (#458).
  * OpenAI-compatible endpoints (OpenAI, LM Studio, vLLM, etc.) return the
  * failure reason as JSON in the body:
@@ -429,6 +465,10 @@ export function buildOpenAiChatRequest(
       messages: normalized,
       ...(format ? { response_format: openAiResponseFormat(format) } : {}),
       stream,
+      // Request usage on the final SSE frame so the tokens/sec footer can be
+      // populated (#575). Only on streaming requests — vLLM/OpenAI reject
+      // stream_options on non-streaming POSTs with a 400.
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       ...sampling,
     }),
   };
@@ -445,10 +485,20 @@ export async function streamOpenAiChat(
   onChunk: (delta: string, reasoning?: string) => void,
   options?: GenerationOptions,
   format?: StructuredOutputFormat,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onGenStats?: (stats: GenStats) => void
 ): Promise<void> {
   const { url, headers, body } = buildOpenAiChatRequest(conn, model, messages, options, format);
-  const res = await fetch(url, { method: 'POST', headers, body, signal });
+  let res = await fetch(url, { method: 'POST', headers, body, signal });
+  // A strict proxy may reject the optional stream_options field (a cosmetic
+  // usage footer) and 400 the whole request. Retry once without it so the
+  // footer never turns into "chat broken" (#575).
+  if (!res.ok && !signal?.aborted) {
+    const detail = await openAiDetailText(res);
+    if (/stream_options/i.test(detail)) {
+      res = await fetch(url, { method: 'POST', headers, body: stripStreamOptions(body), signal });
+    }
+  }
   if (!res.ok) throw await openAiErrorFromResponse(res, 'OpenAI stream error');
 
   const reader = res.body?.getReader();
@@ -456,6 +506,32 @@ export async function streamOpenAiChat(
   if (!reader) throw new Error('Response body is null');
 
   let buf = '';
+  let finishReason: string | null = null;
+  const streamStart = Date.now();
+  // Parse one SSE data line: track finish reason, emit the usage footer, and
+  // stream content deltas. Returns 'done' so callers can exit on [DONE].
+  const parse = (data: string): 'done' | 'ok' => {
+    if (data === '[DONE]') return 'done';
+    try {
+      const chunk = JSON.parse(data);
+      const first = chunk?.choices?.[0];
+      if (first?.finish_reason) finishReason = first.finish_reason;
+      // When include_usage is honoured the final frame is {choices:[], usage}.
+      if (chunk?.usage) {
+        const stats = usageToGenStats(chunk.usage, finishReason, Date.now() - streamStart);
+        if (stats) onGenStats?.(stats);
+      }
+      const d = first?.delta;
+      const delta = d?.content ?? '';
+      const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
+      if (delta) onChunk(delta);
+      if (reasoning) onChunk('', reasoning);
+    } catch {
+      // malformed SSE line — skip
+    }
+    return 'ok';
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -464,36 +540,14 @@ export async function streamOpenAiChat(
     buf = lines.pop() ?? '';
     for (const line of lines) {
       if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (data === '[DONE]') return;
-      try {
-        const chunk = JSON.parse(data);
-        const d = chunk?.choices?.[0]?.delta;
-        const delta = d?.content ?? '';
-        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
-        if (delta) onChunk(delta);
-        if (reasoning) onChunk('', reasoning);
-      } catch {
-        // malformed SSE line — skip
-      }
+      if (parse(line.slice(5).trim()) === 'done') return;
     }
   }
   // Flush any remaining buffered content after the stream ends (#466).
   if (buf.trim()) {
     const line = buf.trim();
     if (line.startsWith('data:')) {
-      const data = line.slice(5).trim();
-      if (data === '[DONE]') return;
-      try {
-        const chunk = JSON.parse(data);
-        const d = chunk?.choices?.[0]?.delta;
-        const delta = d?.content ?? '';
-        const reasoning = d?.reasoning_content ?? d?.thinking ?? '';
-        if (delta) onChunk(delta);
-        if (reasoning) onChunk('', reasoning);
-      } catch {
-        // malformed trailing SSE line — skip
-      }
+      if (parse(line.slice(5).trim()) === 'done') return;
     }
   }
 }
