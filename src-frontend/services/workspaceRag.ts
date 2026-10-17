@@ -12,7 +12,7 @@
 
 import { listDir, readFile } from './fileTools';
 import { createCollection, listCollections, deleteCollection, addFile } from './knowledge';
-import { indexCollection, retrieve, type RetrievedChunk } from './rag';
+import { indexCollection, retrieve, type RetrievedChunk, type EmbedTarget } from './rag';
 import type { DirEntry } from './fileTools';
 
 // Text file extensions to include when indexing the workspace.
@@ -77,6 +77,11 @@ async function getOrCreateWorkspaceCollection(workspaceRoot: string): Promise<st
 export interface IndexOptions {
   ollamaBaseUrl?: string;
   model?: string;
+  /** Endpoint dialect: `openai` for OpenAI-compatible servers (LLM/LLM Studio),
+   *  `ollama` (default) for native Ollama. (#572) */
+  kind?: 'ollama' | 'openai';
+  /** API key for OpenAI-compatible servers. (#572) */
+  apiKey?: string;
   /** Called with progress [0..1]. */
   onProgress?: (ratio: number) => void;
 }
@@ -104,13 +109,22 @@ export async function indexWorkspace(workspaceRoot: string, opts: IndexOptions =
     }
   }
 
-  await indexCollection(collectionId, opts);
+  await indexCollection(collectionId, {
+    ollamaBaseUrl: opts.ollamaBaseUrl,
+    embeddingModel: opts.model,
+    kind: opts.kind,
+    apiKey: opts.apiKey,
+  });
   return collectionId;
 }
 
 export interface QueryOptions {
   ollamaBaseUrl?: string;
   model?: string;
+  /** Endpoint dialect: `openai` for OpenAI-compatible servers, `ollama` (default). (#572) */
+  kind?: 'ollama' | 'openai';
+  /** API key for OpenAI-compatible servers. (#572) */
+  apiKey?: string;
 }
 
 /**
@@ -126,7 +140,12 @@ export async function queryWorkspace(
   const name = collectionName(workspaceRoot);
   const col = (await listCollections()).find(c => c.name === name);
   if (!col) return [];
-  return retrieve([col.id], query, k, opts);
+  return retrieve([col.id], query, k, {
+    ollamaBaseUrl: opts.ollamaBaseUrl,
+    embeddingModel: opts.model,
+    kind: opts.kind,
+    apiKey: opts.apiKey,
+  });
 }
 
 /** True if a workspace collection has been indexed. */
@@ -136,6 +155,16 @@ export async function isWorkspaceIndexed(workspaceRoot: string): Promise<boolean
 }
 
 // ── Agent tool registration (#94/#194) ───────────────────────────────────────
+
+/**
+ * The active connection's embed target, pushed by App whenever the selected
+ * model/connection changes. The workspace RAG agent tools read it lazily so
+ * `index_workspace` / `query_workspace` embed against the right dialect —
+ * `/v1/embeddings` for an OpenAI-compatible server, Ollama's otherwise (#572).
+ */
+let _activeEmbedTarget: EmbedTarget | null = null;
+export function setActiveEmbedTarget(target: EmbedTarget | null): void { _activeEmbedTarget = target; }
+export function getActiveEmbedTarget(): EmbedTarget | undefined { return _activeEmbedTarget ?? undefined; }
 
 /**
  * Register workspace RAG agent tools (#94/#194).
@@ -167,7 +196,13 @@ export function registerWorkspaceRagTools(): void {
           const root = getWorkspaceRoot();
           if (!root) return { error: 'No workspace root set — open a project folder first.' };
           const { model } = (args ?? {}) as { model?: string };
-          const collectionId = await indexWorkspace(root, { model });
+          const t = getActiveEmbedTarget();
+          const collectionId = await indexWorkspace(root, {
+            ollamaBaseUrl: t?.baseUrl,
+            model: model ?? t?.model,
+            kind: t?.kind,
+            apiKey: t?.apiKey,
+          });
           return { ok: true, collectionId, workspaceRoot: root };
         },
       });
@@ -188,7 +223,13 @@ export function registerWorkspaceRagTools(): void {
           const root = getWorkspaceRoot();
           if (!root) return { error: 'No workspace root set.' };
           const { query, k = 5 } = (args ?? {}) as { query: string; k?: number };
-          const chunks = await queryWorkspace(root, query, k);
+          const t = getActiveEmbedTarget();
+          const chunks = await queryWorkspace(root, query, k, {
+            ollamaBaseUrl: t?.baseUrl,
+            model: t?.model,
+            kind: t?.kind,
+            apiKey: t?.apiKey,
+          });
           if (chunks.length === 0) return { note: 'No results — run index_workspace first.', chunks: [] };
           return { chunks: chunks.map(c => ({ file: c.fileName, text: c.text })) };
         },

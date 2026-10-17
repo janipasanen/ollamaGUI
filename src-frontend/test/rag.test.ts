@@ -142,7 +142,7 @@ describe('embed error handling (#459)', () => {
       statusText: 'Internal Server Error',
       json: async () => ({ error: 'embedding model not found' }),
     }) as any;
-    await expect(embed(['hello'], 'http://x', 'nomic-embed-text')).rejects.toThrow('embedding model not found');
+    await expect(embed(['hello'], { baseUrl: 'http://x', kind: 'ollama', model: 'nomic-embed-text' })).rejects.toThrow('embedding model not found');
   });
 
   it('falls back to statusText when body has no .error (#459)', async () => {
@@ -151,7 +151,7 @@ describe('embed error handling (#459)', () => {
       statusText: 'Not Found',
       json: async () => ({ data: 42 }),
     }) as any;
-    await expect(embed(['hello'], 'http://x', 'nomic-embed-text')).rejects.toThrow('Ollama embed error: Not Found');
+    await expect(embed(['hello'], { baseUrl: 'http://x', kind: 'ollama', model: 'nomic-embed-text' })).rejects.toThrow('Ollama embed error: Not Found');
   });
 
   it('returns embeddings on success', async () => {
@@ -159,7 +159,83 @@ describe('embed error handling (#459)', () => {
       ok: true,
       json: async () => ({ embeddings: [[0.1, 0.2, 0.3]] }),
     }) as any;
-    const result = await embed(['hello'], 'http://x', 'nomic-embed-text');
+    const result = await embed(['hello'], { baseUrl: 'http://x', kind: 'ollama', model: 'nomic-embed-text' });
     expect(result).toEqual([[0.1, 0.2, 0.3]]);
+  });
+});
+
+// ── #572: provider-aware embeddings + graceful degradation ────────────────────
+
+describe('embed endpoints are provider-aware (#572)', () => {
+  let origFetch: typeof global.fetch;
+  beforeEach(() => { origFetch = global.fetch; setEmbedFn(null as any); });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('POSTs to {baseUrl}/v1/embeddings with Authorization for an OpenAI-compatible server (#572)', async () => {
+    let captured: { url: string; init: { headers: Record<string, string> } } | null = null;
+    global.fetch = vi.fn(async (url: string, init?: any) => {
+      captured = { url, init };
+      return {
+        ok: true,
+        json: async () => ({ data: [{ embedding: [0.5, 0.25] }, { embedding: [0.1, 0.9] }] }),
+      } as any;
+    }) as any;
+
+    const out = await embed(['a', 'b'], { baseUrl: 'http://vllm', kind: 'openai', apiKey: 'sekret', model: 'embed' });
+
+    expect(out).toEqual([[0.5, 0.25], [0.1, 0.9]]);
+    expect(captured!.url).toBe('http://vllm/v1/embeddings');
+    expect(captured!.init.headers.Authorization).toBe('Bearer sekret');
+  });
+
+  it('POSTs to {baseUrl}/api/embeddings for the native Ollama dialect, no auth (#572)', async () => {
+    let captured: { url: string } | null = null;
+    global.fetch = vi.fn(async (url: string) => {
+      captured = { url };
+      return { ok: true, json: async () => ({ embeddings: [[1, 2]] }) } as any;
+    }) as any;
+
+    const out = await embed(['a'], { baseUrl: 'http://localhost:11434', kind: 'ollama', model: 'nomic-embed-text' });
+
+    expect(out).toEqual([[1, 2]]);
+    expect(captured!.url).toBe('http://localhost:11434/api/embeddings');
+  });
+});
+
+describe('retrieve degrades gracefully when embedding fails (#572)', () => {
+  it('still ranks by BM25 and never throws when the embed layer rejects', async () => {
+    const db = createMemoryKnowledgeDB();
+    setKnowledgeDB(db);
+    const col = { id: 'cg', name: 'Grad', createdAt: 1, updatedAt: 1 };
+    await db.saveCollection(col);
+    await addFile(col.id, 'q.txt', 'text/plain', 30, 'neural transformer architecture');
+    await addFile(col.id, 'n.txt', 'text/plain', 30, 'random words about cats and dogs');
+
+    // Index with a working embed, then make the embed layer fail at query time.
+    setEmbedFn(fakeEmbed);
+    await indexCollection(col.id);
+    setEmbedFn(async () => { throw new Error('embedding server down'); });
+
+    const results = await retrieve([col.id], 'neural transformer', 5);
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].text).toContain('neural');
+    setEmbedFn(null as any);
+  });
+
+  it('indexCollection skips a file whose embedding throws, instead of aborting', async () => {
+    const db = createMemoryKnowledgeDB();
+    setKnowledgeDB(db);
+    const col = { id: 'ci', name: 'Deg', createdAt: 1, updatedAt: 1 };
+    await db.saveCollection(col);
+    await addFile(col.id, 'ok.txt', 'text/plain', 20, 'readable file');
+
+    setEmbedFn(async () => { throw new Error('embed unavailable'); });
+
+    await expect(indexCollection(col.id)).resolves.toBeUndefined();
+    const file = await db.getFile((await db.getFilesByCollection(col.id))[0].id);
+    // Embedding failed → no chunks were stored for the file.
+    expect(file?.chunks).toBeUndefined();
+    setEmbedFn(null as any);
   });
 });

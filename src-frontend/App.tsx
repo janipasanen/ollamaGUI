@@ -38,7 +38,7 @@ import {
 import {
   ModelConnection, ConnectedModel,
   loadConnections, saveConnections, addConnection, updateConnection, removeConnection,
-  initConnectionSecrets, migrateConnectionSecrets,
+  initConnectionSecrets, migrateConnectionSecrets, getConnectionApiKey,
   fetchAllConnectionModels, probeConnection, streamOpenAiChat,
 } from './services/connections';
 import { hasSameHostConflict, runManyModels, type ModelGroup } from './services/manyModels';
@@ -174,7 +174,7 @@ import { ConversationStatsButton } from './components/ConversationStatsButton';
 import { listCollections, createCollection, deleteCollection, addFile, removeFile, getFilesForCollection, type KnowledgeCollection, type KnowledgeFile } from './services/knowledge';
 import { loadProjectRules } from './services/projectRules';
 import { initOpenApiServers, initOpenApiServersSecrets, migrateOpenApiKeys } from './services/openapiTools';
-import { registerWorkspaceRagTools } from './services/workspaceRag';
+import { registerWorkspaceRagTools, setActiveEmbedTarget } from './services/workspaceRag';
 import { webSearch, loadWebSearchConfig, saveWebSearchConfig, formatResultsAsContext, type WebSearchConfig } from './services/websearch';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
@@ -1085,6 +1085,19 @@ const App: React.FC = () => {
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const messageQueueRef = useRef<string[]>([]);
   useEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
+
+  // #572: keep the workspace RAG embed target synced with the active model +
+  // connection so the `#` picker and index/query_workspace tools embed against
+  // the right dialect (OpenAI-compatible /v1/embeddings vs Ollama). Read from
+  // the keychain cache so no plaintext key is stored in component state.
+  useEffect(() => {
+    const cm = connectedModels.find(m => m.id === model);
+    const conn = cm ? connections.find(c => c.id === cm.connectionId) : undefined;
+    const kind = conn?.kind === 'openai' ? 'openai' : 'ollama';
+    setActiveEmbedTarget(kind === 'openai' && conn
+      ? { baseUrl: conn.baseUrl, kind, apiKey: getConnectionApiKey(conn.id), model: cm?.name }
+      : { baseUrl: conn?.baseUrl ?? ollamaBaseUrl, kind, model: cm?.name });
+  }, [model, connections, connectedModels, ollamaBaseUrl]);
 
   // Storage quota warning
   const [storageWarning, setStorageWarning] = useState(false);
@@ -6118,7 +6131,12 @@ ${lines.join('\n')}`;
                        e.preventDefault();
                        const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
                        const stripped = input.replace(/#\S*$/, '').trim();
-                       void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
+                       const connModel = connectedModels.find(m => m.id === model);
+                       const conn = connModel ? connections.find(c => c.id === connModel.connectionId) : undefined;
+                       const connApiKey = conn && conn.kind === 'openai' ? getConnectionApiKey(conn.id) : undefined;
+                       void resolveContextRef(ref, stripped, {
+                         ollamaBaseUrl, kind: conn?.kind ?? 'ollama', apiKey: connApiKey, embeddingModel: connModel?.name ?? model,
+                       }).then(sources => {
                          const block = buildContextBlock(sources);
                          if (block) setPendingContextBlocks(prev => [...prev, block]);
                        });
@@ -6309,7 +6327,12 @@ ${lines.join('\n')}`;
                      const opt = hashSuggestions[hashSelected];
                      const ref: ContextRef = { kind: opt.kind, id: opt.id, url: opt.url, label: opt.label };
                      const stripped = input.replace(/#\S*$/, '').trim();
-                     void resolveContextRef(ref, stripped, { ollamaBaseUrl }).then(sources => {
+                     const connModel = connectedModels.find(m => m.id === model);
+                     const conn = connModel ? connections.find(c => c.id === connModel.connectionId) : undefined;
+                     const connApiKey = conn && conn.kind === 'openai' ? getConnectionApiKey(conn.id) : undefined;
+                     void resolveContextRef(ref, stripped, {
+                       ollamaBaseUrl, kind: conn?.kind ?? 'ollama', apiKey: connApiKey, embeddingModel: connModel?.name ?? model,
+                     }).then(sources => {
                        const block = buildContextBlock(sources);
                        if (block) setPendingContextBlocks(prev => [...prev, block]);
                      });

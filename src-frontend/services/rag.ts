@@ -8,6 +8,7 @@
 
 import { getKnowledgeDB, type ChunkRecord } from './db';
 import { ollamaErrorFromResponse } from './ollama';
+import { formatErrorLine } from './errorMessages';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,23 +44,78 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
 
 // ── Embeddings ────────────────────────────────────────────────────────────────
 
-let _embedFn: ((texts: string[]) => Promise<number[][]>) | null = null;
+/**
+ * The endpoint dialect to embed against. Every call site (named knowledge,
+ * workspace RAG, the `#` picker) must route through this so an OpenAI-compatible
+ * server — vLLM, LM Studio, remote Ollama, … — is never sent to Ollama's
+ * `/api/embeddings` (#572).
+ *   - `openai`  → POST {baseUrl}/v1/embeddings, JSON `{ model, input }` (+ auth)
+ *   - `ollama`  → POST {baseUrl}/api/embeddings, native Ollama dialect
+ */
+export interface EmbedTarget {
+  baseUrl: string;
+  kind: 'ollama' | 'openai';
+  model?: string;
+  apiKey?: string;
+}
 
-/** Override the embed function (used in tests and when MLX is active). */
-export function setEmbedFn(fn: (texts: string[]) => Promise<number[][]>): void {
+let _embedFn: ((texts: string[], target: EmbedTarget) => Promise<number[][]>) | null = null;
+
+/** Override the embed function (used in tests and when MLX is active). The
+ *  target is forwarded so an override can be provider-aware too. */
+export function setEmbedFn(fn: (texts: string[], target: EmbedTarget) => Promise<number[][]>): void {
   _embedFn = fn;
 }
 
-export async function embed(texts: string[], ollamaBaseUrl: string, model: string): Promise<number[][]> {
-  if (_embedFn) return _embedFn(texts);
-  const response = await fetch(`${ollamaBaseUrl}/api/embed`, {
+/**
+ * Embed `texts` against the endpoint dialect described by `target`.
+ *
+ * Does not swallow failures — any network/API error is thrown so the caller
+ * can decide how to degrade (#572): `indexCollection` skips the file, `retrieve`
+ * drops the cosine term and still ranks by BM25. The `_embedFn` override may
+ * return `[]` to signal "no embeddings available" and keep the UI responsive.
+ */
+export async function embed(texts: string[], target: EmbedTarget): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  if (_embedFn) return await _embedFn(texts, target);
+  if (target.kind === 'openai') return await embedOpenAi(texts, target);
+  return await embedOllama(texts, target);
+}
+
+/** Native Ollama embed (`POST {baseUrl}/api/embeddings`). */
+async function embedOllama(texts: string[], target: EmbedTarget): Promise<number[][]> {
+  const model = target.model ?? 'nomic-embed-text';
+  const url = `${target.baseUrl.replace(/\/$/, '')}/api/embeddings`;
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input: texts }),
   });
   if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama embed error');
-  const data = await response.json();
-  return data.embeddings as number[][];
+  const data = (await response.json()) as { embeddings?: number[][]; embedding?: number[][] };
+  return data.embeddings ?? data.embedding ?? [];
+}
+
+/** OpenAI-compatible embed (`POST {baseUrl}/v1/embeddings`). Honors `apiKey`. */
+async function embedOpenAi(texts: string[], target: EmbedTarget): Promise<number[][]> {
+  const model = target.model ?? 'nomic-embed-text';
+  const url = `${target.baseUrl.replace(/\/$/, '')}/v1/embeddings`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {}),
+    },
+    body: JSON.stringify({ model, input: texts }),
+  });
+  if (!response.ok) {
+    // OpenAI-dialect servers report the reason in body.error.
+    let bodyErr: string | undefined;
+    try { bodyErr = (await response.json()).error as string | undefined; } catch { /* ignore */ }
+    throw new Error(`${response.status} ${response.statusText}${bodyErr ? `: ${bodyErr}` : ''}`);
+  }
+  const data = (await response.json()) as { data?: Array<{ embedding: number[] }> };
+  return (data.data ?? []).map((d) => d.embedding);
 }
 
 // ── BM25 ──────────────────────────────────────────────────────────────────────
@@ -116,26 +172,35 @@ function rrfFuse(rankedLists: string[][], k = 60): Map<string, number> {
 
 export async function indexCollection(
   collectionId: string,
-  opts: { ollamaBaseUrl?: string; embeddingModel?: string } & ChunkOptions = {},
+  opts: { ollamaBaseUrl?: string; embeddingModel?: string; kind?: EmbedTarget['kind']; apiKey?: string } & ChunkOptions = {},
 ): Promise<void> {
   const {
     ollamaBaseUrl = 'http://localhost:11434',
     embeddingModel = 'nomic-embed-text',
+    kind = 'ollama',
+    apiKey,
     ...chunkOpts
   } = opts;
   const db = await getKnowledgeDB();
   const files = await db.getFilesByCollection(collectionId);
+  const target: EmbedTarget = { baseUrl: ollamaBaseUrl, kind, model: embeddingModel, apiKey };
   for (const file of files) {
     if (!file.text) continue;
-    const texts = chunkText(file.text, chunkOpts);
-    const embeddings = await embed(texts, ollamaBaseUrl, embeddingModel);
-    const chunks: ChunkRecord[] = texts.map((text, i) => ({
-      index: i,
-      text,
-      embedding: embeddings[i],
-      tf: computeTf(tokenize(text)),
-    }));
-    await db.putFile({ ...file, chunks });
+    try {
+      const texts = chunkText(file.text, chunkOpts);
+      const embeddings = await embed(texts, target);
+      const chunks: ChunkRecord[] = texts.map((text, i) => ({
+        index: i,
+        text,
+        embedding: embeddings[i],
+        tf: computeTf(tokenize(text)),
+      }));
+      await db.putFile({ ...file, chunks });
+    } catch (err) {
+      // #572: if embedding is unavailable, skip this file rather than aborting
+      // the whole collection — already-indexed files keep working.
+      console.error('indexCollection: embedding failed, skipping file:', formatErrorLine(err, kind === 'openai' ? 'openai-compatible' : 'ollama', { label: ollamaBaseUrl, baseUrl: ollamaBaseUrl }));
+    }
   }
 }
 
@@ -145,16 +210,27 @@ export async function retrieve(
   collectionIds: string[],
   query: string,
   k = 5,
-  opts: { ollamaBaseUrl?: string; embeddingModel?: string } = {},
+  opts: { ollamaBaseUrl?: string; embeddingModel?: string; kind?: EmbedTarget['kind']; apiKey?: string } = {},
 ): Promise<RetrievedChunk[]> {
   const {
     ollamaBaseUrl = 'http://localhost:11434',
     embeddingModel = 'nomic-embed-text',
+    kind = 'ollama',
+    apiKey,
   } = opts;
 
   const db = await getKnowledgeDB();
   const queryTokens = tokenize(query);
-  const [queryEmb] = await embed([query], ollamaBaseUrl, embeddingModel);
+
+  // #572: degrade gracefully — if embedding fails, drop the cosine term and
+  // keep BM25 ranking rather than crashing the chat.
+  let queryEmb: number[] | undefined;
+  try {
+    const [emb] = await embed([query], { baseUrl: ollamaBaseUrl, kind, model: embeddingModel, apiKey });
+    queryEmb = emb;
+  } catch (err) {
+    console.error('retrieve: embedding failed, falling back to BM25:', formatErrorLine(err, kind === 'openai' ? 'openai-compatible' : 'ollama', { label: ollamaBaseUrl, baseUrl: ollamaBaseUrl }));
+  }
 
   // Collect all indexed chunks across all collections
   const allChunks: Array<{

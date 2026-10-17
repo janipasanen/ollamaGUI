@@ -89,7 +89,7 @@ export async function getAutocompleteOptions(query: string): Promise<Autocomplet
 export async function resolveContextRef(
   ref: ContextRef,
   query: string,
-  opts: { ollamaBaseUrl?: string; embeddingModel?: string; k?: number } = {},
+  opts: { ollamaBaseUrl?: string; embeddingModel?: string; kind?: 'ollama' | 'openai'; apiKey?: string; k?: number } = {},
 ): Promise<ResolvedSource[]> {
   const { k = 5 } = opts;
 
@@ -105,6 +105,8 @@ export async function resolveContextRef(
   }
 
   if (ref.kind === 'collection' && ref.id) {
+    // #572: route retrieval through the selected connection's dialect so an
+    // OpenAI-compatible server is never sent to Ollama's `/api/embeddings`.
     const chunks: RetrievedChunk[] = await retrieve([ref.id], query, k, opts);
     return chunks.map(c => ({
       id: `chunk:${c.fileId}:${c.chunkIndex}`,
