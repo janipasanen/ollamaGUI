@@ -19,17 +19,6 @@ import os from 'node:os';
 // vitest 4 flattened `poolOptions.forks.{maxForks,minForks}` (the 2.x shape) into
 // a single top-level `maxWorkers` (there is no minWorkers counterpart). Keep this
 // in sync if the installed major version changes again.
-//
-// `npm test` loads this config with vite's *native* loader instead of the
-// default rolldown bundling. On Windows rolldown fails to resolve the config's
-// own absolute path and aborts with
-//
-//     [UNRESOLVED_ENTRY] Cannot resolve entry module D:\a\...\vite.config.ts
-//
-// before a single test is collected (upstream: rolldown/rolldown#10798, still
-// open). The native loader hands the file straight to Node, which needs
-// `--experimental-strip-types` below Node 22.18 — hence the explicit flag in
-// the `test` script. Drop both once #10798 is fixed.
 const cpuCount = os.cpus()?.length ?? 4;
 const maxWorkers = Math.max(
   1,
