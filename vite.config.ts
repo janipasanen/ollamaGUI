@@ -20,15 +20,16 @@ import os from 'node:os';
 // a single top-level `maxWorkers` (there is no minWorkers counterpart). Keep this
 // in sync if the installed major version changes again.
 //
-// The `test` script passes `--configLoader runner` on every platform: vite 8
-// bundles this config with rolldown, and on Windows rolldown cannot resolve the
-// config's own absolute path, aborting with
+// `npm test` loads this config with vite's *native* loader instead of the
+// default rolldown bundling. On Windows rolldown fails to resolve the config's
+// own absolute path and aborts with
 //
 //     [UNRESOLVED_ENTRY] Cannot resolve entry module D:\a\...\vite.config.ts
 //
-// before a single test is collected (upstream: rolldown/rolldown#10798, open as
-// of 1e276e9). vite's `runner` loader skips that bundling step. Drop the flag —
-// here and in the `test` script — once #10798 is fixed.
+// before a single test is collected (upstream: rolldown/rolldown#10798, still
+// open). The native loader hands the file straight to Node, which needs
+// `--experimental-strip-types` below Node 22.18 — hence the explicit flag in
+// the `test` script. Drop both once #10798 is fixed.
 const cpuCount = os.cpus()?.length ?? 4;
 const maxWorkers = Math.max(
   1,
