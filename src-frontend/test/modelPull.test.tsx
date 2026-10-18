@@ -65,7 +65,9 @@ describe('Model pull UI (#238)', () => {
     fireEvent.click(downloadBtn);
     await waitFor(() => expect(screen.getByText(/Error pulling/i)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
-  }, 15000);
+    // Render + pull + polling under a loaded runner: keep the repo-wide 30s
+    // budget (vite.config.ts) instead of a tighter local one.
+  }, 30_000);
 
   it('updates progress text and disables the pull button while pulling', async () => {
     global.fetch = makeFetch({ models: [] }) as any;
@@ -76,5 +78,6 @@ describe('Model pull UI (#238)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pull$/i }));
     // While/after pulling, a progress line referencing the model appears.
     await waitFor(() => expect(screen.getByText(/Pull complete: llama3.2:1b/i)).toBeInTheDocument());
-  }, 15000);
+    // Same 30s budget: this one flaked at 15s on a fully loaded suite.
+  }, 30_000);
 });
