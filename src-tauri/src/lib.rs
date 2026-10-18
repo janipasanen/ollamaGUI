@@ -18,6 +18,7 @@ mod document_convert; // #140 tiered converter + LibreOffice detection
 mod odf; // #142 ODF edit (mimetype-stored-first)
 mod ooxml; // #141 OOXML template-fill + surgical edit
 mod pdf_tools; // #143 PDF info/merge/split surface
+mod sandbox; // #661 workspace path sandbox (symlink-safe)
 
 #[derive(Serialize)]
 struct CliOutput {
@@ -1234,42 +1235,12 @@ struct FsDirEntry {
 
 /// Resolve `path` and verify it is inside the workspace root.
 /// Returns the canonical absolute path on success.
+///
+/// Delegates to [`sandbox::resolve_in_roots`], which resolves symlinks before the
+/// containment check (#661).
 fn resolve_workspace_path(path: &str) -> Result<PathBuf, String> {
     let roots = WORKSPACE_ROOTS.lock().map_err(|e| e.to_string())?;
-    let primary = roots
-        .first()
-        .ok_or_else(|| "No workspace root set. Call set_workspace_root first.".to_string())?;
-    let candidate = PathBuf::from(path);
-    // Resolve to absolute; the file doesn't have to exist yet for writes.
-    // Relative paths are interpreted against the primary root.
-    let abs = if candidate.is_absolute() {
-        candidate.clone()
-    } else {
-        primary.join(&candidate)
-    };
-    // Normalize without requiring existence (for new files)
-    let normalized = normalize_path(&abs);
-    // A project may span several repositories (#492): accept any configured root.
-    if !roots.iter().any(|r| normalized.starts_with(r)) {
-        return Err(format!("Path '{}' is outside the workspace root(s).", path));
-    }
-    Ok(normalized)
-}
-
-/// Lexically normalize a path (resolve `..` without hitting the filesystem).
-fn normalize_path(path: &std::path::Path) -> PathBuf {
-    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
-    for component in path.components() {
-        use std::path::Component::*;
-        match component {
-            ParentDir => {
-                parts.pop();
-            }
-            CurDir => {}
-            c => parts.push(c.as_os_str()),
-        }
-    }
-    parts.iter().collect()
+    sandbox::resolve_in_roots(&roots, path)
 }
 
 #[tauri::command]
