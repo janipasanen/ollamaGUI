@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '../App';
 import { storage, type ChatSession, type Project } from '../services/storage';
 import { _mocks as fileMocks } from '../services/fileTools';
@@ -148,9 +148,10 @@ describe('Send on Ctrl+Enter option (#374)', () => {
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: 'hello' } });
     fireEvent.keyDown(composer, { key: 'Enter' });
-    // The message should be sent — check that the composer is cleared or a user message appears
+    // The message should be sent — the transcript now carries it. Scoped to the
+    // transcript because the same text also becomes the new session's title.
     await waitFor(() => {
-      expect(screen.getByText('hello')).toBeInTheDocument();
+      expect(within(screen.getByTestId('messages-container')).getByText('hello')).toBeInTheDocument();
     });
   });
 
@@ -177,7 +178,7 @@ describe('Send on Ctrl+Enter option (#374)', () => {
     fireEvent.keyDown(composer, { key: 'Enter', ctrlKey: true });
 
     await waitFor(() => {
-      expect(screen.getByText('test message')).toBeInTheDocument();
+      expect(within(screen.getByTestId('messages-container')).getByText('test message')).toBeInTheDocument();
     });
   });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '../App';
 
 let origFetch: typeof global.fetch;
@@ -60,8 +60,12 @@ describe('Multi-line composer (#259)', () => {
     const composer = screen.getByPlaceholderText('Message Ollama...') as HTMLTextAreaElement;
     fireEvent.change(composer, { target: { value: 'Hello' } });
     fireEvent.keyDown(composer, { key: 'Enter' });
-    // The user message is added to the chat immediately on send.
-    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument(), { timeout: 3000 });
+    // The user message is added to the chat immediately on send. Scope the query
+    // to the transcript: the same text is also the new session's sidebar title.
+    await waitFor(
+      () => expect(within(screen.getByTestId('messages-container')).getByText('Hello')).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
   });
 
   it('preserves a multi-line value typed into the composer', () => {
