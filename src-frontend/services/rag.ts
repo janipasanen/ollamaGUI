@@ -9,6 +9,7 @@
 import { getKnowledgeDB, type ChunkRecord } from './db';
 import { ollamaErrorFromResponse } from './ollama';
 import { formatErrorLine } from './errorMessages';
+import { PROVIDER_TIMEOUTS, timeoutSignal } from './net';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,7 @@ async function embedOllama(texts: string[], target: EmbedTarget): Promise<number
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, input: texts }),
+    signal: timeoutSignal(PROVIDER_TIMEOUTS.embeddings),
   });
   if (!response.ok) throw await ollamaErrorFromResponse(response, 'Ollama embed error');
   const data = (await response.json()) as { embeddings?: number[][]; embedding?: number[][] };
@@ -107,6 +109,7 @@ async function embedOpenAi(texts: string[], target: EmbedTarget): Promise<number
       ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {}),
     },
     body: JSON.stringify({ model, input: texts }),
+    signal: timeoutSignal(PROVIDER_TIMEOUTS.embeddings),
   });
   if (!response.ok) {
     // OpenAI-dialect servers report the reason in body.error.

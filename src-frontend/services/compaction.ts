@@ -11,6 +11,7 @@
 
 import { ollamaErrorFromResponse, type Message } from './ollama';
 import { openAiErrorFromResponse, type ModelConnection } from './connections';
+import { PROVIDER_TIMEOUTS, timeoutSignal } from './net';
 
 export interface CompactionOptions {
   /** Characters-per-token estimate for the heuristic (default 4). */
@@ -108,6 +109,7 @@ export function makeSummarizeFn(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.compaction),
     });
     if (!resp.ok) throw await ollamaErrorFromResponse(resp, 'Summarize failed');
     const data = await resp.json();
@@ -146,6 +148,7 @@ export function makeOpenAiSummarizeFn(
         ],
         stream: false,
       }),
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.compaction),
     });
     if (!resp.ok) throw await openAiErrorFromResponse(resp, 'Summarize failed');
     const data = await resp.json() as any;

@@ -5,6 +5,7 @@
  */
 import { toolRegistry, type ToolDefinition } from './tools';
 import { secretStore } from './secretStore';
+import { PROVIDER_TIMEOUTS, timeoutSignal } from './net';
 
 const STORAGE_KEY = 'openapi_servers';
 
@@ -181,7 +182,11 @@ export function operationToToolDefinition(
     }
 
     // Tauri unavailable — fallback to fetch (browser dev mode)
-    const opts: RequestInit = { method: method.toUpperCase(), headers };
+    const opts: RequestInit = {
+      method: method.toUpperCase(),
+      headers,
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.toolCall),
+    };
     if (body) opts.body = body;
     const r = await fetch(url, opts);
     const text = await r.text();
@@ -243,7 +248,10 @@ export async function fetchOpenApiSpec(url: string, apiKey?: string, apiKeyHeade
     try { return JSON.parse(res.body) as OASpec; }
     catch { throw new Error(`OpenAPI spec at ${url} returned non-JSON response: ${res.body.slice(0, 200)}`); }
   } catch {
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, {
+      headers,
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.specFetch),
+    });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);

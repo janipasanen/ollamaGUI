@@ -4,6 +4,7 @@
  * Generated images are base64-encoded PNGs ready for the existing image path.
  */
 import { secretStore } from './secretStore';
+import { PROVIDER_TIMEOUTS, timeoutSignal } from './net';
 
 const STORAGE_KEY = 'imagegen_config';
 
@@ -142,7 +143,12 @@ async function httpRequest(
     }) as { success: boolean; status: number; body: string };
     return { status: res.status, body: res.body };
   } catch {
-    const res = await fetch(url, { method, headers: hdrs, body });
+    const res = await fetch(url, {
+      method,
+      headers: hdrs,
+      body,
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.imageGeneration),
+    });
     return { status: res.status, body: await res.text() };
   }
 }
@@ -159,7 +165,7 @@ async function httpGetBase64(url: string): Promise<{ status: number; base64: str
     const res = await invoke('http_get_binary', { url }) as { success: boolean; status: number; body_base64: string };
     return { status: res.status, base64: res.body_base64 };
   } catch {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: timeoutSignal(PROVIDER_TIMEOUTS.imageDownload) });
     const blob = await resp.blob();
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();

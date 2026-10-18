@@ -7,6 +7,9 @@
  * Recording uses the browser's MediaRecorder API; the injectable _setRecordFn
  * seam lets tests substitute a mock without requiring a real microphone.
  */
+
+import { PROVIDER_TIMEOUTS, timeoutSignal } from './net';
+
 const STORAGE_KEY = 'stt_config';
 
 export interface SttConfig {
@@ -104,7 +107,11 @@ export async function transcribeBlob(blob: Blob, cfg?: SttConfig): Promise<strin
   form.append('response_format', 'json');
   if (config.language !== 'auto') form.append('language', config.language);
 
-  const res = await fetch(`${base}/inference`, { method: 'POST', body: form });
+  const res = await fetch(`${base}/inference`, {
+    method: 'POST',
+    body: form,
+    signal: timeoutSignal(PROVIDER_TIMEOUTS.sttInference),
+  });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -133,7 +140,9 @@ export async function dictate(cfg?: SttConfig): Promise<string> {
 export async function checkWhisperAvailable(cfg?: SttConfig): Promise<boolean> {
   const config = cfg ?? loadSttConfig();
   try {
-    const res = await fetch(`${config.whisperUrl.replace(/\/$/, '')}/`);
+    const res = await fetch(`${config.whisperUrl.replace(/\/$/, '')}/`, {
+      signal: timeoutSignal(PROVIDER_TIMEOUTS.sttProbe),
+    });
     return res.ok || res.status === 404; // 404 at root still means server is running
   } catch {
     return false;

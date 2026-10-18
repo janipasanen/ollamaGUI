@@ -433,7 +433,17 @@ async fn mcp_http_request(request: McpHttpRequest) -> Result<McpHttpResponse, St
     let client = {
         let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
         if client_guard.is_none() {
-            *client_guard = Some(Client::new());
+            // Provider/JSON-RPC calls routed from the frontend land here (#663).
+            // Client::new() has no timeout at all, so a stalled endpoint held the
+            // promise (and the feature) open forever. 120s is generous enough for
+            // a slow image generation and still bounded.
+            *client_guard = Some(
+                Client::builder()
+                    .timeout(Duration::from_secs(120))
+                    .connect_timeout(Duration::from_secs(10))
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
         }
         client_guard.as_ref().unwrap().clone()
     };
