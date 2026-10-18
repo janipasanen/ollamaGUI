@@ -2610,7 +2610,13 @@ const App: React.FC = () => {
   const saveCurrentSession = (currentMessages: Message[], bs?: BranchState) => {
     if (isTemporary) return; // temporary chats are never written to storage
     const activeBranchState = bs ?? branchState;
-    if (currentSessionId === null) {
+    // #666: read the id from the ref, not the captured state. A single send can
+    // run two saves in one tick (React StrictMode double-invokes state updaters,
+    // and the stream's callbacks each save inside theirs), and both closures saw
+    // `currentSessionId === null` — minting two sessions with the same title, one
+    // of them orphaned in the sidebar with a duplicated reply.
+    const sessionId = currentSessionId ?? currentSessionIdRef.current;
+    if (sessionId === null) {
       const newSession: ChatSession = {
         id: Date.now().toString(),
         title: generateTitle(currentMessages),
@@ -2622,6 +2628,9 @@ const App: React.FC = () => {
       };
       const result = storage.saveSession(newSession);
       if (result.ok === false && result.error === 'quota') setStorageWarning(true);
+      // Set both synchronously so a second save in the same tick takes the
+      // update path instead of minting a sibling session.
+      currentSessionIdRef.current = newSession.id;
       setCurrentSessionId(newSession.id);
       // #592: an in-flight run that started in an empty session adopts the
       // freshly minted id so its stream callbacks keep "owning" it.
@@ -2629,7 +2638,7 @@ const App: React.FC = () => {
       if (owner && owner.sessionId == null) owner.sessionId = newSession.id;
       setSessions(storage.getSessions());
     } else {
-      const session = storage.getSessions().find(s => s.id === currentSessionId);
+      const session = storage.getSessions().find(s => s.id === sessionId);
       if (session) {
         const result = storage.saveSession({ ...session, messages: currentMessages, branchState: activeBranchState });
         if (result.ok === false && result.error === 'quota') setStorageWarning(true);
