@@ -15,10 +15,13 @@ mod browser_engine; // #73 chromiumoxide CDP automation engine
 mod browser_preview; // #72 native-preview webview (Tauri unstable add_child)
 mod config_validation; // #66 config-invariant tests
 mod document_convert; // #140 tiered converter + LibreOffice detection
+mod http_bounds; // #662 HTTP body byte caps
 mod odf; // #142 ODF edit (mimetype-stored-first)
 mod ooxml; // #141 OOXML template-fill + surgical edit
 mod pdf_tools; // #143 PDF info/merge/split surface
 mod sandbox; // #661 workspace path sandbox (symlink-safe)
+
+use http_bounds::{append_capped, FETCH_URL_MAX_BYTES, HTTP_BINARY_MAX_BYTES};
 
 #[derive(Serialize)]
 struct CliOutput {
@@ -503,16 +506,21 @@ fn bytes_to_base64(bytes: &[u8]) -> String {
 
 #[tauri::command]
 async fn http_get_binary(url: String) -> Result<HttpBinaryResponse, String> {
-    let client = {
-        let mut client_guard = MCP_HTTP_CLIENT.lock().map_err(|e| e.to_string())?;
-        if client_guard.is_none() {
-            *client_guard = Some(Client::new());
-        }
-        client_guard.as_ref().unwrap().clone()
-    };
-    let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    // A dedicated client: MCP_HTTP_CLIENT is shared with JSON-RPC calls and has
+    // no timeout, which let a stalled image endpoint hang the caller forever.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let status = response.status();
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    // Stream with a cap instead of `response.bytes()` (#662): a runaway body used
+    // to be buffered whole, then base64-encoded on top of it.
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        append_capped(&mut bytes, &chunk, HTTP_BINARY_MAX_BYTES)?;
+    }
     Ok(HttpBinaryResponse {
         success: status.is_success(),
         status: status.as_u16(),
@@ -2170,9 +2178,18 @@ async fn fetch_url(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let final_url = resp.url().to_string();
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    // Read with a byte cap instead of `resp.text()`: the previous code buffered
+    // the whole body and only then applied `max_chars` (#662). Exceeding the cap
+    // truncates, which is the documented behaviour of this command anyway.
+    let mut raw: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if append_capped(&mut raw, &chunk, FETCH_URL_MAX_BYTES).is_err() {
+            break;
+        }
+    }
+    let body = String::from_utf8_lossy(&raw).into_owned();
 
     let title = extract_html_title(&body).unwrap_or_else(|| final_url.clone());
     let text: String = strip_html_tags(&body).chars().take(max).collect();
