@@ -46,7 +46,11 @@ pub fn ooxml_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_string();
+        // zip 9 returns the decoded name as a fallible `Cow<str>`.
+        let name = entry
+            .name()
+            .map_err(|e| format!("zip name {i}: {e}"))?
+            .to_string();
         let mut data = Vec::with_capacity(entry.size() as usize);
         entry
             .read_to_end(&mut data)

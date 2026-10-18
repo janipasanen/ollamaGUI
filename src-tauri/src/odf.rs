@@ -64,7 +64,11 @@ pub fn odf_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_string();
+        // zip 9 returns the decoded name as a fallible `Cow<str>`.
+        let name = entry
+            .name()
+            .map_err(|e| format!("Failed to decode entry name {i}: {e}"))?
+            .to_string();
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry
             .read_to_end(&mut buf)
@@ -428,7 +432,7 @@ mod tests {
         let mut out = Vec::new();
         for i in 0..zip.len() {
             let e = zip.by_index(i).unwrap();
-            out.push((e.name().to_string(), e.compression()));
+            out.push((e.name().unwrap().to_string(), e.compression()));
         }
         out
     }

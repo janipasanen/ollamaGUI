@@ -20,6 +20,10 @@
 # gate still surfaces them, but they do not fail the build (no exploit path in
 # our usage: glib's unsound `VariantStrIter` comes via the GTK3 bindings we
 # never call directly; anyhow's `Error::downcast_mut` is never used).
+#
+# The only ignored *vulnerability-range* entries are the three `zip` extraction
+# advisories below, and only because the single affected copy (8.6.0, pinned by
+# calamine) never calls the vulnerable API. See the note next to them.
 
 [advisories]
 ignore = [
@@ -58,4 +62,16 @@ ignore = [
     # `ttf-parser` — unmaintained (RUSTSEC-2026-0192). Transitive via `lopdf`
     # font helpers. Informational only.
     "RUSTSEC-2026-0192",
+
+    # `zip` 8.6.0 — the copy calamine 0.36.1 pins. All three advisories describe
+    # the *extraction* API (`ZipArchive::extract` / `ZipStreamReader::extract`:
+    # symlink escape, SUID/SGID preservation, permissions applied through
+    # symlinks). calamine only ever opens the archive and reads entries
+    # (`ZipArchive::new`, `by_index`/`by_name`) — it never extracts to disk, so
+    # none of the three is reachable through it. Our own zip usage lives on the
+    # direct `zip = "9"` dependency, which is fixed. calamine's master branch
+    # already requires zip 9.x, so drop these ignores once 0.37 ships.
+    "RUSTSEC-2026-0367", # zip: SUID/SGID bits preserved during extraction
+    "RUSTSEC-2026-0368", # zip: extract() symlink targets outside destination
+    "RUSTSEC-2026-0369", # zip: extract() applies Unix permissions through symlinks
 ]
