@@ -397,7 +397,7 @@ const CodeBlock: React.FC<{ lang: string; code: string; dark: boolean; props: an
 function highlightChildren(children: React.ReactNode, query: string): React.ReactNode {
   if (!query || !query.trim()) return children;
   const q = query.trim();
-  const re = new RegExp(`(${q.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
   const process = (node: React.ReactNode): React.ReactNode => {
     if (typeof node === 'string') {
       const parts = node.split(re);
@@ -433,7 +433,7 @@ export const MarkdownMessage: React.FC<{ content: string; dark: boolean; onToggl
         h2({ children, ...rest }: any) { return <h2 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h2>; },
         h3({ children, ...rest }: any) { return <h3 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h3>; },
         h4({ children, ...rest }: any) { return <h4 {...rest}>{highlightQuery ? highlightChildren(children, highlightQuery) : children}</h4>; },
-        code({ node, inline, className, children, ...props }: any) {
+        code({ inline, className, children, ...props }: any) {
           const lang = (className || '').replace('language-', '') || 'text';
           const code = String(children).replace(/\n$/, '');
           if (!inline) {
@@ -1207,7 +1207,7 @@ const App: React.FC = () => {
     });
   };
 
-  const url = (path: string) => `${ollamaBaseUrl}${path}`;
+  const url = useCallback((path: string) => `${ollamaBaseUrl}${path}`, [ollamaBaseUrl]);
 
   // User-specified Ollama Cloud model names (#485). The cloud catalogue changes
   // faster than this app ships and Ollama exposes no "list all cloud models"
@@ -1233,7 +1233,7 @@ const App: React.FC = () => {
       .then(r => setRunningModels(new Set(r.map(m => m.name))))
       .catch(() => {});
    return combined;
- }, [ollamaBaseUrl]);
+  }, [url]);
 
   /** Add a user-specified cloud model name and refresh the selector (#485). */
   const addCustomCloudModel = useCallback(() => {
@@ -1324,7 +1324,7 @@ const App: React.FC = () => {
         .catch(() => {});
     }, 30_000);
     return () => clearInterval(id);
-  }, [ollamaBaseUrl]);
+  }, [ollamaBaseUrl, url]);
 
   useEffect(() => {
     async function loadInitialData() {
@@ -1713,6 +1713,8 @@ const App: React.FC = () => {
       }
     }
     loadInitialData();
+    // Mount-only: register tools once and load initial data on first render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Cleanup diff review and browser approval callbacks on unmount (#185, #193)
@@ -2164,7 +2166,9 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions, promptPreview, pendingToolApproval, pendingApproval, pendingPlanApproval]);
+    // Persistent listener; stable deps listed, the churny callbacks are omitted to avoid re-subscribing on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startNewChat, isSettingsOpen, showHelp, chatSearchOpen, paletteOpen, isLoading, messages, toggleTheme, scrollToBottom, currentSessionId, sessions, promptPreview, pendingToolApproval, pendingApproval, pendingPlanApproval, adjustFontScale, fontScale, lightboxImage]);
 
   // Keyboard shortcuts for the CLI approval modal (#361) — Enter = Allow Once,
   // Escape = Deny, A = Always Allow.
@@ -2261,7 +2265,7 @@ const App: React.FC = () => {
 
   // Pre-fill the Add-server form from a catalog preset (or one of its variants),
   // then open it for editing.
-  const useMcpPreset = (preset: McpServerPreset, variant?: McpPresetVariant) => {
+  const applyMcpPreset = (preset: McpServerPreset, variant?: McpPresetVariant) => {
     const src = variant ?? preset;
     setNewMcpServer({
       name: variant ? `${preset.name} (${variant.label})` : preset.name,
@@ -2433,6 +2437,8 @@ const App: React.FC = () => {
       }
       loadSession(filteredSessions[nextIdx]);
     };
+    // Ref-update effect; loadSession is derived from the listed deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredSessions, currentSessionId]);
 
   // ─── Organization actions (#133) ─────────────────────────────────────────
@@ -6737,7 +6743,7 @@ ${lines.join('\n')}`;
             )}
             <div className="flex gap-4">
               <button
-                onClick={() => { voiceCallHandleRef.current?.mute ? (voiceCallHandleRef.current.muted ? voiceCallHandleRef.current.unmute() : voiceCallHandleRef.current.mute()) : null; }}
+                onClick={() => voiceCallHandleRef.current?.mute ? (voiceCallHandleRef.current.muted ? voiceCallHandleRef.current.unmute() : voiceCallHandleRef.current.mute()) : null}
                 className="px-5 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-semibold"
               >
                 {voiceCallHandleRef.current?.muted ? 'Unmute' : 'Mute'}
@@ -7582,7 +7588,7 @@ ${lines.join('\n')}`;
                               <div className={`text-[10px] mt-0.5 truncate ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{preset.description}</div>
                             </div>
                             <button
-                              onClick={() => useMcpPreset(preset)}
+                              onClick={() => applyMcpPreset(preset)}
                               aria-label={`Use ${preset.name} preset`}
                               className="shrink-0 text-xs px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-colors"
                             >
@@ -7594,7 +7600,7 @@ ${lines.join('\n')}`;
                               {preset.variants.map(v => (
                                 <button
                                   key={v.label}
-                                  onClick={() => useMcpPreset(preset, v)}
+                                  onClick={() => applyMcpPreset(preset, v)}
                                   aria-label={`Use ${preset.name} variant ${v.label}`}
                                   className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
                                     v.deprecated
@@ -8066,7 +8072,7 @@ ${lines.join('\n')}`;
                         <button onClick={() => {
                           if (!newCustomTool.name.trim()) return;
                           let props: Record<string, { type: string; description: string }> = {};
-                          try { props = JSON.parse(newCustomTool.paramsJson); } catch {}
+                          try { props = JSON.parse(newCustomTool.paramsJson); } catch { /* invalid JSON — keep empty params */ }
                           addCustomTool({ name: newCustomTool.name.trim(), description: newCustomTool.description.trim(), parameters: { type: 'object', properties: props }, code: newCustomTool.code, enabled: true });
                           setCustomTools(loadCustomTools());
                           setNewCustomTool({ name: '', description: '', code: 'return { result: params.input };', paramsJson: '{"input":{"type":"string","description":"Input"}}' });

@@ -171,7 +171,7 @@ export function operationToToolDefinition(
         request: { method: method.toUpperCase(), url, headers, body },
       }) as { success: boolean; status: number; body: string };
       tauriAvailable = true;
-    } catch (e: any) {
+    } catch {
       /* fall through to fetch fallback */
     }
 

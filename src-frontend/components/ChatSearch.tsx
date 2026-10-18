@@ -51,7 +51,7 @@ export const ChatSearch: React.FC<ChatSearchProps> = ({
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? onPrev() : onNext(); }
+          if (e.key === 'Enter') { e.preventDefault(); if (e.shiftKey) onPrev(); else onNext(); }
           else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
         }}
         placeholder="Find in chat…"

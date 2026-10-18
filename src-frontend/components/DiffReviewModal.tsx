@@ -16,7 +16,7 @@ export const DiffReviewModal: React.FC<DiffReviewModalProps> = ({ edit, dark, on
   const [copiedDiff, setCopiedDiff] = React.useState(false);
 
   // Keep the accepted array in sync if the edit changes (new proposal).
-  React.useEffect(() => { setAccepted(hunks.map(() => true)); }, [hunks.length]);
+  React.useEffect(() => { setAccepted(hunks.map(() => true)); }, [hunks]);
 
   const lineToHunk = React.useMemo(() => {
     const m = new Map<number, number>();

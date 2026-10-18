@@ -45,7 +45,7 @@ function TerminalSessionView({ session, dark }: { session: TerminalSession; dark
       setLines(prev => [...prev, line]);
     });
     return unsub;
-  }, [session.id]);
+  }, [session.id, session.lines]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });

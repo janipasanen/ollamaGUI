@@ -81,7 +81,6 @@ export async function compactConversation(
   const summaryMsg: Message & { compacted?: boolean } = {
     role: 'system',
     content: `[Conversation summary — earlier messages compacted]\n${summary}`,
-    // @ts-ignore custom field for UI rendering
     compacted: true,
   };
 

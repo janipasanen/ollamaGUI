@@ -188,7 +188,7 @@ class OpenStore {
   }
 
   toggle(id: string): void {
-    this.isOpen(id) ? this.close(id) : this.open(id);
+    if (this.isOpen(id)) this.close(id); else this.open(id);
   }
 
   setDockWidth(px: number): void {
@@ -384,6 +384,8 @@ export function PanelShell({ children, dark, isMobile: isMobileProp }: PanelShel
     window.removeEventListener('pointerup', onBottomDividerUp);
     window.removeEventListener('mousemove', onBottomDividerMove);
     window.removeEventListener('mouseup', onBottomDividerUp);
+    // Unmount-only cleanup; the detachers are captured closures.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // On mobile, an open side panel overlays full-width and hides the chat column.

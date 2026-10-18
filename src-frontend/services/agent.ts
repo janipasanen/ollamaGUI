@@ -274,7 +274,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
 
   let iteration = 0;
   let hitMaxIterations = false;
-  let currentMessages = [...messages];
+  const currentMessages = [...messages];
 
   while (iteration < maxIterations) {
     // Check abort at the top of every iteration so the Stop button works.
@@ -368,7 +368,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       const assistantReasoning = turn.reasoning;
       const toolCalls = turn.toolCalls;
       const hasToolCalls = turn.hasToolCalls;
-      let turnStats: GenStats | undefined = turn.stats;
+      const turnStats: GenStats | undefined = turn.stats;
 
       // If we have tool calls, execute them and continue the loop
       if (hasToolCalls && toolCalls.length > 0) {

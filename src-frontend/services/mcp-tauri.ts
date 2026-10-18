@@ -129,7 +129,7 @@ export class TauriMcpStdioTransport {
   static async checkProcessAlive(sessionId: string): Promise<boolean> {
     try {
       return await invoke('mcp_stdio_check', { sessionId }) as boolean;
-    } catch (error) {
+    } catch {
       return false;
     }
   }

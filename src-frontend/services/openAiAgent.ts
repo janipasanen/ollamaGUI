@@ -320,7 +320,7 @@ export async function* openAiAgenticChatStream(opts: OpenAiAgenticOptions): Asyn
   // message to the nearest preceding unanswered call by `tool_call_id`, drops
   // orphans, and stringifies object args — so a reloaded session replays
   // without the "unmatched tool_call_id" 400 on strict servers (#579).
-  let openaiMessages = normalizeOpenAiHistory(messages);
+  const openaiMessages = normalizeOpenAiHistory(messages);
 
   // Available tools (the registry already emits the OpenAI shape).
   const allTools = toolRegistry.getOllamaToolDefinitions();
