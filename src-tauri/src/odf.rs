@@ -55,6 +55,9 @@ pub fn odf_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut zip = ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| format!("Not a valid ODF/zip archive: {e}"))?;
     let mut parts = Vec::with_capacity(zip.len());
+    // Decompressed total, not the archive size, is what can exhaust memory
+    // (#665) — a small ODF can declare gigabytes of content.
+    let mut total: u64 = 0;
     for i in 0..zip.len() {
         let mut entry = zip
             .by_index(i)
@@ -69,6 +72,12 @@ pub fn odf_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             .name()
             .map_err(|e| format!("Failed to decode entry name {i}: {e}"))?
             .to_string();
+        total = crate::file_limits::check_decompressed_total(
+            total,
+            entry.size(),
+            crate::file_limits::DECOMPRESSED_MAX_BYTES,
+        )
+        .map_err(|e| format!("Entry '{name}': {e}"))?;
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry
             .read_to_end(&mut buf)

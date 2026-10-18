@@ -39,6 +39,9 @@ pub fn ooxml_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let cursor = Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor).map_err(|e| format!("zip open: {e}"))?;
     let mut parts: Vec<(String, Vec<u8>)> = Vec::with_capacity(zip.len());
+    // Track the decompressed total: a few hundred KB of deflated XML can declare
+    // gigabytes, and this loop used to trust every entry (#665).
+    let mut total: u64 = 0;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| format!("zip entry {i}: {e}"))?;
         // Skip directory entries — they carry no content and the repack
@@ -51,6 +54,12 @@ pub fn ooxml_unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             .name()
             .map_err(|e| format!("zip name {i}: {e}"))?
             .to_string();
+        total = crate::file_limits::check_decompressed_total(
+            total,
+            entry.size(),
+            crate::file_limits::DECOMPRESSED_MAX_BYTES,
+        )
+        .map_err(|e| format!("zip entry '{name}': {e}"))?;
         let mut data = Vec::with_capacity(entry.size() as usize);
         entry
             .read_to_end(&mut data)

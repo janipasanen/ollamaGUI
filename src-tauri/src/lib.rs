@@ -15,6 +15,7 @@ mod browser_engine; // #73 chromiumoxide CDP automation engine
 mod browser_preview; // #72 native-preview webview (Tauri unstable add_child)
 mod config_validation; // #66 config-invariant tests
 mod document_convert; // #140 tiered converter + LibreOffice detection
+mod file_limits; // #665 read/decompress size gates
 mod http_bounds; // #662 HTTP body byte caps
 mod odf; // #142 ODF edit (mimetype-stored-first)
 mod ooxml; // #141 OOXML template-fill + surgical edit
@@ -1297,6 +1298,11 @@ async fn read_file(
 ) -> Result<String, String> {
     let abs = resolve_workspace_path(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
+        // Stat before reading (#665): a line-range read used to allocate the
+        // whole file and slice afterwards, so `limit=20` on a 2 GB log still
+        // reserved 2 GB. Refuse over-cap files with the size in the message.
+        let len = std::fs::metadata(&abs).map_err(|e| e.to_string())?.len();
+        file_limits::ensure_within_cap(len, file_limits::READ_FILE_MAX_BYTES, "File")?;
         let content = std::fs::read_to_string(&abs).map_err(|e| e.to_string())?;
         if offset.is_none() && limit.is_none() {
             return Ok(content);
@@ -1903,6 +1909,13 @@ fn read_zip_entry(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
     let mut entry = zip
         .by_name(entry_name)
         .map_err(|e| format!("{entry_name}: {e}"))?;
+    // Entry sizes are attacker-controlled: check the declared size before
+    // materialising it (#665).
+    file_limits::check_decompressed_total(
+        0,
+        entry.size(),
+        file_limits::DECOMPRESSED_MAX_BYTES,
+    )?;
     let mut buf = Vec::new();
     entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
@@ -1917,8 +1930,15 @@ fn read_zip_entries_prefix(path: &str, prefix: &str) -> Result<Vec<Vec<u8>>, Str
         .filter(|n| n.starts_with(prefix) && n.ends_with(".xml"))
         .collect();
     let mut results = Vec::new();
+    // The sum of all matching parts, not just one, must stay under the cap.
+    let mut total: u64 = 0;
     for name in names {
         let mut entry = zip.by_name(&name).map_err(|e| e.to_string())?;
+        total = file_limits::check_decompressed_total(
+            total,
+            entry.size(),
+            file_limits::DECOMPRESSED_MAX_BYTES,
+        )?;
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         results.push(buf);
@@ -1989,6 +2009,15 @@ async fn document_read(path: String) -> Result<DocumentContent, String> {
     let path = resolve_workspace_path(&path)?;
     let path_str = path.to_str().ok_or("Invalid path")?;
     let format = detect_format(path_str);
+    // Reject oversized inputs before any parsing/decompression (#665). Archives
+    // get the larger budget because the same file also holds media parts.
+    let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let cap = if format == "text" || format == "markdown" {
+        file_limits::READ_FILE_MAX_BYTES
+    } else {
+        file_limits::DOCUMENT_MAX_BYTES
+    };
+    file_limits::ensure_within_cap(len, cap, "Document")?;
 
     let text = match format {
         "docx" => extract_docx_text(path_str)?,
