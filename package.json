@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.node.json --tsBuildInfoFile node_modules/.cache/tsconfig.node.tsbuildinfo",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run",
+    "test": "vitest run --configLoader runner",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",

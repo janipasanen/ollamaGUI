@@ -19,6 +19,16 @@ import os from 'node:os';
 // vitest 4 flattened `poolOptions.forks.{maxForks,minForks}` (the 2.x shape) into
 // a single top-level `maxWorkers` (there is no minWorkers counterpart). Keep this
 // in sync if the installed major version changes again.
+//
+// The `test` script passes `--configLoader runner` on every platform: vite 8
+// bundles this config with rolldown, and on Windows rolldown cannot resolve the
+// config's own absolute path, aborting with
+//
+//     [UNRESOLVED_ENTRY] Cannot resolve entry module D:\a\...\vite.config.ts
+//
+// before a single test is collected (upstream: rolldown/rolldown#10798, open as
+// of 1e276e9). vite's `runner` loader skips that bundling step. Drop the flag —
+// here and in the `test` script — once #10798 is fixed.
 const cpuCount = os.cpus()?.length ?? 4;
 const maxWorkers = Math.max(
   1,
