@@ -706,9 +706,12 @@ const App: React.FC = () => {
   // Agentic "Continue past max-iterations" affordance (Codex/Claude parity, #403).
   const [agentHitMax, setAgentHitMax] = useState(false);
 
-  // Session state
+  // Session state. Seeded synchronously from storage so the sidebar renders the
+  // persisted history on the first paint: `loadInitialData` hydrates the keychain
+  // caches *before* it re-reads storage (#611), which left the sidebar empty for
+  // one or more ticks (jsdom: seconds) after mount.
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>(() => storage.getSessions());
   // Inline session rename (#52)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -716,8 +719,8 @@ const App: React.FC = () => {
   const [notification, setNotification] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('recent');
-  // Organization (#133)
-  const [folders, setFolders] = useState<Folder[]>([]);
+  // Organization (#133). Same first-paint reasoning as `sessions` above.
+  const [folders, setFolders] = useState<Folder[]>(() => storage.getFolders());
   const [showArchived, setShowArchived] = useState(false);
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -1328,28 +1331,19 @@ const App: React.FC = () => {
 
   useEffect(() => {
     async function loadInitialData() {
-      // #611: hydrate the connection + OpenAPI + imagegen API-key caches from the
-      // keychain, and migrate any pre-#611 plaintext keys out of localStorage,
-      // before any connection read or handler can observe a key. Reload so the
-      // keys are attached to the state the handlers read from.
-      await initConnectionSecrets();
-      await migrateConnectionSecrets();
-      await initOpenApiServersSecrets();
-      await migrateOpenApiKeys();
-      await initImageGenConfigSecrets();
-      await migrateImageGenKey();
-      setConnections(loadConnections());
-      setOpenApiServers(loadOpenApiServers());
-      setImageGenConfig(loadImageGenConfig());
-
+      // Persisted UI state that needs no keychain access is applied first. The
+      // six keychain awaits below used to sit in front of every storage read, so
+      // the first paint — and anything the user did before they resolved — saw
+      // defaults instead of the persisted values: the sidebar rendered "No past
+      // conversations." and `/system` reported an empty prompt.
       const savedUrl = localStorage.getItem('ollama_gui_base_url');
       if (savedUrl) setOllamaBaseUrl(savedUrl);
 
       const savedSortMode = localStorage.getItem('ollama_gui_sort_mode');
-    if (savedSortMode === 'recent' || savedSortMode === 'name' || savedSortMode === 'messages') {
-      setSortMode(savedSortMode as SortMode);
-    }
-    const savedPrompt = localStorage.getItem('ollama_gui_system_prompt');
+      if (savedSortMode === 'recent' || savedSortMode === 'name' || savedSortMode === 'messages') {
+        setSortMode(savedSortMode as SortMode);
+      }
+      const savedPrompt = localStorage.getItem('ollama_gui_system_prompt');
       if (savedPrompt) setSystemPrompt(savedPrompt);
 
       const savedGenOptions = localStorage.getItem('ollama_gui_gen_options');
@@ -1369,10 +1363,25 @@ const App: React.FC = () => {
 
       setSessions(storage.getSessions());
       setFolders(storage.getFolders());
-      getSystemMemory().then(setSystemMemory).catch(() => setSystemMemory(null));
 
       // Load persisted MCP servers
       setMcpServers(mcpConfigStore.list());
+
+      // #611: hydrate the connection + OpenAPI + imagegen API-key caches from the
+      // keychain, and migrate any pre-#611 plaintext keys out of localStorage,
+      // before any connection read or handler can observe a key. Reload so the
+      // keys are attached to the state the handlers read from.
+      await initConnectionSecrets();
+      await migrateConnectionSecrets();
+      await initOpenApiServersSecrets();
+      await migrateOpenApiKeys();
+      await initImageGenConfigSecrets();
+      await migrateImageGenKey();
+      setConnections(loadConnections());
+      setOpenApiServers(loadOpenApiServers());
+      setImageGenConfig(loadImageGenConfig());
+
+      getSystemMemory().then(setSystemMemory).catch(() => setSystemMemory(null));
 
       // Reap spawned stdio MCP processes when the app window closes (#54)
       registerMcpShutdownHandler();

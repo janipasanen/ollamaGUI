@@ -128,6 +128,16 @@ describe('App Component', () => {
       localStorage.setItem('ollama_gui_sessions', data);
     }
 
+    it('shows persisted sessions on the first paint (#611)', () => {
+      // Regression guard: after #611 moved the API keys into the keychain, the
+      // mount effect awaited six keychain calls before re-reading storage, so the
+      // sidebar rendered "No past conversations." for a while after mount. The
+      // session list must be seeded synchronously instead.
+      createSampleSession();
+      render(<App />);
+      expect(screen.getByRole('button', { name: /Delete session: Sample Chat/i })).toBeInTheDocument();
+    });
+
     it('opens a confirmation dialog before deleting a chat', () => {
       createSampleSession();
       render(<App />);
