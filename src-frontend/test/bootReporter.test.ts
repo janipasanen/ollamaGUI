@@ -73,6 +73,33 @@ describe('boot reporter — reports genuine boot failures (#552)', () => {
   });
 });
 
+describe('boot reporter — slow development boots are not failures', () => {
+  it('waits for the entry module before starting the no-render clock', () => {
+    document.body.innerHTML = '<div id="root"></div><script id="app-entry" type="module"></script>';
+    // eslint-disable-next-line no-new-func
+    new Function(reporterSource())();
+    vi.advanceTimersByTime(30_000); // the deferred setup has run by now
+    // No 'load' on the entry yet: the bundle is still being fetched/compiled.
+    expect(isShown()).toBe(false);
+
+    document.getElementById('app-entry')!.dispatchEvent(new Event('load'));
+    vi.advanceTimersByTime(20_000);
+    expect(detail()).toMatch(/rendered nothing/i);
+  });
+
+  it('stays silent on the Vite dev server, where compile time is not a boot failure', () => {
+    document.body.innerHTML =
+      '<script src="/@vite/client"></script><div id="root"></div><script id="app-entry" type="module"></script>';
+    // eslint-disable-next-line no-new-func
+    new Function(reporterSource())();
+    document.getElementById('app-entry')!.dispatchEvent(new Event('load'));
+    // A cold checkout measured ~33 s of compile before React painted; the
+    // watchdog must not turn that into an error overlay.
+    vi.advanceTimersByTime(60_000);
+    expect(isShown()).toBe(false);
+  });
+});
+
 describe('boot reporter — never hides a working app (#552 regression)', () => {
   it('ignores a failed resource load, which carries no message', () => {
     // The exact regression: a 404 on an icon or lazy chunk fired an 'error'

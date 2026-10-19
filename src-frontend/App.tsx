@@ -53,6 +53,7 @@ import BrowserToolResult, { isBrowserToolName } from './components/BrowserToolRe
 import { registerBrowserTools, stopBrowserEngine } from './services/browser-tools';
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
+import { GoalPanel, loadGoalSettings, saveGoalSettings, type GoalSettings } from './components/GoalPanel';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
 import './components/BrowserPane';
@@ -733,6 +734,13 @@ const App: React.FC = () => {
 
   // Agent autonomy settings (#88, #89, #146)
   const [autonomySettings, setAutonomySettings] = useState<AgentAutonomySettings>(() => loadAutonomySettings());
+
+  // Goal mode (#668): the success criterion for a run, and the optional judge.
+  const [goalSettings, setGoalSettings] = useState<GoalSettings>(() => loadGoalSettings());
+  const updateGoalSettings = (next: GoalSettings) => {
+    setGoalSettings(next);
+    saveGoalSettings(next);
+  };
 
   // Memory (#95)
   const [memoryEntries, setMemoryEntries] = useState<MemoryEntry[]>(() => loadMemory());
@@ -4240,6 +4248,12 @@ ${lines.join('\n')}`;
             setAgentHitMax(false);
           },
         };
+        // Goal mode (#668): an empty goal is no goal; the judge only runs when
+        // both a goal and a model are present, defaulting to the chat model.
+        const activeGoal = goalSettings.goal.trim() || undefined;
+        const activeJudgeModel = activeGoal && goalSettings.judgeEnabled
+          ? (goalSettings.judgeModel || (selectedConnectedModel?.name ?? model))
+          : undefined;
         const agentStream = connForModel
           ? openAiAgenticChatStream({
               conn: connForModel,
@@ -4259,6 +4273,8 @@ ${lines.join('\n')}`;
               signal: abortControllerRef.current?.signal,
               options: genOptions,
               format,
+              goal: activeGoal,
+              judgeModel: activeJudgeModel,
               ...agentCallbacks,
             });
 
@@ -4271,6 +4287,12 @@ ${lines.join('\n')}`;
           // max-iterations stop warning, which is yielded directly by the
           // generator (not via onAssistantMessage) and must be surfaced to
           // the UI so the "Continue agent" button (#403) can attach to it.
+          if ((message as Message).judgeVerdict) {
+            // Judge checkpoints are part of the record: they explain why the
+            // run ended, or why it kept going (#668).
+            setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
+            continue;
+          }
           if (message.role === 'assistant' && typeof message.content === 'string' && message.content.startsWith('⚠️ Agent stopped: maximum tool iterations')) {
             setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
           }
@@ -6218,6 +6240,26 @@ ${lines.join('\n')}`;
         >
           {/* Agentic mode with no workspace folder open (#482) */}
           <NoWorkspaceHint dark={dark} agentic={isAgenticMode} />
+          {/* Goal mode (#668): the run's success criterion stays visible. */}
+          {goalSettings.goal.trim() && (
+            <div
+              data-testid="goal-banner"
+              className={`max-w-3xl mx-auto mb-2 flex items-start gap-2 text-xs rounded-lg px-3 py-2 border ${
+                dark ? 'border-blue-800 bg-blue-950/40 text-blue-200' : 'border-blue-200 bg-blue-50 text-blue-800'
+              }`}
+            >
+              <span aria-hidden>🎯</span>
+              <span className="flex-1 whitespace-pre-wrap">{goalSettings.goal}</span>
+              <button
+                type="button"
+                aria-label="Clear goal"
+                onClick={() => updateGoalSettings({ ...goalSettings, goal: '' })}
+                className="shrink-0 px-1 rounded hover:bg-blue-500/20"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           {/* M5 Issue 20: Image thumbnails preview */}
           {attachedImages.length > 0 && (
             <div className="max-w-3xl mx-auto flex flex-wrap gap-2 mb-2">
@@ -8880,6 +8922,14 @@ ${lines.join('\n')}`;
                     </div>
                   ))}
                 </div>
+
+                {/* Goal mode (#668) */}
+                <GoalPanel
+                  dark={dark}
+                  models={[...models.map(m => m.name), ...connectedModels.map(m => m.name)]}
+                  settings={goalSettings}
+                  onChange={updateGoalSettings}
+                />
 
                 {/* Agent Safety — autonomy levels (#88, #89, #146) */}
                 <div className={`p-4 rounded-xl border ${dark ? 'border-zinc-700 bg-zinc-800/40' : 'border-zinc-200 bg-zinc-50'}`}>

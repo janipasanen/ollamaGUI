@@ -34,6 +34,12 @@ export const PROVIDER_TIMEOUTS = {
   sttInference: 60_000,
   /** Reachability probe: must fail fast or it blocks the settings UI. */
   sttProbe: 5_000,
+  /**
+   * Judge checkpoint (#668): one non-streaming turn over a capped transcript.
+   * A hung judge must not hold the run hostage — the verdict defaults to
+   * `continue` when this expires.
+   */
+  judge: 60_000,
   /** Browser-mode fallback for the Rust `mcp_http_request` command. */
   mcpRequest: 60_000,
 } as const;

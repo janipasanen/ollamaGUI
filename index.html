@@ -120,12 +120,47 @@
 
         // Nothing threw, but nothing rendered either — catches a silent failure
         // that never surfaces as an error event. appAlive() inside show() is
-        // what keeps a merely slow boot from tripping this, and the timer is
-        // cleared as soon as the app mounts so it cannot fire over a live UI.
-        var noRender = window.setTimeout(function () {
-          show('The app bundle loaded but rendered nothing within 20 seconds.',
-               'The interface did not start. Reopening the app usually clears this.');
-        }, 20000);
+        // what keeps a merely slow boot from tripping this, and the timers are
+        // cleared as soon as the app mounts so they cannot fire over a live UI.
+        //
+        // The mount clock starts when the entry module finishes loading, not
+        // when this script runs: on a cold Vite dev server the 9k-line App.tsx
+        // can take longer than the window to compile, and counting that compile
+        // as "rendered nothing" put a failure overlay over an app that was
+        // about to appear (measured on a clean Linux checkout). A module that
+        // never loads at all still gets reported, by the longer fallback.
+        var noRender = null;
+        var neverLoaded = null;
+
+        function startNoRenderClock() {
+          if (noRender || appAlive()) return;
+          noRender = window.setTimeout(function () {
+            show('The app bundle loaded but rendered nothing within 20 seconds.',
+                 'The interface did not start. Reopening the app usually clears this.');
+          }, 20000);
+        }
+
+        // Deferred a turn so the parser has created the entry <script> element
+        // below (this runs before it in the document).
+        window.setTimeout(function () {
+          var entry = document.getElementById('app-entry');
+          if (!entry) { startNoRenderClock(); return; }
+          // The Vite dev server compiles the 9k-line app on first request; on a
+          // cold Linux checkout that measured ~33 s before React painted, which
+          // is compiler time, not a broken bundle. The watchdog exists for the
+          // packaged app, so it does not run against the dev server at all —
+          // a false overlay over a working UI is the failure this file exists
+          // to prevent.
+          var isDevServer = !!document.querySelector('script[src*="@vite/client"]');
+          entry.addEventListener('load', function () {
+            window.clearTimeout(neverLoaded);
+            if (!isDevServer) startNoRenderClock();
+          });
+          neverLoaded = window.setTimeout(function () {
+            show('The app bundle never finished loading (90 seconds).',
+                 'The interface did not start. Reopening the app usually clears this.');
+          }, 90000);
+        }, 0);
 
         // Stop watching the moment React mounts: a healthy app should not carry
         // a pending failure timer for its whole lifetime.
@@ -135,6 +170,7 @@
             var mo = new MutationObserver(function () {
               if (!appAlive()) return;
               window.clearTimeout(noRender);
+              window.clearTimeout(neverLoaded);
               mo.disconnect();
             });
             mo.observe(root, { childList: true });
@@ -143,6 +179,6 @@
       })();
     </script>
 
-    <script type="module" src="/src-frontend/main.tsx"></script>
+    <script id="app-entry" type="module" src="/src-frontend/main.tsx"></script>
   </body>
 </html>

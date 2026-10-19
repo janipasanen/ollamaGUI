@@ -19,6 +19,8 @@ export interface Message {
   feedback?: MessageFeedback;
   /** Which model produced this assistant message (#97). */
   producedByModel?: string;
+  /** Goal-mode judge checkpoint (#668): present on the synthetic judge message. */
+  judgeVerdict?: import('./judge').JudgeVerdict;
   /** Reasoning/thinking trace from Ollama reasoning models (#241). */
   reasoning?: string;
   /** Epoch ms when the message was created (#253). */

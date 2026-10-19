@@ -30,6 +30,29 @@ export interface AgenticChatOptions {
   onAssistantMessage?: (message: string) => void;
   /** Reasoning/thinking trace accumulator (#245). */
   onAssistantReasoning?: (reasoning: string) => void;
+  /**
+   * Goal mode (#668): the success criterion for this run. Injected as a system
+   * message; when a judge is configured it is what the judge reviews against.
+   */
+  goal?: string;
+  /**
+   * Goal mode (#668): judge model name. When set, the loop asks it before
+   * ending — on a final answer without tool calls and when maxIterations is
+   * hit — and a `blocked` verdict with advice continues the run.
+   */
+  judgeModel?: string;
+  /** Fired with every judge verdict so the UI can show the checkpoint. */
+  onJudgeVerdict?: (verdict: import('./judge').JudgeVerdict) => void;
+  /** Judge calls allowed per run (default JUDGE_MAX_CALLS). */
+  maxJudgeCalls?: number;
+  /** Injected for tests; defaults to services/judge runJudge. */
+  runJudgeFn?: (opts: {
+    endpoint: string;
+    model: string;
+    goal: string;
+    messages: Message[];
+    signal?: AbortSignal;
+  }) => Promise<import('./judge').JudgeVerdict>;
   /** Fired at the start of each loop iteration with (iteration, maxIterations) (#398). */
   onIteration?: (iteration: number, maxIterations: number) => void;
   /** Fired when the loop stops after reaching maxIterations without a final answer (#403). */
@@ -71,6 +94,11 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onRetry,
     toolFilter,
     onApprovalNeeded,
+    goal,
+    judgeModel,
+    onJudgeVerdict,
+    maxJudgeCalls = (await import('./judge')).JUDGE_MAX_CALLS,
+    runJudgeFn,
   } = options;
 
   // Retry bounds for transient network failures in the agentic loop (#586).
@@ -276,7 +304,65 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
   let hitMaxIterations = false;
   const currentMessages = [...messages];
 
-  while (iteration < maxIterations) {
+  // Goal mode (#668). The goal joins the system context for every turn; the
+  // judge is consulted at the two points where a run would otherwise end.
+  let iterationLimit = maxIterations;
+  let judgeCalls = 0;
+  const judge = await import('./judge');
+  if (goal && goal.trim()) {
+    const goalMsg = judge.goalSystemMessage(goal);
+    const firstNonSystem = currentMessages.findIndex(m => m.role !== 'system');
+    if (firstNonSystem === -1) currentMessages.push(goalMsg);
+    else currentMessages.splice(firstNonSystem, 0, goalMsg);
+  }
+  const judgeEnabled = !!(goal && goal.trim() && judgeModel);
+
+  /** Ask the judge, respecting the per-run budget. Null when it does not apply. */
+  const askJudge = async (): Promise<import('./judge').JudgeVerdict | null> => {
+    if (!judgeEnabled || judgeCalls >= maxJudgeCalls) return null;
+    judgeCalls++;
+    const verdict = await (runJudgeFn ?? judge.runJudge)({
+      endpoint,
+      model: judgeModel as string,
+      goal: goal as string,
+      messages: currentMessages,
+      signal,
+    });
+    if (onJudgeVerdict) onJudgeVerdict(verdict);
+    return verdict;
+  };
+
+  /**
+   * Apply a verdict at an end-of-run point. Returns 'continue' when the run
+   * should keep going (advice injected), 'end' when it should stop now, and
+   * 'neutral' when the judge had nothing to change.
+   */
+  async function* applyVerdict(
+    verdict: import('./judge').JudgeVerdict | null,
+  ): AsyncGenerator<Message, 'continue' | 'end' | 'neutral', unknown> {
+    if (!verdict) return 'neutral' as const;
+    // The verdict is part of the transcript: the user should see who judged
+    // and why, not just that the run stopped.
+    yield {
+      role: 'assistant',
+      content: judge.formatJudgeVerdict(verdict),
+      judgeVerdict: verdict,
+    } as Message;
+    if (verdict.verdict === 'done') return 'end' as const;
+    if (verdict.verdict === 'blocked' && verdict.advice) {
+      currentMessages.push({
+        role: 'system',
+        content:
+          'JUDGE FEEDBACK — an independent judge says you are blocked and suggests: ' +
+          `${verdict.advice}\nTake that route, or explain concretely why it cannot work.`,
+      });
+      iterationLimit += judge.JUDGE_EXTRA_ITERATIONS;
+      return 'continue' as const;
+    }
+    return 'neutral' as const;
+  }
+
+  while (iteration < iterationLimit) {
     // Check abort at the top of every iteration so the Stop button works.
     if (signal?.aborted) break;
 
@@ -500,11 +586,27 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
           yield message as any;
         }
 
+        // Out of iterations with tools still being called: a judge may grant
+        // more runway when it can name an unblocked path (#668).
+        if (iteration >= iterationLimit && judgeEnabled) {
+          const outcome = yield* applyVerdict(await askJudge());
+          if (outcome === 'continue') continue;
+          if (outcome === 'end') break;
+        }
         // Continue to next iteration to let the model respond to tool results
-        if (iteration >= maxIterations) {
+        if (iteration >= iterationLimit) {
           hitMaxIterations = true;
         }
         continue;
+      }
+
+      // No more tool calls: the model considers itself finished. In goal mode
+      // that claim is checked before the run ends (#668) — a blocked verdict
+      // with advice puts the model back to work instead of stopping.
+      if (judgeEnabled) {
+        const outcome = yield* applyVerdict(await askJudge());
+        if (outcome === 'continue') continue;
+        if (outcome === 'end') break;
       }
 
       // No more tool calls, we're done — surface the final turn's stats.
