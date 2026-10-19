@@ -22,9 +22,11 @@
  * tests stand in a fake without importing the real Tauri runtime.
  */
 
-import { toolRegistry } from './tools';
+import { toolRegistry, truncateToolContent } from './tools';
 import { browserSession, browserBus, isLocalhostUrl } from './browser';
 import { parseSnapshotRefs, updateSessionSnapshot } from './browserSnapshot';
+import { getNetworkEntries, recordRequest, recordResponse, recordFailure } from './browserNetwork';
+import { getPageErrors, clearPageErrors } from './browserErrors';
 
 // ---------------------------------------------------------------------------
 // Test seam
@@ -38,6 +40,43 @@ async function tauriInvoke<T>(cmd: string, args: Record<string, unknown> = {}): 
   if (_mocks.invoke) return _mocks.invoke(cmd, args) as Promise<T>;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<T>(cmd, args);
+}
+
+/**
+ * Pull the Chromium engine's network log into the shared buffer.
+ *
+ * Best-effort: with no engine running (the common case — local previews use the
+ * iframe) the command errors and we simply keep the locally-recorded entries.
+ * Engine rows are keyed by CDP request id so repeated calls do not duplicate
+ * them.
+ */
+const _seenEngineRequests = new Set<string>();
+async function mergeEngineNetwork(): Promise<void> {
+  try {
+    const rows = await tauriInvoke<any[]>('browser_cdp_read_network', {});
+    if (!Array.isArray(rows)) return;
+    for (const r of rows) {
+      const key = String(r.request_id ?? r.requestId ?? '');
+      if (!key || _seenEngineRequests.has(key)) continue;
+      _seenEngineRequests.add(key);
+      const id = recordRequest({
+        method: String(r.method ?? 'GET'),
+        url: String(r.url ?? ''),
+        resourceType: 'document',
+      });
+      if (r.failure) recordFailure(id, String(r.failure));
+      else if (r.status != null) {
+        recordResponse(id, { status: Number(r.status), statusText: r.status_text ?? r.statusText });
+      }
+    }
+  } catch {
+    // No engine running: the local recorder is the whole answer.
+  }
+}
+
+/** Test seam: forget which engine rows have been merged. */
+export function _resetEngineNetworkMerge(): void {
+  _seenEngineRequests.clear();
 }
 
 /**
@@ -285,6 +324,107 @@ export function registerBrowserTools(
     },
     readOnly: true,
     execute: async (p) => tauriInvoke('browser_cdp_read_console', { clear: !!p.clear }),
+  });
+
+  // ── browser_read_network ─────────────────────────────────────────────────
+  // Read-only: the recorded request/response log (#625). This is what makes
+  // "why did the login fail" answerable — the console rarely says.
+  //
+  // Bodies are OFF by default: a single JSON response can be larger than the
+  // whole context window, and the model usually needs status codes and URLs,
+  // not payloads. Sensitive headers were already redacted at record time.
+  toolRegistry.registerTool({
+    name: 'browser_read_network',
+    description:
+      'Read network requests the page made: method, URL, status, duration, and failures. '
+      + 'Use it to check API calls, form submissions and login POSTs. '
+      + 'Set include_body only when the payload actually matters.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: { type: 'string', description: 'Case-insensitive substring match on the URL.' },
+        method: { type: 'string', description: 'Only this HTTP method, e.g. POST.' },
+        status: { type: 'string', description: 'Exact code (404) or class (4xx, 5xx).' },
+        failed_only: { type: 'boolean', description: 'Only requests that never completed.' },
+        include_body: { type: 'boolean', description: 'Include request/response bodies (large).' },
+        limit: { type: 'number', description: 'Newest N entries. Default 20.' },
+      },
+    },
+    readOnly: true,
+    execute: async (p) => {
+      const query = {
+        filter: typeof p.filter === 'string' ? p.filter : undefined,
+        method: typeof p.method === 'string' ? p.method : undefined,
+        status: (typeof p.status === 'string' || typeof p.status === 'number') ? p.status : undefined,
+        failedOnly: !!p.failed_only,
+        limit: typeof p.limit === 'number' ? p.limit : 20,
+      };
+      // Two sources, one answer (#628). The fetch/XHR patch only reaches
+      // same-origin pages; the Chromium engine sees every request a real
+      // browser makes, which is what external sites and login flows need.
+      // Merging here keeps the model from having to know which is which.
+      await mergeEngineNetwork();
+      const entries = getNetworkEntries(query);
+      if (entries.length === 0) {
+        // A clear statement beats an empty array: the model otherwise cannot
+        // tell "nothing matched" from "recording is not working".
+        return { count: 0, requests: [], note: 'No matching network requests recorded.' };
+      }
+      const includeBody = !!p.include_body;
+      return {
+        count: entries.length,
+        requests: entries.map(e => ({
+          method: e.method,
+          url: e.url,
+          status: e.failed ? 'failed' : e.status,
+          failureReason: e.failureReason,
+          durationMs: e.durationMs,
+          resourceType: e.resourceType,
+          ...(includeBody
+            ? {
+                requestBody: e.requestBody ? truncateToolContent(e.requestBody) : undefined,
+                responseBody: e.responseBody ? truncateToolContent(e.responseBody) : undefined,
+              }
+            : {}),
+        })),
+      };
+    },
+  });
+
+  // ── browser_read_errors ──────────────────────────────────────────────────
+  // Read-only: uncaught exceptions and unhandled rejections (#626). Kept apart
+  // from the console channel because an error buried in a hundred log lines is
+  // the signal that matters most when a page misbehaves.
+  toolRegistry.registerTool({
+    name: 'browser_read_errors',
+    description:
+      'Read uncaught JavaScript errors and unhandled promise rejections from the page, '
+      + 'separately from ordinary console output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Newest N errors. Default 20.' },
+        clear: { type: 'boolean', description: 'Clear the error buffer after reading.' },
+      },
+    },
+    readOnly: true,
+    execute: async (p) => {
+      const limit = typeof p.limit === 'number' ? p.limit : 20;
+      const errors = getPageErrors(limit);
+      if (p.clear) clearPageErrors();
+      if (errors.length === 0) return { count: 0, errors: [], note: 'No page errors recorded.' };
+      return {
+        count: errors.length,
+        errors: errors.map(e => ({
+          message: e.message,
+          source: e.source,
+          line: e.line,
+          column: e.column,
+          kind: e.kind,
+          stack: e.stack ? truncateToolContent(e.stack) : undefined,
+        })),
+      };
+    },
   });
 
   // ── browser_wait_for ─────────────────────────────────────────────────────

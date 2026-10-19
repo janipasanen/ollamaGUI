@@ -34,7 +34,7 @@ tokio = { version = "1", features = ["full"] }
 # Cross-platform OS secret store: macOS Keychain, Windows Credential Manager, Linux Secret Service.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 # Encrypted-file fallback for environments with no OS secret store (e.g. headless Linux).
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 # Cross-platform system memory detection for the model-fit indicator.
 sysinfo = "0.33"
 # Document reading: docx/xlsx/pptx/odt are ZIP archives containing XML (#139).
@@ -42,7 +42,7 @@ sysinfo = "0.33"
 # escape, SUID/SGID preservation) — that API is on our own code path
 # (`browser_chromium.rs` unpacks the Chrome-for-Testing archive).
 zip = "9"
-quick-xml = "0.41"
+quick-xml = "0.42"
 lopdf = { version = "0.44", default-features = false }
 calamine = "0.36"
 # Bump transitive `plist` (via tauri) from 1.9 → 1.10 so its quick-xml dep

@@ -22,7 +22,7 @@ vi.mock('../components/PanelShell', () => ({
 }));
 
 // Import AFTER the PanelShell mock so the module-level registration is captured.
-import { showArtifact, _mocks } from '../components/ArtifactPanel';
+import { showArtifact, _mocks, _resetPendingArtifact } from '../components/ArtifactPanel';
 import type { Artifact, DocumentArtifactData } from '../components/ArtifactPanel';
 
 const sampleCodeArtifact: Artifact = {
@@ -55,6 +55,9 @@ describe('ArtifactPanel (#99, #145)', () => {
     // Module-level registration happens once at import time; do not clear it.
     openPanelSpy.mockClear();
     closePanelSpy.mockClear();
+    // showArtifact() latches for a panel that mounts later (#504); clear it so
+    // one test cannot start with the previous test's artifact selected.
+    _resetPendingArtifact();
     _mocks.openDocumentPath = null;
     _mocks.exportDocumentPath = null;
   });

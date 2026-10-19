@@ -62,7 +62,13 @@ function fromPersistedServer(s: PersistedServer): McpServerConfig {
     status: 'disconnected',
     tools: [],
     authRequired: s.authRequired ?? false,
-    authenticated: false,
+    // Preserve the persisted value instead of hardcoding false (#521). It was
+    // always reset on load, and since the only place it was ever set to true
+    // touched React state alone, ANY later setMcpServers(mcpConfigStore.list())
+    // — adding or deleting a server, or an app restart — silently flipped every
+    // badge back to unauthenticated while the tokens were still valid in the
+    // keychain. refreshAuthFlags() below reconciles it against the token store.
+    authenticated: s.authenticated ?? false,
   };
 }
 
@@ -150,3 +156,44 @@ export const mcpConfigStore = {
     return `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   },
 };
+
+
+/**
+ * Reconcile each HTTP server's `authenticated` badge against the real token
+ * store, and persist the result (#521).
+ *
+ * The badge is only ever meaningful if it reflects whether a usable token
+ * actually exists — otherwise it either claims an authentication the user does
+ * not have, or hides one they do, sending them through a whole OAuth
+ * round-trip for tokens already sitting in the keychain.
+ */
+export async function refreshAuthFlags(servers: McpServerConfig[]): Promise<McpServerConfig[]> {
+  const { tokenStore } = await import('./mcpAuth');
+  const out = await Promise.all(servers.map(async (srv) => {
+    if (srv.type !== 'http') return srv;
+    try {
+      const tokens = await tokenStore.load(srv.id);
+      // A refresh_token can still redeem an expired access token.
+      const usable = !!tokens && (!tokenStore.isExpired(tokens) || !!tokens.refresh_token);
+      return usable === srv.authenticated ? srv : { ...srv, authenticated: usable };
+    } catch {
+      return srv; // keychain unavailable — leave the flag as-is rather than lying
+    }
+  }));
+  if (out.some((s, i) => s !== servers[i])) {
+    // Update ONLY the flag on the persisted records. Re-persisting whole
+    // servers here would risk round-tripping the blanked env values that
+    // list() hands back, so touch nothing else.
+    const persisted = readPersisted();
+    let changed = false;
+    for (const srv of out) {
+      const rec = persisted.find(r => r.id === srv.id);
+      if (rec && rec.authenticated !== srv.authenticated) {
+        rec.authenticated = srv.authenticated;
+        changed = true;
+      }
+    }
+    if (changed) safePersist(persisted);
+  }
+  return out;
+}

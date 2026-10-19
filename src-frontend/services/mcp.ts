@@ -36,6 +36,15 @@ const MCP_INITIALIZE_PARAMS = {
   clientInfo: MCP_CLIENT_INFO,
 };
 
+/** Flatten an MCP `content` array into plain text for the transcript. */
+export function extractMcpToolResultText(result: any): string {
+  const items = Array.isArray(result?.content) ? result.content : [];
+  return items
+    .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
+    .map((c: any) => c.text)
+    .join('\n');
+}
+
 /** Default per-request timeout for stdio MCP servers (#446). */
 const MCP_DEFAULT_TIMEOUT_MS = 30_000;
 

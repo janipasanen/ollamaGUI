@@ -110,14 +110,15 @@ describe('Copy-diff button in DiffReviewModal (#370)', () => {
     expect(copied).toContain('+B');
   });
 
-  it('shows "Copied" feedback after clicking', () => {
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn() }, writable: true, configurable: true });
+  it('shows "Copied" feedback after clicking', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async () => {}) }, writable: true, configurable: true });
 
     render(<DiffReviewModal edit={edit} dark={true} onResolve={() => {}} />);
     const copyBtn = screen.getByLabelText('Copy diff to clipboard');
     expect(copyBtn.textContent).toContain('Copy diff');
     fireEvent.click(copyBtn);
-    expect(copyBtn.textContent).toContain('Copied');
+    // The tick is only claimed once the clipboard write resolves (#524).
+    await waitFor(() => expect(copyBtn.textContent).toContain('Copied'));
   });
 });
 

@@ -83,7 +83,7 @@ cargo tauri build
 
 #### macOS
 - **Output**: `.app` bundle and `.dmg` in `src-tauri/target/release/bundle/dmg/`
-- **Requirements**: current macOS (Big Sur 11+) on `master` / `development`
+- **Requirements**: macOS 13.3 (Ventura) or later on `master` / `development`. This floor is WebKit's, not the Rust side's: the frontend bundle is built for Safari 16.4 (`build.target` in `vite.config.ts`) because `remark-gfm` ships a RegExp lookbehind that no bundler can down-level, and Tailwind v4's CSS uses `@property` / `oklch()` / `color-mix()`. `minimumSystemVersion` in `tauri.conf.json` matches it, so older Macs get an OS-level refusal instead of a blank window. Raise or lower the two together — never one alone.
 - **Build (default, newer macOS)**: `cd src-tauri && cargo tauri build`. No deployment-target pin — the build follows the host SDK default so the app can use modern macOS APIs.
 - **Build (Catalina 10.15 compatibility line)**: check out the `macOS-10.15` branch and run `scripts/build-macos-10.15.sh` (it exports `MACOSX_DEPLOYMENT_TARGET=10.15`; that branch also pins the flag for the apple-darwin targets in `src-tauri/.cargo/config.toml`).
 - **Notarization**: Required for Gatekeeper approval
