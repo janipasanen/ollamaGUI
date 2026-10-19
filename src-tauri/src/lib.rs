@@ -17,6 +17,7 @@ mod config_validation; // #66 config-invariant tests
 mod document_convert; // #140 tiered converter + LibreOffice detection
 mod file_limits; // #665 read/decompress size gates
 mod http_bounds; // #662 HTTP body byte caps
+mod lsp; // #670 language-server diagnostics
 mod odf; // #142 ODF edit (mimetype-stored-first)
 mod ooxml; // #141 OOXML template-fill + surgical edit
 mod pdf_tools; // #143 PDF info/merge/split surface
@@ -1253,6 +1254,41 @@ async fn terminal_run(
 }
 
 /// Kill a terminal session by sending SIGKILL to the shell process.
+// ─── Language server (#670) ──────────────────────────────────────────────────
+//
+// The agent asks the workspace's language server for diagnostics after it edits
+// a file, so a broken edit is visible in the same turn instead of on the next
+// build.  stdout is framed on a background thread and re-emitted as
+// `lsp_message_<id>` events; stdin stays here so `lsp_send` can write requests.
+
+#[tauri::command]
+async fn lsp_start(
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<u64, String> {
+    if !lsp::is_allowed(&command) {
+        return Err(format!("language server not allowed: {command}"));
+    }
+    let id = lsp::next_id();
+    let event = format!("lsp_message_{}", id);
+    lsp::start(id, &command, &args, cwd.as_deref(), move |body| {
+        let _ = app_handle.emit(&event, body);
+    })?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn lsp_send(session_id: u64, message: String) -> Result<(), String> {
+    lsp::send(session_id, &message)
+}
+
+#[tauri::command]
+fn lsp_stop(session_id: u64) {
+    lsp::stop(session_id);
+}
+
 #[tauri::command]
 fn terminal_kill(session_id: u64) -> Result<(), String> {
     let pid = {
@@ -2551,6 +2587,9 @@ pub fn run() {
             copy_path,
             create_dir,
             terminal_run,
+            lsp_start,
+            lsp_send,
+            lsp_stop,
             terminal_kill,
             git_status,
             git_diff,

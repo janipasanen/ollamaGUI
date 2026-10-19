@@ -132,7 +132,7 @@ export function parseJudgeVerdict(text: string): JudgeVerdict {
   }
 
   // Bare-word answers are common from small models: "DONE — the tests pass".
-  const head = raw.replace(/^[^A-Za-z]+/, '').split(/[\s,:.;!\-]+/)[0];
+  const head = raw.replace(/^[^A-Za-z]+/, '').split(/[\s,:.;!-]+/)[0];
   const kind = normaliseKind(head);
   if (kind) {
     return { verdict: kind, reason: raw.slice(0, 400) };

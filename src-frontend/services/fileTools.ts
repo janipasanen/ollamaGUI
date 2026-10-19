@@ -11,6 +11,7 @@
 
 import { toolRegistry } from './tools';
 import { proposeEdit, proposeEdits } from './diffReview';
+import { collectDiagnostics, formatDiagnostics, type DiagnosticsOutcome } from './lsp';
 
 export interface DirEntry {
   name: string;
@@ -65,6 +66,35 @@ export function getWorkspaceRoots(): string[] {
 export function clearWorkspaceRoot(): void {
   _workspaceRoot = null;
   _workspaceRoots = [];
+}
+
+/** Test seam for the post-edit diagnostics lookup (#670). */
+export const _diagnostics = {
+  collect: null as
+    | ((path: string, cwd: string, options: { text?: string }) => Promise<DiagnosticsOutcome>)
+    | null,
+};
+
+/**
+ * Run the workspace language server over an edited file and render whatever it
+ * reports. Never throws: a missing server or a slow one must not fail the edit.
+ */
+async function diagnosticsAfterEdit(path: string, content?: string): Promise<string | null> {
+  const cwd = getWorkspaceRoot();
+  if (!cwd) return null;
+  if (!/\.(ts|tsx|js|jsx|rs|py|go)$/i.test(path)) return null;
+  let text = content;
+  if (text === undefined) {
+    try { text = await readFile(path); } catch { return null; }
+  }
+  const collect = _diagnostics.collect ?? collectDiagnostics;
+  try {
+    const outcome = await collect(path, cwd, { text });
+    if (outcome.status !== 'ok' || outcome.diagnostics.length === 0) return null;
+    return formatDiagnostics(path, outcome.diagnostics);
+  } catch {
+    return null;
+  }
 }
 
 export async function readFile(path: string, offset?: number, limit?: number): Promise<string> {
@@ -179,7 +209,10 @@ export function registerFileTools(): void {
         newString: params.content as string,
         label: `write ${params.path}`,
       });
-      return { success: applied };
+      const diagnostics = applied
+        ? await diagnosticsAfterEdit(params.path as string, params.content as string)
+        : null;
+      return diagnostics ? { success: applied, diagnostics } : { success: applied };
     },
   });
 
@@ -221,7 +254,8 @@ export function registerFileTools(): void {
         newString: params.new_string as string,
         label: `edit ${params.path}`,
       });
-      return { success: applied };
+      const diagnostics = applied ? await diagnosticsAfterEdit(params.path as string) : null;
+      return diagnostics ? { success: applied, diagnostics } : { success: applied };
     },
   });
 
