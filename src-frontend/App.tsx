@@ -54,6 +54,11 @@ import { registerBrowserTools, stopBrowserEngine } from './services/browser-tool
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
 import { GoalPanel, loadGoalSettings, saveGoalSettings, type GoalSettings } from './components/GoalPanel';
+import SchedulePanel from './components/SchedulePanel';
+import {
+  loadSchedules, saveSchedules, startScheduler,
+  type ScheduleEntry, type RunVerdict, type Scheduler,
+} from './services/scheduledRuns';
 import { loadFallbackModels, saveFallbackModels } from './services/modelFallback';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
@@ -673,6 +678,18 @@ export const ContextBudget: React.FC<{ tokens: number; numCtx?: number; dark: bo
   );
 };
 
+/** Per-run overrides for `sendMessage` (#671 scheduled runs, #668 judge). */
+interface RunOptions {
+  /** Success criterion for this run only, overriding the Settings goal. */
+  goal?: string;
+  /** Judge model for this run only. */
+  judgeModel?: string;
+  /** Called with every judge verdict the run produces. */
+  onVerdict?: (v: 'done' | 'blocked' | 'continue') => void;
+  /** Start from this history instead of the on-screen messages. */
+  history?: Message[];
+}
+
 const App: React.FC = () => {
   // Core chat state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -742,6 +759,23 @@ const App: React.FC = () => {
     setGoalSettings(next);
     saveGoalSettings(next);
   };
+
+  // Scheduled runs (#671): goals that fire on a timer while the app is open.
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>(() => loadSchedules());
+  const schedulerRef = useRef<Scheduler | null>(null);
+  const updateSchedules = (next: ScheduleEntry[]) => {
+    setSchedules(next);
+    schedulesRef.current = next;
+    saveSchedules(next);
+    // A new or edited entry changes the soonest slot; re-arm immediately
+    // instead of waiting for the timer that was armed for the old list.
+    schedulerRef.current?.refresh();
+  };
+  // The launcher needs the latest sendMessage without re-arming the scheduler
+  // on every render, and the run's promise must outlive that render.
+  const sendMessageRef = useRef<((text?: string, model?: string, cont?: boolean, opts?: RunOptions) => Promise<void>) | null>(null);
+  const schedulesRef = useRef<ScheduleEntry[]>(schedules);
+  schedulesRef.current = schedules;
 
   // Model fallback chain (#669): ordered models tried when the chat model fails.
   const [fallbackModels, setFallbackModels] = useState<string[]>(() => loadFallbackModels());
@@ -2828,7 +2862,12 @@ const App: React.FC = () => {
   };
 
   // Send message
-  const sendMessage = async (textOverride?: string, modelOverride?: string, continueMode: boolean = false) => {
+  const sendMessage = async (
+    textOverride?: string,
+    modelOverride?: string,
+    continueMode: boolean = false,
+    runOptions?: RunOptions,
+  ) => {
     let text = textOverride ?? input;
     // Agentic "Continue past max-iterations" (#403): re-run the agentic loop with
     // the current context (no new user message). Reset the hit-max flag on entry.
@@ -3899,9 +3938,12 @@ ${lines.join('\n')}`;
     // Apply filter inlets before dispatch (#127)
     const stripMaxIter = (m: Message) =>
       !(continueMode && m.role === 'assistant' && m.content.startsWith('⚠️ Agent stopped: maximum tool iterations'));
+    // A scheduled run starts in a fresh session whose empty history is passed in
+    // explicitly: `messages` still holds the previous chat for this render.
+    const baseHistory = runOptions?.history ?? messages;
     let rawHistory: Message[] = [
       { role: 'system', content: composedSystem },
-      ...messages.filter(stripMaxIter).map(toApiMsg),
+      ...baseHistory.filter(stripMaxIter).map(toApiMsg),
       ...(continueMode ? [] : [toApiMsg(userMessage)]),
     ];
 
@@ -3947,7 +3989,7 @@ ${lines.join('\n')}`;
 
     const chatHistory = await applyFilterInlet(rawHistory);
 
-    setMessages(continueMode ? messages.filter(stripMaxIter) : [...messages, userMessage]);
+    setMessages(continueMode ? baseHistory.filter(stripMaxIter) : [...baseHistory, userMessage]);
     if (textOverride === undefined) setInput(''); // keep in-progress typing for queued auto-sends
     setAttachedImages([]);
     setIsLoading(true);
@@ -4258,9 +4300,12 @@ ${lines.join('\n')}`;
         };
         // Goal mode (#668): an empty goal is no goal; the judge only runs when
         // both a goal and a model are present, defaulting to the chat model.
-        const activeGoal = goalSettings.goal.trim() || undefined;
-        const activeJudgeModel = activeGoal && goalSettings.judgeEnabled
-          ? (goalSettings.judgeModel || (selectedConnectedModel?.name ?? model))
+        const requestedGoal = runOptions?.goal ?? goalSettings.goal;
+        const activeGoal = requestedGoal.trim() || undefined;
+        const activeJudgeModel = activeGoal
+          ? (runOptions?.judgeModel ?? (goalSettings.judgeEnabled
+            ? (goalSettings.judgeModel || (selectedConnectedModel?.name ?? model))
+            : undefined))
           : undefined;
         const agentStream = connForModel
           ? openAiAgenticChatStream({
@@ -4302,9 +4347,11 @@ ${lines.join('\n')}`;
             setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
             continue;
           }
-          if ((message as Message).judgeVerdict) {
+          const judgeVerdict = (message as Message).judgeVerdict;
+          if (judgeVerdict) {
             // Judge checkpoints are part of the record: they explain why the
             // run ended, or why it kept going (#668).
+            runOptions?.onVerdict?.(judgeVerdict.verdict);
             setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
             continue;
           }
@@ -4566,6 +4613,54 @@ ${lines.join('\n')}`;
       }
     }
   };
+
+  // Scheduled runs (#671). The launcher is rebuilt every render through a ref,
+  // so the scheduler's single timer never has to be re-armed just because a
+  // closure changed. Entries are copied in and out so the timer can mutate its
+  // own view without writing to React state behind its back.
+  sendMessageRef.current = sendMessage;
+  useEffect(() => {
+    const scheduler = startScheduler({
+      getEntries: () => schedulesRef.current.map(e => ({ ...e })),
+      onFire: async entry => {
+        const session: ChatSession = {
+          id: `sched-${Date.now().toString(36)}`,
+          title: `⏱ ${entry.goal.slice(0, 48)}`,
+          messages: [],
+          createdAt: Date.now(),
+          model: entry.model || model,
+        };
+        storage.saveSession(session);
+        currentSessionIdRef.current = session.id;
+        setCurrentSessionId(session.id);
+        setIsTemporary(false);
+        setMessages([]);
+        setSessions(storage.getSessions());
+        let verdict: RunVerdict = 'continue';
+        try {
+          await sendMessageRef.current?.(entry.goal, entry.model || undefined, false, {
+            goal: entry.goal,
+            judgeModel: entry.judgeModel,
+            history: [],
+            onVerdict: v => { verdict = v; },
+          });
+        } catch {
+          verdict = 'error';
+        }
+        return verdict;
+      },
+      onChange: next => {
+        schedulesRef.current = next;
+        setSchedules(next);
+        saveSchedules(next);
+      },
+    });
+    schedulerRef.current = scheduler;
+    return () => { scheduler.stop(); schedulerRef.current = null; };
+    // Arming depends on nothing but the entries, which the scheduler reads
+    // through the ref on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Local thumbs feedback on an assistant message (#137).
   const setMessageFeedback = (index: number, thumbs: 'up' | 'down') => {
@@ -8944,6 +9039,13 @@ ${lines.join('\n')}`;
                   models={[...models.map(m => m.name), ...connectedModels.map(m => m.name)]}
                   settings={goalSettings}
                   onChange={updateGoalSettings}
+                />
+
+                {/* Scheduled runs (#671) */}
+                <SchedulePanel
+                  entries={schedules}
+                  onChange={updateSchedules}
+                  models={[...models.map(m => m.name), ...connectedModels.map(m => m.name)]}
                 />
 
                 {/* Agent Safety — autonomy levels (#88, #89, #146) */}
