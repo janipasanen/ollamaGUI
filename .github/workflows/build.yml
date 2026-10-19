@@ -9,6 +9,12 @@ on:
 jobs:
   build:
     strategy:
+      # The Windows runner fails at `Run tests` on an upstream vite/rolldown bug
+      # ([UNRESOLVED_ENTRY] on its own vite.config.ts, rolldown#10798). With the
+      # default fail-fast, that one failure cancels ubuntu and macOS before they
+      # compile anything — so the Rust tests never ran (#667). Keep every leg
+      # running; Windows stays visibly red on its own.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
