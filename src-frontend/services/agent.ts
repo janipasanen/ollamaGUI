@@ -45,6 +45,13 @@ export interface AgenticChatOptions {
   onJudgeVerdict?: (verdict: import('./judge').JudgeVerdict) => void;
   /** Judge calls allowed per run (default JUDGE_MAX_CALLS). */
   maxJudgeCalls?: number;
+  /**
+   * Ordered fallback models (#669). When the current model fails for a
+   * model-scoped reason, the same turn is retried on the next one.
+   */
+  fallbackModels?: string[];
+  /** Fired when the run moves to a fallback model. */
+  onModelSwitch?: (info: { from: string; to: string; reason: string }) => void;
   /** Injected for tests; defaults to services/judge runJudge. */
   runJudgeFn?: (opts: {
     endpoint: string;
@@ -99,6 +106,8 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
     onJudgeVerdict,
     maxJudgeCalls = (await import('./judge')).JUDGE_MAX_CALLS,
     runJudgeFn,
+    fallbackModels,
+    onModelSwitch,
   } = options;
 
   // Retry bounds for transient network failures in the agentic loop (#586).
@@ -317,6 +326,18 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
   }
   const judgeEnabled = !!(goal && goal.trim() && judgeModel);
 
+  // Fallback chain (#669): each configured model is offered once per run, and
+  // only for failures that are about the model rather than the request.
+  const { classifyFailure, fallbackCandidates, switchReason } = await import('./modelFallback');
+  let activeModel = model;
+  const triedModels = new Set([model]);
+  const candidates = fallbackCandidates(fallbackModels, model);
+  const takeNextModel = (): string | null => {
+    const next = candidates.find(m => !triedModels.has(m));
+    if (next) triedModels.add(next);
+    return next ?? null;
+  };
+
   /** Ask the judge, respecting the per-run budget. Null when it does not apply. */
   const askJudge = async (): Promise<import('./judge').JudgeVerdict | null> => {
     if (!judgeEnabled || judgeCalls >= maxJudgeCalls) return null;
@@ -376,7 +397,7 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
 
     // Prepare the request
     const requestBody = {
-      model,
+      model: activeModel,
       messages: currentMessages,
       stream: true,
       ...(tools.length > 0 ? { tools } : {}),
@@ -400,7 +421,10 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
       // iteration, so a transient 502/503/504 or ECONNRESET still completes the
       // turn. A failure after content was emitted is not replayed.
       let streamError: unknown;
-      for (let attempt = 0; !streamError && attempt < MAX_FETCH_RETRIES; attempt++) {
+      let attempt = 0;
+      while (!streamError && attempt < MAX_FETCH_RETRIES) {
+        // A switch re-arms the fetch with the model that is current now.
+        requestBody.model = activeModel;
         // Reset per-attempt accumulators.
         turn.message = '';
         turn.reasoning = '';
@@ -423,12 +447,33 @@ export async function* agenticChatStream(options: AgenticChatOptions): AsyncGene
           // Retry only transient network failures, and only before anything was
           // emitted, so a mid-stream reset never replays a half-built turn.
           if (isRetryableError(error) && !turn.emitted && attempt < MAX_FETCH_RETRIES - 1) {
-            if (onRetry) onRetry(attempt + 1, MAX_FETCH_RETRIES);
-            if (await abortableSleep(500 * (attempt + 1), signal)) {
+            attempt++;
+            if (onRetry) onRetry(attempt, MAX_FETCH_RETRIES);
+            if (await abortableSleep(500 * attempt, signal)) {
               streamError = error;
               break;
             }
             continue;
+          }
+          // Model-scoped failure (deleted model, load failure, dead host): try
+          // the same turn on the next configured model (#669). Nothing has been
+          // emitted, so the retry cannot duplicate output.
+          if (!turn.emitted && classifyFailure(error) === 'model') {
+            const next = takeNextModel();
+            if (next) {
+              const from = activeModel;
+              const reason = switchReason(error);
+              activeModel = next;
+              requestBody.model = next;
+              attempt = 0;
+              if (onModelSwitch) onModelSwitch({ from, to: next, reason });
+              yield {
+                role: 'assistant',
+                content: `⚙️ Switched from **${from}** to **${next}** — ${reason}`,
+                modelSwitch: { from, to: next, reason },
+              } as Message;
+              continue;
+            }
           }
           streamError = error;
         }

@@ -54,6 +54,7 @@ import { registerBrowserTools, stopBrowserEngine } from './services/browser-tool
 import { setBrowserApprovalCallback, clearBrowserApprovalCallback } from './services/browserApproval';
 import { PanelShell, togglePanel, isPanelOpen, closeAllPanels } from './components/PanelShell';
 import { GoalPanel, loadGoalSettings, saveGoalSettings, type GoalSettings } from './components/GoalPanel';
+import { loadFallbackModels, saveFallbackModels } from './services/modelFallback';
 import { registerDocumentTools, readDocument, detectDocumentFormat } from './services/documentTools';
 import { showArtifact, type AnyArtifact, type DocumentArtifactData } from './components/ArtifactPanel';
 import './components/BrowserPane';
@@ -740,6 +741,13 @@ const App: React.FC = () => {
   const updateGoalSettings = (next: GoalSettings) => {
     setGoalSettings(next);
     saveGoalSettings(next);
+  };
+
+  // Model fallback chain (#669): ordered models tried when the chat model fails.
+  const [fallbackModels, setFallbackModels] = useState<string[]>(() => loadFallbackModels());
+  const updateFallbackModels = (next: string[]) => {
+    setFallbackModels(next);
+    saveFallbackModels(next);
   };
 
   // Memory (#95)
@@ -4275,6 +4283,7 @@ ${lines.join('\n')}`;
               format,
               goal: activeGoal,
               judgeModel: activeJudgeModel,
+              fallbackModels,
               ...agentCallbacks,
             });
 
@@ -4287,6 +4296,12 @@ ${lines.join('\n')}`;
           // max-iterations stop warning, which is yielded directly by the
           // generator (not via onAssistantMessage) and must be surfaced to
           // the UI so the "Continue agent" button (#403) can attach to it.
+          if ((message as Message).modelSwitch) {
+            // A fallback switch is part of the record: it explains why this
+            // reply came from a different model (#669).
+            setMessages(prev => { const updated = [...prev, message]; saveCurrentSession(updated); return updated; });
+            continue;
+          }
           if ((message as Message).judgeVerdict) {
             // Judge checkpoints are part of the record: they explain why the
             // run ended, or why it kept going (#668).
@@ -8965,6 +8980,34 @@ ${lines.join('\n')}`;
                       onChange={e => { const v = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 1)); const s = { ...autonomySettings, maxIterations: v }; setAutonomySettings(s); saveAutonomySettings(s); }}
                       className={`w-20 text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'}`}
                     />
+                  </div>
+                  {/* Fallback models (#669) */}
+                  <div className="mb-3">
+                    <label className={`block text-xs mb-1 ${dark ? 'text-zinc-400' : 'text-zinc-600'}`} htmlFor="fallback-models">
+                      Fallback models
+                    </label>
+                    <select
+                      id="fallback-models"
+                      data-testid="fallback-models"
+                      multiple
+                      // React applies `value` on render; a select that mounts
+                      // before its options arrive would lose the selection.
+                      key={`fallback-${models.length}-${connectedModels.length}`}
+                      value={fallbackModels}
+                      onChange={e => updateFallbackModels(Array.from(e.target.selectedOptions, o => o.value))}
+                      className={`w-full text-xs px-2 py-1 rounded border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                        dark ? 'bg-zinc-900 border-zinc-700 text-zinc-200' : 'bg-white border-zinc-300 text-zinc-800'
+                      }`}
+                      style={{ height: '4.5rem' }}
+                    >
+                      {[...models, ...connectedModels]
+                        .filter(m => m.name !== model)
+                        .map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                    </select>
+                    <p className={`text-[10px] mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                      If the chat model fails (deleted, cannot load, host down), the same turn is retried on the
+                      next model here. Ctrl/Cmd+click to pick more than one.
+                    </p>
                   </div>
                   {/* Read-only mode */}
                   <div className="flex items-center justify-between mb-2">

@@ -21,6 +21,8 @@ export interface Message {
   producedByModel?: string;
   /** Goal-mode judge checkpoint (#668): present on the synthetic judge message. */
   judgeVerdict?: import('./judge').JudgeVerdict;
+  /** Model fallback notice (#669): present when the run changed models. */
+  modelSwitch?: { from: string; to: string; reason: string };
   /** Reasoning/thinking trace from Ollama reasoning models (#241). */
   reasoning?: string;
   /** Epoch ms when the message was created (#253). */
