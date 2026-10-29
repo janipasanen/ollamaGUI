@@ -2704,9 +2704,9 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lzma-rust2"
-version = "0.22.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
+checksum = "f1c46f3fcd2e888afdb01a07efc071cb21300e07c68d32c3e8b01b5c8cb1fcaa"
 dependencies = [
  "sha2 0.11.1",
 ]
@@ -4522,7 +4522,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "walkdir",
- "zip 9.0.5",
+ "zip 9.1.2",
 ]
 
 [[package]]
@@ -5436,6 +5436,12 @@ name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
+name = "typed-path"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "typeid"
@@ -6656,15 +6662,15 @@ dependencies = [
  "flate2",
  "indexmap 2.14.2",
  "memchr",
- "typed-path",
+ "typed-path 0.12.3",
  "zopfli",
 ]
 
 [[package]]
 name = "zip"
-version = "9.0.5"
+version = "9.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+checksum = "ec2e3161de27091f18a831d9494e9c53378a34833af5c1dda35ad85849da18d6"
 dependencies = [
  "aes 0.9.3",
  "bzip2",
@@ -6682,7 +6688,8 @@ dependencies = [
  "ppmd-rust",
  "sha1 0.11.0",
  "time",
- "typed-path",
+ "typed-path 0.13.0",
+ "windows-sys 0.61.2",
  "zeroize",
  "zopfli",
  "zstd",
